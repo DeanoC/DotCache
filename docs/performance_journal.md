@@ -46,6 +46,15 @@ Current recommendation from that sweep:
 - Best balanced approximate point: sink `256`, recent `1024`, envelope `top_k=4`.
 - Larger sink/recent windows did not materially improve max-abs error enough to justify the extra runtime.
 
+Long-context validation of the balanced `256/1024/4` envelope profile:
+
+| Context | Active Pages | Session ms/step | Max Abs Error |
+|---|---:|---:|---:|
+| `8192` | 9 | 10.74 | `4.57` |
+| `16384` | 9 | 10.37 | `4.73` |
+
+That is a useful result too: the fixed window/profile keeps latency almost flat as context grows, but accuracy degrades, so this should be treated as the best current M4 approximate profile for the 4k regime, not a universal setting.
+
 ## Working Conclusions
 
 - Exact compressed-domain MPS decode is in very good shape.
@@ -54,6 +63,7 @@ Current recommendation from that sweep:
 - Multi-vector sketches are better than a single page mean as a first-pass gate, but they still do not preserve full-context quality.
 - A simple page-envelope bound is materially better than sketch gating at about the same latency budget.
 - A targeted sweep says `sink=256`, `recent=1024`, `top_k=4` is the best current balance for the M4 profile.
+- That same fixed `256/1024/4` profile does not hold quality steady at `8192+`, so longer contexts need a context-scaled retune.
 - Precomputing runtime sketches during encode removed the preload/append regression from sketch-based experiments.
 - A two-stage shortlist with exact refine improves quality a bit, and score reuse helps a little, but it still gives back most of the latency win from sketch gating.
 - Adding exact refine on top of the envelope gate does not currently buy enough to justify the cost.
@@ -76,6 +86,7 @@ These are the important checkpoints so far. Some numbers come from earlier harne
 | `working tree` | Page-envelope relevance gate | Decode `8.39 ms/step`; session runtime `10.37 ms/step`; max abs error `3.19` | A cheap page-level min/max envelope is a much stronger shortlist signal than the sketch gate |
 | `working tree` | Envelope shortlist plus exact refine | Decode `19.96 ms/step`; session runtime `22.02 ms/step`; max abs error `3.19` | Exact refine did not improve the envelope shortlist enough to be worth keeping on top |
 | `working tree` | Targeted envelope sweep around `256/1024` | Frontier points: `top_k=2` at `7.68 ms/step`, `3.54` error; `top_k=4` at `8.15 ms/step`, `3.19` error | The envelope gate should stay simple; `256/1024/top_k=4` is the best current default approximate profile |
+| `working tree` | Long-context validation of tuned envelope profile | `8192` at `10.74 ms/step`, `4.57` error; `16384` at `10.37 ms/step`, `4.73` error | Fixed-window latency scales well, but quality does not; long contexts need retuning |
 
 ## Current Path
 
@@ -84,6 +95,7 @@ What we are keeping:
 - Exact full-context MPS decode as the high-quality reference runtime.
 - Page-envelope relevance gating as the best current approximate shortlist mode.
 - `sink=256`, `recent=1024`, `top_k=4` as the best current M4 approximate profile.
+- A wrapper entrypoint for that profile in [run_m4_envelope_session.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m4_envelope_session.sh).
 - Session-shaped benchmark harness with separate preload, append, and decode phases.
 - Raw benchmark history checked into the repo.
 
@@ -99,7 +111,7 @@ What looks next-most-promising:
 
 - Keep exact full-context MPS decode as the production-shaped path while shortlist experiments stay opt-in.
 - Promote the envelope gate as the default approximate baseline in any higher-level harnesses we add next.
-- Validate the tuned envelope profile at longer contexts such as `8192` and `16384`.
+- Retune the envelope profile as context grows past `4096`, likely by scaling `recent_window` and/or `top_k`.
 - Only revisit exact refine if it can improve on the envelope gate without dragging decode time back toward the exact path.
 
 ## Recording New Runs
