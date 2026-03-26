@@ -640,6 +640,7 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
+                        build_runtime_metadata=False,
                     )
                 )
                 value_pages_by_head[kv_head_id].append(
@@ -650,6 +651,7 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
+                        build_runtime_metadata=False,
                     )
                 )
         return key_pages_by_head, value_pages_by_head
@@ -1089,6 +1091,7 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
+                    build_runtime_metadata=False,
                 )
                 finalized_value_page = encode_page(
                     dense_values,
@@ -1097,6 +1100,7 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
+                    build_runtime_metadata=False,
                 )
                 state.session.append([finalized_key_page], [finalized_value_page], trace=trace)
                 state.invalidate_decode_views()

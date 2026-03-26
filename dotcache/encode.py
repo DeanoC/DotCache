@@ -37,6 +37,7 @@ def encode_page(
     mode: str | None = None,
     layout: str | None = None,
     quant_scheme: str | None = None,
+    build_runtime_metadata: bool = True,
 ) -> EncodedPage:
     values = np.asarray(tensor_slice, dtype=np.float32)
     if values.ndim != 2:
@@ -50,8 +51,13 @@ def encode_page(
     page_layout = layout or (config.payload_layout_k if kind == "K" else config.payload_layout_v)
     scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
     token_count = values.shape[0]
-    runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
-    runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
+    runtime_page_mean = None
+    runtime_page_sketch = None
+    runtime_page_min = None
+    runtime_page_max = None
+    if build_runtime_metadata:
+        runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
+        runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
 
     if page_mode == "M3":
         header = PageHeader(

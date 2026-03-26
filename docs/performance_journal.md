@@ -112,6 +112,12 @@ Latest higher-context decode optimization checkpoint on SmolLM2 360M:
 - greedy agreement stayed at `1.00`
 - prefill ingest is still expensive at this size, so the next bottleneck on this model is now prefill rather than decode
 
+Latest higher-context prefill optimization checkpoint on SmolLM2 360M:
+
+- skipping approximate-only page sketch/envelope metadata during exact model-path encoding moved the exact `2048` SmolLM2 prefill-cache ingest from `4233.23 ms` down to `3672.38 ms`
+- the same rerun also brought DotCache decode down further to `665.86 ms/step`
+- dense landed at `881.04 ms/step` on that run, so DotCache stayed ahead on decode while keeping the same `0.22x` KV-memory ratio
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt
