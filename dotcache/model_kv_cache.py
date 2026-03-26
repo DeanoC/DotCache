@@ -6,7 +6,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .attention_runtime import BackendName, decode_step, prepare_pages
+from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
 from .backends import PreparedPageMPS
 from .config import DotCacheConfig
 from .encode import encode_page
@@ -443,13 +443,13 @@ class ModelPagedKVCache:
             key_pages, value_pages = prepared_page_pairs[kv_head_id]
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
-            for q_head_id in q_head_ids:
-                _, _, output = decode_step(
-                    scaled_queries[q_head_id],
-                    key_pages,
-                    value_pages,
-                    backend=self.backend,
-                    trace=trace,
-                )
-                outputs[q_head_id] = output
+            kv_queries = scaled_queries[q_head_ids]
+            _, _, kv_outputs = decode_multi_query_step(
+                kv_queries,
+                key_pages,
+                value_pages,
+                backend=self.backend,
+                trace=trace,
+            )
+            outputs[q_head_ids] = kv_outputs
         return outputs

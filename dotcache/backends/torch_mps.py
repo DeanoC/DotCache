@@ -233,6 +233,20 @@ def _pad_query(query_slice: np.ndarray, padded_head_dim: int):
     return padded
 
 
+def _pad_queries(query_slices: np.ndarray, padded_head_dim: int):
+    torch = _load_torch()
+    queries = torch.as_tensor(query_slices, dtype=torch.float32, device="mps")
+    if queries.ndim != 2:
+        raise ValueError("query_slices must have shape [query_count, head_dim]")
+    if int(queries.shape[1]) > padded_head_dim:
+        raise ValueError("query head_dim exceeds padded_head_dim")
+    if int(queries.shape[1]) == padded_head_dim:
+        return queries
+    padded = torch.zeros((queries.shape[0], padded_head_dim), dtype=torch.float32, device="mps")
+    padded[:, : queries.shape[1]] = queries
+    return padded
+
+
 def _prepare_output_accumulator(out_acc: np.ndarray | None, head_dim: int, padded_head_dim: int):
     torch = _load_torch()
     output = torch.zeros(padded_head_dim, dtype=torch.float32, device="mps")
@@ -579,4 +593,154 @@ def decode_step_mps(
         logits.detach().cpu().numpy(),
         weights.detach().cpu().numpy(),
         output[:head_dim].detach().cpu().numpy(),
+    )
+
+
+def _score_page_chunk_multiquery_mps(
+    query_slices: np.ndarray,
+    pages: Sequence[PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+):
+    torch = _load_torch()
+    if not pages:
+        raise ValueError("pages must be non-empty")
+    header = pages[0].header
+    query_count = int(np.asarray(query_slices).shape[0])
+    if trace is not None:
+        trace.record_page_read(
+            sum(page.payload_nbytes for page in pages),
+            sum(page.metadata_nbytes for page in pages),
+        )
+
+    if header.mode_default == "M3":
+        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        queries = torch.as_tensor(query_slices, dtype=torch.float32, device="mps")
+        return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
+
+    queries = _pad_queries(query_slices, header.padded_head_dim)
+    query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
+    query_group_sums = query_groups.sum(dim=-1)
+    page_count = len(pages)
+    logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device="mps")
+
+    for group_index in range(header.num_groups):
+        group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = _unpack_bits_torch(
+            group_words.reshape(-1, header.words_per_group),
+            pages[0].unpack_shifts,
+            pages[0].unpack_mask,
+            header.group_size,
+        ).reshape(page_count, header.token_count, header.group_size)
+        if trace is not None:
+            trace.record_temporary(int(codes.numel() * codes.element_size()))
+        qg = query_groups[:, group_index, :]
+        int_dot = torch.einsum("ptg,qg->qpt", codes, qg)
+        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        logits += scales.unsqueeze(0) * int_dot + bias.unsqueeze(0) * query_group_sums[:, group_index].reshape(
+            query_count,
+            1,
+            1,
+        )
+
+    return logits.reshape(query_count, -1)
+
+
+def _mix_page_chunk_multiquery_mps(
+    attn_weights,
+    pages: Sequence[PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+):
+    torch = _load_torch()
+    if not pages:
+        raise ValueError("pages must be non-empty")
+    header = pages[0].header
+    page_count = len(pages)
+    token_count = header.token_count
+
+    if trace is not None:
+        trace.record_page_read(
+            sum(page.payload_nbytes for page in pages),
+            sum(page.metadata_nbytes for page in pages),
+        )
+
+    if not isinstance(attn_weights, torch.Tensor):
+        weights = torch.as_tensor(attn_weights, dtype=torch.float32, device="mps")
+    else:
+        weights = attn_weights
+    if weights.ndim != 3 or tuple(weights.shape[1:]) != (page_count, token_count):
+        raise ValueError("attn_weights chunk must have shape [query_count, page_count, token_count]")
+
+    query_count = int(weights.shape[0])
+    output = torch.zeros((query_count, header.padded_head_dim), dtype=torch.float32, device="mps")
+
+    if header.mode_default == "M3":
+        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
+        return output
+
+    for group_index in range(header.num_groups):
+        group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = _unpack_bits_torch(
+            group_words.reshape(-1, header.words_per_group),
+            pages[0].unpack_shifts,
+            pages[0].unpack_mask,
+            header.group_size,
+        ).reshape(page_count, token_count, header.group_size)
+        if trace is not None:
+            trace.record_temporary(int(codes.numel() * codes.element_size()))
+        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        weighted_scales = weights * scales.unsqueeze(0)
+        contribution = torch.einsum("qpt,ptg->qg", weighted_scales, codes)
+        bias_term = torch.einsum("qpt,pt->q", weights, bias)
+        start = group_index * header.group_size
+        end = start + header.group_size
+        output[:, start:end] += contribution + bias_term[:, None]
+
+    return output
+
+
+def decode_multi_query_step_mps(
+    query_slices: np.ndarray,
+    key_pages: Sequence[EncodedPage | PreparedPageMPS],
+    value_pages: Sequence[EncodedPage | PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    torch = _load_torch()
+    prepared_key_pages = [prepare_page_mps(page, trace=trace) for page in key_pages]
+    prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
+    if not prepared_key_pages:
+        raise ValueError("decode_multi_query_step_mps requires at least one page")
+
+    logits_parts = []
+    for page_chunk in _chunk_compatible_pages(prepared_key_pages):
+        logits_parts.append(_score_page_chunk_multiquery_mps(query_slices, page_chunk, trace=trace))
+    logits = torch.cat(logits_parts, dim=1)
+    weights = torch.softmax(logits, dim=1)
+
+    output = torch.zeros(
+        (int(np.asarray(query_slices).shape[0]), prepared_value_pages[0].header.padded_head_dim),
+        dtype=torch.float32,
+        device="mps",
+    )
+    offset = 0
+    for page_chunk in _chunk_compatible_pages(prepared_value_pages):
+        chunk_token_count = page_chunk[0].header.token_count * len(page_chunk)
+        chunk_weights = weights[:, offset : offset + chunk_token_count].reshape(
+            weights.shape[0],
+            len(page_chunk),
+            page_chunk[0].header.token_count,
+        )
+        output += _mix_page_chunk_multiquery_mps(chunk_weights, page_chunk, trace=trace)
+        offset += chunk_token_count
+
+    head_dim = prepared_value_pages[0].header.head_dim
+    return (
+        logits.detach().cpu().numpy(),
+        weights.detach().cpu().numpy(),
+        output[:, :head_dim].detach().cpu().numpy(),
     )

@@ -7,6 +7,7 @@ import numpy as np
 from .attention_reference import softmax
 from .backends import (
     PreparedPageMPS,
+    decode_multi_query_step_mps,
     decode_step_mps,
     mix_page_cpu_ref,
     mix_page_mps,
@@ -155,6 +156,59 @@ def decode_step(
         backend=backend,
         cache=cache,
         trace=trace,
+    )
+
+
+def decode_multi_query_step(
+    query_slices: np.ndarray,
+    key_pages: Sequence[PageLike],
+    value_pages: Sequence[PageLike],
+    *,
+    backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
+    trace: ExecutionTrace | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    queries = np.asarray(query_slices, dtype=np.float32)
+    if queries.ndim != 2:
+        raise ValueError("query_slices must have shape [query_count, head_dim]")
+    if len(key_pages) != len(value_pages):
+        raise ValueError("key_pages and value_pages must contain the same number of pages")
+    if not key_pages:
+        raise ValueError("decode_multi_query_step requires at least one page")
+
+    prepared_key_pages = prepare_pages(key_pages, backend=backend, cache=cache, trace=trace)
+    prepared_value_pages = prepare_pages(value_pages, backend=backend, cache=cache, trace=trace)
+
+    if (
+        backend != "cpu_ref"
+        and all(isinstance(page, PreparedPageMPS) for page in prepared_key_pages)
+        and all(isinstance(page, PreparedPageMPS) for page in prepared_value_pages)
+    ):
+        return decode_multi_query_step_mps(
+            queries,
+            prepared_key_pages,
+            prepared_value_pages,
+            trace=trace,
+        )
+
+    logits_list = []
+    weights_list = []
+    output_list = []
+    for query_slice in queries:
+        logits, weights, output = decode_step(
+            query_slice,
+            prepared_key_pages,
+            prepared_value_pages,
+            backend=backend,
+            trace=trace,
+        )
+        logits_list.append(logits)
+        weights_list.append(weights)
+        output_list.append(output)
+    return (
+        np.stack(logits_list, axis=0).astype(np.float32, copy=False),
+        np.stack(weights_list, axis=0).astype(np.float32, copy=False),
+        np.stack(output_list, axis=0).astype(np.float32, copy=False),
     )
 
 
