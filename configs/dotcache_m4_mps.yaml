@@ -1,0 +1,13 @@
+head_dim: 256
+group_size: 32
+bits_k: 4
+bits_v: 4
+tokens_per_page: 256
+recent_window: 128
+payload_layout_k: group_major
+payload_layout_v: group_major
+default_mode_k: M0
+default_mode_v: M0
+quant_scheme_k: affine
+quant_scheme_v: affine
+escape_dtype: float16

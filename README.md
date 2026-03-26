@@ -56,3 +56,26 @@ scripts/
 
 This is the CPU-reference bootstrap, not the final runtime. The next logical step on this M4 Mac is a `torch_mps` execution backend that reuses the same page format and correctness harness.
 
+## MPS Tuning Notes
+
+The current eager `torch_mps` path is sensitive to page size.
+
+- Small pages such as `tokens_per_page=64` favor the CPU reference path.
+- Larger pages let MPS amortize the per-page unpack and matmul overhead much better.
+- On this M4 Mac, the first strong crossover point showed up around `tokens_per_page=128`, and `256` is a good first serious tuning target for MPS experiments.
+
+For a ready-made MPS-oriented profile, start from [configs/dotcache_m4_mps.yaml](./configs/dotcache_m4_mps.yaml).
+
+Benchmark scripts accept `--config <path>` and then let explicit CLI flags override the loaded values. For example:
+
+```bash
+.venv/bin/python benchmarks/bench_decode.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096
+```
+
+To reproduce the crossover sweep:
+
+```bash
+bash scripts/run_mps_page_sweep.sh --config configs/dotcache_m4_mps.yaml
+```
+
+On this Mac setup, invoking the wrapper through `bash` is the most reliable path.
