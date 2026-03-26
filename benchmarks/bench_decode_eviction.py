@@ -15,7 +15,7 @@ from bench_common import build_config, build_queries, emit
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sweep prepared-page cache capacity under growing-context decode.")
-    parser.add_argument("--backend", choices=["torch_mps"], default="torch_mps")
+    parser.add_argument("--backend", choices=["torch_mps", "torch_cuda"], default="torch_mps")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--contexts", nargs="*", type=int, default=[4096])
     parser.add_argument("--decode-steps", type=int, default=8)

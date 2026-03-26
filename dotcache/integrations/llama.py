@@ -54,6 +54,22 @@ def _require_transformers() -> None:
         raise RuntimeError("transformers and torch are required for the Llama integration path")
 
 
+def _torch_backend_matches_device(backend: str, device_type: str) -> bool:
+    if device_type == "mps":
+        return backend in {"torch_mps", "auto"}
+    if device_type == "cuda":
+        return backend in {"torch_cuda", "auto"}
+    return False
+
+
+def _default_model_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def _default_attention_mask(input_ids) -> Any:
     return torch.ones_like(input_ids, dtype=torch.long)
 
@@ -286,7 +302,7 @@ class DotCacheLlamaAttention(nn.Module):
         value_step = value_states[0].detach().to(dtype=torch.float32)
 
         append_start = time.perf_counter()
-        if self.adapter.backend in {"torch_mps", "auto"} and hidden_states.device.type == "mps":
+        if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type):
             self.adapter.model_kv_cache.append_step_torch(
                 self.layer_idx,
                 key_step,
@@ -304,7 +320,7 @@ class DotCacheLlamaAttention(nn.Module):
             )
         self.adapter.append_runtime_ms_total += (time.perf_counter() - append_start) * 1000.0
         decode_start = time.perf_counter()
-        if self.adapter.backend in {"torch_mps", "auto"} and hidden_states.device.type == "mps":
+        if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type):
             context_states = self.adapter.model_kv_cache.decode_layer_torch(
                 self.layer_idx,
                 query_step,
@@ -436,7 +452,7 @@ class LlamaDotCacheModelAdapter:
         self.decode_runtime_ms_total = 0.0
 
     def load_prefill_cache(self, past_key_values, *, trace: ExecutionTrace | None = None) -> None:
-        if self.backend in {"torch_mps", "auto"} and self.device.type == "mps":
+        if _torch_backend_matches_device(self.backend, self.device.type):
             self.load_prefill_cache_tensors(extract_past_key_values_tensors(past_key_values), trace=trace)
         else:
             self.load_prefill_cache_arrays(extract_past_key_values_arrays(past_key_values), trace=trace)
@@ -480,14 +496,15 @@ class LlamaDotCacheHarness:
         model_id: str,
         dotcache_config: DotCacheConfig,
         *,
-        backend: str = "torch_mps",
-        device: str = "mps",
+        backend: str = "auto",
+        device: str | None = None,
         torch_dtype: str = "float16",
     ) -> "LlamaDotCacheHarness":
         _require_transformers()
         dtype = getattr(torch, torch_dtype)
+        resolved_device = _default_model_device() if device is None else device
         model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
-        model.to(device)
+        model.to(resolved_device)
         model.eval()
         tokenizer = AutoTokenizer.from_pretrained(model_id)
         if tokenizer.pad_token_id is None:
@@ -549,7 +566,7 @@ def _prefill_prompt(
     adapter.set_mode("dense")
     adapter.set_capture(False)
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
-    if adapter.backend in {"torch_mps", "auto"} and input_ids.device.type == "mps":
+    if _torch_backend_matches_device(adapter.backend, input_ids.device.type):
         prefill_layers = extract_past_key_values_tensors(outputs.past_key_values)
     else:
         prefill_layers = extract_past_key_values_arrays(outputs.past_key_values)

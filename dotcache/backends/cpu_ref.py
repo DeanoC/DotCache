@@ -5,11 +5,11 @@ import numpy as np
 from ..attention_reference import mix_page_ref, score_page_ref
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage
-from .torch_mps import PreparedPageMPS
+from .torch_mps import PreparedPageTorch
 
 
-def _source_page(page: EncodedPage | PreparedPageMPS) -> EncodedPage:
-    if isinstance(page, PreparedPageMPS):
+def _source_page(page: EncodedPage | PreparedPageTorch) -> EncodedPage:
+    if isinstance(page, PreparedPageTorch):
         return page.source_page
     return page
 
@@ -24,7 +24,7 @@ def _record_trace(page: EncodedPage, trace: ExecutionTrace | None) -> None:
 
 def score_page_cpu_ref(
     query_slice: np.ndarray,
-    page: EncodedPage | PreparedPageMPS,
+    page: EncodedPage | PreparedPageTorch,
     *,
     trace: ExecutionTrace | None = None,
 ) -> np.ndarray:
@@ -35,7 +35,7 @@ def score_page_cpu_ref(
 
 def mix_page_cpu_ref(
     attn_weights: np.ndarray,
-    page: EncodedPage | PreparedPageMPS,
+    page: EncodedPage | PreparedPageTorch,
     *,
     out_acc: np.ndarray | None = None,
     trace: ExecutionTrace | None = None,

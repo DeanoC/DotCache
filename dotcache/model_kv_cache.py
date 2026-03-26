@@ -7,10 +7,11 @@ import numpy as np
 
 from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
 from .backends import (
-    PreparedPageMPS,
+    PreparedPageTorch,
     clear_prepared_chunk_cache,
-    decode_grouped_multiquery_step_prepared_mps_tensor,
-    decode_multi_query_step_mps_tensor,
+    cuda_available,
+    decode_grouped_multiquery_step_prepared_torch_tensor,
+    decode_multi_query_step_torch_tensor,
     mps_available,
     prepared_chunk_cache_resident_bytes,
 )
@@ -22,7 +23,7 @@ from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 
-PageLike = EncodedPage | PreparedPageMPS
+PageLike = EncodedPage | PreparedPageTorch
 
 
 def default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: int) -> np.ndarray:
@@ -69,9 +70,13 @@ def _grouped_pages_can_batch(
             return False
         if int(query_groups[group_index].shape[0]) != query_count:
             return False
-        if not all(isinstance(page, PreparedPageMPS) for page in key_pages_by_group[group_index]):
+        if not all(isinstance(page, PreparedPageTorch) for page in key_pages_by_group[group_index]):
             return False
-        if not all(isinstance(page, PreparedPageMPS) for page in value_pages_by_group[group_index]):
+        if not all(isinstance(page, PreparedPageTorch) for page in value_pages_by_group[group_index]):
+            return False
+        if any(page.device_type != key_pages_by_group[0][0].device_type for page in key_pages_by_group[group_index]):
+            return False
+        if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
             return False
     for page_index in range(page_count):
         key_signature = (
@@ -348,8 +353,9 @@ class _PersistentTailPage:
     layer_id: int
     kv_head_id: int
     kind: str
+    device_type: str
     source_page: EncodedPage | None = None
-    prepared_page: PreparedPageMPS | None = None
+    prepared_page: PreparedPageTorch | None = None
     host_buffer: np.ndarray | None = None
     token_count: int = 0
     resident_nbytes: int = 0
@@ -369,7 +375,7 @@ class _PersistentTailPage:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover - torch is required only for the MPS tail path
-            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+            raise RuntimeError("torch is required for the persistent torch tail path") from exc
 
         dtype_name = self.config.escape_dtype
         np_dtype = _tail_escape_dtype_numpy(dtype_name)
@@ -396,9 +402,10 @@ class _PersistentTailPage:
         device_payload = torch.zeros(
             (self.config.tokens_per_page, self.config.head_dim),
             dtype=torch_dtype,
-            device="mps",
+            device=self.device_type,
         )
-        prepared_page = PreparedPageMPS(
+        prepared_page = PreparedPageTorch(
+            device_type=self.device_type,
             source_page=source_page,
             header=header,
             escape_payload=device_payload,
@@ -472,7 +479,7 @@ class _PersistentTailPage:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+            raise RuntimeError("torch is required for the persistent torch tail path") from exc
         if not torch.is_tensor(device_rows):
             raise TypeError("append_device_rows requires a torch.Tensor")
         if device_rows.ndim != 2 or int(device_rows.shape[1]) != self.config.head_dim:
@@ -519,8 +526,8 @@ class _PersistentTailPage:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
-        row_tensor = torch.from_numpy(np.ascontiguousarray(converted)).to(device="mps")
+            raise RuntimeError("torch is required for the persistent torch tail path") from exc
+        row_tensor = torch.from_numpy(np.ascontiguousarray(converted)).to(device=self.device_type)
         start, end = self.prepare_append_span(token_start=token_start, row_count=values.shape[0])
         self.host_buffer[start:end] = converted
         self.prepared_page.escape_payload[start:end, : self.config.head_dim] = row_tensor
@@ -528,7 +535,7 @@ class _PersistentTailPage:
             trace.record_host_to_device(int(row_tensor.numel() * row_tensor.element_size()))
 
     @property
-    def active_page(self) -> PreparedPageMPS | None:
+    def active_page(self) -> PreparedPageTorch | None:
         if self.token_count <= 0:
             return None
         return self.prepared_page
@@ -599,7 +606,7 @@ class ModelPagedKVCache:
                 tail_resident_bytes += state.persistent_key_tail.resident_nbytes
             if state.persistent_value_tail is not None:
                 tail_resident_bytes += state.persistent_value_tail.resident_nbytes
-        chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self.backend in {"torch_mps", "auto"} else 0
+        chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self._torch_device_type == "mps" else 0
         return self.cache.resident_bytes + tail_resident_bytes + chunk_resident_bytes
 
     def clear(self) -> None:
@@ -661,7 +668,7 @@ class ModelPagedKVCache:
         return key_pages_by_head, value_pages_by_head
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
-        if self.backend not in {"torch_mps", "auto"} or not mps_available():
+        if self._torch_device_type is None:
             return
         key_refs: list[tuple[_HeadSessionState, int]] = []
         key_pages: list[PageLike] = []
@@ -670,12 +677,12 @@ class ModelPagedKVCache:
 
         for state in self._states.values():
             for index, page in enumerate(state.session.key_pages):
-                if isinstance(page, PreparedPageMPS):
+                if isinstance(page, PreparedPageTorch):
                     continue
                 key_refs.append((state, index))
                 key_pages.append(page)
             for index, page in enumerate(state.session.value_pages):
-                if isinstance(page, PreparedPageMPS):
+                if isinstance(page, PreparedPageTorch):
                     continue
                 value_refs.append((state, index))
                 value_pages.append(page)
@@ -691,6 +698,31 @@ class ModelPagedKVCache:
                 state.session.value_pages[index] = prepared
                 state.invalidate_decode_views()
 
+    def _ensure_prepared_static_pages(
+        self,
+        state: _HeadSessionState,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        if self._torch_device_type is None:
+            return
+        if state.session.key_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
+            state.session.key_pages = prepare_pages(
+                state.session.key_pages,
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )
+            state.invalidate_decode_views()
+        if state.session.value_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages):
+            state.session.value_pages = prepare_pages(
+                state.session.value_pages,
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )
+            state.invalidate_decode_views()
+
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
             raise ValueError(f"layer_id must be in [0, {self.num_hidden_layers})")
@@ -702,51 +734,48 @@ class ModelPagedKVCache:
         key = (layer_id, kv_head_id)
         state = self._states.get(key)
         if state is None:
+            torch_device_type = self._torch_device_type
             state = _HeadSessionState(
                 session=PagedDecodeSession(backend=self.backend, cache=self.cache),
                 tail=_TailPageBuilder(self.config, layer_id=layer_id, kv_head_id=kv_head_id),
-                persistent_key_tail=_PersistentTailPage(self.config, layer_id=layer_id, kv_head_id=kv_head_id, kind="K")
-                if self._use_persistent_mps_tail
+                persistent_key_tail=_PersistentTailPage(
+                    self.config,
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    kind="K",
+                    device_type=torch_device_type,
+                )
+                if torch_device_type is not None
                 else None,
-                persistent_value_tail=_PersistentTailPage(self.config, layer_id=layer_id, kv_head_id=kv_head_id, kind="V")
-                if self._use_persistent_mps_tail
+                persistent_value_tail=_PersistentTailPage(
+                    self.config,
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    kind="V",
+                    device_type=torch_device_type,
+                )
+                if torch_device_type is not None
                 else None,
             )
             self._states[key] = state
         return state
 
     @property
-    def _use_persistent_mps_tail(self) -> bool:
+    def _torch_device_type(self) -> str | None:
         if self.backend == "torch_mps":
-            return mps_available()
+            return "mps" if mps_available() else None
+        if self.backend == "torch_cuda":
+            return "cuda" if cuda_available() else None
         if self.backend == "auto":
-            return mps_available()
-        return False
+            if cuda_available():
+                return "cuda"
+            if mps_available():
+                return "mps"
+        return None
 
-    def _ensure_prepared_static_pages(
-        self,
-        state: _HeadSessionState,
-        *,
-        trace: ExecutionTrace | None = None,
-    ) -> None:
-        if self.backend not in {"torch_mps", "auto"} or not mps_available():
-            return
-        if state.session.key_pages and not all(isinstance(page, PreparedPageMPS) for page in state.session.key_pages):
-            state.session.key_pages = prepare_pages(
-                state.session.key_pages,
-                backend=self.backend,
-                cache=self.cache,
-                trace=trace,
-            )
-            state.invalidate_decode_views()
-        if state.session.value_pages and not all(isinstance(page, PreparedPageMPS) for page in state.session.value_pages):
-            state.session.value_pages = prepare_pages(
-                state.session.value_pages,
-                backend=self.backend,
-                cache=self.cache,
-                trace=trace,
-            )
-            state.invalidate_decode_views()
+    @property
+    def _use_persistent_torch_tail(self) -> bool:
+        return self._torch_device_type is not None
 
     def layer_sequence_length(self, layer_id: int) -> int:
         self._validate_layer_id(layer_id)
@@ -772,9 +801,9 @@ class ModelPagedKVCache:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+            raise RuntimeError("torch is required for the persistent torch tail path") from exc
         contiguous_rows = np.ascontiguousarray(np.stack([rows.astype(np.float16, copy=False) for _, rows in non_empty_pairs], axis=0))
-        device_rows = torch.from_numpy(contiguous_rows).to(device="mps")
+        device_rows = torch.from_numpy(contiguous_rows).to(device=non_empty_pairs[0][0].device_type)
         if trace is not None:
             trace.record_host_to_device(int(device_rows.numel() * device_rows.element_size()))
         for batch_index, (tail, rows) in enumerate(non_empty_pairs):
@@ -798,7 +827,7 @@ class ModelPagedKVCache:
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+            raise RuntimeError("torch is required for the persistent torch tail path") from exc
         if not torch.is_tensor(rows_by_head):
             raise TypeError("rows_by_head must be a torch.Tensor")
         if rows_by_head.ndim != 3:
@@ -854,7 +883,7 @@ class ModelPagedKVCache:
             remainder_values = values[kv_head_id, full_tokens:]
             state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
             state.sequence_length = seq_len
-        if self._use_persistent_mps_tail:
+        if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
             for kv_head_id in range(self.num_key_value_heads):
@@ -893,8 +922,8 @@ class ModelPagedKVCache:
             import torch
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("torch is required for ingest_prefill_cache_torch") from exc
-        if self.backend not in {"torch_mps", "auto"} or not mps_available():
-            raise RuntimeError("ingest_prefill_cache_torch is only available for the torch_mps backend")
+        if self._torch_device_type is None:
+            raise RuntimeError("ingest_prefill_cache_torch is only available for a torch accelerator backend")
         keys = _normalize_prefill_tensor_torch(
             layer_k,
             num_key_value_heads=self.num_key_value_heads,
@@ -925,7 +954,7 @@ class ModelPagedKVCache:
         else:
             preload_key_pages_by_head = [[] for _ in range(self.num_key_value_heads)]
             preload_value_pages_by_head = [[] for _ in range(self.num_key_value_heads)]
-        if not self._use_persistent_mps_tail:
+        if not self._use_persistent_torch_tail:
             remainder_keys_cpu = keys[:, full_tokens:].detach().cpu().numpy()
             remainder_values_cpu = values[:, full_tokens:].detach().cpu().numpy()
 
@@ -937,7 +966,7 @@ class ModelPagedKVCache:
             if preload_key_pages:
                 state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
                 state.invalidate_decode_views()
-            if self._use_persistent_mps_tail:
+            if self._use_persistent_torch_tail:
                 state.tail.clear()
             else:
                 remainder_keys = remainder_keys_cpu[kv_head_id]
@@ -945,7 +974,7 @@ class ModelPagedKVCache:
                 state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
             state.sequence_length = seq_len
 
-        if self._use_persistent_mps_tail:
+        if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
             for kv_head_id in range(self.num_key_value_heads):
@@ -995,7 +1024,7 @@ class ModelPagedKVCache:
             raise ValueError("key_step and value_step token counts must match")
         token_count = int(keys.shape[1])
 
-        if self._use_persistent_mps_tail:
+        if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
             for kv_head_id in range(self.num_key_value_heads):
@@ -1046,8 +1075,8 @@ class ModelPagedKVCache:
             raise RuntimeError("torch is required for append_step_torch") from exc
         if not torch.is_tensor(key_step) or not torch.is_tensor(value_step):
             raise TypeError("append_step_torch requires torch.Tensor inputs")
-        if self.backend not in {"torch_mps", "auto"} or not mps_available():
-            raise RuntimeError("append_step_torch is only available for the torch_mps backend")
+        if self._torch_device_type is None:
+            raise RuntimeError("append_step_torch is only available for a torch accelerator backend")
 
         keys = key_step.detach().to(dtype=torch.float32)
         values = value_step.detach().to(dtype=torch.float32)
@@ -1069,7 +1098,7 @@ class ModelPagedKVCache:
             raise ValueError("key_step and value_step token counts must match")
         token_count = int(keys.shape[1])
 
-        if not self._use_persistent_mps_tail:
+        if not self._use_persistent_torch_tail:
             self.append_step(
                 layer_id,
                 keys.cpu().numpy(),
@@ -1106,7 +1135,7 @@ class ModelPagedKVCache:
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             if state.persistent_key_tail is None or state.persistent_value_tail is None:
-                raise RuntimeError("persistent MPS tail path requires allocated key/value tails")
+                raise RuntimeError("persistent torch tail path requires allocated key/value tails")
             if state.tail.token_count > 0:
                 state.tail.clear()
             if state.persistent_key_tail.token_count >= self.config.tokens_per_page:
@@ -1234,8 +1263,8 @@ class ModelPagedKVCache:
             raise RuntimeError("torch is required for decode_layer_torch") from exc
         if not torch.is_tensor(query_step):
             raise TypeError("decode_layer_torch requires a torch.Tensor query_step")
-        if self.backend not in {"torch_mps", "auto"} or not mps_available():
-            raise RuntimeError("decode_layer_torch is only available for the torch_mps backend")
+        if self._torch_device_type is None:
+            raise RuntimeError("decode_layer_torch is only available for a torch accelerator backend")
         if query_step.ndim == 4:
             if tuple(query_step.shape[:1] + query_step.shape[2:3]) != (1, 1):
                 raise ValueError("query_step must have shape [q_heads, head_dim] or [1, q_heads, 1, head_dim]")
@@ -1273,7 +1302,7 @@ class ModelPagedKVCache:
             active_value_pages.append(value_pages)
 
         if _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
-            _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_mps_tensor(
+            _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_torch_tensor(
                 active_queries,
                 active_key_pages,
                 active_value_pages,
@@ -1290,6 +1319,12 @@ class ModelPagedKVCache:
             active_value_pages,
             strict=True,
         ):
-            _, _, kv_outputs = decode_multi_query_step_mps_tensor(kv_queries, key_pages, value_pages, trace=trace)
+            _, _, kv_outputs = decode_multi_query_step_torch_tensor(
+                kv_queries,
+                key_pages,
+                value_pages,
+                device_type=self._torch_device_type,
+                trace=trace,
+            )
             outputs[list(q_head_ids)] = kv_outputs
         return outputs

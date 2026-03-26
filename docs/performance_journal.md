@@ -8,7 +8,55 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `d820a7c`
+Current branch head: `2a84af0` plus pending merge from `main@b17ae4b`
+
+### First NVIDIA CUDA snapshot
+
+The new eager `torch_cuda` backend now runs on an NVIDIA RTX 2000 Ada machine through the same shared torch accelerator path as `torch_mps`.
+
+First decode-step ladder on `torch_cuda`:
+
+| Context | Prepare ms | Decode ms | Host-to-Device Bytes | Max Abs Logit Error | Max Abs Output Error |
+|---|---:|---:|---:|---:|---:|
+| `64` | `7.22` | `2.31` | `10,240` | `8.58e-06` | `7.15e-07` |
+| `256` | `0.35` | `3.10` | `40,960` | `1.24e-05` | `4.05e-06` |
+| `1024` | `0.66` | `6.86` | `163,840` | `1.10e-05` | `2.62e-06` |
+| `4096` | `2.38` | `21.50` | `655,360` | `1.53e-05` | `7.15e-07` |
+
+First exact session-shaped CUDA checkpoint at `4096` context:
+
+| Backend | Preload ms | Append ms/step | Decode ms/step | Session ms/step | Decode H2D Bytes/Step | Max Abs Error |
+|---|---:|---:|---:|---:|---:|---:|
+| `torch_cuda` | `10.47` | `0.39` | `33.11` | `33.50` | `0` | `2.15e-06` |
+
+Latest tiny-random LLaMA smoke run on CUDA:
+
+| Backend | Prompt Len | Decode Steps | Decode ms/step | Dense Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
+|---|---:|---:|---:|---:|---:|---:|
+| `torch_cuda` | `6` | `3` | `17.65` | `4.24` | `1.00` | `9.79e-05` |
+
+First real TinyLlama dense-vs-DotCache CUDA comparison:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement |
+|---|---:|---:|---:|---:|---:|---:|
+| `10` | `40.17` | `72.61` | `585,728` | `5,767,168` | `9.85x` | `1.00` |
+| `289` | `22.31` | `132.15` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
+| `577` | `23.49` | `134.48` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
+
+First higher-context CUDA frontier probe on SmolLM2 360M:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Status |
+|---|---:|---:|---:|---:|---:|---|
+| `2048` | `51.64` | `436.20` | `168,017,920` | `36,700,160` | `0.22x` | Exact greedy agreement |
+| `4096` | `38.95` | `655.83` | `335,790,080` | `62,914,560` | `0.19x` | Exact greedy agreement |
+| `8188` | - | - | - | - | - | Dense CUDA OOM |
+
+That is the right first CUDA read:
+
+- the shared torch accelerator refactor is numerically stable on CUDA
+- the real LLaMA harness runs end to end on CUDA with exact greedy agreement on the recorded cases
+- exact compressed-domain decode runs with `0` execution-time host-to-device bytes once pages are prepared
+- KV-memory savings show up on real models, but the current eager CUDA path is still a correctness-first parity port, not yet a decode-speed win
 
 ### Phase 5 model-integration snapshot
 

@@ -8,7 +8,7 @@ from bench_decode_session import run_session_benchmark
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Tune envelope-gated session profiles under runtime budgets.")
-    parser.add_argument("--backend", choices=["torch_mps"], default="torch_mps")
+    parser.add_argument("--backend", choices=["torch_mps", "torch_cuda"], default="torch_mps")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--contexts", nargs="*", type=int, default=[8192, 16384])
     parser.add_argument("--decode-steps", type=int, default=8)
