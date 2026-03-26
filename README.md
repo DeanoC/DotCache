@@ -84,6 +84,14 @@ That benchmark reports:
 - `cache_cold_*`: one cold cache fill amortized across repeated steps
 - `cache_warm_*`: steady-state decode with a warm prepared-page cache
 
+To measure growing-context decode where only newly appended pages are prepared, use:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_growth.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
+```
+
+That benchmark models a resident prepared-page cache, appends one page of fresh KV per decode step, and reports how much host-to-device work remains per step once old pages stay warm.
+
 To reproduce the crossover sweep:
 
 ```bash

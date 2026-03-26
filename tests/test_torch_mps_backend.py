@@ -216,3 +216,26 @@ def test_prepared_page_cache_reuses_mps_pages_across_decode_steps() -> None:
     assert second_trace.prepared_page_cache_misses == 0
     assert second_trace.host_to_device_bytes == 0
     assert second_trace.cache_resident_bytes == cache.resident_bytes
+
+
+@requires_mps
+def test_prepared_page_cache_evicts_oldest_pages_when_capacity_is_capped() -> None:
+    rng = np.random.default_rng(28)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, tokens_per_page=64)
+    keys_a = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+    keys_b = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+    page_a = encode_page(keys_a, config, kind="K", token_start=0)
+    page_b = encode_page(keys_b, config, kind="K", token_start=config.tokens_per_page)
+
+    warm_trace = ExecutionTrace()
+    warm_page = prepare_page(page_a, backend="torch_mps")
+    cache = PreparedPageCache(max_resident_bytes=warm_page.host_to_device_nbytes)
+    cache.append_page(page_a, trace=warm_trace)
+
+    evict_trace = ExecutionTrace()
+    cache.append_page(page_b, trace=evict_trace)
+
+    assert cache.size == 1
+    assert evict_trace.prepared_page_cache_evictions == 1
+    assert evict_trace.cache_evicted_bytes == warm_page.host_to_device_nbytes
+    assert cache.resident_bytes == warm_page.host_to_device_nbytes
