@@ -59,6 +59,19 @@ def test_llama_generation_harness_runs_on_tiny_random_model() -> None:
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
 
 
+def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
+    model, adapter = _tiny_llama_model()
+    input_ids = torch.tensor([[7, 8, 9, 10, 11, 12]], dtype=torch.long)
+
+    result = run_llama_generation_harness(model, adapter, input_ids=input_ids, max_new_tokens=4, profile=True)
+
+    profile = result["profile"]
+    assert profile["device_type"] == "cpu"
+    assert profile["prefill_cache_ingest"]["host_to_device_bytes"] >= 0
+    assert profile["dotcache_decode"]["model_forward_ms_total"] >= 0.0
+    assert len(profile["dotcache_decode"]["per_layer"]) == model.config.num_hidden_layers
+
+
 @requires_mps
 def test_llama_generation_harness_runs_on_mps_tiny_random_model() -> None:
     model, adapter = _tiny_llama_model(device="mps")

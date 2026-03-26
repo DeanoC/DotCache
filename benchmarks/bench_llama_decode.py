@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--tokens-per-page", type=int, default=256)
     parser.add_argument("--random-tiny", action="store_true")
+    parser.add_argument("--profile", action="store_true")
     return parser.parse_args()
 
 
@@ -63,7 +64,13 @@ def main() -> None:
 
     if args.random_tiny:
         model, adapter, input_ids = _build_random_harness(args)
-        record = run_llama_generation_harness(model, adapter, input_ids=input_ids, max_new_tokens=args.max_new_tokens)
+        record = run_llama_generation_harness(
+            model,
+            adapter,
+            input_ids=input_ids,
+            max_new_tokens=args.max_new_tokens,
+            profile=args.profile,
+        )
         record.update(
             {
                 "backend": args.backend,
@@ -93,7 +100,7 @@ def main() -> None:
             device=args.device,
             torch_dtype=args.torch_dtype,
         )
-        record = harness.generate_greedy(prompt=args.prompt, max_new_tokens=args.max_new_tokens)
+        record = harness.generate_greedy(prompt=args.prompt, max_new_tokens=args.max_new_tokens, profile=args.profile)
         record.update(
             {
                 "backend": args.backend,

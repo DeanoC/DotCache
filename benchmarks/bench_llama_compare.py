@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-max-practical", action="store_true")
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
+    parser.add_argument("--profile", action="store_true")
     return parser.parse_args()
 
 
@@ -66,12 +67,14 @@ def _run_case(
     max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
+    profile: bool,
 ) -> None:
     try:
         record = harness.generate_greedy(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
+            profile=profile,
         )
     except Exception as exc:  # pragma: no cover - benchmark-only failure path
         if not continue_on_error:
@@ -143,6 +146,7 @@ def main() -> None:
                 "model_max_position_embeddings": max_position_embeddings,
             },
             continue_on_error=args.continue_on_error,
+            profile=args.profile,
         )
 
     for prompt_length in sorted(set(length for length in target_prompt_lengths if length > 0)):
@@ -169,6 +173,7 @@ def main() -> None:
                 "model_max_position_embeddings": max_position_embeddings,
             },
             continue_on_error=args.continue_on_error,
+            profile=args.profile,
         )
 
 

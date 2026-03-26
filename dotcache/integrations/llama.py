@@ -49,6 +49,37 @@ class LlamaReplayRecord:
     output_states: np.ndarray
 
 
+@dataclass(slots=True)
+class LlamaLayerRuntimeProfile:
+    layer_id: int
+    call_count: int = 0
+    qkv_projection_ms_total: float = 0.0
+    append_ms_total: float = 0.0
+    decode_ms_total: float = 0.0
+    output_projection_ms_total: float = 0.0
+
+    def reset(self) -> None:
+        self.call_count = 0
+        self.qkv_projection_ms_total = 0.0
+        self.append_ms_total = 0.0
+        self.decode_ms_total = 0.0
+        self.output_projection_ms_total = 0.0
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "layer_id": self.layer_id,
+            "call_count": self.call_count,
+            "qkv_projection_ms_total": float(self.qkv_projection_ms_total),
+            "append_ms_total": float(self.append_ms_total),
+            "decode_ms_total": float(self.decode_ms_total),
+            "output_projection_ms_total": float(self.output_projection_ms_total),
+            "qkv_projection_ms_per_call": float(self.qkv_projection_ms_total / max(self.call_count, 1)),
+            "append_ms_per_call": float(self.append_ms_total / max(self.call_count, 1)),
+            "decode_ms_per_call": float(self.decode_ms_total / max(self.call_count, 1)),
+            "output_projection_ms_per_call": float(self.output_projection_ms_total / max(self.call_count, 1)),
+        }
+
+
 def _require_transformers() -> None:
     if not transformers_available():
         raise RuntimeError("transformers and torch are required for the Llama integration path")
@@ -68,6 +99,53 @@ def _default_model_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _device_type(device: Any) -> str:
+    if hasattr(device, "type"):
+        return str(device.type)
+    return str(device)
+
+
+def _synchronize_device(device: Any) -> None:
+    device_type = _device_type(device)
+    if device_type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device=device)
+    elif device_type == "mps" and torch.backends.mps.is_available():
+        torch.mps.synchronize()
+
+
+def _timed_call(fn, *, device: Any) -> tuple[Any, float]:
+    _synchronize_device(device)
+    start = time.perf_counter()
+    result = fn()
+    _synchronize_device(device)
+    return result, (time.perf_counter() - start) * 1000.0
+
+
+def _begin_cuda_memory_region(device: Any) -> dict[str, int] | None:
+    if _device_type(device) != "cuda" or not torch.cuda.is_available():
+        return None
+    torch.cuda.synchronize(device=device)
+    torch.cuda.reset_peak_memory_stats(device)
+    stats = torch.cuda.memory_stats(device)
+    return {
+        "allocation_count": int(stats.get("allocation.all.allocated", 0)),
+        "segment_count": int(stats.get("segment.all.allocated", 0)),
+    }
+
+
+def _end_cuda_memory_region(device: Any, baseline: dict[str, int] | None) -> dict[str, int]:
+    if baseline is None or _device_type(device) != "cuda" or not torch.cuda.is_available():
+        return {}
+    torch.cuda.synchronize(device=device)
+    stats = torch.cuda.memory_stats(device)
+    return {
+        "cuda_peak_memory_allocated_bytes": int(torch.cuda.max_memory_allocated(device)),
+        "cuda_peak_memory_reserved_bytes": int(torch.cuda.max_memory_reserved(device)),
+        "cuda_allocation_count": int(stats.get("allocation.all.allocated", 0)) - baseline["allocation_count"],
+        "cuda_segment_allocation_count": int(stats.get("segment.all.allocated", 0)) - baseline["segment_count"],
+    }
 
 
 def _default_attention_mask(input_ids) -> Any:
@@ -296,51 +374,69 @@ class DotCacheLlamaAttention(nn.Module):
         if tuple(hidden_states.shape[:2]) != (1, 1):
             raise ValueError("DotCache decode mode only supports batch=1 and query_len=1")
         token_index = self.adapter.current_token_index(cache_position)
-        (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
+        ((query_states, key_states), value_states), qkv_ms = _timed_call(
+            lambda: self._project_qkv(hidden_states, position_embeddings),
+            device=hidden_states.device,
+        )
         query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32)
         key_step = key_states[0].detach().to(dtype=torch.float32)
         value_step = value_states[0].detach().to(dtype=torch.float32)
+        self.adapter.record_layer_runtime(self.layer_idx, qkv_projection_ms=qkv_ms)
 
-        append_start = time.perf_counter()
-        if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type):
-            self.adapter.model_kv_cache.append_step_torch(
+        _, append_ms = _timed_call(
+            lambda: self.adapter.model_kv_cache.append_step_torch(
                 self.layer_idx,
                 key_step,
                 value_step,
                 token_index,
                 trace=self.adapter.active_trace,
             )
-        else:
-            self.adapter.model_kv_cache.append_step(
+            if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type)
+            else self.adapter.model_kv_cache.append_step(
                 self.layer_idx,
                 key_step.cpu().numpy(),
                 value_step.cpu().numpy(),
                 token_index,
                 trace=self.adapter.active_trace,
-            )
-        self.adapter.append_runtime_ms_total += (time.perf_counter() - append_start) * 1000.0
-        decode_start = time.perf_counter()
-        if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type):
-            context_states = self.adapter.model_kv_cache.decode_layer_torch(
+            ),
+            device=hidden_states.device,
+        )
+        self.adapter.append_runtime_ms_total += append_ms
+
+        context_states, decode_ms = _timed_call(
+            lambda: self.adapter.model_kv_cache.decode_layer_torch(
                 self.layer_idx,
                 query_step,
                 self.adapter.q_head_to_kv_head,
                 query_scale=float(self.base_attention.scaling),
                 trace=self.adapter.active_trace,
             )
-        else:
-            context_states = self.adapter.model_kv_cache.decode_layer(
+            if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type)
+            else self.adapter.model_kv_cache.decode_layer(
                 self.layer_idx,
                 query_step.detach().cpu().numpy(),
                 self.adapter.q_head_to_kv_head,
                 query_scale=float(self.base_attention.scaling),
                 trace=self.adapter.active_trace,
-            )
-        self.adapter.decode_runtime_ms_total += (time.perf_counter() - decode_start) * 1000.0
-        if not torch.is_tensor(context_states):
-            context_states = torch.as_tensor(context_states, dtype=torch.float32, device=hidden_states.device)
-        context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
-        projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+            ),
+            device=hidden_states.device,
+        )
+        self.adapter.decode_runtime_ms_total += decode_ms
+
+        def _project_output():
+            local_context_states = context_states
+            if not torch.is_tensor(local_context_states):
+                local_context_states = torch.as_tensor(local_context_states, dtype=torch.float32, device=hidden_states.device)
+            context_tensor = local_context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+            return self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+
+        projected_output, output_projection_ms = _timed_call(_project_output, device=hidden_states.device)
+        self.adapter.record_layer_runtime(
+            self.layer_idx,
+            append_ms=append_ms,
+            decode_ms=decode_ms,
+            output_projection_ms=output_projection_ms,
+        )
 
         if self.adapter.capture_enabled:
             self.adapter.record_replay(
@@ -389,6 +485,9 @@ class LlamaDotCacheModelAdapter:
         self._wrappers: list[DotCacheLlamaAttention] = []
         self.append_runtime_ms_total = 0.0
         self.decode_runtime_ms_total = 0.0
+        self.qkv_projection_ms_total = 0.0
+        self.output_projection_ms_total = 0.0
+        self.layer_runtime_profiles = [LlamaLayerRuntimeProfile(layer_id=layer_id) for layer_id in range(model.config.num_hidden_layers)]
         self._current_token_index_override: int | None = None
         self._install_wrappers()
 
@@ -450,6 +549,50 @@ class LlamaDotCacheModelAdapter:
     def reset_runtime_metrics(self) -> None:
         self.append_runtime_ms_total = 0.0
         self.decode_runtime_ms_total = 0.0
+        self.qkv_projection_ms_total = 0.0
+        self.output_projection_ms_total = 0.0
+        for profile in self.layer_runtime_profiles:
+            profile.reset()
+
+    def record_layer_runtime(
+        self,
+        layer_id: int,
+        *,
+        qkv_projection_ms: float = 0.0,
+        append_ms: float = 0.0,
+        decode_ms: float = 0.0,
+        output_projection_ms: float = 0.0,
+    ) -> None:
+        profile = self.layer_runtime_profiles[layer_id]
+        if qkv_projection_ms > 0.0:
+            profile.call_count += 1
+            profile.qkv_projection_ms_total += qkv_projection_ms
+            self.qkv_projection_ms_total += qkv_projection_ms
+        if append_ms > 0.0:
+            profile.append_ms_total += append_ms
+        if decode_ms > 0.0:
+            profile.decode_ms_total += decode_ms
+        if output_projection_ms > 0.0:
+            profile.output_projection_ms_total += output_projection_ms
+            self.output_projection_ms_total += output_projection_ms
+
+    def runtime_profile_summary(self, *, model_forward_ms_total: float) -> dict[str, Any]:
+        per_layer = [profile.to_dict() for profile in self.layer_runtime_profiles if profile.call_count > 0]
+        accounted_ms_total = (
+            self.qkv_projection_ms_total
+            + self.append_runtime_ms_total
+            + self.decode_runtime_ms_total
+            + self.output_projection_ms_total
+        )
+        return {
+            "model_forward_ms_total": float(model_forward_ms_total),
+            "qkv_projection_ms_total": float(self.qkv_projection_ms_total),
+            "append_runtime_ms_total": float(self.append_runtime_ms_total),
+            "decode_runtime_ms_total": float(self.decode_runtime_ms_total),
+            "output_projection_ms_total": float(self.output_projection_ms_total),
+            "other_overhead_ms_total": float(max(model_forward_ms_total - accounted_ms_total, 0.0)),
+            "per_layer": per_layer,
+        }
 
     def load_prefill_cache(self, past_key_values, *, trace: ExecutionTrace | None = None) -> None:
         if _torch_backend_matches_device(self.backend, self.device.type):
@@ -545,6 +688,7 @@ class LlamaDotCacheHarness:
         input_ids=None,
         attention_mask=None,
         max_new_tokens: int = 8,
+        profile: bool = False,
     ) -> dict[str, Any]:
         return run_llama_generation_harness(
             self.model,
@@ -554,6 +698,7 @@ class LlamaDotCacheHarness:
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             tokenizer=self.tokenizer,
+            profile=profile,
         )
 
 
@@ -583,9 +728,10 @@ def _run_dense_greedy_decode(
     max_new_tokens: int,
     capture: bool,
 ) -> dict[str, Any]:
-    prefill_start = time.perf_counter()
-    prefill_outputs, prefill_layers, first_generated_token = _prefill_prompt(model, adapter, input_ids, attention_mask)
-    prefill_ms = (time.perf_counter() - prefill_start) * 1000.0
+    (prefill_outputs, prefill_layers, first_generated_token), prefill_ms = _timed_call(
+        lambda: _prefill_prompt(model, adapter, input_ids, attention_mask),
+        device=input_ids.device,
+    )
     if max_new_tokens <= 0:
         return {
             "prefill_layers": prefill_layers,
@@ -629,16 +775,18 @@ def _run_dense_greedy_decode(
             adapter.begin_capture_step(step_index)
         adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
         try:
-            step_start = time.perf_counter()
-            outputs = model(
-                input_ids=current_input_ids,
-                attention_mask=current_attention_mask,
-                past_key_values=past_key_values,
-                use_cache=True,
-                cache_position=cache_position,
-                position_ids=cache_position.unsqueeze(0),
+            outputs, step_ms = _timed_call(
+                lambda: model(
+                    input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    cache_position=cache_position,
+                    position_ids=cache_position.unsqueeze(0),
+                ),
+                device=input_ids.device,
             )
-            dense_decode_ms_total += (time.perf_counter() - step_start) * 1000.0
+            dense_decode_ms_total += step_ms
         finally:
             adapter.set_current_token_index(None)
         if capture:
@@ -692,19 +840,21 @@ def _run_dotcache_decode_inputs(
         step_trace = ExecutionTrace()
         adapter.active_trace = step_trace
         adapter.set_current_token_index(int(input_ids.shape[1] + offset))
-        start = time.perf_counter()
         try:
-            outputs = model(
-                input_ids=decode_input,
-                attention_mask=current_attention_mask,
-                use_cache=False,
-                cache_position=cache_position,
-                position_ids=cache_position.unsqueeze(0),
+            outputs, step_ms = _timed_call(
+                lambda: model(
+                    input_ids=decode_input,
+                    attention_mask=current_attention_mask,
+                    use_cache=False,
+                    cache_position=cache_position,
+                    position_ids=cache_position.unsqueeze(0),
+                ),
+                device=input_ids.device,
             )
         finally:
             adapter.active_trace = None
             adapter.set_current_token_index(None)
-        decode_ms_total += (time.perf_counter() - start) * 1000.0
+        decode_ms_total += step_ms
         trace_total.merge(step_trace)
         step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
 
@@ -764,19 +914,21 @@ def _run_dotcache_greedy_decode(
         step_trace = ExecutionTrace()
         adapter.active_trace = step_trace
         adapter.set_current_token_index(current_token_index)
-        start = time.perf_counter()
         try:
-            outputs = model(
-                input_ids=current_input_ids,
-                attention_mask=current_attention_mask,
-                use_cache=False,
-                cache_position=cache_position,
-                position_ids=cache_position.unsqueeze(0),
+            outputs, step_ms = _timed_call(
+                lambda: model(
+                    input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    use_cache=False,
+                    cache_position=cache_position,
+                    position_ids=cache_position.unsqueeze(0),
+                ),
+                device=input_ids.device,
             )
         finally:
             adapter.active_trace = None
             adapter.set_current_token_index(None)
-        decode_ms_total += (time.perf_counter() - start) * 1000.0
+        decode_ms_total += step_ms
         trace_total.merge(step_trace)
         current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated_ids.append(int(current_input_ids.item()))
@@ -896,6 +1048,7 @@ def run_llama_generation_harness(
     attention_mask=None,
     max_new_tokens: int = 8,
     tokenizer=None,
+    profile: bool = False,
 ) -> dict[str, Any]:
     _require_transformers()
     if prompt is not None:
@@ -917,12 +1070,14 @@ def run_llama_generation_harness(
     )
 
     prefill_trace = ExecutionTrace()
-    prefill_start = time.perf_counter()
-    if dense_result["prefill_layers"] and torch.is_tensor(dense_result["prefill_layers"][0][0]):
-        adapter.load_prefill_cache_tensors(dense_result["prefill_layers"], trace=prefill_trace)
-    else:
-        adapter.load_prefill_cache_arrays(dense_result["prefill_layers"], trace=prefill_trace)
-    prefill_ingest_ms = (time.perf_counter() - prefill_start) * 1000.0
+    prefill_cuda_baseline = _begin_cuda_memory_region(input_ids.device) if profile else None
+    _, prefill_ingest_ms = _timed_call(
+        lambda: adapter.load_prefill_cache_tensors(dense_result["prefill_layers"], trace=prefill_trace)
+        if dense_result["prefill_layers"] and torch.is_tensor(dense_result["prefill_layers"][0][0])
+        else adapter.load_prefill_cache_arrays(dense_result["prefill_layers"], trace=prefill_trace),
+        device=input_ids.device,
+    )
+    prefill_cuda_stats = _end_cuda_memory_region(input_ids.device, prefill_cuda_baseline) if profile else {}
 
     if max_new_tokens <= 1:
         generated_ids = dense_result["generated_ids"]
@@ -932,7 +1087,10 @@ def run_llama_generation_harness(
         step_count = 0
         append_runtime_ms_per_step = 0.0
         decode_runtime_ms_per_step = 0.0
+        dotcache_profile = adapter.runtime_profile_summary(model_forward_ms_total=0.0) if profile else None
+        dotcache_cuda_stats: dict[str, int] = {}
     else:
+        dotcache_cuda_baseline = _begin_cuda_memory_region(input_ids.device) if profile else None
         dotcache_result = _run_dotcache_greedy_decode(
             model,
             adapter,
@@ -949,6 +1107,8 @@ def run_llama_generation_harness(
         append_runtime_ms_per_step = dotcache_result["append_runtime_ms_total"] / max(step_count, 1)
         decode_runtime_ms_per_step = dotcache_result["decode_runtime_ms_total"] / max(step_count, 1)
         append_ms_per_step = append_runtime_ms_per_step
+        dotcache_profile = adapter.runtime_profile_summary(model_forward_ms_total=float(dotcache_result["decode_ms_total"])) if profile else None
+        dotcache_cuda_stats = _end_cuda_memory_region(input_ids.device, dotcache_cuda_baseline) if profile else {}
 
     dense_generated_ids = dense_result["generated_ids"]
     dense_step_count = max(max_new_tokens - 1, 0)
@@ -1011,4 +1171,20 @@ def run_llama_generation_harness(
     if tokenizer is not None:
         result["dense_text"] = tokenizer.decode(dense_generated_ids, skip_special_tokens=True)
         result["dotcache_text"] = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    if profile:
+        result["profile"] = {
+            "device_type": input_ids.device.type,
+            "prefill_cache_ingest": {
+                "ms_total": float(prefill_ingest_ms),
+                "host_to_device_bytes": int(prefill_trace.host_to_device_bytes),
+                **prefill_cuda_stats,
+            },
+            "dotcache_decode": {
+                **({} if dotcache_profile is None else dotcache_profile),
+                "step_count": int(step_count),
+                "host_to_device_bytes_total": int(decode_trace.host_to_device_bytes),
+                "host_to_device_bytes_per_step": float(decode_trace.host_to_device_bytes / max(step_count, 1)),
+                **dotcache_cuda_stats,
+            },
+        }
     return result

@@ -610,7 +610,7 @@ class ModelPagedKVCache:
                 tail_resident_bytes += state.persistent_key_tail.resident_nbytes
             if state.persistent_value_tail is not None:
                 tail_resident_bytes += state.persistent_value_tail.resident_nbytes
-        chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self._torch_device_type == "mps" else 0
+        chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self._torch_device_type is not None else 0
         return self.cache.resident_bytes + tail_resident_bytes + chunk_resident_bytes
 
     def clear(self) -> None:

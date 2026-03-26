@@ -213,8 +213,6 @@ def _chunk_compatible_pages(pages: Sequence[PreparedPageTorch]) -> list[list[Pre
 def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple[int, int], ...] | None:
     if not pages:
         return None
-    if pages[0].device_type != "mps":
-        return None
     if pages[0].header.mode_default != "M0":
         return None
     return tuple((int(page.cache_uid), int(page.header.token_count)) for page in pages)
@@ -225,15 +223,25 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
     if not pages:
         raise ValueError("pages must be non-empty")
     header = pages[0].header
-    if pages[0].device_type != "mps" or header.mode_default != "M0":
-        raise ValueError("prepared chunk cache currently supports only MPS M0 pages")
+    if header.mode_default != "M0":
+        raise ValueError("prepared chunk cache currently supports only M0 pages")
     payload_groups = tuple(torch.stack([page.payload[group_index] for page in pages], dim=0) for group_index in range(header.num_groups))
+    scales_groups = tuple(
+        torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
+        for group_index in range(header.num_groups)
+    )
+    bias_groups = tuple(
+        torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        for group_index in range(header.num_groups)
+    )
     resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in scales_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
     return PreparedChunkMPS(
         header=header,
         payload_groups=payload_groups,
-        scales_groups=None,
-        bias_groups=None,
+        scales_groups=scales_groups,
+        bias_groups=bias_groups,
         resident_nbytes=resident_nbytes,
     )
 
