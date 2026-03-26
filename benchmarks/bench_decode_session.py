@@ -6,6 +6,7 @@ import numpy as np
 
 from dotcache.attention_runtime import decode_step
 from dotcache.encode import encode_page
+from dotcache.execution_profiles import resolve_execution_profile
 from dotcache.page_cache import PreparedPageCache
 from dotcache.session_runtime import PagedDecodeSession
 from dotcache.tracing import ExecutionTrace
@@ -64,9 +65,20 @@ def run_session_benchmark(
     execution_relevance_mode: str,
     execution_exact_refine_top_k: int,
     execution_approximate_old_pages: bool,
+    execution_profile_name: str = "none",
 ) -> dict[str, float | int | str]:
     append_tokens = config.tokens_per_page
     initial_context = max(config.tokens_per_page, context_length)
+    resolved_profile = resolve_execution_profile(execution_profile_name, context_length=initial_context)
+    if resolved_profile is not None:
+        execution_recent_window = resolved_profile.recent_window_tokens
+        execution_sink_window = resolved_profile.sink_window_tokens
+        execution_relevance_top_k = resolved_profile.relevance_top_k
+        execution_relevance_mode = resolved_profile.relevance_mode
+        execution_relevance_sketch_size = resolved_profile.relevance_sketch_size
+        execution_exact_refine_top_k = resolved_profile.exact_refine_top_k
+        execution_approximate_old_pages = resolved_profile.approximate_old_pages
+
     keys, values = _build_growth_fixture(
         initial_context=initial_context,
         decode_steps=decode_steps,
@@ -159,6 +171,7 @@ def run_session_benchmark(
         "execution_recent_window": -1 if execution_recent_window is None else execution_recent_window,
         "execution_approximate_old_pages": int(execution_approximate_old_pages),
         "execution_exact_refine_top_k": execution_exact_refine_top_k,
+        "execution_profile": execution_profile_name,
         "execution_relevance_mode": execution_relevance_mode,
         "execution_relevance_top_k": execution_relevance_top_k,
         "execution_relevance_sketch_size": execution_relevance_sketch_size,
@@ -195,6 +208,7 @@ def main() -> None:
                 execution_relevance_mode=args.execution_relevance_mode,
                 execution_exact_refine_top_k=args.execution_exact_refine_top_k,
                 execution_approximate_old_pages=args.execution_approximate_old_pages,
+                execution_profile_name=args.execution_profile,
             )
         )
 

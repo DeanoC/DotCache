@@ -148,6 +148,14 @@ To run that tuned M4 approximate profile directly, use:
 bash scripts/run_m4_envelope_session.sh --contexts 4096
 ```
 
+There is also an experimental context-aware variant:
+
+```bash
+bash scripts/run_m4_envelope_autoscaled_session.sh --contexts 4096 8192 16384
+```
+
+That profile scales the recent window and `top_k` with context length, but current validation says it is not yet a clear win over the simpler fixed `256/1024/4` profile.
+
 To sweep that envelope profile around different `sink/recent/top_k` settings, use:
 
 ```bash
