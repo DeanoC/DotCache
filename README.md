@@ -92,6 +92,25 @@ To measure growing-context decode where only newly appended pages are prepared, 
 
 That benchmark models a resident prepared-page cache, appends one page of fresh KV per decode step, and reports how much host-to-device work remains per step once old pages stay warm.
 
+To sweep cache capacity under growing-context decode with the current FIFO policy, use:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_eviction.py --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
+```
+
+That benchmark reports the tradeoff between:
+
+- cache capacity in appended page-pairs
+- hit rate and evictions
+- per-step host-to-device bytes
+- decode throughput versus CPU
+
+Useful capacity labels:
+
+- `initial`: enough resident space for the starting context only
+- `final`: enough resident space for the fully grown context
+- `unbounded`: no resident cap
+
 To reproduce the crossover sweep:
 
 ```bash
