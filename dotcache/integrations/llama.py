@@ -114,6 +114,46 @@ def extract_past_key_values_tensors(past_key_values) -> list[tuple[Any, Any]]:
     return extracted
 
 
+def _prefill_layer_nbytes(prefill_layers: Sequence[tuple[Any, Any]]) -> int:
+    total = 0
+    for layer_keys, layer_values in prefill_layers:
+        if torch.is_tensor(layer_keys):
+            total += int(layer_keys.numel() * layer_keys.element_size())
+        else:
+            keys = np.asarray(layer_keys)
+            total += int(keys.nbytes)
+        if torch.is_tensor(layer_values):
+            total += int(layer_values.numel() * layer_values.element_size())
+        else:
+            values = np.asarray(layer_values)
+            total += int(values.nbytes)
+    return total
+
+
+def _dense_kv_bytes_after_decode(
+    prefill_layers: Sequence[tuple[Any, Any]],
+    *,
+    generated_token_count: int,
+) -> int:
+    if not prefill_layers:
+        return 0
+    layer_keys, _ = prefill_layers[0]
+    if torch.is_tensor(layer_keys):
+        seq_len = int(layer_keys.shape[2])
+        kv_heads = int(layer_keys.shape[1])
+        head_dim = int(layer_keys.shape[3])
+        dtype_bytes = int(layer_keys.element_size())
+    else:
+        keys = np.asarray(layer_keys)
+        seq_len = int(keys.shape[2])
+        kv_heads = int(keys.shape[1])
+        head_dim = int(keys.shape[3])
+        dtype_bytes = int(keys.dtype.itemsize)
+    total_tokens = seq_len + max(generated_token_count - 1, 0)
+    layer_count = len(prefill_layers)
+    return int(layer_count * 2 * kv_heads * total_tokens * head_dim * dtype_bytes)
+
+
 class DotCacheLlamaAttention(nn.Module):
     def __init__(self, base_attention: nn.Module, adapter: "LlamaDotCacheModelAdapter") -> None:
         super().__init__()
@@ -564,6 +604,7 @@ def _run_dense_greedy_decode(
     decode_inputs: list[Any] = []
     step_logits: list[np.ndarray] = []
     capture_records: list[list[LlamaReplayRecord]] = []
+    dense_decode_ms_total = 0.0
 
     for step_index in range(max_new_tokens - 1):
         decode_inputs.append(current_input_ids.detach().clone())
@@ -571,6 +612,7 @@ def _run_dense_greedy_decode(
             adapter.begin_capture_step(step_index)
         adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
         try:
+            step_start = time.perf_counter()
             outputs = model(
                 input_ids=current_input_ids,
                 attention_mask=current_attention_mask,
@@ -579,6 +621,7 @@ def _run_dense_greedy_decode(
                 cache_position=cache_position,
                 position_ids=cache_position.unsqueeze(0),
             )
+            dense_decode_ms_total += (time.perf_counter() - step_start) * 1000.0
         finally:
             adapter.set_current_token_index(None)
         if capture:
@@ -602,6 +645,7 @@ def _run_dense_greedy_decode(
         "capture_records": capture_records,
         "prefill_outputs": prefill_outputs,
         "prefill_ms": prefill_ms,
+        "dense_decode_ms_total": dense_decode_ms_total,
     }
 
 
@@ -890,6 +934,13 @@ def run_llama_generation_harness(
         append_ms_per_step = append_runtime_ms_per_step
 
     dense_generated_ids = dense_result["generated_ids"]
+    dense_step_count = max(max_new_tokens - 1, 0)
+    dense_decode_ms_per_step = float(dense_result["dense_decode_ms_total"] / max(dense_step_count, 1)) if dense_step_count > 0 else 0.0
+    dense_prefill_kv_cache_bytes = _prefill_layer_nbytes(dense_result["prefill_layers"])
+    dense_final_kv_cache_bytes = _dense_kv_bytes_after_decode(
+        dense_result["prefill_layers"],
+        generated_token_count=len(dense_generated_ids),
+    )
     agreement_prefix = sum(
         int(lhs == rhs)
         for lhs, rhs in zip(generated_ids, dense_generated_ids, strict=False)
@@ -919,6 +970,9 @@ def run_llama_generation_harness(
         "prompt_length": int(input_ids.shape[1]),
         "decode_steps": max(max_new_tokens - 1, 0),
         "prefill_ms": float(dense_result["prefill_ms"]),
+        "dense_decode_ms_per_step": dense_decode_ms_per_step,
+        "dense_prefill_kv_cache_bytes": dense_prefill_kv_cache_bytes,
+        "dense_final_kv_cache_bytes": dense_final_kv_cache_bytes,
         "dense_generated_ids": dense_generated_ids,
         "dotcache_generated_ids": generated_ids,
         "greedy_token_agreement_rate": float(agreement_rate),
@@ -929,6 +983,10 @@ def run_llama_generation_harness(
         "append_runtime_ms_per_step": float(append_runtime_ms_per_step),
         "decode_runtime_ms_per_step": float(decode_runtime_ms_per_step),
         "resident_bytes": adapter.model_kv_cache.resident_bytes,
+        "dotcache_vs_dense_kv_bytes_ratio": float(adapter.model_kv_cache.resident_bytes / max(dense_final_kv_cache_bytes, 1)),
+        "dotcache_vs_dense_decode_speedup": float(dense_decode_ms_per_step / max(decode_ms_per_step, 1e-8))
+        if decode_ms_per_step > 0.0
+        else 0.0,
         "decode_host_to_device_bytes_per_step": decode_trace.host_to_device_bytes / max(step_count, 1),
         "teacher_forced_logit_max_abs_error": max_abs_logit_drift,
         "teacher_forced_logit_max_rel_error": max_rel_logit_drift,
