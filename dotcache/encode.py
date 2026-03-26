@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import numpy as np
+
+from .config import DotCacheConfig
+from .modes.m0_affine import quantize_tensor
+from .modes.m3_escape import encode_escape_payload
+from .page_format import build_payload
+from .packing import words_per_group
+from .types import EncodedPage, Kind, PageHeader
+
+
+def encode_page(
+    tensor_slice: np.ndarray,
+    config: DotCacheConfig,
+    *,
+    kind: Kind,
+    layer_id: int = 0,
+    kv_head_id: int = 0,
+    token_start: int = 0,
+    mode: str | None = None,
+    layout: str | None = None,
+    quant_scheme: str | None = None,
+) -> EncodedPage:
+    values = np.asarray(tensor_slice, dtype=np.float32)
+    if values.ndim != 2:
+        raise ValueError("tensor_slice must have shape [token_count, head_dim]")
+    if values.shape[1] != config.head_dim:
+        raise ValueError("tensor_slice head_dim must match config.head_dim")
+
+    bits = config.bits_k if kind == "K" else config.bits_v
+    default_mode = config.default_mode_k if kind == "K" else config.default_mode_v
+    page_mode = mode or default_mode
+    page_layout = layout or (config.payload_layout_k if kind == "K" else config.payload_layout_v)
+    scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
+    token_count = values.shape[0]
+
+    if page_mode == "M3":
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=config.padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=bits,
+            words_per_group=words_per_group(config.group_size, bits),
+            mode_default="M3",
+            layout=page_layout,
+            quant_scheme=scheme,
+            escape_dtype=config.escape_dtype,
+        )
+        escape_payload = encode_escape_payload(values, dtype=config.escape_dtype)
+        return EncodedPage(header=header, escape_payload=escape_payload)
+
+    if page_mode != "M0":
+        raise ValueError("only M0 and M3 are supported in the bootstrap")
+
+    codes, scales, bias, padded_head_dim = quantize_tensor(
+        values,
+        group_size=config.group_size,
+        bits=bits,
+        scheme=scheme,
+    )
+    payload = build_payload(codes, bits, page_layout)
+    header = PageHeader(
+        layer_id=layer_id,
+        kv_head_id=kv_head_id,
+        kind=kind,
+        token_start=token_start,
+        token_count=token_count,
+        head_dim=config.head_dim,
+        padded_head_dim=padded_head_dim,
+        group_size=config.group_size,
+        num_groups=config.num_groups,
+        bits=bits,
+        words_per_group=words_per_group(config.group_size, bits),
+        mode_default="M0",
+        layout=page_layout,
+        quant_scheme=scheme,
+        escape_dtype=config.escape_dtype,
+    )
+    stored_scales = scales.astype(np.float16)
+    stored_bias = None if bias is None else bias.astype(np.float16)
+    return EncodedPage(header=header, payload=payload, scales=stored_scales, bias=stored_bias)
+
