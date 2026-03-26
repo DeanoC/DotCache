@@ -17,6 +17,7 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [dotcache_software_implementation_guide.md](./dotcache_software_implementation_guide.md)
 - [dotcache_no_cuda_bootstrap_m4_amd.md](./dotcache_no_cuda_bootstrap_m4_amd.md)
 - [dotcache_nvidia_llama_bootstrap.md](./dotcache_nvidia_llama_bootstrap.md)
+- [docs/benchmark_report.md](./docs/benchmark_report.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
 
 ## Quick start on NVIDIA Linux for non-MPS Llama work

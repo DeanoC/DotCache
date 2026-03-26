@@ -1,0 +1,197 @@
+# DotCache MVP Results
+
+This report is the compact benchmark summary for the current DotCache prototype. It sits above the experiment log in [performance_journal.md](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md) and the raw append-only records in [history.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/history.jsonl).
+
+The prototype state reflected here is:
+
+- exact-first `M0` affine plus `M3` escape execution
+- compressed-domain `score_page` and `mix_page`
+- standalone decode harnesses
+- Phase 5 Llama-family model integration
+- `torch_mps` and `torch_cuda` accelerator backends
+
+## Configuration
+
+### Core page configuration
+
+- group size: `32`
+- bits_k: `4`
+- bits_v: `4`
+- tokens per page: usually `256` in the real-model path
+- layouts: `group_major` for both K and V
+- quantization: affine `M0` by default, `M3` escape for tails / high-precision paths
+- execution mode in model benchmarks: exact full-context decode, batch `1`, greedy generation
+
+### Benchmark environments
+
+| Environment | Backend | Notes |
+|---|---|---|
+| Apple M4 Mac | `torch_mps` | Main optimization target so far |
+| NVIDIA RTX 2000 Ada 16 GB | `torch_cuda` | First shared-torch parity port |
+
+### Primary real-model checkpoints
+
+| Model | Context Limit | Main Use |
+|---|---:|---|
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | `2048` | Short-to-mid exact model integration validation |
+| `HuggingFaceTB/SmolLM2-360M-Instruct` | `8192` | Higher-context exact model benchmark on current machines |
+
+## Correctness
+
+- pack/unpack: covered by the unit suite and compressed-domain parity tests; current suite status is `65 passed, 5 skipped`
+- score parity: standalone MPS and CUDA decode-step ladders stay in the low `1e-5` max-abs-logit range on recorded runs
+- mix parity: standalone output errors stay in the low `1e-6` range on recorded exact ladders
+- full attention parity: exact session and decode harnesses continue to match the explicit dequantized baseline within test tolerances
+- end-to-end generation sanity:
+  - tiny-random Llama smoke runs keep `1.0` greedy agreement on `cpu_ref`, `torch_mps`, and `torch_cuda`
+  - real TinyLlama and SmolLM2 exact DotCache paths keep `1.0` greedy agreement on the recorded MPS and CUDA comparisons
+
+One important caveat: teacher-forced model-logit drift is still non-zero on real checkpoints, especially on longer contexts, so the current end-to-end claim is "stable exact decode behavior with matching greedy tokens on tested prompts", not "bit-identical logits to dense attention."
+
+## Memory
+
+### Real-model KV-cache footprint
+
+| Model / Prompt | Backend | Dense KV Bytes | DotCache KV Bytes | DotCache / Dense |
+|---|---|---:|---:|---:|
+| TinyLlama / `10` | MPS | `585,728` | `5,767,168` | `9.85x` |
+| TinyLlama / `289` | MPS | `13,156,352` | `7,569,408` | `0.58x` |
+| TinyLlama / `577` | MPS | `26,132,480` | `9,371,648` | `0.36x` |
+| TinyLlama / `865` | MPS | `39,108,608` | `11,173,888` | `0.29x` |
+| TinyLlama / `289` | CUDA | `13,156,352` | `7,569,408` | `0.58x` |
+| TinyLlama / `577` | CUDA | `26,132,480` | `9,371,648` | `0.36x` |
+| SmolLM2 / `2048` | MPS | `168,017,920` | `36,700,160` | `0.22x` |
+| SmolLM2 / `2048` | CUDA | `168,017,920` | `36,700,160` | `0.22x` |
+| SmolLM2 / `4096` | CUDA | `335,790,080` | `62,914,560` | `0.19x` |
+
+### Memory takeaways
+
+- DotCache loses badly on KV bytes for very short prompts because prepared tails dominate the footprint.
+- The practical TinyLlama memory crossover on MPS happens between about `73` and `145` prompt tokens.
+- On higher-context SmolLM2, DotCache is already near `22%` of dense KV bytes by `2048` tokens.
+- The strongest current systems-value result is memory reduction, not universal decode-speed wins.
+
+## Performance
+
+### Standalone exact decode kernels
+
+#### CUDA decode-step ladder
+
+| Context | Prepare ms | Decode ms | Host-to-Device Bytes |
+|---|---:|---:|---:|
+| `64` | `7.22` | `2.31` | `10,240` |
+| `256` | `0.35` | `3.10` | `40,960` |
+| `1024` | `0.66` | `6.86` | `163,840` |
+| `4096` | `2.38` | `21.50` | `655,360` |
+
+These runs confirm the shared torch accelerator path is correct and scales cleanly, but they are still eager-kernel microbenchmarks rather than full serving wins.
+
+### Exact model-path decode
+
+#### TinyLlama on MPS
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Result |
+|---|---:|---:|---|
+| `145` | `36.46` | `172.30` | Dense faster |
+| `289` | `44.30` | `254.40` | Dense faster |
+| `577` | `79.12` | `279.30` | Dense faster |
+| `865` | `171.99` | `282.56` | Dense faster |
+| `1536` | `2274.82` | `4476.23` | Dense faster, but DotCache uses `0.24x` KV bytes |
+
+#### TinyLlama on CUDA
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Result |
+|---|---:|---:|---|
+| `10` | `40.17` | `72.61` | Dense faster |
+| `289` | `22.31` | `132.15` | Dense faster |
+| `577` | `23.49` | `134.48` | Dense faster |
+
+#### SmolLM2 360M on MPS
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Result |
+|---|---:|---:|---|
+| `256` | `41.79` | `494.46` | Dense faster |
+| `512` | `39.99` | `375.00` | Dense faster |
+| `1024` | `41.65` | `399.80` | Dense faster in the early frontier |
+| `1536` | `172.39` | `456.58` | Dense faster in the early frontier |
+| `2048` | `517.41` | `402.70` | DotCache faster on the trusted standalone rerun |
+
+#### SmolLM2 360M on CUDA
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Result |
+|---|---:|---:|---|
+| `2048` | `51.64` | `436.20` | Dense faster |
+| `4096` | `38.95` | `655.83` | Dense faster |
+
+### Model-path optimization progression on MPS
+
+The strongest exact MPS path improvements came from:
+
+- batching decode by KV-head groups inside each layer
+- keeping tails resident on device
+- moving append and prefill ingest on-device where possible
+- prewarming deferred prefill pages once
+- reducing repeated grouped-decode validation
+- adding selective static prepared-chunk reuse
+
+Those changes are what moved SmolLM2 `2048` on MPS from an initial losing exact path to a real decode-speed win over dense on the best trusted rerun.
+
+### Explicit dequantized baseline latency
+
+The repo still uses the explicit dequantized path as a correctness oracle, but it is not yet maintained as a single first-class top-line latency metric in the model reports. The current performance comparison is therefore:
+
+- dense KV
+- DotCache exact compressed-domain path
+- standalone microbench decode ladders
+
+Adding a stable explicit-dequant end-to-end latency column would be a good follow-up to this report.
+
+### Crossover context lengths
+
+- TinyLlama MPS, KV memory: crossover between about `73` and `145` prompt tokens
+- TinyLlama MPS, decode speed: no trusted crossover on the tested exact path
+- TinyLlama CUDA, KV memory: crossover by `289` tokens
+- TinyLlama CUDA, decode speed: no crossover on the tested exact path
+- SmolLM2 MPS, KV memory: already favorable by `256` tokens
+- SmolLM2 MPS, decode speed: current trusted crossover is around the exact `2048`-token point on this M4
+- SmolLM2 CUDA, decode speed: no crossover on the tested `2048` and `4096` points
+
+## Observations
+
+### Where DotCache wins
+
+- KV-cache memory wins are already strong and repeatable once prompts are more than a small number of pages.
+- Exact MPS decode can beat dense at higher context on the current SmolLM2 `2048` benchmark.
+- The page format and compressed-domain execution contract are stable enough to support both MPS and CUDA backends plus real-model decode integration.
+
+### Where DotCache loses
+
+- Short-prompt model inference still pays too much control/setup overhead.
+- TinyLlama exact decode remains slower than dense on both MPS and CUDA in the recorded runs.
+- CUDA is currently a correctness/parity backend, not a performance-leading one.
+- Prefill ingest and page preparation are still expensive at longer contexts, especially before warmup and caching effects settle.
+
+### Likely causes
+
+- the prototype still has eager kernel structure and Python/runtime orchestration overhead
+- grouped static-page reuse helps, but only after the runtime has enough stable prefill pages to amortize setup
+- CUDA has not yet had the deeper optimization passes that the MPS path already received
+- the model-path benchmark still includes framework overhead outside the raw compressed-domain kernels
+
+### Next experiments
+
+- add a stable explicit-dequant end-to-end comparison column to the report
+- optimize large-context prefill preparation and scheduling further, especially on CUDA
+- continue exact decode optimization in the midrange SmolLM2 `512-1536` region where memory wins exist but speed wins are mixed
+- start the optional vLLM-style integration phase from the original guide once the benchmark report is accepted as the current baseline
+
+## Bottom Line
+
+The DotCache MVP claim is now partially validated in software:
+
+- compressed KV can be executed directly without widening full pages by default
+- correctness is strong enough for exact end-to-end Llama-family decode on real checkpoints
+- KV-memory savings are already substantial on real workloads
+- decode-speed wins are possible on Apple MPS at higher context, but they are not yet universal across models, prompt lengths, or backends
+
+That is a good benchmark-report outcome for the stage we are in: the execution-format idea is real, the memory story is strong, and the remaining work is largely systems optimization and runtime integration rather than basic feasibility.
