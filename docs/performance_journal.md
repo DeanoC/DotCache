@@ -92,6 +92,19 @@ Largest practical exact-length TinyLlama comparison point on this M4 so far:
 - greedy agreement: `1.00`
 - probes at exact `1792` and `1920` prompt tokens OOMed the stock dense MPS baseline on this machine, so `1536` is a good large-case reference point here even though the model's theoretical prompt ceiling with `max_new_tokens=4` is `2044`
 
+First higher-context Llama-family checkpoint beyond TinyLlama:
+
+- model: `HuggingFaceTB/SmolLM2-360M-Instruct`
+- theoretical context window: `8192`
+- exact `2048`-token prompt with `max_new_tokens=4` completed successfully on this M4
+- dense decode: `988.02 ms/step`
+- DotCache decode: `1127.39 ms/step`
+- dense final KV bytes: `168,017,920`
+- DotCache resident bytes: `36,700,160`
+- DotCache/dense KV ratio: `0.22x`
+- greedy agreement: `1.00`
+- probes at exact `3072` and `4096` prompt tokens OOMed the stock dense MPS baseline on this machine, so `2048` is the current practical higher-context reference point here
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt

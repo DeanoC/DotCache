@@ -105,6 +105,14 @@ That benchmark reports:
 - greedy token agreement versus the dense path
 - teacher-forced logit drift versus the dense path
 
+For a small higher-context Llama-family checkpoint on this M4, use SmolLM2 360M:
+
+```bash
+bash scripts/run_smollm2_long_context_compare.sh
+```
+
+That wrapper runs [bench_llama_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_compare.py) against `HuggingFaceTB/SmolLM2-360M-Instruct` at an exact `2048`-token prompt so we can exercise the Phase 5 path beyond TinyLlama's `2048`-token context ceiling. Exact `3072` and `4096` probes hit dense MPS OOM on this machine.
+
 ## MPS Tuning Notes
 
 The current eager `torch_mps` path is sensitive to page size.
