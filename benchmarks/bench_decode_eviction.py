@@ -20,7 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contexts", nargs="*", type=int, default=[4096])
     parser.add_argument("--decode-steps", type=int, default=8)
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--cache-policies", nargs="*", choices=["fifo", "lru"], default=["fifo", "lru"])
     parser.add_argument("--capacity-page-pairs", nargs="*", default=["1", "2", "4", "8", "initial", "final", "unbounded"])
+    parser.add_argument("--working-set-page-pairs", nargs="*", default=["all", "4"])
     parser.add_argument("--head-dim", type=int, default=None)
     parser.add_argument("--group-size", type=int, default=None)
     parser.add_argument("--tokens-per-page", type=int, default=None)
@@ -77,6 +79,12 @@ def _parse_capacity_multiplier(raw: str, *, initial_page_pairs: int, final_page_
     return int(raw)
 
 
+def _slice_working_set(key_pages: list, value_pages: list, working_set_page_pairs: int | None) -> tuple[list, list]:
+    if working_set_page_pairs is None:
+        return key_pages, value_pages
+    return key_pages[-working_set_page_pairs:], value_pages[-working_set_page_pairs:]
+
+
 def _run_growth_once(
     *,
     backend: str,
@@ -85,6 +93,8 @@ def _run_growth_once(
     decode_steps: int,
     seed: int,
     max_resident_bytes: int | None,
+    cache_policy: str,
+    working_set_page_pairs: int | None,
 ) -> dict[str, float | int]:
     append_tokens = config.tokens_per_page
     initial_context = max(config.tokens_per_page, context_length)
@@ -108,7 +118,7 @@ def _run_growth_once(
     mps_outputs: list[np.ndarray] = []
 
     growth_trace = ExecutionTrace()
-    cache = PreparedPageCache(max_resident_bytes=max_resident_bytes)
+    cache = PreparedPageCache(max_resident_bytes=max_resident_bytes, policy=cache_policy)
 
     initial_prep_trace = ExecutionTrace()
     cache.append_pages(key_pages + value_pages, trace=initial_prep_trace)
@@ -117,14 +127,24 @@ def _run_growth_once(
     for query in queries:
         cpu_total_ms += _time_ms(
             lambda q=query, kp=list(key_pages), vp=list(value_pages): cpu_outputs.append(
-                decode_step(q, kp, vp, backend="cpu_ref")[2]
+                decode_step(
+                    q,
+                    *_slice_working_set(kp, vp, working_set_page_pairs),
+                    backend="cpu_ref",
+                )[2]
             )
         )
 
         step_trace = ExecutionTrace()
         mps_total_ms += _time_ms(
             lambda q=query, kp=list(key_pages), vp=list(value_pages), st=step_trace: mps_outputs.append(
-                decode_step(q, kp, vp, backend=backend, cache=cache, trace=st)[2]
+                decode_step(
+                    q,
+                    *_slice_working_set(kp, vp, working_set_page_pairs),
+                    backend=backend,
+                    cache=cache,
+                    trace=st,
+                )[2]
             )
         )
         growth_trace.merge(step_trace)
@@ -190,27 +210,35 @@ def main() -> None:
                 final_page_pairs=final_page_pairs,
             )
             max_resident_bytes = None if multiplier is None else multiplier * append_page_pair_bytes
-            result = _run_growth_once(
-                backend=args.backend,
-                config=config,
-                context_length=context_length,
-                decode_steps=args.decode_steps,
-                seed=args.seed,
-                max_resident_bytes=max_resident_bytes,
-            )
-            emit(
-                {
-                    "append_page_pair_bytes": append_page_pair_bytes,
-                    "backend": args.backend,
-                    "capacity_label": raw_capacity,
-                    "capacity_page_pairs": -1 if multiplier is None else multiplier,
-                    "context_length": context_length,
-                    "decode_steps": args.decode_steps,
-                    "max_resident_bytes": -1 if max_resident_bytes is None else max_resident_bytes,
-                    "tokens_per_page": config.tokens_per_page,
-                    **result,
-                }
-            )
+            for cache_policy in args.cache_policies:
+                for raw_working_set in args.working_set_page_pairs:
+                    working_set_page_pairs = None if raw_working_set == "all" else int(raw_working_set)
+                    result = _run_growth_once(
+                        backend=args.backend,
+                        config=config,
+                        context_length=context_length,
+                        decode_steps=args.decode_steps,
+                        seed=args.seed,
+                        max_resident_bytes=max_resident_bytes,
+                        cache_policy=cache_policy,
+                        working_set_page_pairs=working_set_page_pairs,
+                    )
+                    emit(
+                        {
+                            "append_page_pair_bytes": append_page_pair_bytes,
+                            "backend": args.backend,
+                            "cache_policy": cache_policy,
+                            "capacity_label": raw_capacity,
+                            "capacity_page_pairs": -1 if multiplier is None else multiplier,
+                            "context_length": context_length,
+                            "decode_steps": args.decode_steps,
+                            "max_resident_bytes": -1 if max_resident_bytes is None else max_resident_bytes,
+                            "tokens_per_page": config.tokens_per_page,
+                            "working_set_label": raw_working_set,
+                            "working_set_page_pairs": -1 if working_set_page_pairs is None else working_set_page_pairs,
+                            **result,
+                        }
+                    )
 
 
 if __name__ == "__main__":
