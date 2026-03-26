@@ -441,6 +441,27 @@ def score_page_mps(
     return logits.detach().cpu().numpy()
 
 
+def score_pages_mps(
+    query_slice: np.ndarray,
+    pages: Sequence[EncodedPage | PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> list[np.ndarray]:
+    prepared_pages = [prepare_page_mps(page, trace=trace) for page in pages]
+    if not prepared_pages:
+        return []
+
+    page_logits: list[np.ndarray] = []
+    for page_chunk in _chunk_compatible_pages(prepared_pages):
+        chunk_logits = _score_page_chunk_mps(query_slice, page_chunk, trace=trace)
+        chunk_logits = chunk_logits.reshape(len(page_chunk), page_chunk[0].header.token_count)
+        page_logits.extend(
+            chunk_logits[index].detach().cpu().numpy()
+            for index in range(len(page_chunk))
+        )
+    return page_logits
+
+
 def mix_page_mps(
     attn_weights: np.ndarray,
     page: EncodedPage | PreparedPageMPS,
@@ -491,11 +512,20 @@ def mix_page_mps(
     return output[: header.head_dim].detach().cpu().numpy()
 
 
+def _page_logits_tensor(page_logits, token_count: int):
+    torch = _load_torch()
+    logits = torch.as_tensor(page_logits, dtype=torch.float32, device="mps")
+    if tuple(logits.shape) != (token_count,):
+        raise ValueError("precomputed page logits must have shape [token_count]")
+    return logits
+
+
 def decode_step_mps(
     query_slice: np.ndarray,
     key_pages: Sequence[EncodedPage | PreparedPageMPS],
     value_pages: Sequence[EncodedPage | PreparedPageMPS],
     *,
+    precomputed_page_logits: Sequence[np.ndarray | Any | None] | None = None,
     trace: ExecutionTrace | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     torch = _load_torch()
@@ -503,12 +533,33 @@ def decode_step_mps(
     prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
     if not prepared_key_pages:
         raise ValueError("decode_step_mps requires at least one page")
+    if precomputed_page_logits is not None and len(precomputed_page_logits) != len(prepared_key_pages):
+        raise ValueError("precomputed_page_logits must align with key_pages")
 
-    logits_chunks = [
-        _score_page_chunk_mps(query_slice, page_chunk, trace=trace)
-        for page_chunk in _chunk_compatible_pages(prepared_key_pages)
-    ]
-    logits = torch.cat(logits_chunks, dim=0)
+    logits_parts = []
+    score_run: list[PreparedPageMPS] = []
+
+    def flush_score_run() -> None:
+        nonlocal score_run
+        if not score_run:
+            return
+        chunk_logits = _score_page_chunk_mps(query_slice, score_run, trace=trace)
+        chunk_logits = chunk_logits.reshape(len(score_run), score_run[0].header.token_count)
+        logits_parts.extend(chunk_logits[index] for index in range(len(score_run)))
+        score_run = []
+
+    for index, page in enumerate(prepared_key_pages):
+        cached_logits = None if precomputed_page_logits is None else precomputed_page_logits[index]
+        if cached_logits is not None:
+            flush_score_run()
+            logits_parts.append(_page_logits_tensor(cached_logits, page.header.token_count))
+            continue
+        if score_run and _batched_signature(score_run[-1]) != _batched_signature(page):
+            flush_score_run()
+        score_run.append(page)
+    flush_score_run()
+
+    logits = torch.cat(logits_parts, dim=0)
     weights = torch.softmax(logits, dim=0)
 
     output = torch.zeros(

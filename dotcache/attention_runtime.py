@@ -14,6 +14,7 @@ from .backends import (
     page_supported_mps,
     prepare_page_mps,
     prepare_pages_mps,
+    score_pages_mps,
     score_page_cpu_ref,
     score_page_mps,
 )
@@ -85,6 +86,23 @@ def score_page(
     return score_page_cpu_ref(query_slice, page, trace=trace)
 
 
+def score_pages(
+    query_slice: np.ndarray,
+    pages: Sequence[PageLike],
+    *,
+    backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
+    trace: ExecutionTrace | None = None,
+) -> list[np.ndarray]:
+    if not pages:
+        return []
+
+    prepared_pages = prepare_pages(pages, backend=backend, cache=cache, trace=trace)
+    if backend != "cpu_ref" and all(isinstance(page, PreparedPageMPS) for page in prepared_pages):
+        return score_pages_mps(query_slice, prepared_pages, trace=trace)
+    return [score_page(query_slice, page, backend=backend, trace=trace) for page in prepared_pages]
+
+
 def mix_page(
     attn_weights: np.ndarray,
     page: PageLike,
@@ -130,6 +148,33 @@ def decode_step(
     if not key_pages:
         raise ValueError("decode_step requires at least one page")
 
+    return decode_step_with_page_logits(
+        query_slice,
+        key_pages,
+        value_pages,
+        backend=backend,
+        cache=cache,
+        trace=trace,
+    )
+
+
+def decode_step_with_page_logits(
+    query_slice: np.ndarray,
+    key_pages: Sequence[PageLike],
+    value_pages: Sequence[PageLike],
+    *,
+    page_logits: Sequence[np.ndarray | None] | None = None,
+    backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
+    trace: ExecutionTrace | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if len(key_pages) != len(value_pages):
+        raise ValueError("key_pages and value_pages must contain the same number of pages")
+    if not key_pages:
+        raise ValueError("decode_step requires at least one page")
+    if page_logits is not None and len(page_logits) != len(key_pages):
+        raise ValueError("page_logits must align with key_pages")
+
     prepared_key_pages = prepare_pages(key_pages, backend=backend, cache=cache, trace=trace)
     prepared_value_pages = prepare_pages(value_pages, backend=backend, cache=cache, trace=trace)
 
@@ -138,10 +183,21 @@ def decode_step(
         and all(isinstance(page, PreparedPageMPS) for page in prepared_key_pages)
         and all(isinstance(page, PreparedPageMPS) for page in prepared_value_pages)
     ):
-        return decode_step_mps(query_slice, prepared_key_pages, prepared_value_pages, trace=trace)
+        return decode_step_mps(
+            query_slice,
+            prepared_key_pages,
+            prepared_value_pages,
+            precomputed_page_logits=page_logits,
+            trace=trace,
+        )
 
-    page_logits = [score_page(query_slice, page, backend=backend, trace=trace) for page in prepared_key_pages]
-    logits = np.concatenate(page_logits).astype(np.float32, copy=False)
+    resolved_page_logits = []
+    for index, page in enumerate(prepared_key_pages):
+        cached_logits = None if page_logits is None else page_logits[index]
+        if cached_logits is None:
+            cached_logits = score_page(query_slice, page, backend=backend, trace=trace)
+        resolved_page_logits.append(np.asarray(cached_logits, dtype=np.float32))
+    logits = np.concatenate(resolved_page_logits).astype(np.float32, copy=False)
     weights = softmax(logits)
 
     output = np.zeros(prepared_key_pages[0].header.head_dim, dtype=np.float32)

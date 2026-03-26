@@ -105,13 +105,13 @@ def main() -> None:
             )
 
             step_trace = ExecutionTrace()
-            active_indices = session.execution_indices(query)
-            active_page_counts.append(len(active_indices))
-            active_token_counts.append(sum(session.key_pages[index].header.token_count for index in active_indices))
             decode_total_ms += _time_ms(
                 lambda q=query, st=step_trace: session_outputs.append(session.decode(q, trace=st)[2])
             )
             decode_trace_total.merge(step_trace)
+            active_indices = session.last_selected_indices
+            active_page_counts.append(len(active_indices))
+            active_token_counts.append(sum(session.key_pages[index].header.token_count for index in active_indices))
 
             next_key_tokens = keys[current_context : current_context + append_tokens]
             next_value_tokens = values[current_context : current_context + append_tokens]

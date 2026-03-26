@@ -2,7 +2,15 @@ import numpy as np
 import pytest
 
 from dotcache.attention_reference import softmax
-from dotcache.attention_runtime import decode_step, mix_page, prepare_page, prepare_pages, score_page
+from dotcache.attention_runtime import (
+    decode_step,
+    decode_step_with_page_logits,
+    mix_page,
+    prepare_page,
+    prepare_pages,
+    score_page,
+    score_pages,
+)
 from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
@@ -644,6 +652,50 @@ def test_paged_decode_session_exact_refine_matches_selected_page_reference_on_mp
     np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
     assert [page.header.token_start for page in selected_key_pages] == [0, 128, 256]
     assert exec_trace.host_to_device_bytes == 0
+
+
+@requires_mps
+def test_decode_step_with_page_logits_reuses_precomputed_scores_on_mps() -> None:
+    rng = np.random.default_rng(134)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 2 * config.tokens_per_page
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    precomputed_logits = score_pages(query, [key_pages[0]], backend="torch_mps")
+
+    exec_trace = ExecutionTrace()
+    logits, weights, output = decode_step_with_page_logits(
+        query,
+        key_pages,
+        value_pages,
+        page_logits=[precomputed_logits[0], None],
+        backend="torch_mps",
+        trace=exec_trace,
+    )
+    ref_logits, ref_weights, ref_output = decode_step(
+        query,
+        key_pages,
+        value_pages,
+        backend="cpu_ref",
+    )
+    baseline_trace = ExecutionTrace()
+    decode_step_with_page_logits(
+        query,
+        key_pages,
+        value_pages,
+        backend="torch_mps",
+        trace=baseline_trace,
+    )
+
+    np.testing.assert_allclose(logits, ref_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(weights, ref_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
+    assert exec_trace.payload_bytes_read == baseline_trace.payload_bytes_read - key_pages[0].payload_nbytes
+    assert exec_trace.metadata_bytes_read == baseline_trace.metadata_bytes_read - key_pages[0].metadata_nbytes
 
 
 @requires_mps

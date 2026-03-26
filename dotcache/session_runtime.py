@@ -4,7 +4,15 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
-from .attention_runtime import BackendName, decode_step, mix_page, prepare_pages, score_page
+from .attention_runtime import (
+    BackendName,
+    decode_step,
+    decode_step_with_page_logits,
+    mix_page,
+    prepare_pages,
+    score_page,
+    score_pages,
+)
 from .modes.m0_affine import dequantize_group
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
@@ -206,12 +214,14 @@ class PagedDecodeSession:
     value_pages: list[PageLike] = field(default_factory=list)
     key_page_sketches: list[np.ndarray] = field(default_factory=list)
     value_page_summaries: list[np.ndarray] = field(default_factory=list)
+    last_selected_indices: list[int] = field(default_factory=list)
 
     def clear(self) -> None:
         self.key_pages.clear()
         self.value_pages.clear()
         self.key_page_sketches.clear()
         self.value_page_summaries.clear()
+        self.last_selected_indices.clear()
         if self.cache is not None:
             self.cache.clear()
 
@@ -272,6 +282,14 @@ class PagedDecodeSession:
         *,
         trace: ExecutionTrace | None = None,
     ) -> list[int]:
+        return self._execution_plan(query_slice, trace=trace)[0]
+
+    def _execution_plan(
+        self,
+        query_slice: np.ndarray | None = None,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[list[int], dict[int, np.ndarray]]:
         stage1_indices = select_execution_page_indices(
             self.key_pages,
             recent_window_tokens=self.recent_window_tokens,
@@ -281,9 +299,9 @@ class PagedDecodeSession:
             relevance_top_k=self.relevance_top_k,
         )
         if query_slice is None or self.exact_refine_top_k <= 0 or self.relevance_top_k <= 0:
-            return stage1_indices
+            return stage1_indices, {}
         if not stage1_indices:
-            return stage1_indices
+            return stage1_indices, {}
 
         base_indices = set(
             select_window_page_indices(
@@ -294,11 +312,16 @@ class PagedDecodeSession:
         )
         candidate_indices = [index for index in stage1_indices if index not in base_indices]
         if not candidate_indices or self.exact_refine_top_k >= len(candidate_indices):
-            return stage1_indices
+            return stage1_indices, {}
 
+        candidate_logits = score_pages(
+            query_slice,
+            [self.key_pages[index] for index in candidate_indices],
+            backend=self.backend,
+            trace=trace,
+        )
         exact_scores = []
-        for index in candidate_indices:
-            logits = score_page(query_slice, self.key_pages[index], backend=self.backend, trace=trace).astype(np.float32, copy=False)
+        for index, logits in zip(candidate_indices, candidate_logits, strict=True):
             exact_scores.append((float(np.max(logits)), index))
         chosen = [
             index
@@ -308,7 +331,13 @@ class PagedDecodeSession:
                 reverse=True,
             )[: self.exact_refine_top_k]
         ]
-        return sorted(base_indices.union(chosen))
+        chosen_set = set(chosen)
+        chosen_logits = {
+            index: np.asarray(logits, dtype=np.float32)
+            for index, logits in zip(candidate_indices, candidate_logits, strict=True)
+            if index in chosen_set
+        }
+        return sorted(base_indices.union(chosen)), chosen_logits
 
     def decode(
         self,
@@ -318,14 +347,17 @@ class PagedDecodeSession:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not self.key_pages or not self.value_pages:
             raise ValueError("PagedDecodeSession requires preloaded pages before decode")
-        selected_indices = self.execution_indices(query_slice, trace=trace)
+        selected_indices, selected_logits = self._execution_plan(query_slice, trace=trace)
+        self.last_selected_indices = list(selected_indices)
         key_pages = [self.key_pages[index] for index in selected_indices]
         value_pages = [self.value_pages[index] for index in selected_indices]
         if not self.approximate_old_pages or len(selected_indices) == len(self.key_pages):
-            return decode_step(
+            precomputed_page_logits = [selected_logits.get(index) for index in selected_indices]
+            return decode_step_with_page_logits(
                 query_slice,
                 key_pages,
                 value_pages,
+                page_logits=precomputed_page_logits,
                 backend=self.backend,
                 trace=trace,
             )

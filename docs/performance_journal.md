@@ -25,7 +25,7 @@ Latest heuristic shortlist comparison on the same workload:
 | Sink 256 + Recent 1024 | 5 | 7.70 | 32.65 | `4.43` |
 | Sink 256 + Recent 1024 + relevance `top_k=4` + sketch `1` | 9 | 8.55 | 31.75 | `4.26` |
 | Sink 256 + Recent 1024 + relevance `top_k=4` + sketch `4` | 9 | 9.29 | 11.36 | `4.35` |
-| Sink 256 + Recent 1024 + sketch shortlist `top_k=8` + exact refine `top_k=4` | 9 | 19.57 | 21.83 | `3.92` |
+| Sink 256 + Recent 1024 + sketch shortlist `top_k=8` + exact refine `top_k=4` | 9 | 18.92 | 21.32 | `3.92` |
 | Sink 256 + Recent 1024 + approximate old pages | 5 | 21.56 | 45.71 | `4.43` |
 
 ## Working Conclusions
@@ -35,7 +35,7 @@ Latest heuristic shortlist comparison on the same workload:
 - Heuristic pruning paths buy latency, but current quality loss is still too large.
 - Multi-vector sketches are better than a single page mean as a first-pass gate, but they still do not preserve full-context quality.
 - Precomputing runtime sketches during encode removed the preload/append regression from sketch-based experiments.
-- A two-stage shortlist with exact refine improves quality a bit, but today it gives back most of the latency win from sketch gating.
+- A two-stage shortlist with exact refine improves quality a bit, and score reuse helps a little, but it still gives back most of the latency win from sketch gating.
 
 ## Milestone Log
 
@@ -51,7 +51,7 @@ These are the important checkpoints so far. Some numbers come from earlier harne
 | `260bfa3` | Approximate fallback for pruned pages | Decode climbed to `21.56 ms/step` while max abs error stayed `4.43` | Summary fallback was not worth the cost |
 | `24c1801` | Multi-vector page sketches for gating | Sketch size `4` improved relative error a lot versus sketch size `1` and kept decode at `7.83 ms/step` | Stronger key-side sketches are better than page means, but still not good enough |
 | `working tree` | Runtime sketch metadata computed during encode | Exact preload fell back to `8.24 ms`; exact session runtime to `22.57 ms/step`; sketch-gated session runtime to `11.36 ms/step` | Precomputing sketches fixed the preload/append regression and made gating cheap again |
-| `working tree` | Two-stage sketch shortlist plus exact refine | Decode `19.57 ms/step`; session runtime `21.83 ms/step`; max abs error `3.92` | Exact refine helps quality, but it is still too expensive to replace either exact decode or the cheap sketch gate |
+| `working tree` | Two-stage sketch shortlist plus exact refine with reused logits | Decode `18.92 ms/step`; session runtime `21.32 ms/step`; max abs error `3.92` | Reusing shortlisted logits helps a bit, but exact refine is still too expensive to replace either exact decode or the cheap sketch gate |
 
 ## Current Path
 
@@ -65,7 +65,7 @@ What is currently experimental:
 
 - Sink/recent pruning.
 - Relevance-gated shortlist selection.
-- Exact-refine shortlist selection.
+- Exact-refine shortlist selection with reused candidate logits.
 - Approximate old-page fallback.
 - Multi-vector sketch gating.
 
