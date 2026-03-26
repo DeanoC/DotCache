@@ -118,6 +118,12 @@ Latest higher-context prefill optimization checkpoint on SmolLM2 360M:
 - the same rerun also brought DotCache decode down further to `665.86 ms/step`
 - dense landed at `881.04 ms/step` on that run, so DotCache stayed ahead on decode while keeping the same `0.22x` KV-memory ratio
 
+Latest higher-context prewarm scheduling checkpoint on SmolLM2 360M:
+
+- capping MPS prepare batches to bounded page counts moved exact `2048` SmolLM2 prefill-cache ingest from `3672.38 ms` down to `2318.24 ms`
+- the same rerun brought DotCache decode down to `399.11 ms/step`
+- dense landed at `1260.83 ms/step` on that run, so DotCache was about `3.16x` faster on decode while still using only `0.22x` the KV bytes
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt

@@ -9,6 +9,7 @@ from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 
 _UNPACK_METADATA: dict[int, tuple[Any, Any]] = {}
+_MAX_PREPARE_PAGES_PER_CHUNK = 128
 
 
 def mps_available() -> bool:
@@ -80,7 +81,9 @@ def _chunk_compatible_source_pages(
     current_signature: tuple[int | str, ...] | None = None
     for page in pages:
         signature = _prepare_signature(page)
-        if current_chunk and signature != current_signature:
+        if current_chunk and (
+            signature != current_signature or len(current_chunk) >= _MAX_PREPARE_PAGES_PER_CHUNK
+        ):
             chunks.append(current_chunk)
             current_chunk = [page]
             current_signature = signature
