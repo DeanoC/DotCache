@@ -51,15 +51,22 @@ Latest dense-KV versus exact DotCache TinyLlama comparison from one loaded model
 
 | Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement |
 |---|---:|---:|---:|---:|---:|---:|
-| `10` | `41.58` | `139.66` | `585,728` | `5,767,168` | `9.85x` | `1.00` |
-| `289` | `39.06` | `279.71` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
-| `577` | `36.05` | `284.02` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
+| `10` | `36.03` | `121.57` | `585,728` | `5,767,168` | `9.85x` | `1.00` |
+| `73` | `28.70` | `146.22` | `3,424,256` | `5,767,168` | `1.68x` | `1.00` |
+| `145` | `36.46` | `172.30` | `6,668,288` | `5,767,168` | `0.86x` | `1.00` |
+| `217` | `34.75` | `172.51` | `9,912,320` | `5,767,168` | `0.58x` | `1.00` |
+| `289` | `44.30` | `254.40` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
+| `433` | `39.60` | `267.12` | `19,644,416` | `7,569,408` | `0.39x` | `1.00` |
+| `577` | `79.12` | `279.30` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
+| `865` | `171.99` | `282.56` | `39,108,608` | `11,173,888` | `0.29x` | `1.00` |
 
 That comparison is the clearest current model-level frontier:
 
 - stock dense KV is still much faster on decode for this exact TinyLlama integration
 - DotCache is worse than dense on KV bytes for a very short prompt because the resident prepared-tail machinery dominates at tiny sequence lengths
-- once the prompt spans multiple pages, DotCache starts winning clearly on KV-cache memory: about `1.74x` smaller at `289` tokens and about `2.79x` smaller at `577` tokens
+- the KV-memory crossover happens between about `73` and `145` prompt tokens on this setup; by `865` tokens DotCache uses about `3.5x` less KV memory than dense
+- the decode-latency gap narrows as prompts grow, but dense still wins at `865` tokens: about `172 ms/step` dense versus `283 ms/step` DotCache
+- resident bytes grow in page-sized steps, which is why `145` and `217` share the same DotCache footprint and `289` / `433` share the next plateau
 - greedy token agreement stayed exact across the sweep, so this is a real latency-versus-KV-memory tradeoff rather than a correctness failure
 
 The current Phase 5 read is:
