@@ -6,7 +6,12 @@ from typing import Any, Sequence
 import numpy as np
 
 from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
-from .backends import PreparedPageMPS, decode_multi_query_step_mps_tensor, mps_available
+from .backends import (
+    PreparedPageMPS,
+    decode_grouped_multiquery_step_mps_tensor,
+    decode_multi_query_step_mps_tensor,
+    mps_available,
+)
 from .config import DotCacheConfig
 from .encode import encode_page
 from .page_cache import PreparedPageCache
@@ -38,6 +43,89 @@ def _group_query_heads(mapping: np.ndarray, *, num_key_value_heads: int) -> tupl
             raise ValueError("q_head_to_kv_head contains an invalid KV head id")
         grouped[kv_head_id].append(q_head_id)
     return tuple(tuple(group) for group in grouped)
+
+
+def _grouped_pages_can_batch(
+    key_pages_by_group: Sequence[Sequence[PageLike]],
+    value_pages_by_group: Sequence[Sequence[PageLike]],
+    query_groups: Sequence[Any],
+) -> bool:
+    if not key_pages_by_group or len(key_pages_by_group) != len(value_pages_by_group):
+        return False
+    group_count = len(key_pages_by_group)
+    if len(query_groups) != group_count:
+        return False
+    try:
+        query_count = int(query_groups[0].shape[0])
+    except Exception:
+        return False
+    page_count = len(key_pages_by_group[0])
+    if page_count == 0:
+        return False
+    for group_index in range(group_count):
+        if len(key_pages_by_group[group_index]) != page_count or len(value_pages_by_group[group_index]) != page_count:
+            return False
+        if int(query_groups[group_index].shape[0]) != query_count:
+            return False
+        if not all(isinstance(page, PreparedPageMPS) for page in key_pages_by_group[group_index]):
+            return False
+        if not all(isinstance(page, PreparedPageMPS) for page in value_pages_by_group[group_index]):
+            return False
+    for page_index in range(page_count):
+        key_signature = (
+            key_pages_by_group[0][page_index].header.mode_default,
+            key_pages_by_group[0][page_index].header.token_count,
+            key_pages_by_group[0][page_index].header.head_dim,
+            key_pages_by_group[0][page_index].header.padded_head_dim,
+            key_pages_by_group[0][page_index].header.group_size,
+            key_pages_by_group[0][page_index].header.num_groups,
+            key_pages_by_group[0][page_index].header.bits,
+            key_pages_by_group[0][page_index].header.words_per_group,
+            key_pages_by_group[0][page_index].header.layout,
+            key_pages_by_group[0][page_index].header.quant_scheme,
+        )
+        value_signature = (
+            value_pages_by_group[0][page_index].header.mode_default,
+            value_pages_by_group[0][page_index].header.token_count,
+            value_pages_by_group[0][page_index].header.head_dim,
+            value_pages_by_group[0][page_index].header.padded_head_dim,
+            value_pages_by_group[0][page_index].header.group_size,
+            value_pages_by_group[0][page_index].header.num_groups,
+            value_pages_by_group[0][page_index].header.bits,
+            value_pages_by_group[0][page_index].header.words_per_group,
+            value_pages_by_group[0][page_index].header.layout,
+            value_pages_by_group[0][page_index].header.quant_scheme,
+        )
+        for group_index in range(1, group_count):
+            key_page = key_pages_by_group[group_index][page_index]
+            value_page = value_pages_by_group[group_index][page_index]
+            if (
+                key_page.header.mode_default,
+                key_page.header.token_count,
+                key_page.header.head_dim,
+                key_page.header.padded_head_dim,
+                key_page.header.group_size,
+                key_page.header.num_groups,
+                key_page.header.bits,
+                key_page.header.words_per_group,
+                key_page.header.layout,
+                key_page.header.quant_scheme,
+            ) != key_signature:
+                return False
+            if (
+                value_page.header.mode_default,
+                value_page.header.token_count,
+                value_page.header.head_dim,
+                value_page.header.padded_head_dim,
+                value_page.header.group_size,
+                value_page.header.num_groups,
+                value_page.header.bits,
+                value_page.header.words_per_group,
+                value_page.header.layout,
+                value_page.header.quant_scheme,
+            ) != value_signature:
+                return False
+    return True
 
 
 def _normalize_prefill_tensor(
@@ -1135,18 +1223,39 @@ class ModelPagedKVCache:
             dtype=torch.float32,
             device=scaled_queries.device,
         )
+        active_q_head_ids: list[tuple[int, ...]] = []
+        active_queries: list[Any] = []
+        active_key_pages: list[Sequence[PageLike]] = []
+        active_value_pages: list[Sequence[PageLike]] = []
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
             key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
-            kv_queries = scaled_queries[list(q_head_ids)]
-            _, _, kv_outputs = decode_multi_query_step_mps_tensor(
-                kv_queries,
-                key_pages,
-                value_pages,
+            active_q_head_ids.append(q_head_ids)
+            active_queries.append(scaled_queries[list(q_head_ids)])
+            active_key_pages.append(key_pages)
+            active_value_pages.append(value_pages)
+
+        if _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
+            _, _, grouped_outputs = decode_grouped_multiquery_step_mps_tensor(
+                active_queries,
+                active_key_pages,
+                active_value_pages,
                 trace=trace,
             )
+            for q_head_ids, kv_outputs in zip(active_q_head_ids, grouped_outputs, strict=True):
+                outputs[list(q_head_ids)] = kv_outputs
+            return outputs
+
+        for q_head_ids, kv_queries, key_pages, value_pages in zip(
+            active_q_head_ids,
+            active_queries,
+            active_key_pages,
+            active_value_pages,
+            strict=True,
+        ):
+            _, _, kv_outputs = decode_multi_query_step_mps_tensor(kv_queries, key_pages, value_pages, trace=trace)
             outputs[list(q_head_ids)] = kv_outputs
         return outputs

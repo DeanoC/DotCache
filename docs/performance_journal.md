@@ -105,6 +105,13 @@ First higher-context Llama-family checkpoint beyond TinyLlama:
 - greedy agreement: `1.00`
 - probes at exact `3072` and `4096` prompt tokens OOMed the stock dense MPS baseline on this machine, so `2048` is the current practical higher-context reference point here
 
+Latest higher-context decode optimization checkpoint on SmolLM2 360M:
+
+- batched exact MPS decode across KV-head groups inside each layer moved the exact `2048` SmolLM2 decode from `1127.39 ms/step` down to `769.92 ms/step`
+- on that rerun, dense landed at `1323.56 ms/step`, so DotCache was about `1.72x` faster on decode while still using only `0.22x` the KV bytes
+- greedy agreement stayed at `1.00`
+- prefill ingest is still expensive at this size, so the next bottleneck on this model is now prefill rather than decode
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt
