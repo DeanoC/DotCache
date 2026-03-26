@@ -140,6 +140,15 @@ To switch from sketch-based relevance to a stronger page-envelope score, use `--
 ```
 
 This uses encode-time per-page min/max envelopes to form a query-dependent upper-bound style score for each old page. On the current M4 prototype, that envelope gate is materially better than the sketch gate at roughly the same latency budget.
+The best current M4 balance from our targeted sweep is `--execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-mode envelope`.
+
+To sweep that envelope profile around different `sink/recent/top_k` settings, use:
+
+```bash
+bash scripts/run_envelope_sweep.sh --config configs/dotcache_m4_mps.yaml --contexts 4096 --execution-sink-windows 128 256 384 --execution-recent-windows 768 1024 1280 --execution-relevance-top-ks 2 4 6
+```
+
+That emits JSONL sweep records, tags Pareto-frontier points, and can be redirected into a file such as [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 
 To refine that sketch shortlist with exact compressed-domain key scoring before final decode, add `--execution-exact-refine-top-k`:
 
