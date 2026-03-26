@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from collections import OrderedDict
 from typing import Literal
 
-from .backends import PreparedPageMPS, prepare_page_mps
+from .backends import PreparedPageMPS, prepare_page_mps, prepare_pages_mps
 from .tracing import ExecutionTrace
 from .types import EncodedPage
 
@@ -104,7 +104,7 @@ class PreparedPageCache:
         *,
         trace: ExecutionTrace | None = None,
     ) -> list[EncodedPage | PreparedPageMPS]:
-        return [self.append_page(page, trace=trace) for page in pages]
+        return self.prepare_pages(pages, trace=trace)
 
     def prepare_page(
         self,
@@ -143,4 +143,44 @@ class PreparedPageCache:
         *,
         trace: ExecutionTrace | None = None,
     ) -> list[EncodedPage | PreparedPageMPS]:
-        return [self.prepare_page(page, trace=trace) for page in pages]
+        prepared_pages: list[EncodedPage | PreparedPageMPS | None] = [None] * len(pages)
+        miss_indices: list[int] = []
+        miss_pages: list[EncodedPage] = []
+
+        for index, page in enumerate(pages):
+            if isinstance(page, PreparedPageMPS):
+                prepared_pages[index] = page
+                if trace is not None:
+                    trace.record_cache_hit()
+                    trace.observe_cache_resident_bytes(self._resident_bytes)
+                continue
+
+            cache_key = id(page)
+            cached_page = self._mps_pages.get(cache_key)
+            if cached_page is not None:
+                self._touch_cached_page(cache_key)
+                prepared_pages[index] = cached_page
+                if trace is not None:
+                    trace.record_cache_hit()
+                    trace.observe_cache_resident_bytes(self._resident_bytes)
+                continue
+
+            miss_indices.append(index)
+            miss_pages.append(page)
+
+        if miss_pages:
+            new_prepared_pages = prepare_pages_mps(miss_pages, trace=trace)
+            for index, source_page, prepared_page in zip(miss_indices, miss_pages, new_prepared_pages, strict=True):
+                self._ensure_capacity(self._page_nbytes(prepared_page), trace=trace)
+                cache_key = id(source_page)
+                self._mps_pages[cache_key] = prepared_page
+                self._order[cache_key] = None
+                self._resident_bytes += self._page_nbytes(prepared_page)
+                prepared_pages[index] = prepared_page
+                if trace is not None:
+                    trace.record_cache_miss()
+                    trace.observe_cache_resident_bytes(self._resident_bytes)
+
+        if any(page is None for page in prepared_pages):
+            raise RuntimeError("prepared page cache failed to populate all requested pages")
+        return [page for page in prepared_pages if page is not None]

@@ -17,6 +17,7 @@ from dotcache.tracing import ExecutionTrace
 
 DEFAULT_CONTEXTS = [64, 256, 1024]
 CONFIG_OVERRIDES = ("head_dim", "group_size", "tokens_per_page")
+_MPS_WARMED = False
 
 
 def parse_args(description: str, *, default_repeats: int) -> argparse.Namespace:
@@ -97,6 +98,7 @@ def page_byte_totals(pages: list) -> tuple[int, int]:
 
 
 def prepare_context_pages(pages: list, backend: BackendName) -> tuple[list, float, ExecutionTrace]:
+    _warm_backend(backend)
     trace = ExecutionTrace()
     start = time.perf_counter()
     prepared_pages = prepare_pages(pages, backend=backend, trace=trace)
@@ -125,3 +127,19 @@ def error_stats(actual: np.ndarray, reference: np.ndarray) -> dict[str, float]:
 
 def emit(record: dict[str, Any]) -> None:
     print(json.dumps(record, sort_keys=True))
+
+
+def _warm_backend(backend: BackendName) -> None:
+    global _MPS_WARMED
+
+    if backend != "torch_mps" or _MPS_WARMED:
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    if not torch.backends.mps.is_available():
+        return
+    sample = torch.ones(16, device="mps", dtype=torch.float32)
+    _ = (sample + 1).sum().item()
+    _MPS_WARMED = True

@@ -13,6 +13,7 @@ from .backends import (
     mps_available,
     page_supported_mps,
     prepare_page_mps,
+    prepare_pages_mps,
     score_page_cpu_ref,
     score_page_mps,
 )
@@ -62,6 +63,12 @@ def prepare_pages(
     cache: PreparedPageCache | None = None,
     trace: ExecutionTrace | None = None,
 ) -> list[PageLike]:
+    if pages:
+        resolved_backend = _resolve_backend(backend, pages[0])
+        if resolved_backend == "torch_mps":
+            if cache is not None:
+                return cache.prepare_pages(list(pages), trace=trace)
+            return prepare_pages_mps(pages, trace=trace)
     return [prepare_page(page, backend=backend, cache=cache, trace=trace) for page in pages]
 
 

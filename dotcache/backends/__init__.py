@@ -6,6 +6,7 @@ from .torch_mps import (
     mps_available,
     page_supported_mps,
     prepare_page_mps,
+    prepare_pages_mps,
     score_page_mps,
 )
 
@@ -17,6 +18,7 @@ __all__ = [
     "mps_available",
     "page_supported_mps",
     "prepare_page_mps",
+    "prepare_pages_mps",
     "score_page_cpu_ref",
     "score_page_mps",
 ]

@@ -62,6 +62,22 @@ def test_prepare_page_mps_reuses_device_copy() -> None:
 
 
 @requires_mps
+def test_prepare_pages_mps_batches_upload_without_widening_affine_metadata() -> None:
+    rng = np.random.default_rng(122)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, tokens_per_page=64)
+    keys = rng.normal(size=(2 * config.tokens_per_page, config.head_dim)).astype(np.float32)
+    key_pages = _encode_paged(keys, config, kind="K")
+
+    trace = ExecutionTrace()
+    prepared_pages = prepare_pages(key_pages, backend="torch_mps", trace=trace)
+
+    expected_bytes = sum(page.payload.nbytes + page.scales.nbytes + page.bias.nbytes for page in key_pages)
+    assert len(prepared_pages) == len(key_pages)
+    assert trace.host_to_device_bytes == expected_bytes
+    assert sum(page.host_to_device_nbytes for page in prepared_pages) == expected_bytes
+
+
+@requires_mps
 @pytest.mark.parametrize(("token_count", "head_dim"), [(8, 48), (64, 128)])
 def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int) -> None:
     rng = np.random.default_rng(token_count + head_dim)

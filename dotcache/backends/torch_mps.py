@@ -8,6 +8,8 @@ import numpy as np
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 
+_UNPACK_METADATA: dict[int, tuple[Any, Any]] = {}
+
 
 def mps_available() -> bool:
     try:
@@ -51,6 +53,46 @@ def _device_tensor(array: np.ndarray, *, device: str):
     return torch.from_numpy(np.ascontiguousarray(array)).to(device=device)
 
 
+def _prepare_signature(page: EncodedPage | PreparedPageMPS) -> tuple[int | str, ...]:
+    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    header = source_page.header
+    return (
+        header.kind,
+        header.mode_default,
+        header.token_count,
+        header.head_dim,
+        header.padded_head_dim,
+        header.group_size,
+        header.num_groups,
+        header.bits,
+        header.words_per_group,
+        header.layout,
+        header.quant_scheme,
+        header.escape_dtype,
+    )
+
+
+def _chunk_compatible_source_pages(
+    pages: Sequence[EncodedPage | PreparedPageMPS],
+) -> list[list[EncodedPage | PreparedPageMPS]]:
+    chunks: list[list[EncodedPage | PreparedPageMPS]] = []
+    current_chunk: list[EncodedPage | PreparedPageMPS] = []
+    current_signature: tuple[int | str, ...] | None = None
+    for page in pages:
+        signature = _prepare_signature(page)
+        if current_chunk and signature != current_signature:
+            chunks.append(current_chunk)
+            current_chunk = [page]
+            current_signature = signature
+            continue
+        if not current_chunk:
+            current_signature = signature
+        current_chunk.append(page)
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
 def page_supported_mps(page: EncodedPage | PreparedPageMPS) -> bool:
     source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
     header = source_page.header
@@ -69,54 +111,112 @@ def page_supported_mps(page: EncodedPage | PreparedPageMPS) -> bool:
     )
 
 
+def _unpack_metadata(bits: int):
+    cached = _UNPACK_METADATA.get(bits)
+    if cached is not None:
+        return cached
+    torch = _load_torch()
+    symbols_per_word = 32 // bits
+    shifts = torch.arange(symbols_per_word, dtype=torch.int32, device="mps") * bits
+    mask = torch.tensor((1 << bits) - 1, dtype=torch.int32, device="mps")
+    _UNPACK_METADATA[bits] = (shifts, mask)
+    return shifts, mask
+
+
+def _prepared_page_host_nbytes(page: EncodedPage) -> int:
+    total = 0
+    if page.payload is not None:
+        total += int(page.payload.nbytes)
+    if page.scales is not None:
+        total += int(page.scales.nbytes)
+    if page.bias is not None:
+        total += int(page.bias.nbytes)
+    if page.escape_payload is not None:
+        total += int(page.escape_payload.nbytes)
+    return total
+
+
+def _prepare_page_chunk_mps(
+    pages: Sequence[EncodedPage],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> list[PreparedPageMPS]:
+    if not pages:
+        return []
+    header = pages[0].header
+    total_host_to_device_nbytes = 0
+
+    if header.mode_default == "M3":
+        escape_batch = _device_tensor(np.stack([np.asarray(page.escape_payload) for page in pages], axis=0), device="mps")
+        total_host_to_device_nbytes += int(escape_batch.numel() * escape_batch.element_size())
+        prepared_pages = [
+            PreparedPageMPS(
+                source_page=page,
+                header=page.header,
+                escape_payload=escape_batch[index],
+                host_to_device_nbytes=_prepared_page_host_nbytes(page),
+            )
+            for index, page in enumerate(pages)
+        ]
+        if trace is not None:
+            trace.record_host_to_device(total_host_to_device_nbytes)
+        return prepared_pages
+
+    payload_batch = _device_tensor(np.stack([np.asarray(page.payload, dtype=np.int32) for page in pages], axis=0), device="mps")
+    scales_batch = _device_tensor(np.stack([np.asarray(page.scales) for page in pages], axis=0), device="mps")
+    bias_batch = _device_tensor(np.stack([np.asarray(page.bias) for page in pages], axis=0), device="mps")
+    total_host_to_device_nbytes += int(payload_batch.numel() * payload_batch.element_size())
+    total_host_to_device_nbytes += int(scales_batch.numel() * scales_batch.element_size())
+    total_host_to_device_nbytes += int(bias_batch.numel() * bias_batch.element_size())
+    unpack_shifts, unpack_mask = _unpack_metadata(header.bits)
+
+    prepared_pages = [
+        PreparedPageMPS(
+            source_page=page,
+            header=page.header,
+            payload=payload_batch[index],
+            scales=scales_batch[index],
+            bias=bias_batch[index],
+            unpack_shifts=unpack_shifts,
+            unpack_mask=unpack_mask,
+            host_to_device_nbytes=_prepared_page_host_nbytes(page),
+        )
+        for index, page in enumerate(pages)
+    ]
+    if trace is not None:
+        trace.record_host_to_device(total_host_to_device_nbytes)
+    return prepared_pages
+
+
+def prepare_pages_mps(
+    pages: Sequence[EncodedPage | PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> list[PreparedPageMPS]:
+    if not mps_available():
+        raise RuntimeError("torch_mps is unavailable on this machine")
+    prepared_pages: list[PreparedPageMPS] = []
+    for page_chunk in _chunk_compatible_source_pages(pages):
+        if all(isinstance(page, PreparedPageMPS) for page in page_chunk):
+            prepared_pages.extend(page_chunk)
+            continue
+        if any(isinstance(page, PreparedPageMPS) for page in page_chunk):
+            prepared_pages.extend(prepare_page_mps(page, trace=trace) for page in page_chunk)
+            continue
+        source_pages = []
+        for page in page_chunk:
+            if not page_supported_mps(page):
+                raise ValueError("page is unsupported by torch_mps in this phase")
+            source_pages.append(page)
+        if source_pages:
+            prepared_pages.extend(_prepare_page_chunk_mps(source_pages, trace=trace))
+    return prepared_pages
+
+
 def prepare_page_mps(page: EncodedPage | PreparedPageMPS, *, trace: ExecutionTrace | None = None) -> PreparedPageMPS:
     if isinstance(page, PreparedPageMPS):
         return page
-    if not mps_available():
-        raise RuntimeError("torch_mps is unavailable on this machine")
-    if not page_supported_mps(page):
-        raise ValueError("page is unsupported by torch_mps in this phase")
-
-    payload = None
-    scales = None
-    bias = None
-    escape_payload = None
-    unpack_shifts = None
-    unpack_mask = None
-    host_to_device_nbytes = 0
-
-    if page.payload is not None:
-        payload = _device_tensor(np.asarray(page.payload, dtype=np.int64), device="mps")
-        host_to_device_nbytes += int(payload.numel() * payload.element_size())
-    if page.scales is not None:
-        scales = _device_tensor(np.asarray(page.scales, dtype=np.float32), device="mps")
-        host_to_device_nbytes += int(scales.numel() * scales.element_size())
-    if page.bias is not None:
-        bias = _device_tensor(np.asarray(page.bias, dtype=np.float32), device="mps")
-        host_to_device_nbytes += int(bias.numel() * bias.element_size())
-    if page.escape_payload is not None:
-        escape_payload = _device_tensor(np.asarray(page.escape_payload, dtype=np.float32), device="mps")
-        host_to_device_nbytes += int(escape_payload.numel() * escape_payload.element_size())
-    if page.header.mode_default == "M0":
-        torch = _load_torch()
-        symbols_per_word = 32 // page.header.bits
-        unpack_shifts = torch.arange(symbols_per_word, dtype=torch.int64, device="mps") * page.header.bits
-        unpack_mask = torch.tensor((1 << page.header.bits) - 1, dtype=torch.int64, device="mps")
-
-    prepared = PreparedPageMPS(
-        source_page=page,
-        header=page.header,
-        payload=payload,
-        scales=scales,
-        bias=bias,
-        escape_payload=escape_payload,
-        unpack_shifts=unpack_shifts,
-        unpack_mask=unpack_mask,
-        host_to_device_nbytes=host_to_device_nbytes,
-    )
-    if trace is not None:
-        trace.record_host_to_device(host_to_device_nbytes)
-    return prepared
+    return prepare_pages_mps([page], trace=trace)[0]
 
 
 def _pad_query(query_slice: np.ndarray, padded_head_dim: int):
@@ -214,7 +314,7 @@ def _score_page_chunk_mps(query_slice: np.ndarray, pages: Sequence[PreparedPageM
         )
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim] for page in pages], dim=0)
+        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
         query = torch.as_tensor(query_slice, dtype=torch.float32, device="mps")
         return torch.matmul(dense, query).reshape(-1)
 
@@ -236,8 +336,8 @@ def _score_page_chunk_mps(query_slice: np.ndarray, pages: Sequence[PreparedPageM
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[group_index]
         int_dot = torch.matmul(codes, qg)
-        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
         logits += scales * int_dot + bias * query_group_sums[group_index]
 
     return logits.reshape(-1)
@@ -273,7 +373,7 @@ def _mix_page_chunk_mps(
         raise ValueError("attn_weights chunk must have shape [page_count, token_count]")
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim] for page in pages], dim=0)
+        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
 
@@ -287,8 +387,8 @@ def _mix_page_chunk_mps(
         ).reshape(page_count, token_count, header.group_size)
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
         weighted_scales = weights * scales
         contribution = torch.sum(weighted_scales[..., None] * codes, dim=(0, 1))
         bias_term = torch.sum(weights * bias)
@@ -315,7 +415,7 @@ def score_page_mps(
     if header.mode_default == "M3":
         if prepared.escape_payload is None:
             raise ValueError("escape payload is missing")
-        dense = prepared.escape_payload[:, : header.head_dim]
+        dense = prepared.escape_payload[:, : header.head_dim].to(torch.float32)
         query = torch.as_tensor(query_slice, dtype=torch.float32, device="mps")
         return torch.matmul(dense, query).detach().cpu().numpy()
 
@@ -334,8 +434,8 @@ def score_page_mps(
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[group_index]
         int_dot = torch.matmul(codes, qg)
-        scales = prepared.scales[:, group_index]
-        bias = prepared.bias[:, group_index]
+        scales = prepared.scales[:, group_index].to(torch.float32)
+        bias = prepared.bias[:, group_index].to(torch.float32)
         logits += scales * int_dot + bias * query_group_sums[group_index]
 
     return logits.detach().cpu().numpy()
@@ -362,7 +462,7 @@ def mix_page_mps(
     if header.mode_default == "M3":
         if prepared.escape_payload is None:
             raise ValueError("escape payload is missing")
-        dense = prepared.escape_payload[:, : header.head_dim]
+        dense = prepared.escape_payload[:, : header.head_dim].to(torch.float32)
         output = torch.matmul(weights, dense)
         if out_acc is not None:
             base = torch.as_tensor(out_acc, dtype=torch.float32, device="mps")
@@ -381,8 +481,8 @@ def mix_page_mps(
         codes = _unpack_bits_torch(group_words, prepared.unpack_shifts, prepared.unpack_mask, header.group_size)
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        weighted_scales = weights * prepared.scales[:, group_index]
-        bias_term = torch.sum(weights * prepared.bias[:, group_index])
+        weighted_scales = weights * prepared.scales[:, group_index].to(torch.float32)
+        bias_term = torch.sum(weights * prepared.bias[:, group_index].to(torch.float32))
         contribution = torch.matmul(weighted_scales, codes)
         start = group_index * header.group_size
         end = start + header.group_size
