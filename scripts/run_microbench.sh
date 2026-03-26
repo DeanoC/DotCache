@@ -9,4 +9,5 @@ backend="${1:-auto}"
 .venv/bin/python benchmarks/bench_decode.py --backend "${backend}"
 .venv/bin/python benchmarks/bench_decode_reuse.py --backend "${backend}"
 .venv/bin/python benchmarks/bench_decode_growth.py --backend "${backend}"
+.venv/bin/python benchmarks/bench_decode_session.py --backend "${backend}"
 .venv/bin/python benchmarks/bench_decode_eviction.py --backend torch_mps

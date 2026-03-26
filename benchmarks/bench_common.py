@@ -98,7 +98,7 @@ def page_byte_totals(pages: list) -> tuple[int, int]:
 
 
 def prepare_context_pages(pages: list, backend: BackendName) -> tuple[list, float, ExecutionTrace]:
-    _warm_backend(backend)
+    warm_backend(backend)
     trace = ExecutionTrace()
     start = time.perf_counter()
     prepared_pages = prepare_pages(pages, backend=backend, trace=trace)
@@ -129,7 +129,7 @@ def emit(record: dict[str, Any]) -> None:
     print(json.dumps(record, sort_keys=True))
 
 
-def _warm_backend(backend: BackendName) -> None:
+def warm_backend(backend: BackendName) -> None:
     global _MPS_WARMED
 
     if backend != "torch_mps" or _MPS_WARMED:

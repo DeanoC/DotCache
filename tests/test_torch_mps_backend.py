@@ -7,6 +7,7 @@ from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
+from dotcache.session_runtime import PagedDecodeSession
 from dotcache.tracing import ExecutionTrace
 
 requires_mps = pytest.mark.skipif(not mps_available(), reason="torch_mps is unavailable")
@@ -265,6 +266,41 @@ def test_prepared_page_cache_reuses_mps_pages_across_decode_steps() -> None:
     assert second_trace.prepared_page_cache_misses == 0
     assert second_trace.host_to_device_bytes == 0
     assert second_trace.cache_resident_bytes == cache.resident_bytes
+
+
+@requires_mps
+def test_paged_decode_session_separates_preload_append_and_decode() -> None:
+    rng = np.random.default_rng(127)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 192
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    base_key_pages = _encode_paged(keys[:128], config, kind="K")
+    base_value_pages = _encode_paged(values[:128], config, kind="V")
+    append_key_pages = _encode_paged(keys[128:], config, kind="K")
+    append_value_pages = _encode_paged(values[128:], config, kind="V")
+    all_key_pages = base_key_pages + append_key_pages
+    all_value_pages = base_value_pages + append_value_pages
+
+    session = PagedDecodeSession(backend="torch_mps", cache=PreparedPageCache())
+    preload_trace = ExecutionTrace()
+    session.preload(base_key_pages, base_value_pages, trace=preload_trace)
+    append_trace = ExecutionTrace()
+    session.append(append_key_pages, append_value_pages, trace=append_trace)
+    decode_trace = ExecutionTrace()
+    logits, weights, output = session.decode(query, trace=decode_trace)
+
+    ref_logits, ref_weights, ref_output = decode_step(query, all_key_pages, all_value_pages, backend="cpu_ref")
+
+    np.testing.assert_allclose(logits, ref_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(weights, ref_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
+    assert preload_trace.host_to_device_bytes > 0
+    assert append_trace.host_to_device_bytes > 0
+    assert decode_trace.host_to_device_bytes == 0
+    assert session.page_count == len(all_key_pages)
 
 
 @requires_mps

@@ -95,6 +95,19 @@ To measure growing-context decode where only newly appended pages are prepared, 
 
 That benchmark models a resident prepared-page cache, appends one page of fresh KV per decode step, and reports how much host-to-device work remains per step once old pages stay warm.
 
+To benchmark a more model-shaped runtime with distinct preload, append, and decode phases, use:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
+```
+
+That benchmark keeps a resident session object alive across steps and reports:
+
+- one-time preload latency and bytes
+- per-step append latency and bytes
+- per-step decode latency with resident pages
+- combined session runtime per generated step
+
 To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
 
 ```bash

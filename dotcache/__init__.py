@@ -9,6 +9,7 @@ from .config import DotCacheConfig
 from .page_cache import PreparedPageCache
 from .encode import encode_page
 from .planner import choose_mode
+from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 
@@ -17,6 +18,7 @@ __all__ = [
     "EncodedPage",
     "ExecutionTrace",
     "PageHeader",
+    "PagedDecodeSession",
     "PreparedPageCache",
     "choose_mode",
     "decode_step",
