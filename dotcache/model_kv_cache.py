@@ -450,7 +450,13 @@ class _HeadSessionState:
     tail: _TailPageBuilder
     persistent_key_tail: _PersistentTailPage | None = None
     persistent_value_tail: _PersistentTailPage | None = None
+    decode_key_pages_with_tail: list[PageLike] | None = None
+    decode_value_pages_with_tail: list[PageLike] | None = None
     sequence_length: int = 0
+
+    def invalidate_decode_views(self) -> None:
+        self.decode_key_pages_with_tail = None
+        self.decode_value_pages_with_tail = None
 
     def clear(self, *, clear_prepared_cache: bool) -> None:
         self.session.key_pages.clear()
@@ -467,6 +473,7 @@ class _HeadSessionState:
             self.persistent_key_tail.clear()
         if self.persistent_value_tail is not None:
             self.persistent_value_tail.clear()
+        self.invalidate_decode_views()
         self.sequence_length = 0
 
 
@@ -541,10 +548,12 @@ class ModelPagedKVCache:
             prepared_keys = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
             for (state, index), prepared in zip(key_refs, prepared_keys, strict=True):
                 state.session.key_pages[index] = prepared
+                state.invalidate_decode_views()
         if value_pages:
             prepared_values = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
             for (state, index), prepared in zip(value_refs, prepared_values, strict=True):
                 state.session.value_pages[index] = prepared
+                state.invalidate_decode_views()
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
@@ -698,6 +707,7 @@ class ModelPagedKVCache:
                 )
             if preload_key_pages:
                 state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
+                state.invalidate_decode_views()
             remainder_keys = dense_keys[full_tokens:]
             remainder_values = dense_values[full_tokens:]
             state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
@@ -794,6 +804,7 @@ class ModelPagedKVCache:
                     )
             if preload_key_pages:
                 state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
+                state.invalidate_decode_views()
             if self._use_persistent_mps_tail:
                 state.tail.clear()
             else:
@@ -882,6 +893,7 @@ class ModelPagedKVCache:
             )
             if finalized_key_pages:
                 state.session.append(finalized_key_pages, finalized_value_pages, trace=trace)
+                state.invalidate_decode_views()
                 if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
                     state.persistent_key_tail.clear()
                     state.persistent_value_tail.clear()
@@ -986,6 +998,7 @@ class ModelPagedKVCache:
                     token_start=token_start_full,
                 )
                 state.session.append([finalized_key_page], [finalized_value_page], trace=trace)
+                state.invalidate_decode_views()
                 state.persistent_key_tail.clear()
                 state.persistent_value_tail.clear()
             state.sequence_length += token_count
@@ -1002,11 +1015,27 @@ class ModelPagedKVCache:
             prepared_key_tail = state.persistent_key_tail.active_page
             prepared_value_tail = state.persistent_value_tail.active_page
             if prepared_key_tail is not None and prepared_value_tail is not None:
+                cached_key_pages = state.decode_key_pages_with_tail
+                cached_value_pages = state.decode_value_pages_with_tail
+                if (
+                    cached_key_pages is not None
+                    and cached_value_pages is not None
+                    and cached_key_pages
+                    and cached_value_pages
+                    and cached_key_pages[-1] is prepared_key_tail
+                    and cached_value_pages[-1] is prepared_value_tail
+                    and len(cached_key_pages) == len(state.session.key_pages) + 1
+                    and len(cached_value_pages) == len(state.session.value_pages) + 1
+                ):
+                    return cached_key_pages, cached_value_pages
                 key_pages = list(state.session.key_pages)
                 value_pages = list(state.session.value_pages)
                 key_pages.append(prepared_key_tail)
                 value_pages.append(prepared_value_tail)
+                state.decode_key_pages_with_tail = key_pages
+                state.decode_value_pages_with_tail = value_pages
                 return key_pages, value_pages
+            state.invalidate_decode_views()
             return state.session.key_pages, state.session.value_pages
         temp_pages = state.tail.build_temp_pages()
         if temp_pages is None:

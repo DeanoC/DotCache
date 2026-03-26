@@ -75,6 +75,17 @@ Latest long-prompt optimization checkpoint after skipping redundant `PreparedPag
 - dense on that rerun was `178.78 ms/step`, so DotCache still trails on latency but the gap is materially smaller
 - KV-cache memory stayed the same at a `0.29x` DotCache/dense ratio with full greedy agreement
 
+Largest practical exact-length TinyLlama comparison point on this M4 so far:
+
+- exact `1536`-token prompt with `max_new_tokens=4` completed successfully
+- dense decode: `2274.82 ms/step`
+- DotCache decode: `4476.23 ms/step`
+- dense final KV bytes: `69,341,184`
+- DotCache resident bytes: `16,580,608`
+- DotCache/dense KV ratio: `0.24x`
+- greedy agreement: `1.00`
+- probes at exact `1792` and `1920` prompt tokens OOMed the stock dense MPS baseline on this machine, so `1536` is a good large-case reference point here even though the model's theoretical prompt ceiling with `max_new_tokens=4` is `2044`
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt
