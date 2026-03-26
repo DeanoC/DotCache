@@ -19,14 +19,30 @@ Latest tiny-random Llama smoke runs:
 | Backend | Prompt Len | Decode Steps | Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
 |---|---:|---:|---:|---:|---:|
 | `cpu_ref` | `6` | `3` | `2.54` | `1.00` | `0.111` |
-| `torch_mps` | `6` | `2` | `50.61` | `0.667` | `0.080` |
+| `torch_mps` | `6` | `2` | `24.13` | `1.00` | `9.54e-05` |
 
 That is the right honest read of the new path:
 
 - the narrow Phase 5 harness works end to end on both CPU and this M4 MPS path
 - the CPU tiny-random smoke run kept full greedy agreement over the tested steps
-- the MPS tiny-random smoke run is operational, but it still shows meaningful model-level drift even when the teacher-forced logit delta stays numerically modest
-- this is still a correctness-and-integration milestone first, not yet a model-level quality or throughput win
+- the MPS tiny-random smoke run now also keeps full greedy agreement, and the model-level drift on that local harness is very small
+- the real-model TinyLlama path is now the more useful truth source for Phase 5 performance work
+
+Latest real TinyLlama MPS checkpoints on this Mac:
+
+| Change | Decode ms/step | Append ms/step | Host-to-Device Bytes/Step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
+|---|---:|---:|---:|---:|---:|
+| Query scaling fix | `2607.06` | `0.43` | `84480` | `1.00` | `1.5708` |
+| Batched KV-head decode | `442.27` | `0.22` | `84480` | `1.00` | `1.6860` |
+| Persistent resident tail pages | `187.89` | `32.55` | `22528` | `1.00` | `0.0625` |
+| Batched persistent tail uploads | `248.31` | `13.91` | `22528` | `1.00` | `0.0625` |
+
+The current Phase 5 read is:
+
+- exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt
+- batching decode by KV head was the biggest single model-path performance win so far
+- keeping tail pages resident on device removed most decode-time upload churn and sharply improved numerical agreement
+- batching tail uploads cut append cost from about `32.6 ms/step` to about `13.9 ms/step`, but total decode latency bounced upward on the short benchmark, so that optimization needs more tuning before we call it a clear end-to-end win
 
 Latest exact session baseline on the M4 profile:
 

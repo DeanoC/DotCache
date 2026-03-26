@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -306,6 +306,44 @@ class _PersistentTailPage:
         self._ensure_allocated(token_start=token_start)
         self.append_rows(values, token_start=token_start, trace=trace)
 
+    def prepare_append_span(self, *, token_start: int, row_count: int) -> tuple[int, int]:
+        if row_count < 0:
+            raise ValueError("row_count must be non-negative")
+        self._ensure_allocated(token_start=token_start if self.token_count == 0 else self.source_page.header.token_start)
+        if self.source_page is None or self.prepared_page is None or self.host_buffer is None:
+            raise RuntimeError("persistent tail page is not initialized")
+        expected_token = self.source_page.header.token_start + self.token_count
+        if token_start != expected_token:
+            raise ValueError(f"persistent tail expected token_start {expected_token}, received {token_start}")
+        end = self.token_count + row_count
+        if end > self.config.tokens_per_page:
+            raise ValueError("persistent tail cannot exceed tokens_per_page")
+        start = self.token_count
+        self.source_page.header.token_count = end
+        self.prepared_page.header.token_count = end
+        self.source_page.escape_payload = self.host_buffer[:end]
+        self.token_count = end
+        return start, end
+
+    def append_rows_from_device(
+        self,
+        *,
+        rows: np.ndarray,
+        device_rows: Any,
+        token_start: int,
+    ) -> None:
+        values = np.asarray(rows, dtype=np.float32)
+        if values.ndim != 2 or values.shape[1] != self.config.head_dim:
+            raise ValueError("tail rows must have shape [token_count, head_dim]")
+        if values.shape[0] == 0:
+            return
+        if self.host_buffer is None or self.prepared_page is None:
+            raise RuntimeError("persistent tail page is not initialized")
+        start, end = self.prepare_append_span(token_start=token_start, row_count=values.shape[0])
+        converted = values.astype(self.host_buffer.dtype, copy=False)
+        self.host_buffer[start:end] = converted
+        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows
+
     def append_rows(
         self,
         rows: np.ndarray,
@@ -321,26 +359,17 @@ class _PersistentTailPage:
         self._ensure_allocated(token_start=token_start if self.token_count == 0 else self.source_page.header.token_start)
         if self.source_page is None or self.prepared_page is None or self.host_buffer is None:
             raise RuntimeError("persistent tail page is not initialized")
-        expected_token = self.source_page.header.token_start + self.token_count
-        if token_start != expected_token:
-            raise ValueError(f"persistent tail expected token_start {expected_token}, received {token_start}")
-        end = self.token_count + values.shape[0]
-        if end > self.config.tokens_per_page:
-            raise ValueError("persistent tail cannot exceed tokens_per_page")
         converted = values.astype(self.host_buffer.dtype, copy=False)
-        self.host_buffer[self.token_count : end] = converted
-        self.source_page.escape_payload = self.host_buffer[:end]
-        self.source_page.header.token_count = end
-        self.prepared_page.header.token_count = end
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("torch is required for the persistent MPS tail path") from exc
         row_tensor = torch.from_numpy(np.ascontiguousarray(converted)).to(device="mps")
-        self.prepared_page.escape_payload[self.token_count : end, : self.config.head_dim] = row_tensor
+        start, end = self.prepare_append_span(token_start=token_start, row_count=values.shape[0])
+        self.host_buffer[start:end] = converted
+        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = row_tensor
         if trace is not None:
             trace.record_host_to_device(int(row_tensor.numel() * row_tensor.element_size()))
-        self.token_count = end
 
     @property
     def active_page(self) -> PreparedPageMPS | None:
@@ -449,6 +478,39 @@ class ModelPagedKVCache:
             raise RuntimeError(f"layer {layer_id} KV heads disagree on sequence length")
         return next(iter(lengths), 0)
 
+    def _batch_upload_persistent_tail_rows(
+        self,
+        tails: Sequence[_PersistentTailPage | None],
+        rows_by_head: np.ndarray,
+        *,
+        token_start: int,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        active_pairs = [(tail, rows_by_head[index]) for index, tail in enumerate(tails) if tail is not None]
+        if not active_pairs:
+            return
+        non_empty_pairs = [(tail, rows) for tail, rows in active_pairs if rows.shape[0] > 0]
+        if not non_empty_pairs:
+            return
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+        contiguous_rows = np.ascontiguousarray(np.stack([rows.astype(np.float16, copy=False) for _, rows in non_empty_pairs], axis=0))
+        device_rows = torch.from_numpy(contiguous_rows).to(device="mps")
+        if trace is not None:
+            trace.record_host_to_device(int(device_rows.numel() * device_rows.element_size()))
+        for batch_index, (tail, rows) in enumerate(non_empty_pairs):
+            if tail is None:
+                continue
+            if tail.host_buffer is None or tail.prepared_page is None:
+                tail._ensure_allocated(token_start=token_start if tail.token_count == 0 else tail.source_page.header.token_start)
+            tail.append_rows_from_device(
+                rows=rows,
+                device_rows=device_rows[batch_index],
+                token_start=token_start,
+            )
+
     def ingest_prefill_cache(
         self,
         layer_id: int,
@@ -510,10 +572,33 @@ class ModelPagedKVCache:
             remainder_keys = dense_keys[full_tokens:]
             remainder_values = dense_values[full_tokens:]
             state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
-            if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
-                state.persistent_key_tail.load_rows(remainder_keys, token_start=full_tokens, trace=trace)
-                state.persistent_value_tail.load_rows(remainder_values, token_start=full_tokens, trace=trace)
             state.sequence_length = seq_len
+        if self._use_persistent_mps_tail:
+            key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
+            value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+            for kv_head_id in range(self.num_key_value_heads):
+                tail = key_tails[kv_head_id]
+                if tail is not None:
+                    tail.clear()
+                    if keys[kv_head_id, full_tokens:].shape[0] > 0:
+                        tail._ensure_allocated(token_start=full_tokens)
+                tail = value_tails[kv_head_id]
+                if tail is not None:
+                    tail.clear()
+                    if values[kv_head_id, full_tokens:].shape[0] > 0:
+                        tail._ensure_allocated(token_start=full_tokens)
+            self._batch_upload_persistent_tail_rows(
+                key_tails,
+                keys[:, full_tokens:],
+                token_start=full_tokens,
+                trace=trace,
+            )
+            self._batch_upload_persistent_tail_rows(
+                value_tails,
+                values[:, full_tokens:],
+                token_start=full_tokens,
+                trace=trace,
+            )
 
     def append_step(
         self,
@@ -540,6 +625,23 @@ class ModelPagedKVCache:
             raise ValueError("key_step and value_step token counts must match")
         token_count = int(keys.shape[1])
 
+        if self._use_persistent_mps_tail:
+            key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
+            value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+            for kv_head_id in range(self.num_key_value_heads):
+                key_tail = key_tails[kv_head_id]
+                value_tail = value_tails[kv_head_id]
+                if key_tail is not None:
+                    key_tail._ensure_allocated(
+                        token_start=token_index if key_tail.token_count == 0 else key_tail.source_page.header.token_start
+                    )
+                if value_tail is not None:
+                    value_tail._ensure_allocated(
+                        token_start=token_index if value_tail.token_count == 0 else value_tail.source_page.header.token_start
+                    )
+            self._batch_upload_persistent_tail_rows(key_tails, keys, token_start=token_index, trace=trace)
+            self._batch_upload_persistent_tail_rows(value_tails, values, token_start=token_index, trace=trace)
+
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             if state.sequence_length != token_index:
@@ -551,9 +653,6 @@ class ModelPagedKVCache:
                 values[kv_head_id],
                 token_start=token_index,
             )
-            if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
-                state.persistent_key_tail.append_rows(keys[kv_head_id], token_start=token_index, trace=trace)
-                state.persistent_value_tail.append_rows(values[kv_head_id], token_start=token_index, trace=trace)
             if finalized_key_pages:
                 state.session.append(finalized_key_pages, finalized_value_pages, trace=trace)
                 if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
