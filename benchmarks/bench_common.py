@@ -31,7 +31,11 @@ def parse_args(description: str, *, default_repeats: int) -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=None)
     parser.add_argument("--tokens-per-page", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--execution-profile", choices=["none", "m4_envelope_auto"], default="none")
+    parser.add_argument(
+        "--execution-profile",
+        choices=["none", "m4_envelope_fast", "m4_envelope_balanced", "m4_envelope_auto"],
+        default="none",
+    )
     parser.add_argument("--execution-recent-window", type=int, default=None)
     parser.add_argument("--execution-sink-window", type=int, default=0)
     parser.add_argument("--execution-relevance-top-k", type=int, default=0)

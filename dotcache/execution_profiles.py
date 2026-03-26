@@ -17,6 +17,18 @@ class ExecutionProfile:
 def resolve_execution_profile(name: str | None, *, context_length: int) -> ExecutionProfile | None:
     if name is None or name == "none":
         return None
+    if name == "m4_envelope_fast":
+        return ExecutionProfile(
+            sink_window_tokens=256,
+            recent_window_tokens=1_024,
+            relevance_top_k=2,
+        )
+    if name == "m4_envelope_balanced":
+        return ExecutionProfile(
+            sink_window_tokens=256,
+            recent_window_tokens=1_024,
+            relevance_top_k=4,
+        )
     if name == "m4_envelope_auto":
         if context_length <= 4_096:
             return ExecutionProfile(
