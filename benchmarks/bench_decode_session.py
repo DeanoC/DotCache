@@ -79,6 +79,7 @@ def main() -> None:
             recent_window_tokens=args.execution_recent_window,
             sink_window_tokens=args.execution_sink_window,
             relevance_top_k=args.execution_relevance_top_k,
+            approximate_old_pages=args.execution_approximate_old_pages,
         )
         preload_trace = ExecutionTrace()
         preload_ms = _time_ms(lambda: session.preload(raw_key_pages, raw_value_pages, trace=preload_trace))
@@ -149,6 +150,7 @@ def main() -> None:
                 "preload_host_to_device_bytes": preload_trace.host_to_device_bytes,
                 "preload_ms": preload_ms,
                 "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
+                "execution_approximate_old_pages": int(args.execution_approximate_old_pages),
                 "execution_relevance_top_k": args.execution_relevance_top_k,
                 "execution_sink_window": args.execution_sink_window,
                 "session_runtime_ms_per_step": (decode_total_ms + append_total_ms) / args.decode_steps,

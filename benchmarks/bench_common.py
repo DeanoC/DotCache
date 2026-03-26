@@ -34,6 +34,7 @@ def parse_args(description: str, *, default_repeats: int) -> argparse.Namespace:
     parser.add_argument("--execution-recent-window", type=int, default=None)
     parser.add_argument("--execution-sink-window", type=int, default=0)
     parser.add_argument("--execution-relevance-top-k", type=int, default=0)
+    parser.add_argument("--execution-approximate-old-pages", action="store_true")
     return parser.parse_args()
 
 

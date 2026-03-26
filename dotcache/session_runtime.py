@@ -5,7 +5,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .attention_runtime import BackendName, decode_step, prepare_pages
+from .attention_runtime import BackendName, decode_step, mix_page, prepare_pages, score_page
 from .modes.m0_affine import dequantize_group
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
@@ -49,6 +49,10 @@ def summarize_key_page(page: PageLike) -> np.ndarray:
         summary[start:end] = group_values.mean(axis=0)
 
     return summary[: header.head_dim]
+
+
+def summarize_value_page(page: PageLike) -> np.ndarray:
+    return summarize_key_page(page)
 
 
 def select_execution_page_indices(
@@ -145,14 +149,17 @@ class PagedDecodeSession:
     recent_window_tokens: int | None = None
     sink_window_tokens: int = 0
     relevance_top_k: int = 0
+    approximate_old_pages: bool = False
     key_pages: list[PageLike] = field(default_factory=list)
     value_pages: list[PageLike] = field(default_factory=list)
     key_page_summaries: list[np.ndarray] = field(default_factory=list)
+    value_page_summaries: list[np.ndarray] = field(default_factory=list)
 
     def clear(self) -> None:
         self.key_pages.clear()
         self.value_pages.clear()
         self.key_page_summaries.clear()
+        self.value_page_summaries.clear()
         if self.cache is not None:
             self.cache.clear()
 
@@ -192,6 +199,7 @@ class PagedDecodeSession:
         self.key_pages.extend(prepared_key_pages)
         self.value_pages.extend(prepared_value_pages)
         self.key_page_summaries.extend(summarize_key_page(page) for page in prepared_key_pages)
+        self.value_page_summaries.extend(summarize_value_page(page) for page in prepared_value_pages)
 
     def execution_pages(self, query_slice: np.ndarray | None = None) -> tuple[list[PageLike], list[PageLike]]:
         return select_execution_page_pairs(
@@ -212,11 +220,75 @@ class PagedDecodeSession:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not self.key_pages or not self.value_pages:
             raise ValueError("PagedDecodeSession requires preloaded pages before decode")
-        key_pages, value_pages = self.execution_pages(query_slice)
-        return decode_step(
-            query_slice,
-            key_pages,
-            value_pages,
-            backend=self.backend,
-            trace=trace,
+        selected_indices = select_execution_page_indices(
+            self.key_pages,
+            recent_window_tokens=self.recent_window_tokens,
+            sink_window_tokens=self.sink_window_tokens,
+            query_slice=query_slice,
+            key_page_summaries=self.key_page_summaries,
+            relevance_top_k=self.relevance_top_k,
         )
+        key_pages = [self.key_pages[index] for index in selected_indices]
+        value_pages = [self.value_pages[index] for index in selected_indices]
+        if not self.approximate_old_pages or len(selected_indices) == len(self.key_pages):
+            return decode_step(
+                query_slice,
+                key_pages,
+                value_pages,
+                backend=self.backend,
+                trace=trace,
+            )
+        return self._decode_with_old_page_fallback(query_slice, selected_indices, trace=trace)
+
+    def _decode_with_old_page_fallback(
+        self,
+        query_slice: np.ndarray,
+        selected_indices: Sequence[int],
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        query = np.asarray(query_slice, dtype=np.float32)
+        exact_index_set = set(selected_indices)
+        all_logits: list[np.ndarray] = []
+
+        max_logit = -np.inf
+        for index, page in enumerate(self.key_pages):
+            if index in exact_index_set:
+                logits = score_page(query, page, backend=self.backend, trace=trace).astype(np.float32, copy=False)
+                all_logits.append(logits)
+                max_logit = max(max_logit, float(np.max(logits)))
+                continue
+            page_score = float(np.dot(self.key_page_summaries[index], query))
+            logits = np.full(page.header.token_count, page_score, dtype=np.float32)
+            all_logits.append(logits)
+            max_logit = max(max_logit, page_score)
+
+        if not np.isfinite(max_logit):
+            raise ValueError("failed to compute logits for session decode")
+
+        output = np.zeros(self.value_pages[0].header.head_dim, dtype=np.float32)
+        all_weights: list[np.ndarray] = []
+        denom = 0.0
+
+        for index, page in enumerate(self.key_pages):
+            logits = all_logits[index]
+            weights = np.exp(logits - max_logit).astype(np.float32, copy=False)
+            all_weights.append(weights)
+            denom += float(np.sum(weights))
+            if index in exact_index_set:
+                output = mix_page(
+                    weights,
+                    self.value_pages[index],
+                    out_acc=output,
+                    backend=self.backend,
+                    trace=trace,
+                )
+            else:
+                output += float(np.sum(weights)) * self.value_page_summaries[index]
+
+        if denom <= 0.0:
+            raise ValueError("invalid normalization denominator in session fallback decode")
+
+        logits = np.concatenate(all_logits).astype(np.float32, copy=False)
+        weights = np.concatenate(all_weights).astype(np.float32, copy=False) / np.float32(denom)
+        return logits, weights, output / np.float32(denom)

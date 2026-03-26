@@ -432,6 +432,83 @@ def test_paged_decode_session_hybrid_relevance_matches_selected_page_reference()
     assert exec_trace.host_to_device_bytes == 0
 
 
+def test_paged_decode_session_approximate_old_pages_improves_over_blunt_pruning_on_cpu() -> None:
+    rng = np.random.default_rng(130)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32) * 0.05
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    keys[128:192, 0] += 8.0
+    values[128:192, 0] += 4.0
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+
+    full_output = decode_step(query, key_pages, value_pages, backend="cpu_ref")[2]
+
+    pruned_session = PagedDecodeSession(
+        backend="cpu_ref",
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+    )
+    pruned_session.preload(key_pages, value_pages)
+    pruned_output = pruned_session.decode(query)[2]
+
+    approx_session = PagedDecodeSession(
+        backend="cpu_ref",
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        approximate_old_pages=True,
+    )
+    approx_session.preload(key_pages, value_pages)
+    approx_output = approx_session.decode(query)[2]
+
+    pruned_error = np.max(np.abs(pruned_output - full_output))
+    approx_error = np.max(np.abs(approx_output - full_output))
+
+    assert approx_error < pruned_error
+
+
+@requires_mps
+def test_paged_decode_session_approximate_old_pages_matches_cpu_runtime() -> None:
+    rng = np.random.default_rng(131)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+
+    cpu_session = PagedDecodeSession(
+        backend="cpu_ref",
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        approximate_old_pages=True,
+    )
+    cpu_session.preload(key_pages, value_pages)
+    cpu_logits, cpu_weights, cpu_output = cpu_session.decode(query)
+
+    mps_session = PagedDecodeSession(
+        backend="torch_mps",
+        cache=PreparedPageCache(),
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        approximate_old_pages=True,
+    )
+    mps_session.preload(key_pages, value_pages)
+    exec_trace = ExecutionTrace()
+    mps_logits, mps_weights, mps_output = mps_session.decode(query, trace=exec_trace)
+
+    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-4, rtol=1e-4)
+    assert exec_trace.host_to_device_bytes == 0
+
+
 @requires_mps
 def test_prepared_page_cache_evicts_oldest_pages_when_capacity_is_capped() -> None:
     rng = np.random.default_rng(28)

@@ -125,6 +125,14 @@ To recover a few older pages by cheap query relevance on top of sink-plus-recent
 
 This keeps the window policy as the base set, then admits a small number of older key/value page pairs whose page-summary vectors score highest against the current query.
 
+To approximate dropped old pages instead of ignoring them entirely, add `--execution-approximate-old-pages`:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-approximate-old-pages
+```
+
+This uses exact decode on the active page set and a summary-based fallback contribution for older pages that stay outside the exact path.
+
 To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
 
 ```bash
