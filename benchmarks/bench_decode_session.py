@@ -73,7 +73,12 @@ def main() -> None:
         raw_key_pages = _encode_slice(keys[:initial_context], config, kind="K", token_start=0)
         raw_value_pages = _encode_slice(values[:initial_context], config, kind="V", token_start=0)
 
-        session = PagedDecodeSession(backend=args.backend, cache=PreparedPageCache())
+        session = PagedDecodeSession(
+            backend=args.backend,
+            cache=PreparedPageCache(),
+            recent_window_tokens=args.execution_recent_window,
+            sink_window_tokens=args.execution_sink_window,
+        )
         preload_trace = ExecutionTrace()
         preload_ms = _time_ms(lambda: session.preload(raw_key_pages, raw_value_pages, trace=preload_trace))
 
@@ -119,6 +124,8 @@ def main() -> None:
 
         emit(
             {
+                "active_page_count": session.active_page_count,
+                "active_token_count": session.active_token_count,
                 "backend": args.backend,
                 "append_host_to_device_bytes_per_step": append_trace_total.host_to_device_bytes / args.decode_steps,
                 "append_ms_per_step": append_total_ms / args.decode_steps,
@@ -133,6 +140,8 @@ def main() -> None:
                 "initial_context": initial_context,
                 "preload_host_to_device_bytes": preload_trace.host_to_device_bytes,
                 "preload_ms": preload_ms,
+                "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
+                "execution_sink_window": args.execution_sink_window,
                 "session_runtime_ms_per_step": (decode_total_ms + append_total_ms) / args.decode_steps,
                 "speedup_decode_vs_cpu": cpu_total_ms / max(decode_total_ms, 1e-8),
                 "speedup_session_runtime_vs_cpu": cpu_total_ms / max(decode_total_ms + append_total_ms, 1e-8),

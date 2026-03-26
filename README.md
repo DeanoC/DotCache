@@ -108,6 +108,15 @@ That benchmark keeps a resident session object alive across steps and reports:
 - per-step decode latency with resident pages
 - combined session runtime per generated step
 
+To evaluate a sink-plus-recent execution policy against the full-context oracle, add execution windows explicitly:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024
+```
+
+That reports active page/token counts and numerical error versus the full CPU reference, so you can see the speed/accuracy tradeoff directly.
+This policy is intentionally approximate in the current prototype; aggressive windows can cut decode cost sharply, but they can also introduce large output error versus full-context attention.
+
 To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
 
 ```bash
