@@ -77,6 +77,22 @@ One operational note from the first real-model CUDA run:
 - the initial TinyLlama download hit a Hugging Face `429` rate limit once and then recovered on retry
 - the benchmark still completed and was recorded successfully in the history log
 
+First higher-context CUDA frontier probe on SmolLM2 360M:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Status |
+|---|---:|---:|---:|---:|---:|---|
+| `2048` | `51.64` | `436.20` | `168,017,920` | `36,700,160` | `0.22x` | Exact greedy agreement |
+| `4096` | `38.95` | `655.83` | `335,790,080` | `62,914,560` | `0.19x` | Exact greedy agreement |
+| `8188` | - | - | - | - | - | Dense CUDA OOM |
+
+That is the first useful bigger-model / bigger-KV read on this GPU:
+
+- this 16 GB card comfortably supports exact `2048` and `4096` token SmolLM2 360M runs on the CUDA model path
+- the current eager DotCache CUDA path still trails dense CUDA badly on decode at those lengths
+- KV-memory savings are already strong at higher context, dropping to about `22%` of dense at `2048` and `19%` at `4096`
+- the max-practical `8188` prompt OOMed the dense CUDA baseline on this first pass, so the next optimization loop should focus on `2048` and `4096` first, not on pushing context farther immediately
+- the most obvious next bottlenecks on CUDA are exact decode kernel cost and prefill-cache ingest cost, not correctness
+
 ### Phase 5 model-integration snapshot
 
 The first exact Llama-family integration path is now implemented in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py) on top of [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py).
