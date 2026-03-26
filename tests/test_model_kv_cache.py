@@ -263,3 +263,31 @@ def test_model_paged_kv_cache_ingest_prefill_cache_torch_keeps_remainder_on_devi
     assert tuple(outputs.shape) == (2, config.head_dim)
     assert ingest_trace.host_to_device_bytes == 0
     assert decode_trace.host_to_device_bytes == 0
+
+
+def test_model_paged_kv_cache_ingest_prefill_cache_torch_defers_full_page_prepare() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(309)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    queries = torch.from_numpy(rng.normal(size=(2, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    ingest_trace = ExecutionTrace()
+    cache.ingest_prefill_cache_torch(0, layer_keys, layer_values, trace=ingest_trace)
+    decode_trace = ExecutionTrace()
+    outputs = cache.decode_layer_torch(0, queries, np.array([0, 1]), trace=decode_trace)
+
+    assert tuple(outputs.shape) == (2, config.head_dim)
+    assert ingest_trace.host_to_device_bytes == 0
+    assert decode_trace.host_to_device_bytes > 0

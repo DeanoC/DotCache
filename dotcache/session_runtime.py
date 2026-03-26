@@ -316,22 +316,28 @@ class PagedDecodeSession:
         key_pages: Sequence[PageLike],
         value_pages: Sequence[PageLike],
         *,
+        prepare: bool = True,
         trace: ExecutionTrace | None = None,
     ) -> None:
         self.clear()
-        self.append(key_pages, value_pages, trace=trace)
+        self.append(key_pages, value_pages, prepare=prepare, trace=trace)
 
     def append(
         self,
         key_pages: Sequence[PageLike],
         value_pages: Sequence[PageLike],
         *,
+        prepare: bool = True,
         trace: ExecutionTrace | None = None,
     ) -> None:
         if len(key_pages) != len(value_pages):
             raise ValueError("key_pages and value_pages must contain the same number of pages")
-        prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
-        prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
+        if prepare:
+            prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
+            prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
+        else:
+            prepared_key_pages = list(key_pages)
+            prepared_value_pages = list(value_pages)
         self.key_pages.extend(prepared_key_pages)
         self.value_pages.extend(prepared_value_pages)
         self.key_page_sketches.extend(

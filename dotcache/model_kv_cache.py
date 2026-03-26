@@ -648,7 +648,7 @@ class ModelPagedKVCache:
                     )
                 )
             if preload_key_pages:
-                state.session.append(preload_key_pages, preload_value_pages, trace=trace)
+                state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
             remainder_keys = dense_keys[full_tokens:]
             remainder_values = dense_values[full_tokens:]
             state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
@@ -744,7 +744,7 @@ class ModelPagedKVCache:
                         )
                     )
             if preload_key_pages:
-                state.session.append(preload_key_pages, preload_value_pages, trace=trace)
+                state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
             if self._use_persistent_mps_tail:
                 state.tail.clear()
             else:
@@ -1063,11 +1063,13 @@ class ModelPagedKVCache:
             key_pages, value_pages = prepared_page_pairs[kv_head_id]
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
+            prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
             kv_queries = scaled_queries[q_head_ids]
             _, _, kv_outputs = decode_multi_query_step_mps_tensor(
                 kv_queries,
-                key_pages,
-                value_pages,
+                prepared_key_pages,
+                prepared_value_pages,
                 trace=trace,
             )
             outputs[q_head_ids] = kv_outputs
