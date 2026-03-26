@@ -344,6 +344,43 @@ class _PersistentTailPage:
         self.host_buffer[start:end] = converted
         self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows
 
+    def append_device_rows(
+        self,
+        device_rows,
+        *,
+        token_start: int,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+        if not torch.is_tensor(device_rows):
+            raise TypeError("append_device_rows requires a torch.Tensor")
+        if device_rows.ndim != 2 or int(device_rows.shape[1]) != self.config.head_dim:
+            raise ValueError("tail rows must have shape [token_count, head_dim]")
+        if int(device_rows.shape[0]) == 0:
+            return
+        if self.prepared_page is None:
+            self._ensure_allocated(token_start=token_start if self.token_count == 0 else self.source_page.header.token_start)
+        if self.prepared_page is None:
+            raise RuntimeError("persistent tail page is not initialized")
+        start, end = self.prepare_append_span(token_start=token_start, row_count=int(device_rows.shape[0]))
+        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows.to(
+            dtype=self.prepared_page.escape_payload.dtype
+        )
+
+    def materialize_rows(self) -> np.ndarray:
+        if self.prepared_page is None or self.token_count <= 0:
+            return np.zeros((0, self.config.head_dim), dtype=np.float32)
+        return (
+            self.prepared_page.escape_payload[: self.token_count, : self.config.head_dim]
+            .detach()
+            .to(dtype=self.prepared_page.escape_payload.dtype)
+            .cpu()
+            .numpy()
+            .astype(np.float32, copy=False)
+        )
+
     def append_rows(
         self,
         rows: np.ndarray,
@@ -511,6 +548,28 @@ class ModelPagedKVCache:
                 token_start=token_start,
             )
 
+    def _batch_append_persistent_tail_tensors(
+        self,
+        tails: Sequence[_PersistentTailPage | None],
+        rows_by_head,
+        *,
+        token_start: int,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for the persistent MPS tail path") from exc
+        if not torch.is_tensor(rows_by_head):
+            raise TypeError("rows_by_head must be a torch.Tensor")
+        if rows_by_head.ndim != 3:
+            raise ValueError("rows_by_head must have shape [kv_heads, token_count, head_dim]")
+        for index, tail in enumerate(tails):
+            if tail is None or int(rows_by_head[index].shape[0]) == 0:
+                continue
+            if tail.prepared_page is None:
+                tail._ensure_allocated(token_start=token_start if tail.token_count == 0 else tail.source_page.header.token_start)
+            tail.append_device_rows(rows_by_head[index], token_start=token_start)
+
     def ingest_prefill_cache(
         self,
         layer_id: int,
@@ -658,6 +717,109 @@ class ModelPagedKVCache:
                 if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
                     state.persistent_key_tail.clear()
                     state.persistent_value_tail.clear()
+            state.sequence_length += token_count
+
+    def append_step_torch(
+        self,
+        layer_id: int,
+        key_step,
+        value_step,
+        token_index: int,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for append_step_torch") from exc
+        if not torch.is_tensor(key_step) or not torch.is_tensor(value_step):
+            raise TypeError("append_step_torch requires torch.Tensor inputs")
+        if self.backend not in {"torch_mps", "auto"} or not mps_available():
+            raise RuntimeError("append_step_torch is only available for the torch_mps backend")
+
+        keys = key_step.detach().to(dtype=torch.float32)
+        values = value_step.detach().to(dtype=torch.float32)
+        if keys.ndim == 4:
+            if int(keys.shape[0]) != 1:
+                raise ValueError("key_step batch dimension must be 1 for the Phase 5 Llama path")
+            keys = keys[0]
+        if values.ndim == 4:
+            if int(values.shape[0]) != 1:
+                raise ValueError("value_step batch dimension must be 1 for the Phase 5 Llama path")
+            values = values[0]
+        if keys.ndim != 3 or values.ndim != 3:
+            raise ValueError("key_step and value_step must have shape [kv_heads, token_count, head_dim]")
+        if int(keys.shape[0]) != self.num_key_value_heads or int(values.shape[0]) != self.num_key_value_heads:
+            raise ValueError(f"append steps must contain {self.num_key_value_heads} KV heads")
+        if int(keys.shape[2]) != self.config.head_dim or int(values.shape[2]) != self.config.head_dim:
+            raise ValueError(f"append steps head_dim must equal {self.config.head_dim}")
+        if tuple(keys.shape) != tuple(values.shape):
+            raise ValueError("key_step and value_step token counts must match")
+        token_count = int(keys.shape[1])
+
+        if not self._use_persistent_mps_tail:
+            self.append_step(
+                layer_id,
+                keys.cpu().numpy(),
+                values.cpu().numpy(),
+                token_index,
+                trace=trace,
+            )
+            return
+
+        key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
+        value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+        for kv_head_id in range(self.num_key_value_heads):
+            state = self._state(layer_id, kv_head_id)
+            if state.sequence_length != token_index:
+                raise ValueError(
+                    f"layer {layer_id} kv_head {kv_head_id} expected token_index {state.sequence_length}, received {token_index}"
+                )
+            if key_tails[kv_head_id] is not None:
+                key_tails[kv_head_id]._ensure_allocated(
+                    token_start=token_index
+                    if key_tails[kv_head_id].token_count == 0
+                    else key_tails[kv_head_id].source_page.header.token_start
+                )
+            if value_tails[kv_head_id] is not None:
+                value_tails[kv_head_id]._ensure_allocated(
+                    token_start=token_index
+                    if value_tails[kv_head_id].token_count == 0
+                    else value_tails[kv_head_id].source_page.header.token_start
+                )
+
+        self._batch_append_persistent_tail_tensors(key_tails, keys, token_start=token_index)
+        self._batch_append_persistent_tail_tensors(value_tails, values, token_start=token_index)
+
+        for kv_head_id in range(self.num_key_value_heads):
+            state = self._state(layer_id, kv_head_id)
+            if state.persistent_key_tail is None or state.persistent_value_tail is None:
+                raise RuntimeError("persistent MPS tail path requires allocated key/value tails")
+            if state.tail.token_count > 0:
+                state.tail.clear()
+            if state.persistent_key_tail.token_count >= self.config.tokens_per_page:
+                token_start_full = state.persistent_key_tail.source_page.header.token_start
+                dense_keys = state.persistent_key_tail.materialize_rows()
+                dense_values = state.persistent_value_tail.materialize_rows()
+                finalized_key_page = encode_page(
+                    dense_keys,
+                    self.config,
+                    kind="K",
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=token_start_full,
+                )
+                finalized_value_page = encode_page(
+                    dense_values,
+                    self.config,
+                    kind="V",
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=token_start_full,
+                )
+                state.session.append([finalized_key_page], [finalized_value_page], trace=trace)
+                state.persistent_key_tail.clear()
+                state.persistent_value_tail.clear()
             state.sequence_length += token_count
 
     def _prepared_pages_with_tail(

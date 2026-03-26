@@ -222,17 +222,26 @@ class DotCacheLlamaAttention(nn.Module):
         token_index = self.adapter.current_token_index(cache_position)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
         query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32)
-        key_step = key_states[0].detach().to(dtype=torch.float32).cpu().numpy()
-        value_step = value_states[0].detach().to(dtype=torch.float32).cpu().numpy()
+        key_step = key_states[0].detach().to(dtype=torch.float32)
+        value_step = value_states[0].detach().to(dtype=torch.float32)
 
         append_start = time.perf_counter()
-        self.adapter.model_kv_cache.append_step(
-            self.layer_idx,
-            key_step,
-            value_step,
-            token_index,
-            trace=self.adapter.active_trace,
-        )
+        if self.adapter.backend in {"torch_mps", "auto"} and hidden_states.device.type == "mps":
+            self.adapter.model_kv_cache.append_step_torch(
+                self.layer_idx,
+                key_step,
+                value_step,
+                token_index,
+                trace=self.adapter.active_trace,
+            )
+        else:
+            self.adapter.model_kv_cache.append_step(
+                self.layer_idx,
+                key_step.cpu().numpy(),
+                value_step.cpu().numpy(),
+                token_index,
+                trace=self.adapter.active_trace,
+            )
         self.adapter.append_runtime_ms_total += (time.perf_counter() - append_start) * 1000.0
         decode_start = time.perf_counter()
         if self.adapter.backend in {"torch_mps", "auto"} and hidden_states.device.type == "mps":
@@ -264,8 +273,8 @@ class DotCacheLlamaAttention(nn.Module):
                     layer_id=self.layer_idx,
                     token_index=token_index,
                     query_states=query_step.detach().cpu().numpy(),
-                    key_states=key_step[:, 0, :],
-                    value_states=value_step[:, 0, :],
+                    key_states=key_step[:, 0, :].detach().cpu().numpy(),
+                    value_states=value_step[:, 0, :].detach().cpu().numpy(),
                     context_states=context_states.detach().cpu().numpy().astype(np.float32, copy=False),
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )

@@ -207,3 +207,31 @@ def test_model_paged_kv_cache_decode_layer_torch_matches_numpy_path() -> None:
     torch_outputs = cache.decode_layer_torch(0, torch.from_numpy(queries).to(device="mps"), mapping)
 
     np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-5, rtol=1e-5)
+
+
+def test_model_paged_kv_cache_append_step_torch_avoids_host_uploads() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(307)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    key_step = torch.from_numpy(rng.normal(size=(2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+    value_step = torch.from_numpy(rng.normal(size=(2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+    queries = torch.from_numpy(rng.normal(size=(2, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    append_trace = ExecutionTrace()
+    cache.append_step_torch(0, key_step, value_step, 0, trace=append_trace)
+    decode_trace = ExecutionTrace()
+    outputs = cache.decode_layer_torch(0, queries, np.array([0, 1]), trace=decode_trace)
+
+    assert tuple(outputs.shape) == (2, config.head_dim)
+    assert append_trace.host_to_device_bytes == 0
+    assert decode_trace.host_to_device_bytes == 0
