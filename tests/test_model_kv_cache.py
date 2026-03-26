@@ -1,9 +1,11 @@
 import numpy as np
 
 from dotcache.attention_runtime import decode_step
+from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.model_kv_cache import ModelPagedKVCache, default_q_head_to_kv_head
+from dotcache.tracing import ExecutionTrace
 
 
 def _encode_pages_for_head(
@@ -153,3 +155,29 @@ def test_model_paged_kv_cache_query_scale_matches_scaled_reference_query() -> No
         expected_outputs.append(decode_step(queries[q_head_id] * np.float32(0.5), key_pages, value_pages, backend="cpu_ref")[2])
 
     np.testing.assert_allclose(scaled_outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)
+
+
+def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> None:
+    if not mps_available():
+        return
+    rng = np.random.default_rng(305)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    key_step = rng.normal(size=(2, 1, config.head_dim)).astype(np.float32)
+    value_step = rng.normal(size=(2, 1, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(2, config.head_dim)).astype(np.float32)
+
+    append_trace = ExecutionTrace()
+    cache.append_step(0, key_step, value_step, 0, trace=append_trace)
+    decode_trace = ExecutionTrace()
+    outputs = cache.decode_layer(0, queries, np.array([0, 1]), trace=decode_trace)
+
+    assert outputs.shape == (2, config.head_dim)
+    assert append_trace.host_to_device_bytes > 0
+    assert decode_trace.host_to_device_bytes == 0

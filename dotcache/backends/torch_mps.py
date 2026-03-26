@@ -328,7 +328,10 @@ def _score_page_chunk_mps(query_slice: np.ndarray, pages: Sequence[PreparedPageM
         )
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        dense = torch.stack(
+            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
+            dim=0,
+        )
         query = torch.as_tensor(query_slice, dtype=torch.float32, device="mps")
         return torch.matmul(dense, query).reshape(-1)
 
@@ -387,7 +390,10 @@ def _mix_page_chunk_mps(
         raise ValueError("attn_weights chunk must have shape [page_count, token_count]")
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        dense = torch.stack(
+            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
+            dim=0,
+        )
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
 
@@ -429,7 +435,7 @@ def score_page_mps(
     if header.mode_default == "M3":
         if prepared.escape_payload is None:
             raise ValueError("escape payload is missing")
-        dense = prepared.escape_payload[:, : header.head_dim].to(torch.float32)
+        dense = prepared.escape_payload[: header.token_count, : header.head_dim].to(torch.float32)
         query = torch.as_tensor(query_slice, dtype=torch.float32, device="mps")
         return torch.matmul(dense, query).detach().cpu().numpy()
 
@@ -497,7 +503,7 @@ def mix_page_mps(
     if header.mode_default == "M3":
         if prepared.escape_payload is None:
             raise ValueError("escape payload is missing")
-        dense = prepared.escape_payload[:, : header.head_dim].to(torch.float32)
+        dense = prepared.escape_payload[: header.token_count, : header.head_dim].to(torch.float32)
         output = torch.matmul(weights, dense)
         if out_acc is not None:
             base = torch.as_tensor(out_acc, dtype=torch.float32, device="mps")
@@ -614,7 +620,10 @@ def _score_page_chunk_multiquery_mps(
         )
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        dense = torch.stack(
+            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
+            dim=0,
+        )
         queries = torch.as_tensor(query_slices, dtype=torch.float32, device="mps")
         return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
 
@@ -677,7 +686,10 @@ def _mix_page_chunk_multiquery_mps(
     output = torch.zeros((query_count, header.padded_head_dim), dtype=torch.float32, device="mps")
 
     if header.mode_default == "M3":
-        dense = torch.stack([page.escape_payload[:, : header.head_dim].to(torch.float32) for page in pages], dim=0)
+        dense = torch.stack(
+            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
+            dim=0,
+        )
         output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
         return output
 
