@@ -171,6 +171,27 @@ Latest SmolLM2 static prepared-chunk cache checkpoint:
 - standalone `1536` and `2048` refreshes were still noisy on the dense side and also showed very unstable prefill timings on MPS, so they should not replace the earlier trusted frontier points by themselves
 - the honest read is that this is another good MPS trade for the real model path: better DotCache decode throughput at the cost of a moderate additional resident-memory increase inside DotCache, while still remaining well below dense KV bytes at the same prompt lengths
 
+Rejected SmolLM2 hard-capped prepared-chunk cache checkpoint:
+
+- bounding the static prepared-chunk cache to a hard `4 MiB` resident budget preserved correctness, but it gave back too much of the decode win
+- on the one-load exact-length rerun, DotCache decode regressed to `563.95 ms/step` at `1024` and `560.93 ms/step` at `1536`
+- resident DotCache KV did come down modestly to about `29.36 MB` at `1024` and `38.21 MB` at `1536`, but that was nowhere near enough to justify the large throughput loss
+- this should be treated as a losing case: the hard budget was too tight for the grouped static-page reuse pattern on this model
+
+Latest SmolLM2 payload-only prepared-chunk cache checkpoint:
+
+- shrinking the static prepared-chunk cache to retain stacked payload tensors only, while recomputing the lighter affine stacks on demand, gave a much healthier speed-memory trade than the hard-capped experiment
+- on the one-load exact-length rerun, DotCache decode landed at:
+  `249.34 ms/step` at `1024`
+  `282.24 ms/step` at `1536`
+  `266.04 ms/step` at `2048`
+- matching resident DotCache KV bytes landed at:
+  `28.31 MB` at `1024`
+  `37.22 MB` at `1536`
+  `46.14 MB` at `2048`
+- versus the earlier full static-chunk cache, this payload-only variant trims about `1.05 MB` at `1024`, `1.57 MB` at `1536`, and `2.10 MB` at `2048`
+- the honest read is that this is a plausible default compromise for now: it avoids the severe regression from the hard-capped cache and still buys back some resident memory, but the `1536` throughput tradeoff is mixed enough that more tuning would still be welcome
+
 Rejected M3 FP32 escape-payload experiment:
 
 - keeping `M3` escape payloads resident as FP32 on device looked promising for live-tail decode, but the real-model measurements went the wrong way

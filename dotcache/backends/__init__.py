@@ -1,6 +1,7 @@
 from .cpu_ref import mix_page_cpu_ref, score_page_cpu_ref
 from .torch_mps import (
     clear_prepared_chunk_cache,
+    configure_prepared_chunk_cache,
     decode_grouped_multiquery_step_prepared_mps_tensor,
     decode_grouped_multiquery_step_mps_tensor,
     PreparedPageMPS,
@@ -19,6 +20,7 @@ from .torch_mps import (
 
 __all__ = [
     "clear_prepared_chunk_cache",
+    "configure_prepared_chunk_cache",
     "PreparedPageMPS",
     "decode_grouped_multiquery_step_prepared_mps_tensor",
     "decode_grouped_multiquery_step_mps_tensor",
