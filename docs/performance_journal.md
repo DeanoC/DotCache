@@ -141,6 +141,14 @@ That frontier sharpens the higher-context picture:
 - The fresh standalone `2048` rerun is the best max-case information point on this machine: DotCache decode `402.70 ms/step` versus dense `517.41 ms/step`, while keeping the KV footprint at about `22%` of dense.
 - The one-load `2048` sweep result was much noisier for both dense and DotCache, so the standalone rerun is the number to trust for the current max practical SmolLM2 checkpoint.
 
+Latest SmolLM2 midrange decode-scheduling checkpoint:
+
+- skipping redundant grouped decode validation and rechunking inside the prepared MPS fast path moved the one-load exact `1024` point from `399.80` down to `343.21 ms/step`
+- the same change moved exact `1536` from `456.58` down to `343.96 ms/step`
+- on a new one-load `2048` rerun, DotCache decode landed at `449.96 ms/step`, down from the earlier noisy `659.60 ms/step`
+- the standalone `2048` refresh still remains the max-case number to trust most on this machine at `402.70 ms/step`
+- an exploratory standalone `1792` point completed successfully with DotCache decode at `487.08 ms/step` and the same strong KV-memory reduction, but the dense side was noisy there too, so it is not yet a clean crossover marker
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt

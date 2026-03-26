@@ -8,7 +8,7 @@ import numpy as np
 from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
 from .backends import (
     PreparedPageMPS,
-    decode_grouped_multiquery_step_mps_tensor,
+    decode_grouped_multiquery_step_prepared_mps_tensor,
     decode_multi_query_step_mps_tensor,
     mps_available,
 )
@@ -1243,7 +1243,7 @@ class ModelPagedKVCache:
             active_value_pages.append(value_pages)
 
         if _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
-            _, _, grouped_outputs = decode_grouped_multiquery_step_mps_tensor(
+            _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_mps_tensor(
                 active_queries,
                 active_key_pages,
                 active_value_pages,

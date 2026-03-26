@@ -937,7 +937,7 @@ def decode_grouped_multiquery_step_mps_tensor(
     value_pages_by_group: Sequence[Sequence[EncodedPage | PreparedPageMPS]],
     *,
     trace: ExecutionTrace | None = None,
-):
+    ):
     torch = _load_torch()
     if not key_pages_by_group or not value_pages_by_group:
         raise ValueError("grouped decode requires non-empty key/value page groups")
@@ -1015,6 +1015,74 @@ def decode_grouped_multiquery_step_mps_tensor(
         chunk_pages = [chunks[chunk_index] for chunks in value_chunks]
         output += _mix_page_chunk_grouped_multiquery_mps(chunk_weights, chunk_pages, trace=trace)
         offset += chunk_token_count
+
+    return logits, weights, output[:, :, :head_dim]
+
+
+def decode_grouped_multiquery_step_prepared_mps_tensor(
+    query_groups,
+    key_pages_by_group: Sequence[Sequence[PreparedPageMPS]],
+    value_pages_by_group: Sequence[Sequence[PreparedPageMPS]],
+    *,
+    trace: ExecutionTrace | None = None,
+):
+    torch = _load_torch()
+    if not key_pages_by_group or not value_pages_by_group:
+        raise ValueError("grouped decode requires non-empty key/value page groups")
+    if len(key_pages_by_group) != len(value_pages_by_group):
+        raise ValueError("key_pages_by_group and value_pages_by_group must have the same group count")
+    group_count = len(key_pages_by_group)
+    if len(query_groups) != group_count:
+        raise ValueError("query_groups must align with key/value group count")
+    if not key_pages_by_group[0]:
+        raise ValueError("grouped decode requires at least one key page per group")
+
+    query_tensors = [
+        group.to(dtype=torch.float32, device="mps") if torch.is_tensor(group) else torch.as_tensor(group, dtype=torch.float32, device="mps")
+        for group in query_groups
+    ]
+    query_count = int(query_tensors[0].shape[0])
+    for group_query in query_tensors[1:]:
+        if int(group_query.shape[0]) != query_count:
+            raise ValueError("all query groups must have the same query count for batched grouped decode")
+
+    first_key_group = key_pages_by_group[0]
+    first_value_group = value_pages_by_group[0]
+    key_chunks = _chunk_compatible_pages(first_key_group)
+    value_chunks = _chunk_compatible_pages(first_value_group)
+    if len(key_chunks) != len(value_chunks):
+        raise ValueError("key and value chunk counts must align for grouped decode")
+
+    key_chunk_lengths = [len(chunk) for chunk in key_chunks]
+    value_chunk_lengths = [len(chunk) for chunk in value_chunks]
+
+    logits_parts = []
+    key_offset = 0
+    for chunk_length in key_chunk_lengths:
+        chunk_pages = [group_pages[key_offset : key_offset + chunk_length] for group_pages in key_pages_by_group]
+        logits_parts.append(_score_page_chunk_grouped_multiquery_mps(query_tensors, chunk_pages, trace=trace))
+        key_offset += chunk_length
+    logits = torch.cat(logits_parts, dim=2)
+    weights = torch.softmax(logits, dim=2)
+
+    head_dim = first_value_group[0].header.head_dim
+    padded_head_dim = first_value_group[0].header.padded_head_dim
+    output = torch.zeros((group_count, query_count, padded_head_dim), dtype=torch.float32, device="mps")
+    offset = 0
+    value_offset = 0
+    for chunk_index, chunk_length in enumerate(value_chunk_lengths):
+        chunk_template = value_chunks[chunk_index]
+        chunk_token_count = chunk_template[0].header.token_count * chunk_length
+        chunk_weights = weights[:, :, offset : offset + chunk_token_count].reshape(
+            group_count,
+            query_count,
+            chunk_length,
+            chunk_template[0].header.token_count,
+        )
+        chunk_pages = [group_pages[value_offset : value_offset + chunk_length] for group_pages in value_pages_by_group]
+        output += _mix_page_chunk_grouped_multiquery_mps(chunk_weights, chunk_pages, trace=trace)
+        offset += chunk_token_count
+        value_offset += chunk_length
 
     return logits, weights, output[:, :, :head_dim]
 

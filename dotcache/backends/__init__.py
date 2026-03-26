@@ -1,5 +1,6 @@
 from .cpu_ref import mix_page_cpu_ref, score_page_cpu_ref
 from .torch_mps import (
+    decode_grouped_multiquery_step_prepared_mps_tensor,
     decode_grouped_multiquery_step_mps_tensor,
     PreparedPageMPS,
     decode_multi_query_step_mps,
@@ -16,6 +17,7 @@ from .torch_mps import (
 
 __all__ = [
     "PreparedPageMPS",
+    "decode_grouped_multiquery_step_prepared_mps_tensor",
     "decode_grouped_multiquery_step_mps_tensor",
     "decode_multi_query_step_mps",
     "decode_multi_query_step_mps_tensor",
