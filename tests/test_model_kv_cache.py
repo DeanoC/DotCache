@@ -127,3 +127,29 @@ def test_model_paged_kv_cache_accepts_batched_prefill_cache_tensors() -> None:
     assert cache.layer_sequence_length(0) == 6
     outputs = cache.decode_layer(0, queries, mapping)
     assert outputs.shape == (4, config.head_dim)
+
+
+def test_model_paged_kv_cache_query_scale_matches_scaled_reference_query() -> None:
+    rng = np.random.default_rng(304)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(2, config.head_dim)).astype(np.float32)
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+
+    scaled_outputs = cache.decode_layer(0, queries, np.array([0, 1]), query_scale=0.5)
+
+    expected_outputs = []
+    for q_head_id, kv_head_id in enumerate([0, 1]):
+        key_pages = _encode_pages_for_head(layer_keys[kv_head_id], config, kind="K", layer_id=0, kv_head_id=kv_head_id)
+        value_pages = _encode_pages_for_head(layer_values[kv_head_id], config, kind="V", layer_id=0, kv_head_id=kv_head_id)
+        expected_outputs.append(decode_step(queries[q_head_id] * np.float32(0.5), key_pages, value_pages, backend="cpu_ref")[2])
+
+    np.testing.assert_allclose(scaled_outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)

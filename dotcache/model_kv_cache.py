@@ -417,6 +417,7 @@ class ModelPagedKVCache:
         query_step: np.ndarray,
         q_head_to_kv_head: Sequence[int] | np.ndarray,
         *,
+        query_scale: float = 1.0,
         trace: ExecutionTrace | None = None,
     ) -> np.ndarray:
         queries = _normalize_query_step(
@@ -424,6 +425,7 @@ class ModelPagedKVCache:
             num_attention_heads=self.num_attention_heads,
             head_dim=self.config.head_dim,
         )
+        scaled_queries = queries * np.float32(query_scale)
         mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
         if mapping.shape != (self.num_attention_heads,):
             raise ValueError("q_head_to_kv_head must have shape [num_attention_heads]")
@@ -443,7 +445,7 @@ class ModelPagedKVCache:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
             for q_head_id in q_head_ids:
                 _, _, output = decode_step(
-                    queries[q_head_id],
+                    scaled_queries[q_head_id],
                     key_pages,
                     value_pages,
                     backend=self.backend,

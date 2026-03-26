@@ -239,6 +239,7 @@ class DotCacheLlamaAttention(nn.Module):
             self.layer_idx,
             query_step,
             self.adapter.q_head_to_kv_head,
+            query_scale=float(self.base_attention.scaling),
             trace=self.adapter.active_trace,
         )
         self.adapter.decode_runtime_ms_total += (time.perf_counter() - decode_start) * 1000.0
