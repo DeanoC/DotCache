@@ -7,7 +7,12 @@ from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
-from dotcache.session_runtime import PagedDecodeSession, select_execution_page_indices, select_execution_page_pairs
+from dotcache.session_runtime import (
+    PagedDecodeSession,
+    select_execution_page_indices,
+    select_execution_page_pairs,
+    sketch_key_page,
+)
 from dotcache.tracing import ExecutionTrace
 
 requires_mps = pytest.mark.skipif(not mps_available(), reason="torch_mps is unavailable")
@@ -83,11 +88,58 @@ def test_select_execution_page_indices_can_admit_relevant_old_pages() -> None:
         recent_window_tokens=64,
         sink_window_tokens=64,
         query_slice=query,
-        key_page_summaries=summaries,
+        key_page_sketches=[summary[None, :] for summary in summaries],
         relevance_top_k=1,
     )
 
     assert selected_indices == [0, 2, 4]
+
+
+def test_sketch_key_page_preserves_chunk_local_signal() -> None:
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, tokens_per_page=64)
+    values = np.zeros((64, config.head_dim), dtype=np.float32)
+    values[:16, 0] = 8.0
+    values[16:, 0] = -2.0
+    page = encode_page(values, config, kind="K")
+
+    sketch = sketch_key_page(page, sketch_size=4)
+
+    assert sketch.shape == (4, config.head_dim)
+    assert float(sketch[0, 0]) > 6.0
+    assert float(sketch[-1, 0]) < -1.0
+
+
+def test_select_execution_page_indices_prefers_chunk_sketch_match_over_page_mean() -> None:
+    rng = np.random.default_rng(202)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    keys = rng.normal(size=(5 * config.tokens_per_page, config.head_dim)).astype(np.float32) * 0.01
+    key_pages = _encode_paged(keys, config, kind="K")
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    mean_like_sketches = [np.full((1, config.head_dim), -1.0, dtype=np.float32) for _ in key_pages]
+    chunked_sketches = [np.full((4, config.head_dim), -1.0, dtype=np.float32) for _ in key_pages]
+    chunked_sketches[2][0, 0] = 10.0
+
+    selected_with_mean = select_execution_page_indices(
+        key_pages,
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        query_slice=query,
+        key_page_sketches=mean_like_sketches,
+        relevance_top_k=1,
+    )
+    selected_with_chunked = select_execution_page_indices(
+        key_pages,
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        query_slice=query,
+        key_page_sketches=chunked_sketches,
+        relevance_top_k=1,
+    )
+
+    assert selected_with_mean != [0, 2, 4]
+    assert selected_with_chunked == [0, 2, 4]
 
 
 @requires_mps
@@ -412,6 +464,7 @@ def test_paged_decode_session_hybrid_relevance_matches_selected_page_reference()
         recent_window_tokens=64,
         sink_window_tokens=64,
         relevance_top_k=1,
+        relevance_sketch_size=4,
     )
     session.preload(key_pages, value_pages)
     selected_key_pages, selected_value_pages = session.execution_pages(query)

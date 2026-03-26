@@ -125,6 +125,12 @@ To recover a few older pages by cheap query relevance on top of sink-plus-recent
 
 This keeps the window policy as the base set, then admits a small number of older key/value page pairs whose page-summary vectors score highest against the current query.
 
+To make that first-pass signal less blunt, raise `--execution-relevance-sketch-size` above `1` so each page is represented by several sub-page mean vectors instead of one global mean:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-sketch-size 4
+```
+
 To approximate dropped old pages instead of ignoring them entirely, add `--execution-approximate-old-pages`:
 
 ```bash

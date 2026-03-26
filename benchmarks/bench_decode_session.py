@@ -79,6 +79,7 @@ def main() -> None:
             recent_window_tokens=args.execution_recent_window,
             sink_window_tokens=args.execution_sink_window,
             relevance_top_k=args.execution_relevance_top_k,
+            relevance_sketch_size=args.execution_relevance_sketch_size,
             approximate_old_pages=args.execution_approximate_old_pages,
         )
         preload_trace = ExecutionTrace()
@@ -152,6 +153,7 @@ def main() -> None:
                 "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
                 "execution_approximate_old_pages": int(args.execution_approximate_old_pages),
                 "execution_relevance_top_k": args.execution_relevance_top_k,
+                "execution_relevance_sketch_size": args.execution_relevance_sketch_size,
                 "execution_sink_window": args.execution_sink_window,
                 "session_runtime_ms_per_step": (decode_total_ms + append_total_ms) / args.decode_steps,
                 "speedup_decode_vs_cpu": cpu_total_ms / max(decode_total_ms, 1e-8),
