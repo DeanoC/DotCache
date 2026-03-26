@@ -140,6 +140,39 @@ def test_decode_step_mps_matches_cpu_reference_across_pages() -> None:
 
 
 @requires_mps
+def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages() -> None:
+    rng = np.random.default_rng(125)
+    config = DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 192
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+
+    cpu_logits, cpu_weights, cpu_output = decode_step(query, key_pages, value_pages, backend="cpu_ref")
+
+    prepared_key_pages = prepare_pages(key_pages, backend="torch_mps")
+    prepared_value_pages = prepare_pages(value_pages, backend="torch_mps")
+    exec_trace = ExecutionTrace()
+    mps_logits, mps_weights, mps_output = decode_step(
+        query,
+        prepared_key_pages,
+        prepared_value_pages,
+        backend="torch_mps",
+        trace=exec_trace,
+    )
+
+    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-4, rtol=1e-4)
+    assert exec_trace.host_to_device_bytes == 0
+    assert exec_trace.m0_full_page_materializations == 0
+    assert exec_trace.payload_bytes_read == sum(page.payload_nbytes for page in key_pages + value_pages)
+
+
+@requires_mps
 def test_m3_pages_work_on_mps() -> None:
     rng = np.random.default_rng(26)
     config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4)

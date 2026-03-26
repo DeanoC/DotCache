@@ -7,6 +7,7 @@ import numpy as np
 from .attention_reference import softmax
 from .backends import (
     PreparedPageMPS,
+    decode_step_mps,
     mix_page_cpu_ref,
     mix_page_mps,
     mps_available,
@@ -124,6 +125,13 @@ def decode_step(
 
     prepared_key_pages = prepare_pages(key_pages, backend=backend, cache=cache, trace=trace)
     prepared_value_pages = prepare_pages(value_pages, backend=backend, cache=cache, trace=trace)
+
+    if (
+        backend != "cpu_ref"
+        and all(isinstance(page, PreparedPageMPS) for page in prepared_key_pages)
+        and all(isinstance(page, PreparedPageMPS) for page in prepared_value_pages)
+    ):
+        return decode_step_mps(query_slice, prepared_key_pages, prepared_value_pages, trace=trace)
 
     page_logits = [score_page(query_slice, page, backend=backend, trace=trace) for page in prepared_key_pages]
     logits = np.concatenate(page_logits).astype(np.float32, copy=False)

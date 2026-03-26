@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -145,6 +145,17 @@ def _prepare_output_accumulator(out_acc: np.ndarray | None, head_dim: int, padde
     return output
 
 
+def _prepare_output_accumulator_tensor(out_acc, head_dim: int, padded_head_dim: int):
+    torch = _load_torch()
+    if out_acc is None:
+        return torch.zeros(padded_head_dim, dtype=torch.float32, device="mps")
+    if isinstance(out_acc, np.ndarray):
+        return _prepare_output_accumulator(out_acc, head_dim, padded_head_dim)
+    if tuple(out_acc.shape) != (padded_head_dim,):
+        raise ValueError("out_acc tensor must have shape [padded_head_dim]")
+    return out_acc
+
+
 def _unpack_bits_torch(words, shifts, mask, group_size: int):
     torch = _load_torch()
     if words.ndim != 2:
@@ -153,6 +164,139 @@ def _unpack_bits_torch(words, shifts, mask, group_size: int):
         raise ValueError("prepared MPS pages require unpack metadata")
     expanded = torch.bitwise_and(torch.bitwise_right_shift(words[..., None], shifts), mask)
     return expanded.reshape(words.shape[0], group_size).to(torch.float32)
+
+
+def _batched_signature(page: PreparedPageMPS) -> tuple[int | str, ...]:
+    header = page.header
+    return (
+        header.kind,
+        header.mode_default,
+        header.token_count,
+        header.head_dim,
+        header.padded_head_dim,
+        header.group_size,
+        header.num_groups,
+        header.bits,
+        header.words_per_group,
+        header.layout,
+        header.quant_scheme,
+    )
+
+
+def _chunk_compatible_pages(pages: Sequence[PreparedPageMPS]) -> list[list[PreparedPageMPS]]:
+    chunks: list[list[PreparedPageMPS]] = []
+    current_chunk: list[PreparedPageMPS] = []
+    current_signature: tuple[int | str, ...] | None = None
+    for page in pages:
+        signature = _batched_signature(page)
+        if current_chunk and signature != current_signature:
+            chunks.append(current_chunk)
+            current_chunk = [page]
+            current_signature = signature
+            continue
+        if not current_chunk:
+            current_signature = signature
+        current_chunk.append(page)
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
+def _score_page_chunk_mps(query_slice: np.ndarray, pages: Sequence[PreparedPageMPS], *, trace: ExecutionTrace | None = None):
+    torch = _load_torch()
+    if not pages:
+        raise ValueError("pages must be non-empty")
+    header = pages[0].header
+    if trace is not None:
+        trace.record_page_read(
+            sum(page.payload_nbytes for page in pages),
+            sum(page.metadata_nbytes for page in pages),
+        )
+
+    if header.mode_default == "M3":
+        dense = torch.stack([page.escape_payload[:, : header.head_dim] for page in pages], dim=0)
+        query = torch.as_tensor(query_slice, dtype=torch.float32, device="mps")
+        return torch.matmul(dense, query).reshape(-1)
+
+    query = _pad_query(query_slice, header.padded_head_dim)
+    query_groups = query.reshape(header.num_groups, header.group_size)
+    query_group_sums = query_groups.sum(dim=-1)
+    page_count = len(pages)
+    logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device="mps")
+
+    for group_index in range(header.num_groups):
+        group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = _unpack_bits_torch(
+            group_words.reshape(-1, header.words_per_group),
+            pages[0].unpack_shifts,
+            pages[0].unpack_mask,
+            header.group_size,
+        ).reshape(page_count, header.token_count, header.group_size)
+        if trace is not None:
+            trace.record_temporary(int(codes.numel() * codes.element_size()))
+        qg = query_groups[group_index]
+        int_dot = torch.matmul(codes, qg)
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
+        logits += scales * int_dot + bias * query_group_sums[group_index]
+
+    return logits.reshape(-1)
+
+
+def _mix_page_chunk_mps(
+    attn_weights,
+    pages: Sequence[PreparedPageMPS],
+    *,
+    out_acc=None,
+    trace: ExecutionTrace | None = None,
+):
+    torch = _load_torch()
+    if not pages:
+        raise ValueError("pages must be non-empty")
+    header = pages[0].header
+    page_count = len(pages)
+    token_count = header.token_count
+    output = _prepare_output_accumulator_tensor(out_acc, header.head_dim, header.padded_head_dim)
+
+    if trace is not None:
+        trace.record_page_read(
+            sum(page.payload_nbytes for page in pages),
+            sum(page.metadata_nbytes for page in pages),
+        )
+
+    if not isinstance(attn_weights, torch.Tensor):
+        weights = torch.as_tensor(attn_weights, dtype=torch.float32, device="mps")
+    else:
+        weights = attn_weights
+    expected_shape = (page_count, token_count)
+    if tuple(weights.shape) != expected_shape:
+        raise ValueError("attn_weights chunk must have shape [page_count, token_count]")
+
+    if header.mode_default == "M3":
+        dense = torch.stack([page.escape_payload[:, : header.head_dim] for page in pages], dim=0)
+        output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
+        return output
+
+    for group_index in range(header.num_groups):
+        group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = _unpack_bits_torch(
+            group_words.reshape(-1, header.words_per_group),
+            pages[0].unpack_shifts,
+            pages[0].unpack_mask,
+            header.group_size,
+        ).reshape(page_count, token_count, header.group_size)
+        if trace is not None:
+            trace.record_temporary(int(codes.numel() * codes.element_size()))
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
+        weighted_scales = weights * scales
+        contribution = torch.sum(weighted_scales[..., None] * codes, dim=(0, 1))
+        bias_term = torch.sum(weights * bias)
+        start = group_index * header.group_size
+        end = start + header.group_size
+        output[start:end] += contribution + bias_term
+
+    return output
 
 
 def score_page_mps(
@@ -245,3 +389,43 @@ def mix_page_mps(
         output[start:end] += contribution + bias_term
 
     return output[: header.head_dim].detach().cpu().numpy()
+
+
+def decode_step_mps(
+    query_slice: np.ndarray,
+    key_pages: Sequence[EncodedPage | PreparedPageMPS],
+    value_pages: Sequence[EncodedPage | PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    torch = _load_torch()
+    prepared_key_pages = [prepare_page_mps(page, trace=trace) for page in key_pages]
+    prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
+    if not prepared_key_pages:
+        raise ValueError("decode_step_mps requires at least one page")
+
+    logits_chunks = [
+        _score_page_chunk_mps(query_slice, page_chunk, trace=trace)
+        for page_chunk in _chunk_compatible_pages(prepared_key_pages)
+    ]
+    logits = torch.cat(logits_chunks, dim=0)
+    weights = torch.softmax(logits, dim=0)
+
+    output = torch.zeros(
+        prepared_value_pages[0].header.padded_head_dim,
+        dtype=torch.float32,
+        device="mps",
+    )
+    offset = 0
+    for page_chunk in _chunk_compatible_pages(prepared_value_pages):
+        chunk_token_count = page_chunk[0].header.token_count * len(page_chunk)
+        chunk_weights = weights[offset : offset + chunk_token_count].reshape(len(page_chunk), page_chunk[0].header.token_count)
+        output = _mix_page_chunk_mps(chunk_weights, page_chunk, out_acc=output, trace=trace)
+        offset += chunk_token_count
+
+    head_dim = prepared_value_pages[0].header.head_dim
+    return (
+        logits.detach().cpu().numpy(),
+        weights.detach().cpu().numpy(),
+        output[:head_dim].detach().cpu().numpy(),
+    )

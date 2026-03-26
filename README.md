@@ -60,6 +60,8 @@ This is the CPU-reference bootstrap, not the final runtime. The next logical ste
 
 The current eager `torch_mps` path is sensitive to page size.
 
+Decode-step execution now batches compatible prepared pages on-device, so warm-cache performance is substantially better than the original per-page loop.
+
 - With the current M4-tuned unpack path, `torch_mps` already wins over `cpu_ref` at long context for `tokens_per_page=64`.
 - Larger pages still matter a lot because they let MPS amortize per-page overhead much better.
 - On this M4 Mac, `tokens_per_page=256` is a strong default for MPS experiments, and `512` can be significantly faster again when the runtime can tolerate fewer, larger pages.
