@@ -133,6 +133,14 @@ To make that first-pass signal less blunt, raise `--execution-relevance-sketch-s
 .venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-sketch-size 4
 ```
 
+To refine that sketch shortlist with exact compressed-domain key scoring before final decode, add `--execution-exact-refine-top-k`:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 8 --execution-relevance-sketch-size 4 --execution-exact-refine-top-k 4
+```
+
+This is currently an experimental middle ground: it keeps sink and recent pages, admits a larger sketch-based candidate pool, then uses exact page scoring to keep only the best old pages for the final decode. On the current M4 prototype it improves error a bit versus pure sketch gating, but it is still much slower than the sketch-only path.
+
 To approximate dropped old pages instead of ignoring them entirely, add `--execution-approximate-old-pages`:
 
 ```bash

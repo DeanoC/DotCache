@@ -497,6 +497,34 @@ def test_paged_decode_session_hybrid_relevance_matches_selected_page_reference()
     assert exec_trace.host_to_device_bytes == 0
 
 
+def test_paged_decode_session_exact_refine_selects_best_old_candidate() -> None:
+    rng = np.random.default_rng(132)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32) * 0.05
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    keys[64:128, 0] += 2.5
+    keys[128:192, 0] += 6.0
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    session = PagedDecodeSession(
+        backend="cpu_ref",
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        relevance_top_k=2,
+        relevance_sketch_size=4,
+        exact_refine_top_k=1,
+    )
+    session.preload(key_pages, value_pages)
+
+    selected_indices = session.execution_indices(query)
+
+    assert [key_pages[index].header.token_start for index in selected_indices] == [0, 128, 256]
+
+
 def test_paged_decode_session_approximate_old_pages_improves_over_blunt_pruning_on_cpu() -> None:
     rng = np.random.default_rng(130)
     config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
@@ -571,6 +599,50 @@ def test_paged_decode_session_approximate_old_pages_matches_cpu_runtime() -> Non
     np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-4, rtol=1e-4)
     np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-5, rtol=1e-5)
     np.testing.assert_allclose(mps_output, cpu_output, atol=1e-4, rtol=1e-4)
+    assert exec_trace.host_to_device_bytes == 0
+
+
+@requires_mps
+def test_paged_decode_session_exact_refine_matches_selected_page_reference_on_mps() -> None:
+    rng = np.random.default_rng(133)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32) * 0.05
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    keys[64:128, 0] += 2.0
+    keys[128:192, 0] += 5.5
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    session = PagedDecodeSession(
+        backend="torch_mps",
+        cache=PreparedPageCache(),
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        relevance_top_k=2,
+        relevance_sketch_size=4,
+        exact_refine_top_k=1,
+    )
+    session.preload(key_pages, value_pages)
+    selected_indices = session.execution_indices(query)
+    selected_key_pages = [key_pages[index] for index in selected_indices]
+    selected_value_pages = [value_pages[index] for index in selected_indices]
+
+    exec_trace = ExecutionTrace()
+    logits, weights, output = session.decode(query, trace=exec_trace)
+    ref_logits, ref_weights, ref_output = decode_step(
+        query,
+        selected_key_pages,
+        selected_value_pages,
+        backend="cpu_ref",
+    )
+
+    np.testing.assert_allclose(logits, ref_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(weights, ref_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
+    assert [page.header.token_start for page in selected_key_pages] == [0, 128, 256]
     assert exec_trace.host_to_device_bytes == 0
 
 

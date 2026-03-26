@@ -80,6 +80,7 @@ def main() -> None:
             sink_window_tokens=args.execution_sink_window,
             relevance_top_k=args.execution_relevance_top_k,
             relevance_sketch_size=args.execution_relevance_sketch_size,
+            exact_refine_top_k=args.execution_exact_refine_top_k,
             approximate_old_pages=args.execution_approximate_old_pages,
         )
         preload_trace = ExecutionTrace()
@@ -104,9 +105,9 @@ def main() -> None:
             )
 
             step_trace = ExecutionTrace()
-            active_key_pages, _ = session.execution_pages(query)
-            active_page_counts.append(len(active_key_pages))
-            active_token_counts.append(sum(page.header.token_count for page in active_key_pages))
+            active_indices = session.execution_indices(query)
+            active_page_counts.append(len(active_indices))
+            active_token_counts.append(sum(session.key_pages[index].header.token_count for index in active_indices))
             decode_total_ms += _time_ms(
                 lambda q=query, st=step_trace: session_outputs.append(session.decode(q, trace=st)[2])
             )
@@ -152,6 +153,7 @@ def main() -> None:
                 "preload_ms": preload_ms,
                 "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
                 "execution_approximate_old_pages": int(args.execution_approximate_old_pages),
+                "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
                 "execution_relevance_top_k": args.execution_relevance_top_k,
                 "execution_relevance_sketch_size": args.execution_relevance_sketch_size,
                 "execution_sink_window": args.execution_sink_window,

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
-
 from .attention_runtime import BackendName, decode_step, mix_page, prepare_pages, score_page
 from .modes.m0_affine import dequantize_group
 from .page_cache import PreparedPageCache
@@ -82,14 +81,11 @@ def summarize_value_page(page: PageLike) -> np.ndarray:
     return _decode_page_dense(page).mean(axis=0)
 
 
-def select_execution_page_indices(
+def select_window_page_indices(
     key_pages: Sequence[PageLike],
     *,
     recent_window_tokens: int | None = None,
     sink_window_tokens: int = 0,
-    query_slice: np.ndarray | None = None,
-    key_page_sketches: Sequence[np.ndarray] | None = None,
-    relevance_top_k: int = 0,
 ) -> list[int]:
     if not key_pages:
         return []
@@ -108,6 +104,28 @@ def select_execution_page_indices(
         in_recent = recent_window_tokens is not None and recent_window_tokens > 0 and page_end > recent_start
         if in_sink or in_recent:
             selected_indices.add(index)
+
+    return sorted(selected_indices)
+
+
+def select_execution_page_indices(
+    key_pages: Sequence[PageLike],
+    *,
+    recent_window_tokens: int | None = None,
+    sink_window_tokens: int = 0,
+    query_slice: np.ndarray | None = None,
+    key_page_sketches: Sequence[np.ndarray] | None = None,
+    relevance_top_k: int = 0,
+) -> list[int]:
+    if not key_pages:
+        return []
+    selected_indices = set(
+        select_window_page_indices(
+            key_pages,
+            recent_window_tokens=recent_window_tokens,
+            sink_window_tokens=sink_window_tokens,
+        )
+    )
 
     if relevance_top_k > 0:
         if query_slice is None or key_page_sketches is None:
@@ -182,6 +200,7 @@ class PagedDecodeSession:
     sink_window_tokens: int = 0
     relevance_top_k: int = 0
     relevance_sketch_size: int = 1
+    exact_refine_top_k: int = 0
     approximate_old_pages: bool = False
     key_pages: list[PageLike] = field(default_factory=list)
     value_pages: list[PageLike] = field(default_factory=list)
@@ -247,6 +266,50 @@ class PagedDecodeSession:
             relevance_top_k=self.relevance_top_k,
         )
 
+    def execution_indices(
+        self,
+        query_slice: np.ndarray | None = None,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> list[int]:
+        stage1_indices = select_execution_page_indices(
+            self.key_pages,
+            recent_window_tokens=self.recent_window_tokens,
+            sink_window_tokens=self.sink_window_tokens,
+            query_slice=query_slice,
+            key_page_sketches=self.key_page_sketches,
+            relevance_top_k=self.relevance_top_k,
+        )
+        if query_slice is None or self.exact_refine_top_k <= 0 or self.relevance_top_k <= 0:
+            return stage1_indices
+        if not stage1_indices:
+            return stage1_indices
+
+        base_indices = set(
+            select_window_page_indices(
+                self.key_pages,
+                recent_window_tokens=self.recent_window_tokens,
+                sink_window_tokens=self.sink_window_tokens,
+            )
+        )
+        candidate_indices = [index for index in stage1_indices if index not in base_indices]
+        if not candidate_indices or self.exact_refine_top_k >= len(candidate_indices):
+            return stage1_indices
+
+        exact_scores = []
+        for index in candidate_indices:
+            logits = score_page(query_slice, self.key_pages[index], backend=self.backend, trace=trace).astype(np.float32, copy=False)
+            exact_scores.append((float(np.max(logits)), index))
+        chosen = [
+            index
+            for _, index in sorted(
+                exact_scores,
+                key=lambda item: item[0],
+                reverse=True,
+            )[: self.exact_refine_top_k]
+        ]
+        return sorted(base_indices.union(chosen))
+
     def decode(
         self,
         query_slice: np.ndarray,
@@ -255,14 +318,7 @@ class PagedDecodeSession:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not self.key_pages or not self.value_pages:
             raise ValueError("PagedDecodeSession requires preloaded pages before decode")
-        selected_indices = select_execution_page_indices(
-            self.key_pages,
-            recent_window_tokens=self.recent_window_tokens,
-            sink_window_tokens=self.sink_window_tokens,
-            query_slice=query_slice,
-            key_page_sketches=self.key_page_sketches,
-            relevance_top_k=self.relevance_top_k,
-        )
+        selected_indices = self.execution_indices(query_slice, trace=trace)
         key_pages = [self.key_pages[index] for index in selected_indices]
         value_pages = [self.value_pages[index] for index in selected_indices]
         if not self.approximate_old_pages or len(selected_indices) == len(self.key_pages):
