@@ -16,7 +16,36 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [dotcache_full.tex](./dotcache_full.tex)
 - [dotcache_software_implementation_guide.md](./dotcache_software_implementation_guide.md)
 - [dotcache_no_cuda_bootstrap_m4_amd.md](./dotcache_no_cuda_bootstrap_m4_amd.md)
+- [dotcache_nvidia_llama_bootstrap.md](./dotcache_nvidia_llama_bootstrap.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
+
+## Quick start on NVIDIA Linux for non-MPS Llama work
+
+This repo's accelerated backend is currently `torch_mps`, so the NVIDIA development path today is:
+
+- run the dense Hugging Face model on `cuda`
+- keep DotCache decode on `cpu_ref` until a CUDA backend exists
+- use the Llama harness and tests to verify model integration on this machine
+
+Bootstrap the local environment with:
+
+```bash
+bash scripts/bootstrap_nvidia_llama_dev.sh
+```
+
+That script creates `.venv`, installs a driver-compatible PyTorch build plus the dev and Hugging Face dependencies, and fails fast if `torch.cuda.is_available()` is false.
+
+For a local no-download smoke run on this machine, use:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cuda --max-new-tokens 4
+```
+
+For a real checkpoint on NVIDIA, start with:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --backend cpu_ref --device cuda --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+```
 
 ## Quick start on Apple Silicon
 
@@ -91,6 +120,12 @@ For the intended real-model path, the benchmark defaults to TinyLlama:
 
 ```bash
 .venv/bin/python benchmarks/bench_llama_decode.py --backend torch_mps --device mps --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+```
+
+On an NVIDIA Linux box, use the same harness with `--device cuda --backend cpu_ref` until the CUDA DotCache backend exists:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --backend cpu_ref --device cuda --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
 ```
 
 That benchmark reports:

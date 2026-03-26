@@ -17,12 +17,12 @@ from dotcache.tracing import ExecutionTrace
 
 DEFAULT_CONTEXTS = [64, 256, 1024]
 CONFIG_OVERRIDES = ("head_dim", "group_size", "tokens_per_page")
-_MPS_WARMED = False
+_WARMED_BACKENDS: set[str] = set()
 
 
 def parse_args(description: str, *, default_repeats: int) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--backend", choices=["cpu_ref", "torch_mps", "auto"], default="auto")
+    parser.add_argument("--backend", choices=["cpu_ref", "torch_mps", "torch_cuda", "auto"], default="auto")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--contexts", nargs="*", type=int, default=DEFAULT_CONTEXTS)
     parser.add_argument("--repeats", type=int, default=default_repeats)
@@ -142,16 +142,21 @@ def emit(record: dict[str, Any]) -> None:
 
 
 def warm_backend(backend: BackendName) -> None:
-    global _MPS_WARMED
-
-    if backend != "torch_mps" or _MPS_WARMED:
+    if backend in {"cpu_ref", "auto"} or backend in _WARMED_BACKENDS:
         return
     try:
         import torch
     except ImportError:
         return
-    if not torch.backends.mps.is_available():
+    if backend == "torch_mps":
+        if not torch.backends.mps.is_available():
+            return
+        sample = torch.ones(16, device="mps", dtype=torch.float32)
+    elif backend == "torch_cuda":
+        if not torch.cuda.is_available():
+            return
+        sample = torch.ones(16, device="cuda", dtype=torch.float32)
+    else:
         return
-    sample = torch.ones(16, device="mps", dtype=torch.float32)
     _ = (sample + 1).sum().item()
-    _MPS_WARMED = True
+    _WARMED_BACKENDS.add(backend)

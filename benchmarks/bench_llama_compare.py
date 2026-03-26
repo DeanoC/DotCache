@@ -13,8 +13,8 @@ from dotcache.integrations.llama import LlamaDotCacheHarness, transformers_avail
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare dense KV vs DotCache on one loaded Llama-family model.")
     parser.add_argument("--model-id", default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-    parser.add_argument("--device", default="mps")
-    parser.add_argument("--backend", choices=["torch_mps", "cpu_ref", "auto"], default="torch_mps")
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
     parser.add_argument("--torch-dtype", default="float16")
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)

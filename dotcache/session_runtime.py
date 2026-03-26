@@ -18,14 +18,14 @@ from .page_format import load_group_words
 from .packing import unpack_bits
 from .tracing import ExecutionTrace
 from .types import EncodedPage
-from .backends import PreparedPageMPS
+from .backends import PreparedPageTorch
 
-PageLike = EncodedPage | PreparedPageMPS
+PageLike = EncodedPage | PreparedPageTorch
 RelevanceMode = Literal["sketch", "envelope"]
 
 
 def _decode_page_dense(page: PageLike) -> np.ndarray:
-    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     header = source_page.header
 
     if header.mode_default == "M3":
@@ -61,7 +61,7 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
 def sketch_key_page(page: PageLike, *, sketch_size: int = 1) -> np.ndarray:
     if sketch_size <= 0:
         raise ValueError("sketch_size must be positive")
-    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     if source_page.runtime_page_sketch is not None:
         stored = np.asarray(source_page.runtime_page_sketch, dtype=np.float32)
         if sketch_size == 1 and source_page.runtime_page_mean is not None:
@@ -83,14 +83,14 @@ def summarize_key_page(page: PageLike) -> np.ndarray:
 
 
 def summarize_value_page(page: PageLike) -> np.ndarray:
-    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     if source_page.runtime_page_mean is not None:
         return np.asarray(source_page.runtime_page_mean, dtype=np.float32)
     return _decode_page_dense(page).mean(axis=0)
 
 
 def envelope_key_page(page: PageLike) -> tuple[np.ndarray, np.ndarray]:
-    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     if source_page.runtime_page_min is not None and source_page.runtime_page_max is not None:
         return (
             np.asarray(source_page.runtime_page_min, dtype=np.float32),

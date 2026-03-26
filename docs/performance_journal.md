@@ -8,7 +8,74 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `df37316`
+Current branch head: `f851870`
+
+### First NVIDIA CUDA snapshot
+
+The new eager `torch_cuda` backend now runs on this NVIDIA RTX 2000 Ada machine through the same shared torch accelerator path as `torch_mps`.
+
+First decode-step ladder on `torch_cuda`:
+
+| Context | Prepare ms | Decode ms | Host-to-Device Bytes | Max Abs Logit Error | Max Abs Output Error |
+|---|---:|---:|---:|---:|---:|
+| `64` | `7.22` | `2.31` | `10,240` | `8.58e-06` | `7.15e-07` |
+| `256` | `0.35` | `3.10` | `40,960` | `1.24e-05` | `4.05e-06` |
+| `1024` | `0.66` | `6.86` | `163,840` | `1.10e-05` | `2.62e-06` |
+| `4096` | `2.38` | `21.50` | `655,360` | `1.53e-05` | `7.15e-07` |
+
+That is the right first microbench read of the CUDA port:
+
+- the shared torch accelerator refactor is numerically stable on CUDA
+- exact compressed-domain decode runs with `0` execution-time host-to-device bytes once pages are prepared
+- latency scales cleanly with context in the current eager path
+- the remaining work is performance work, not correctness rescue
+
+First exact session-shaped CUDA checkpoint at `4096` context:
+
+| Backend | Preload ms | Append ms/step | Decode ms/step | Session ms/step | Decode H2D Bytes/Step | Max Abs Error |
+|---|---:|---:|---:|---:|---:|---:|
+| `torch_cuda` | `10.47` | `0.39` | `33.11` | `33.50` | `0` | `2.15e-06` |
+
+Compared with the CPU reference on the same benchmark:
+
+- CPU decode landed at `14.28 ms/step`
+- CUDA exact DotCache decode landed at `33.11 ms/step`
+- the current eager CUDA path is still about `0.43x` of CPU decode speed on this synthetic exact session benchmark
+- append is already cheap, and decode upload churn is gone; the main remaining gap is the eager page kernel itself
+
+Latest tiny-random LLaMA smoke run on CUDA:
+
+| Backend | Prompt Len | Decode Steps | Decode ms/step | Dense Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
+|---|---:|---:|---:|---:|---:|---:|
+| `torch_cuda` | `6` | `3` | `17.65` | `4.24` | `1.00` | `9.79e-05` |
+
+That confirms the model path is working correctly on CUDA:
+
+- the Phase 5 LLaMA harness runs end to end on `cuda`
+- greedy agreement stayed exact over the tested steps
+- decode and prefill ingest both ran with `0` host-to-device bytes after the on-device torch path was selected
+
+First real TinyLlama dense-vs-DotCache CUDA comparison:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement |
+|---|---:|---:|---:|---:|---:|---:|
+| `10` | `40.17` | `72.61` | `585,728` | `5,767,168` | `9.85x` | `1.00` |
+| `289` | `22.31` | `132.15` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
+| `577` | `23.49` | `134.48` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
+
+That is the honest first CUDA model-level read:
+
+- the CUDA port is functionally correct on a real TinyLlama checkpoint with full greedy agreement at all tested prompt lengths
+- dense CUDA KV is still much faster on decode than the current eager DotCache path
+- the KV-memory crossover is already visible by `289` prompt tokens, where DotCache drops to about `58%` of dense KV bytes
+- by `577` prompt tokens, DotCache is down to about `36%` of dense KV bytes while still trailing on decode latency
+- short-prompt overhead is still dominated by resident prepared-tail machinery, so DotCache is much worse than dense on KV bytes at `10` prompt tokens
+- the first CUDA pass is therefore a successful parity port, not yet a performance win
+
+One operational note from the first real-model CUDA run:
+
+- the initial TinyLlama download hit a Hugging Face `429` rate limit once and then recovered on retry
+- the benchmark still completed and was recorded successfully in the history log
 
 ### Phase 5 model-integration snapshot
 
