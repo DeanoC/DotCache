@@ -8,7 +8,7 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `working_tree`
+Current branch head: `2d60d09`
 
 ### Phase 5 model-integration snapshot
 
@@ -46,6 +46,21 @@ Longer-prompt exact TinyLlama checks after prewarming deferred full pages once t
 |---|---:|---:|---:|---:|---:|---:|
 | `289` | `95.67` | `1,802,240` | `261.63` | `0` | `5.24` | `1.00` |
 | `577` | `106.03` | `3,604,480` | `282.12` | `0` | `4.42` | `1.00` |
+
+Latest dense-KV versus exact DotCache TinyLlama comparison from one loaded model:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement |
+|---|---:|---:|---:|---:|---:|---:|
+| `10` | `41.58` | `139.66` | `585,728` | `5,767,168` | `9.85x` | `1.00` |
+| `289` | `39.06` | `279.71` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
+| `577` | `36.05` | `284.02` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
+
+That comparison is the clearest current model-level frontier:
+
+- stock dense KV is still much faster on decode for this exact TinyLlama integration
+- DotCache is worse than dense on KV bytes for a very short prompt because the resident prepared-tail machinery dominates at tiny sequence lengths
+- once the prompt spans multiple pages, DotCache starts winning clearly on KV-cache memory: about `1.74x` smaller at `289` tokens and about `2.79x` smaller at `577` tokens
+- greedy token agreement stayed exact across the sweep, so this is a real latency-versus-KV-memory tradeoff rather than a correctness failure
 
 The current Phase 5 read is:
 
@@ -215,6 +230,21 @@ Use the recorder helper to append a machine-readable benchmark entry:
     --config configs/dotcache_m4_mps.yaml \
     --contexts 4096 \
     --decode-steps 8
+```
+
+For the model-level dense-vs-DotCache frontier on TinyLlama, use:
+
+```bash
+.venv/bin/python scripts/record_benchmark.py \
+  --label "llama tinyllama mps dense_vs_dotcache" \
+  --notes "One-load TinyLlama comparison sweep across prompt lengths" \
+  --output benchmarks/results/history.jsonl \
+  -- \
+  .venv/bin/python benchmarks/bench_llama_compare.py \
+    --backend torch_mps \
+    --device mps \
+    --max-new-tokens 4 \
+    --repeat-counts 1 32 64
 ```
 
 If we want, we can later add a small exporter that turns `history.jsonl` into CSV for spreadsheets.
