@@ -192,6 +192,17 @@ Latest SmolLM2 payload-only prepared-chunk cache checkpoint:
 - versus the earlier full static-chunk cache, this payload-only variant trims about `1.05 MB` at `1024`, `1.57 MB` at `1536`, and `2.10 MB` at `2048`
 - the honest read is that this is a plausible default compromise for now: it avoids the severe regression from the hard-capped cache and still buys back some resident memory, but the `1536` throughput tradeoff is mixed enough that more tuning would still be welcome
 
+Experimental SmolLM2 key-only prepared-chunk cache checkpoint:
+
+- forcing the static prepared-chunk cache to keep only key-side chunks was a reasonable workload-shaped hypothesis, since score-side chunk reuse is often more valuable than value-side reuse
+- on the one-load exact-length rerun, DotCache decode landed at:
+  `226.81 ms/step` at `1024`
+  `276.20 ms/step` at `1536`
+  `396.96 ms/step` at `2048`
+- that is a small improvement over the payload-only default at `1024` and `1536`, but a clear regression at `2048`
+- the recorded resident DotCache KV bytes were effectively unchanged from the payload-only checkpoint on this ladder, so this did not buy the memory reduction we would want in exchange for the longer-context regression
+- the honest read is that key-only cache selection is worth keeping as experimental infrastructure, but it should not replace the broader payload-only default on this branch
+
 Rejected M3 FP32 escape-payload experiment:
 
 - keeping `M3` escape payloads resident as FP32 on device looked promising for live-tail decode, but the real-model measurements went the wrong way

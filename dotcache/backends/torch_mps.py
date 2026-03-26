@@ -14,6 +14,7 @@ _MAX_PREPARE_PAGES_PER_CHUNK = 128
 _MAX_PREPARED_CHUNK_CACHE_ENTRIES = 64
 _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 64 * 1024 * 1024
 _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT = 4
+_PREPARED_CHUNK_CACHE_KINDS = frozenset({"K", "V"})
 _PREPARED_CHUNK_CACHE: "OrderedDict[tuple[tuple[int, int], ...], PreparedChunkMPS]" = OrderedDict()
 _PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 0
 _PREPARED_PAGE_UID = 1
@@ -68,17 +69,21 @@ def configure_prepared_chunk_cache(
     max_entries: int | None = None,
     max_resident_bytes: int | None = None,
     min_page_count: int | None = None,
+    cached_kinds: Sequence[str] | None = None,
     clear: bool = True,
 ) -> None:
     global _MAX_PREPARED_CHUNK_CACHE_ENTRIES
     global _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES
     global _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT
+    global _PREPARED_CHUNK_CACHE_KINDS
     if max_entries is not None:
         _MAX_PREPARED_CHUNK_CACHE_ENTRIES = max(0, int(max_entries))
     if max_resident_bytes is not None:
         _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES = max(0, int(max_resident_bytes))
     if min_page_count is not None:
         _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT = max(1, int(min_page_count))
+    if cached_kinds is not None:
+        _PREPARED_CHUNK_CACHE_KINDS = frozenset(str(kind) for kind in cached_kinds)
     if clear:
         clear_prepared_chunk_cache()
 
@@ -415,6 +420,8 @@ def _get_prepared_chunk_mps(pages: Sequence[PreparedPageMPS]) -> PreparedChunkMP
     global _PREPARED_CHUNK_CACHE_RESIDENT_BYTES
     cache_key = _prepared_chunk_cache_key(pages)
     if cache_key is None:
+        return None
+    if pages[0].header.kind not in _PREPARED_CHUNK_CACHE_KINDS:
         return None
     if len(pages) < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
         return None

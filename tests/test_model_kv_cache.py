@@ -381,3 +381,42 @@ def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:
     )
     assert resident_after_first_decode <= 512
     assert resident_after_second_decode <= 512
+
+
+def test_model_paged_kv_cache_static_chunk_cache_can_disable_value_chunks() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(312)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    queries = torch.from_numpy(rng.normal(size=(2, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    configure_prepared_chunk_cache(cached_kinds=("K",), min_page_count=1)
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        first_outputs = cache.decode_layer_torch(0, queries, np.array([0, 1]))
+        resident_after_first_decode = prepared_chunk_cache_resident_bytes()
+        second_outputs = cache.decode_layer_torch(0, queries, np.array([0, 1]))
+        resident_after_second_decode = prepared_chunk_cache_resident_bytes()
+    finally:
+        configure_prepared_chunk_cache(cached_kinds=("K", "V"), min_page_count=4)
+        clear_prepared_chunk_cache()
+
+    np.testing.assert_allclose(
+        first_outputs.detach().cpu().numpy(),
+        second_outputs.detach().cpu().numpy(),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    assert resident_after_first_decode > 0
+    assert resident_after_second_decode == resident_after_first_decode
