@@ -20,9 +20,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contexts", nargs="*", type=int, default=[4096])
     parser.add_argument("--decode-steps", type=int, default=8)
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--cache-policies", nargs="*", choices=["fifo", "lru"], default=["fifo", "lru"])
+    parser.add_argument(
+        "--cache-policies",
+        nargs="*",
+        choices=["fifo", "lru", "pinned_recent_fifo"],
+        default=["fifo", "lru", "pinned_recent_fifo"],
+    )
     parser.add_argument("--capacity-page-pairs", nargs="*", default=["1", "2", "4", "8", "initial", "final", "unbounded"])
     parser.add_argument("--working-set-page-pairs", nargs="*", default=["all", "4"])
+    parser.add_argument("--pinned-recent-page-pairs", nargs="*", default=["4"])
     parser.add_argument("--head-dim", type=int, default=None)
     parser.add_argument("--group-size", type=int, default=None)
     parser.add_argument("--tokens-per-page", type=int, default=None)
@@ -94,6 +100,7 @@ def _run_growth_once(
     seed: int,
     max_resident_bytes: int | None,
     cache_policy: str,
+    pinned_recent_pages: int,
     working_set_page_pairs: int | None,
 ) -> dict[str, float | int]:
     append_tokens = config.tokens_per_page
@@ -118,7 +125,11 @@ def _run_growth_once(
     mps_outputs: list[np.ndarray] = []
 
     growth_trace = ExecutionTrace()
-    cache = PreparedPageCache(max_resident_bytes=max_resident_bytes, policy=cache_policy)
+    cache = PreparedPageCache(
+        max_resident_bytes=max_resident_bytes,
+        policy=cache_policy,
+        pinned_recent_pages=pinned_recent_pages,
+    )
 
     initial_prep_trace = ExecutionTrace()
     cache.append_pages(key_pages + value_pages, trace=initial_prep_trace)
@@ -211,34 +222,41 @@ def main() -> None:
             )
             max_resident_bytes = None if multiplier is None else multiplier * append_page_pair_bytes
             for cache_policy in args.cache_policies:
+                pinned_page_pair_options = [0]
+                if cache_policy == "pinned_recent_fifo":
+                    pinned_page_pair_options = [int(raw_value) for raw_value in args.pinned_recent_page_pairs]
                 for raw_working_set in args.working_set_page_pairs:
                     working_set_page_pairs = None if raw_working_set == "all" else int(raw_working_set)
-                    result = _run_growth_once(
-                        backend=args.backend,
-                        config=config,
-                        context_length=context_length,
-                        decode_steps=args.decode_steps,
-                        seed=args.seed,
-                        max_resident_bytes=max_resident_bytes,
-                        cache_policy=cache_policy,
-                        working_set_page_pairs=working_set_page_pairs,
-                    )
-                    emit(
-                        {
-                            "append_page_pair_bytes": append_page_pair_bytes,
-                            "backend": args.backend,
-                            "cache_policy": cache_policy,
-                            "capacity_label": raw_capacity,
-                            "capacity_page_pairs": -1 if multiplier is None else multiplier,
-                            "context_length": context_length,
-                            "decode_steps": args.decode_steps,
-                            "max_resident_bytes": -1 if max_resident_bytes is None else max_resident_bytes,
-                            "tokens_per_page": config.tokens_per_page,
-                            "working_set_label": raw_working_set,
-                            "working_set_page_pairs": -1 if working_set_page_pairs is None else working_set_page_pairs,
-                            **result,
-                        }
-                    )
+                    for pinned_recent_page_pairs in pinned_page_pair_options:
+                        result = _run_growth_once(
+                            backend=args.backend,
+                            config=config,
+                            context_length=context_length,
+                            decode_steps=args.decode_steps,
+                            seed=args.seed,
+                            max_resident_bytes=max_resident_bytes,
+                            cache_policy=cache_policy,
+                            pinned_recent_pages=2 * pinned_recent_page_pairs,
+                            working_set_page_pairs=working_set_page_pairs,
+                        )
+                        emit(
+                            {
+                                "append_page_pair_bytes": append_page_pair_bytes,
+                                "backend": args.backend,
+                                "cache_policy": cache_policy,
+                                "capacity_label": raw_capacity,
+                                "capacity_page_pairs": -1 if multiplier is None else multiplier,
+                                "context_length": context_length,
+                                "decode_steps": args.decode_steps,
+                                "max_resident_bytes": -1 if max_resident_bytes is None else max_resident_bytes,
+                                "pinned_recent_page_pairs": pinned_recent_page_pairs,
+                                "max_pinned_recent_pages": 2 * pinned_recent_page_pairs,
+                                "tokens_per_page": config.tokens_per_page,
+                                "working_set_label": raw_working_set,
+                                "working_set_page_pairs": -1 if working_set_page_pairs is None else working_set_page_pairs,
+                                **result,
+                            }
+                        )
 
 
 if __name__ == "__main__":

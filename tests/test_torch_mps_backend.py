@@ -274,3 +274,35 @@ def test_lru_policy_keeps_recently_reused_page_resident() -> None:
     reuse_b_trace = ExecutionTrace()
     cache.prepare_page(page_b, trace=reuse_b_trace)
     assert reuse_b_trace.prepared_page_cache_misses == 1
+
+
+@requires_mps
+def test_pinned_recent_fifo_keeps_newest_page_resident_under_pressure() -> None:
+    rng = np.random.default_rng(30)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, tokens_per_page=64)
+    keys_a = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+    keys_b = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+    keys_c = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+    page_a = encode_page(keys_a, config, kind="K", token_start=0)
+    page_b = encode_page(keys_b, config, kind="K", token_start=config.tokens_per_page)
+    page_c = encode_page(keys_c, config, kind="K", token_start=2 * config.tokens_per_page)
+
+    sample_prepared = prepare_page(page_a, backend="torch_mps")
+    capacity = sample_prepared.host_to_device_nbytes * 2
+    cache = PreparedPageCache(max_resident_bytes=capacity, policy="pinned_recent_fifo", pinned_recent_pages=1)
+
+    cache.append_pages([page_a, page_b])
+
+    evict_trace = ExecutionTrace()
+    cache.append_page(page_c, trace=evict_trace)
+
+    assert cache.size == 2
+    assert evict_trace.prepared_page_cache_evictions == 1
+
+    recent_trace = ExecutionTrace()
+    cache.prepare_page(page_c, trace=recent_trace)
+    assert recent_trace.prepared_page_cache_hits == 1
+
+    oldest_trace = ExecutionTrace()
+    cache.prepare_page(page_a, trace=oldest_trace)
+    assert oldest_trace.prepared_page_cache_misses == 1

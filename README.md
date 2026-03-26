@@ -92,7 +92,7 @@ To measure growing-context decode where only newly appended pages are prepared, 
 
 That benchmark models a resident prepared-page cache, appends one page of fresh KV per decode step, and reports how much host-to-device work remains per step once old pages stay warm.
 
-To sweep cache capacity under growing-context decode and compare FIFO vs LRU, use:
+To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
 
 ```bash
 .venv/bin/python benchmarks/bench_decode_eviction.py --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
@@ -101,7 +101,8 @@ To sweep cache capacity under growing-context decode and compare FIFO vs LRU, us
 That benchmark reports the tradeoff between:
 
 - cache capacity in appended page-pairs
-- eviction policy (`fifo` vs `lru`)
+- eviction policy (`fifo`, `lru`, or `pinned_recent_fifo`)
+- optional newest-page pinning depth for the pinned policy
 - access pattern (`all` history vs recent-window-heavy working set)
 - hit rate and evictions
 - per-step host-to-device bytes
@@ -112,6 +113,8 @@ Useful capacity labels:
 - `initial`: enough resident space for the starting context only
 - `final`: enough resident space for the fully grown context
 - `unbounded`: no resident cap
+
+To isolate the workload-shaped policy, add `--cache-policies pinned_recent_fifo --pinned-recent-page-pairs 4`.
 
 To reproduce the crossover sweep:
 
