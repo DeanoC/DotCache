@@ -113,6 +113,14 @@ bash scripts/run_smollm2_long_context_compare.sh
 
 That wrapper runs [bench_llama_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_compare.py) against `HuggingFaceTB/SmolLM2-360M-Instruct` at an exact `2048`-token prompt so we can exercise the Phase 5 path beyond TinyLlama's `2048`-token context ceiling. Exact `3072` and `4096` probes hit dense MPS OOM on this machine.
 
+For the higher-context exact-length frontier on the same model, use:
+
+```bash
+bash scripts/run_smollm2_frontier_compare.sh
+```
+
+That runner sweeps exact prompt lengths `256 512 1024 1536 2048` from one model load. On the current M4 checkpoint, DotCache is still slower than dense through `1536` tokens in the one-load sweep, but it already uses much less KV memory, and a fresh standalone `2048` rerun shows DotCache ahead on decode while keeping the same KV-memory win.
+
 ## MPS Tuning Notes
 
 The current eager `torch_mps` path is sensitive to page size.

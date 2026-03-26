@@ -8,7 +8,7 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `2d60d09`
+Current branch head: `df37316`
 
 ### Phase 5 model-integration snapshot
 
@@ -123,6 +123,23 @@ Latest higher-context prewarm scheduling checkpoint on SmolLM2 360M:
 - capping MPS prepare batches to bounded page counts moved exact `2048` SmolLM2 prefill-cache ingest from `3672.38 ms` down to `2318.24 ms`
 - the same rerun brought DotCache decode down to `399.11 ms/step`
 - dense landed at `1260.83 ms/step` on that run, so DotCache was about `3.16x` faster on decode while still using only `0.22x` the KV bytes
+
+Latest higher-context exact-length frontier on SmolLM2 360M:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | DotCache/Dense Decode Speedup | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `256` | `41.79` | `494.46` | `0.08x` | `21,217,280` | `13,762,560` | `0.65x` | One-load frontier sweep |
+| `512` | `39.99` | `375.00` | `0.11x` | `42,188,800` | `17,039,360` | `0.40x` | One-load frontier sweep |
+| `1024` | `41.65` | `399.80` | `0.10x` | `84,131,840` | `23,592,960` | `0.28x` | One-load frontier sweep |
+| `1536` | `172.39` | `456.58` | `0.38x` | `126,074,880` | `30,146,560` | `0.24x` | One-load frontier sweep |
+| `2048` | `517.41` | `402.70` | `1.28x` | `168,017,920` | `36,700,160` | `0.22x` | Fresh standalone rerun |
+
+That frontier sharpens the higher-context picture:
+
+- By `512` tokens, DotCache is already down to about `40%` of dense KV bytes on SmolLM2.
+- By `1536` tokens, DotCache is using about `24%` of dense KV bytes, but it is still slower on decode in the one-load sweep.
+- The fresh standalone `2048` rerun is the best max-case information point on this machine: DotCache decode `402.70 ms/step` versus dense `517.41 ms/step`, while keeping the KV footprint at about `22%` of dense.
+- The one-load `2048` sweep result was much noisier for both dense and DotCache, so the standalone rerun is the number to trust for the current max practical SmolLM2 checkpoint.
 
 The current Phase 5 read is:
 
@@ -307,6 +324,35 @@ For the model-level dense-vs-DotCache frontier on TinyLlama, use:
     --device mps \
     --max-new-tokens 4 \
     --repeat-counts 1 32 64
+```
+
+For the higher-context exact-length frontier on SmolLM2 360M, use:
+
+```bash
+.venv/bin/python scripts/record_benchmark.py \
+  --label "llama smollm2_360m mps frontier_exact_lengths" \
+  --notes "One-load exact-length SmolLM2 frontier sweep on this M4" \
+  --output benchmarks/results/history.jsonl \
+  -- \
+  bash scripts/run_smollm2_frontier_compare.sh
+```
+
+For the max practical SmolLM2 point, refresh `2048` on its own so the result is not distorted by the earlier ladder cases sharing the same process:
+
+```bash
+.venv/bin/python scripts/record_benchmark.py \
+  --label "llama smollm2_360m mps exact_2048_refresh" \
+  --notes "Fresh standalone exact-length 2048 rerun on this M4" \
+  --output benchmarks/results/history.jsonl \
+  -- \
+  .venv/bin/python benchmarks/bench_llama_compare.py \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --backend torch_mps \
+    --device mps \
+    --max-new-tokens 4 \
+    --repeat-counts \
+    --target-prompt-lengths 2048 \
+    --continue-on-error
 ```
 
 If we want, we can later add a small exporter that turns `history.jsonl` into CSV for spreadsheets.
