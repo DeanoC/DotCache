@@ -7,7 +7,7 @@ from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
-from dotcache.session_runtime import PagedDecodeSession, select_execution_page_pairs
+from dotcache.session_runtime import PagedDecodeSession, select_execution_page_indices, select_execution_page_pairs
 from dotcache.tracing import ExecutionTrace
 
 requires_mps = pytest.mark.skipif(not mps_available(), reason="torch_mps is unavailable")
@@ -61,6 +61,33 @@ def test_select_execution_page_pairs_keeps_sink_and_recent_pages() -> None:
 
     assert [page.header.token_start for page in selected_key_pages] == [0, 256]
     assert [page.header.token_start for page in selected_value_pages] == [0, 256]
+
+
+def test_select_execution_page_indices_can_admit_relevant_old_pages() -> None:
+    rng = np.random.default_rng(201)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    keys = rng.normal(size=(5 * config.tokens_per_page, config.head_dim)).astype(np.float32) * 0.01
+    values = rng.normal(size=(5 * config.tokens_per_page, config.head_dim)).astype(np.float32)
+    keys[128:192, 0] = 10.0
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    del value_pages
+
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+    summaries = [np.full(config.head_dim, -1.0, dtype=np.float32) for _ in key_pages]
+    summaries[2] = np.concatenate([np.array([10.0], dtype=np.float32), np.zeros(config.head_dim - 1, dtype=np.float32)])
+
+    selected_indices = select_execution_page_indices(
+        key_pages,
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        query_slice=query,
+        key_page_summaries=summaries,
+        relevance_top_k=1,
+    )
+
+    assert selected_indices == [0, 2, 4]
 
 
 @requires_mps
@@ -362,6 +389,46 @@ def test_paged_decode_session_windowed_decode_matches_selected_page_reference() 
     np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
     assert session.active_page_count == len(selected_key_pages)
     assert session.active_token_count == sum(page.header.token_count for page in selected_key_pages)
+    assert exec_trace.host_to_device_bytes == 0
+
+
+@requires_mps
+def test_paged_decode_session_hybrid_relevance_matches_selected_page_reference() -> None:
+    rng = np.random.default_rng(129)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32) * 0.1
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    keys[128:192, 0] += 6.0
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+
+    session = PagedDecodeSession(
+        backend="torch_mps",
+        cache=PreparedPageCache(),
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        relevance_top_k=1,
+    )
+    session.preload(key_pages, value_pages)
+    selected_key_pages, selected_value_pages = session.execution_pages(query)
+    exec_trace = ExecutionTrace()
+    logits, weights, output = session.decode(query, trace=exec_trace)
+
+    ref_logits, ref_weights, ref_output = decode_step(
+        query,
+        selected_key_pages,
+        selected_value_pages,
+        backend="cpu_ref",
+    )
+
+    np.testing.assert_allclose(logits, ref_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(weights, ref_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
+    assert [page.header.token_start for page in selected_key_pages] == [0, 128, 256]
     assert exec_trace.host_to_device_bytes == 0
 
 

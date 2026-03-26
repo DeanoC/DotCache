@@ -78,6 +78,7 @@ def main() -> None:
             cache=PreparedPageCache(),
             recent_window_tokens=args.execution_recent_window,
             sink_window_tokens=args.execution_sink_window,
+            relevance_top_k=args.execution_relevance_top_k,
         )
         preload_trace = ExecutionTrace()
         preload_ms = _time_ms(lambda: session.preload(raw_key_pages, raw_value_pages, trace=preload_trace))
@@ -89,6 +90,8 @@ def main() -> None:
         append_trace_total = ExecutionTrace()
         cpu_outputs: list[np.ndarray] = []
         session_outputs: list[np.ndarray] = []
+        active_page_counts: list[int] = []
+        active_token_counts: list[int] = []
         current_context = initial_context
 
         for query in queries:
@@ -99,6 +102,9 @@ def main() -> None:
             )
 
             step_trace = ExecutionTrace()
+            active_key_pages, _ = session.execution_pages(query)
+            active_page_counts.append(len(active_key_pages))
+            active_token_counts.append(sum(page.header.token_count for page in active_key_pages))
             decode_total_ms += _time_ms(
                 lambda q=query, st=step_trace: session_outputs.append(session.decode(q, trace=st)[2])
             )
@@ -124,8 +130,10 @@ def main() -> None:
 
         emit(
             {
-                "active_page_count": session.active_page_count,
-                "active_token_count": session.active_token_count,
+                "active_page_count": float(np.mean(active_page_counts)),
+                "active_page_count_last": active_page_counts[-1],
+                "active_token_count": float(np.mean(active_token_counts)),
+                "active_token_count_last": active_token_counts[-1],
                 "backend": args.backend,
                 "append_host_to_device_bytes_per_step": append_trace_total.host_to_device_bytes / args.decode_steps,
                 "append_ms_per_step": append_total_ms / args.decode_steps,
@@ -141,6 +149,7 @@ def main() -> None:
                 "preload_host_to_device_bytes": preload_trace.host_to_device_bytes,
                 "preload_ms": preload_ms,
                 "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
+                "execution_relevance_top_k": args.execution_relevance_top_k,
                 "execution_sink_window": args.execution_sink_window,
                 "session_runtime_ms_per_step": (decode_total_ms + append_total_ms) / args.decode_steps,
                 "speedup_decode_vs_cpu": cpu_total_ms / max(decode_total_ms, 1e-8),

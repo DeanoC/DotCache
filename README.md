@@ -117,6 +117,14 @@ To evaluate a sink-plus-recent execution policy against the full-context oracle,
 That reports active page/token counts and numerical error versus the full CPU reference, so you can see the speed/accuracy tradeoff directly.
 This policy is intentionally approximate in the current prototype; aggressive windows can cut decode cost sharply, but they can also introduce large output error versus full-context attention.
 
+To recover a few older pages by cheap query relevance on top of sink-plus-recent, add `--execution-relevance-top-k`:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4
+```
+
+This keeps the window policy as the base set, then admits a small number of older key/value page pairs whose page-summary vectors score highest against the current query.
+
 To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
 
 ```bash
