@@ -16,6 +16,7 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [dotcache_full.tex](./dotcache_full.tex)
 - [dotcache_software_implementation_guide.md](./dotcache_software_implementation_guide.md)
 - [dotcache_no_cuda_bootstrap_m4_amd.md](./dotcache_no_cuda_bootstrap_m4_amd.md)
+- [docs/performance_journal.md](./docs/performance_journal.md)
 
 ## Quick start on Apple Silicon
 
