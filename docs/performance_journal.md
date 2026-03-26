@@ -8,7 +8,7 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `df37316`
+Current branch head: `d820a7c`
 
 ### Phase 5 model-integration snapshot
 
@@ -156,6 +156,20 @@ Latest SmolLM2 FP32-affine metadata checkpoint:
 - the matching DotCache resident KV bytes increased from about `23.59/30.15/36.70 MB` to about `26.21/34.08/41.94 MB` at `1024/1536/2048`
 - a fresh standalone `1536` rerun landed at `285.99 ms/step` DotCache decode with the same greedy agreement and a `34.08 MB` resident KV footprint
 - the honest read is that this is a good MPS trade on this machine: a noticeable DotCache decode-speed win for a moderate KV-resident-memory increase, while staying far below dense KV bytes at the same prompt lengths
+
+Latest SmolLM2 static prepared-chunk cache checkpoint:
+
+- preparing static prefill pages once in the model decode-view path unlocked reuse of the new stacked M0 chunk cache across repeated grouped MPS decodes instead of rebuilding fresh prepared-page identities every step
+- on the one-load exact-length rerun, DotCache decode moved to `252.20 ms/step` at `1024`, `234.30 ms/step` at `1536`, and `578.09 ms/step` at `2048`
+- versus the earlier FP32-affine metadata checkpoint, that is a clear DotCache-side improvement at `1024` and `1536`:
+  `306.09 -> 252.20 ms/step` at `1024`
+  `262.43 -> 234.30 ms/step` at `1536`
+- the tradeoff is higher resident DotCache KV bytes because the stacked static chunk tensors now stay resident:
+  `26.21 -> 29.36 MB` at `1024`
+  `34.08 -> 38.80 MB` at `1536`
+  `41.94 -> 48.23 MB` at `2048`
+- standalone `1536` and `2048` refreshes were still noisy on the dense side and also showed very unstable prefill timings on MPS, so they should not replace the earlier trusted frontier points by themselves
+- the honest read is that this is another good MPS trade for the real model path: better DotCache decode throughput at the cost of a moderate additional resident-memory increase inside DotCache, while still remaining well below dense KV bytes at the same prompt lengths
 
 Rejected M3 FP32 escape-payload experiment:
 
