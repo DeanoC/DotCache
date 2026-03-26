@@ -31,6 +31,7 @@ class PreparedPageMPS:
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
     host_to_device_nbytes: int = 0
+    resident_nbytes: int = 0
 
     @property
     def payload_nbytes(self) -> int:
@@ -144,6 +145,7 @@ def _prepare_page_chunk_mps(
     *,
     trace: ExecutionTrace | None = None,
 ) -> list[PreparedPageMPS]:
+    torch = _load_torch()
     if not pages:
         return []
     header = pages[0].header
@@ -158,6 +160,7 @@ def _prepare_page_chunk_mps(
                 header=page.header,
                 escape_payload=escape_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
+                resident_nbytes=int(escape_batch[index].numel() * escape_batch[index].element_size()),
             )
             for index, page in enumerate(pages)
         ]
@@ -168,6 +171,8 @@ def _prepare_page_chunk_mps(
     payload_batch = _device_tensor(np.stack([np.asarray(page.payload, dtype=np.int32) for page in pages], axis=0), device="mps")
     scales_batch = _device_tensor(np.stack([np.asarray(page.scales) for page in pages], axis=0), device="mps")
     bias_batch = _device_tensor(np.stack([np.asarray(page.bias) for page in pages], axis=0), device="mps")
+    scales_batch_fp32 = scales_batch.to(dtype=torch.float32)
+    bias_batch_fp32 = bias_batch.to(dtype=torch.float32)
     total_host_to_device_nbytes += int(payload_batch.numel() * payload_batch.element_size())
     total_host_to_device_nbytes += int(scales_batch.numel() * scales_batch.element_size())
     total_host_to_device_nbytes += int(bias_batch.numel() * bias_batch.element_size())
@@ -178,11 +183,16 @@ def _prepare_page_chunk_mps(
             source_page=page,
             header=page.header,
             payload=payload_batch[index],
-            scales=scales_batch[index],
-            bias=bias_batch[index],
+            scales=scales_batch_fp32[index],
+            bias=bias_batch_fp32[index],
             unpack_shifts=unpack_shifts,
             unpack_mask=unpack_mask,
             host_to_device_nbytes=_prepared_page_host_nbytes(page),
+            resident_nbytes=(
+                int(payload_batch[index].numel() * payload_batch[index].element_size())
+                + int(scales_batch_fp32[index].numel() * scales_batch_fp32[index].element_size())
+                + int(bias_batch_fp32[index].numel() * bias_batch_fp32[index].element_size())
+            ),
         )
         for index, page in enumerate(pages)
     ]
@@ -356,8 +366,8 @@ def _score_page_chunk_mps(query_slice: np.ndarray, pages: Sequence[PreparedPageM
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[group_index]
         int_dot = torch.matmul(codes, qg)
-        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
         logits += scales * int_dot + bias * query_group_sums[group_index]
 
     return logits.reshape(-1)
@@ -410,8 +420,8 @@ def _mix_page_chunk_mps(
         ).reshape(page_count, token_count, header.group_size)
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
         weighted_scales = weights * scales
         contribution = torch.sum(weighted_scales[..., None] * codes, dim=(0, 1))
         bias_term = torch.sum(weights * bias)
@@ -457,8 +467,8 @@ def score_page_mps(
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[group_index]
         int_dot = torch.matmul(codes, qg)
-        scales = prepared.scales[:, group_index].to(torch.float32)
-        bias = prepared.bias[:, group_index].to(torch.float32)
+        scales = prepared.scales[:, group_index]
+        bias = prepared.bias[:, group_index]
         logits += scales * int_dot + bias * query_group_sums[group_index]
 
     return logits.detach().cpu().numpy()
@@ -525,8 +535,8 @@ def mix_page_mps(
         codes = _unpack_bits_torch(group_words, prepared.unpack_shifts, prepared.unpack_mask, header.group_size)
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        weighted_scales = weights * prepared.scales[:, group_index].to(torch.float32)
-        bias_term = torch.sum(weights * prepared.bias[:, group_index].to(torch.float32))
+        weighted_scales = weights * prepared.scales[:, group_index]
+        bias_term = torch.sum(weights * prepared.bias[:, group_index])
         contribution = torch.matmul(weighted_scales, codes)
         start = group_index * header.group_size
         end = start + header.group_size
@@ -651,8 +661,8 @@ def _score_page_chunk_multiquery_mps(
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[:, group_index, :]
         int_dot = torch.einsum("ptg,qg->qpt", codes, qg)
-        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
         logits += scales.unsqueeze(0) * int_dot + bias.unsqueeze(0) * query_group_sums[:, group_index].reshape(
             query_count,
             1,
@@ -709,8 +719,8 @@ def _mix_page_chunk_multiquery_mps(
         ).reshape(page_count, token_count, header.group_size)
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        scales = torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
-        bias = torch.stack([page.bias[:, group_index].to(torch.float32) for page in pages], dim=0)
+        scales = torch.stack([page.scales[:, group_index] for page in pages], dim=0)
+        bias = torch.stack([page.bias[:, group_index] for page in pages], dim=0)
         weighted_scales = weights * scales.unsqueeze(0)
         contribution = torch.einsum("qpt,ptg->qg", weighted_scales, codes)
         bias_term = torch.einsum("qpt,pt->q", weights, bias)
@@ -794,11 +804,11 @@ def _score_page_chunk_grouped_multiquery_mps(
         qg = query_groups_tensor[:, :, group_index, :]
         int_dot = torch.einsum("bptg,bqg->bqpt", codes, qg)
         scales = torch.stack(
-            [torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0) for group_pages in pages_by_group],
+            [torch.stack([page.scales[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
             dim=0,
         )
         bias = torch.stack(
-            [torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0) for group_pages in pages_by_group],
+            [torch.stack([page.bias[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
             dim=0,
         )
         logits += scales[:, None] * int_dot + bias[:, None] * query_group_sums[:, :, group_index].reshape(
@@ -866,11 +876,11 @@ def _mix_page_chunk_grouped_multiquery_mps(
         if trace is not None:
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         scales = torch.stack(
-            [torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0) for group_pages in pages_by_group],
+            [torch.stack([page.scales[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
             dim=0,
         )
         bias = torch.stack(
-            [torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0) for group_pages in pages_by_group],
+            [torch.stack([page.bias[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
             dim=0,
         )
         weighted_scales = weights * scales[:, None]

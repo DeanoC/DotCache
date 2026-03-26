@@ -34,6 +34,9 @@ class PreparedPageCache:
         self._order.clear()
 
     def _page_nbytes(self, page: PreparedPageMPS) -> int:
+        resident_nbytes = int(page.resident_nbytes)
+        if resident_nbytes > 0:
+            return resident_nbytes
         return int(page.host_to_device_nbytes)
 
     def _pinned_keys(self) -> set[int]:
