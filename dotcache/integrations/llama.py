@@ -679,7 +679,7 @@ def _run_dotcache_greedy_decode(
             "decode_ms_total": 0.0,
             "append_runtime_ms_total": 0.0,
             "decode_runtime_ms_total": 0.0,
-            "step_logits": [],
+            "step_count": 0,
             "trace": ExecutionTrace(),
         }
 
@@ -695,7 +695,7 @@ def _run_dotcache_greedy_decode(
     )
     cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
     current_token_index = int(input_ids.shape[1])
-    step_logits: list[np.ndarray] = []
+    step_count = 0
     decode_ms_total = 0.0
     trace_total = ExecutionTrace()
 
@@ -717,10 +717,9 @@ def _run_dotcache_greedy_decode(
             adapter.set_current_token_index(None)
         decode_ms_total += (time.perf_counter() - start) * 1000.0
         trace_total.merge(step_trace)
-        logits = outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()
-        step_logits.append(logits)
         current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated_ids.append(int(current_input_ids.item()))
+        step_count += 1
         if current_attention_mask is not None:
             current_attention_mask = torch.cat(
                 [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
@@ -734,7 +733,7 @@ def _run_dotcache_greedy_decode(
         "decode_ms_total": decode_ms_total,
         "append_runtime_ms_total": adapter.append_runtime_ms_total,
         "decode_runtime_ms_total": adapter.decode_runtime_ms_total,
-        "step_logits": step_logits,
+        "step_count": step_count,
         "trace": trace_total,
     }
 
@@ -869,7 +868,7 @@ def run_llama_generation_harness(
         decode_ms_per_step = 0.0
         append_ms_per_step = 0.0
         decode_trace = ExecutionTrace()
-        step_logits: list[np.ndarray] = []
+        step_count = 0
         append_runtime_ms_per_step = 0.0
         decode_runtime_ms_per_step = 0.0
     else:
@@ -882,12 +881,12 @@ def run_llama_generation_harness(
             first_generated_token=torch.as_tensor([[dense_result["generated_ids"][0]]], dtype=torch.long, device=input_ids.device),
             max_new_tokens=max_new_tokens,
         )
-        step_logits = dotcache_result["step_logits"]
+        step_count = int(dotcache_result["step_count"])
         decode_trace = dotcache_result["trace"]
         generated_ids = dotcache_result["generated_ids"]
-        decode_ms_per_step = dotcache_result["decode_ms_total"] / max(len(step_logits), 1)
-        append_runtime_ms_per_step = dotcache_result["append_runtime_ms_total"] / max(len(step_logits), 1)
-        decode_runtime_ms_per_step = dotcache_result["decode_runtime_ms_total"] / max(len(step_logits), 1)
+        decode_ms_per_step = dotcache_result["decode_ms_total"] / max(step_count, 1)
+        append_runtime_ms_per_step = dotcache_result["append_runtime_ms_total"] / max(step_count, 1)
+        decode_runtime_ms_per_step = dotcache_result["decode_runtime_ms_total"] / max(step_count, 1)
         append_ms_per_step = append_runtime_ms_per_step
 
     dense_generated_ids = dense_result["generated_ids"]
@@ -930,7 +929,7 @@ def run_llama_generation_harness(
         "append_runtime_ms_per_step": float(append_runtime_ms_per_step),
         "decode_runtime_ms_per_step": float(decode_runtime_ms_per_step),
         "resident_bytes": adapter.model_kv_cache.resident_bytes,
-        "decode_host_to_device_bytes_per_step": decode_trace.host_to_device_bytes / max(len(step_logits), 1),
+        "decode_host_to_device_bytes_per_step": decode_trace.host_to_device_bytes / max(step_count, 1),
         "teacher_forced_logit_max_abs_error": max_abs_logit_drift,
         "teacher_forced_logit_max_rel_error": max_rel_logit_drift,
     }
