@@ -524,6 +524,48 @@ class ModelPagedKVCache:
             return self.default_grouped_query_heads
         return _group_query_heads(mapping, num_key_value_heads=self.num_key_value_heads)
 
+    def _encode_full_prefill_pages(
+        self,
+        layer_id: int,
+        keys: np.ndarray,
+        values: np.ndarray,
+        *,
+        full_tokens: int,
+    ) -> tuple[list[list[EncodedPage]], list[list[EncodedPage]]]:
+        key_pages_by_head: list[list[EncodedPage]] = [[] for _ in range(self.num_key_value_heads)]
+        value_pages_by_head: list[list[EncodedPage]] = [[] for _ in range(self.num_key_value_heads)]
+        if full_tokens <= 0:
+            return key_pages_by_head, value_pages_by_head
+
+        page_size = self.config.tokens_per_page
+        full_keys = np.ascontiguousarray(keys[:, :full_tokens], dtype=np.float32)
+        full_values = np.ascontiguousarray(values[:, :full_tokens], dtype=np.float32)
+
+        for page_start in range(0, full_tokens, page_size):
+            page_end = page_start + page_size
+            for kv_head_id in range(self.num_key_value_heads):
+                key_pages_by_head[kv_head_id].append(
+                    encode_page(
+                        full_keys[kv_head_id, page_start:page_end],
+                        self.config,
+                        kind="K",
+                        layer_id=layer_id,
+                        kv_head_id=kv_head_id,
+                        token_start=page_start,
+                    )
+                )
+                value_pages_by_head[kv_head_id].append(
+                    encode_page(
+                        full_values[kv_head_id, page_start:page_end],
+                        self.config,
+                        kind="V",
+                        layer_id=layer_id,
+                        kv_head_id=kv_head_id,
+                        token_start=page_start,
+                    )
+                )
+        return key_pages_by_head, value_pages_by_head
+
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
         if self.backend not in {"torch_mps", "auto"} or not mps_available():
             return
@@ -673,43 +715,24 @@ class ModelPagedKVCache:
             raise ValueError("layer_k and layer_v sequence lengths must match")
 
         seq_len = int(keys.shape[1])
+        full_page_count = seq_len // self.config.tokens_per_page
+        full_tokens = full_page_count * self.config.tokens_per_page
+        preload_key_pages_by_head, preload_value_pages_by_head = self._encode_full_prefill_pages(
+            layer_id,
+            keys,
+            values,
+            full_tokens=full_tokens,
+        )
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             state.clear(clear_prepared_cache=False)
-            dense_keys = keys[kv_head_id]
-            dense_values = values[kv_head_id]
-            full_page_count = seq_len // self.config.tokens_per_page
-            full_tokens = full_page_count * self.config.tokens_per_page
-
-            preload_key_pages: list[EncodedPage] = []
-            preload_value_pages: list[EncodedPage] = []
-            for page_start in range(0, full_tokens, self.config.tokens_per_page):
-                page_end = page_start + self.config.tokens_per_page
-                preload_key_pages.append(
-                    encode_page(
-                        dense_keys[page_start:page_end],
-                        self.config,
-                        kind="K",
-                        layer_id=layer_id,
-                        kv_head_id=kv_head_id,
-                        token_start=page_start,
-                    )
-                )
-                preload_value_pages.append(
-                    encode_page(
-                        dense_values[page_start:page_end],
-                        self.config,
-                        kind="V",
-                        layer_id=layer_id,
-                        kv_head_id=kv_head_id,
-                        token_start=page_start,
-                    )
-                )
+            preload_key_pages = preload_key_pages_by_head[kv_head_id]
+            preload_value_pages = preload_value_pages_by_head[kv_head_id]
             if preload_key_pages:
                 state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
                 state.invalidate_decode_views()
-            remainder_keys = dense_keys[full_tokens:]
-            remainder_values = dense_values[full_tokens:]
+            remainder_keys = keys[kv_head_id, full_tokens:]
+            remainder_values = values[kv_head_id, full_tokens:]
             state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
             state.sequence_length = seq_len
         if self._use_persistent_mps_tail:
@@ -771,45 +794,35 @@ class ModelPagedKVCache:
         seq_len = int(keys.shape[1])
         full_page_count = seq_len // self.config.tokens_per_page
         full_tokens = full_page_count * self.config.tokens_per_page
+        if full_tokens > 0:
+            full_keys_cpu = keys[:, :full_tokens].detach().cpu().numpy()
+            full_values_cpu = values[:, :full_tokens].detach().cpu().numpy()
+            preload_key_pages_by_head, preload_value_pages_by_head = self._encode_full_prefill_pages(
+                layer_id,
+                full_keys_cpu,
+                full_values_cpu,
+                full_tokens=full_tokens,
+            )
+        else:
+            preload_key_pages_by_head = [[] for _ in range(self.num_key_value_heads)]
+            preload_value_pages_by_head = [[] for _ in range(self.num_key_value_heads)]
+        if not self._use_persistent_mps_tail:
+            remainder_keys_cpu = keys[:, full_tokens:].detach().cpu().numpy()
+            remainder_values_cpu = values[:, full_tokens:].detach().cpu().numpy()
 
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             state.clear(clear_prepared_cache=False)
-            preload_key_pages: list[EncodedPage] = []
-            preload_value_pages: list[EncodedPage] = []
-            if full_tokens > 0:
-                dense_keys_cpu = keys[kv_head_id, :full_tokens].detach().cpu().numpy()
-                dense_values_cpu = values[kv_head_id, :full_tokens].detach().cpu().numpy()
-                for page_start in range(0, full_tokens, self.config.tokens_per_page):
-                    page_end = page_start + self.config.tokens_per_page
-                    preload_key_pages.append(
-                        encode_page(
-                            dense_keys_cpu[page_start:page_end],
-                            self.config,
-                            kind="K",
-                            layer_id=layer_id,
-                            kv_head_id=kv_head_id,
-                            token_start=page_start,
-                        )
-                    )
-                    preload_value_pages.append(
-                        encode_page(
-                            dense_values_cpu[page_start:page_end],
-                            self.config,
-                            kind="V",
-                            layer_id=layer_id,
-                            kv_head_id=kv_head_id,
-                            token_start=page_start,
-                        )
-                    )
+            preload_key_pages = preload_key_pages_by_head[kv_head_id]
+            preload_value_pages = preload_value_pages_by_head[kv_head_id]
             if preload_key_pages:
                 state.session.append(preload_key_pages, preload_value_pages, prepare=False, trace=trace)
                 state.invalidate_decode_views()
             if self._use_persistent_mps_tail:
                 state.tail.clear()
             else:
-                remainder_keys = keys[kv_head_id, full_tokens:].detach().cpu().numpy()
-                remainder_values = values[kv_head_id, full_tokens:].detach().cpu().numpy()
+                remainder_keys = remainder_keys_cpu[kv_head_id]
+                remainder_values = remainder_values_cpu[kv_head_id]
                 state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
             state.sequence_length = seq_len
 

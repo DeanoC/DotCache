@@ -75,6 +75,12 @@ Latest long-prompt optimization checkpoint after skipping redundant `PreparedPag
 - dense on that rerun was `178.78 ms/step`, so DotCache still trails on latency but the gap is materially smaller
 - KV-cache memory stayed the same at a `0.29x` DotCache/dense ratio with full greedy agreement
 
+Latest prefill-ingest optimization checkpoint after batching dense prefill CPU transfers per layer across KV heads:
+
+- targeted `865`-token rerun kept DotCache decode in the same range at `237.98 ms/step`
+- prefill-cache ingest dropped from `178.87 ms` down to `102.21 ms`
+- the KV-memory result was unchanged at a `0.29x` DotCache/dense ratio with full greedy agreement
+
 Largest practical exact-length TinyLlama comparison point on this M4 so far:
 
 - exact `1536`-token prompt with `max_new_tokens=4` completed successfully
