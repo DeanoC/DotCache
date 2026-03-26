@@ -80,6 +80,7 @@ def main() -> None:
             sink_window_tokens=args.execution_sink_window,
             relevance_top_k=args.execution_relevance_top_k,
             relevance_sketch_size=args.execution_relevance_sketch_size,
+            relevance_mode=args.execution_relevance_mode,
             exact_refine_top_k=args.execution_exact_refine_top_k,
             approximate_old_pages=args.execution_approximate_old_pages,
         )
@@ -154,6 +155,7 @@ def main() -> None:
                 "execution_recent_window": -1 if args.execution_recent_window is None else args.execution_recent_window,
                 "execution_approximate_old_pages": int(args.execution_approximate_old_pages),
                 "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
+                "execution_relevance_mode": args.execution_relevance_mode,
                 "execution_relevance_top_k": args.execution_relevance_top_k,
                 "execution_relevance_sketch_size": args.execution_relevance_sketch_size,
                 "execution_sink_window": args.execution_sink_window,

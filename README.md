@@ -133,13 +133,21 @@ To make that first-pass signal less blunt, raise `--execution-relevance-sketch-s
 .venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-sketch-size 4
 ```
 
+To switch from sketch-based relevance to a stronger page-envelope score, use `--execution-relevance-mode envelope`:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-mode envelope
+```
+
+This uses encode-time per-page min/max envelopes to form a query-dependent upper-bound style score for each old page. On the current M4 prototype, that envelope gate is materially better than the sketch gate at roughly the same latency budget.
+
 To refine that sketch shortlist with exact compressed-domain key scoring before final decode, add `--execution-exact-refine-top-k`:
 
 ```bash
 .venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 8 --execution-relevance-sketch-size 4 --execution-exact-refine-top-k 4
 ```
 
-This is currently an experimental middle ground: it keeps sink and recent pages, admits a larger sketch-based candidate pool, then uses exact page scoring to keep only the best old pages for the final decode. The current implementation reuses those exact shortlisted logits during final decode so it does not rescore the chosen old pages, but on the M4 prototype it is still much slower than the sketch-only path.
+This is currently an experimental middle ground: it keeps sink and recent pages, admits a larger candidate pool from the chosen relevance mode, then uses exact page scoring to keep only the best old pages for the final decode. The current implementation reuses those exact shortlisted logits during final decode so it does not rescore the chosen old pages, but on the M4 prototype it is still much slower than the new envelope-only gate.
 
 To approximate dropped old pages instead of ignoring them entirely, add `--execution-approximate-old-pages`:
 

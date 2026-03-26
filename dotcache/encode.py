@@ -20,6 +20,12 @@ def _build_runtime_page_sketch(values: np.ndarray, *, sketch_rows: int = DEFAULT
     return page_mean, sketch
 
 
+def _build_runtime_page_envelope(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    page_min = values.min(axis=0).astype(np.float16)
+    page_max = values.max(axis=0).astype(np.float16)
+    return page_min, page_max
+
+
 def encode_page(
     tensor_slice: np.ndarray,
     config: DotCacheConfig,
@@ -45,6 +51,7 @@ def encode_page(
     scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
     token_count = values.shape[0]
     runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
+    runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
 
     if page_mode == "M3":
         header = PageHeader(
@@ -70,6 +77,8 @@ def encode_page(
             escape_payload=escape_payload,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
         )
 
     if page_mode != "M0":
@@ -108,4 +117,6 @@ def encode_page(
         bias=stored_bias,
         runtime_page_mean=runtime_page_mean,
         runtime_page_sketch=runtime_page_sketch,
+        runtime_page_min=runtime_page_min,
+        runtime_page_max=runtime_page_max,
     )

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Literal, Sequence
 
 import numpy as np
 from .attention_runtime import (
     BackendName,
-    decode_step,
     decode_step_with_page_logits,
     mix_page,
     prepare_pages,
@@ -22,6 +21,7 @@ from .types import EncodedPage
 from .backends import PreparedPageMPS
 
 PageLike = EncodedPage | PreparedPageMPS
+RelevanceMode = Literal["sketch", "envelope"]
 
 
 def _decode_page_dense(page: PageLike) -> np.ndarray:
@@ -89,6 +89,45 @@ def summarize_value_page(page: PageLike) -> np.ndarray:
     return _decode_page_dense(page).mean(axis=0)
 
 
+def envelope_key_page(page: PageLike) -> tuple[np.ndarray, np.ndarray]:
+    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    if source_page.runtime_page_min is not None and source_page.runtime_page_max is not None:
+        return (
+            np.asarray(source_page.runtime_page_min, dtype=np.float32),
+            np.asarray(source_page.runtime_page_max, dtype=np.float32),
+        )
+    dense = _decode_page_dense(page)
+    return (
+        dense.min(axis=0).astype(np.float32, copy=False),
+        dense.max(axis=0).astype(np.float32, copy=False),
+    )
+
+
+def score_page_relevance(
+    query_slice: np.ndarray,
+    *,
+    relevance_mode: RelevanceMode,
+    page_sketch: np.ndarray | None = None,
+    page_min: np.ndarray | None = None,
+    page_max: np.ndarray | None = None,
+) -> float:
+    query = np.asarray(query_slice, dtype=np.float32)
+    if relevance_mode == "sketch":
+        if page_sketch is None:
+            raise ValueError("sketch relevance requires page_sketch")
+        return float(np.max(np.asarray(page_sketch, dtype=np.float32) @ query))
+    if relevance_mode == "envelope":
+        if page_min is None or page_max is None:
+            raise ValueError("envelope relevance requires page_min and page_max")
+        positive_query = np.maximum(query, 0.0)
+        negative_query = np.minimum(query, 0.0)
+        return float(
+            np.asarray(page_max, dtype=np.float32) @ positive_query
+            + np.asarray(page_min, dtype=np.float32) @ negative_query
+        )
+    raise ValueError(f"unsupported relevance_mode: {relevance_mode}")
+
+
 def select_window_page_indices(
     key_pages: Sequence[PageLike],
     *,
@@ -123,7 +162,10 @@ def select_execution_page_indices(
     sink_window_tokens: int = 0,
     query_slice: np.ndarray | None = None,
     key_page_sketches: Sequence[np.ndarray] | None = None,
+    key_page_minima: Sequence[np.ndarray] | None = None,
+    key_page_maxima: Sequence[np.ndarray] | None = None,
     relevance_top_k: int = 0,
+    relevance_mode: RelevanceMode = "sketch",
 ) -> list[int]:
     if not key_pages:
         return []
@@ -136,25 +178,46 @@ def select_execution_page_indices(
     )
 
     if relevance_top_k > 0:
-        if query_slice is None or key_page_sketches is None:
-            raise ValueError("relevance gating requires query_slice and key_page_sketches")
-        if len(key_page_sketches) != len(key_pages):
-            raise ValueError("key_page_sketches must align with key_pages")
+        if query_slice is None:
+            raise ValueError("relevance gating requires query_slice")
         candidate_indices = [index for index in range(len(key_pages)) if index not in selected_indices]
         if candidate_indices:
-            scores = [
-                float(
-                    np.max(
-                        np.asarray(key_page_sketches[index], dtype=np.float32)
-                        @ np.asarray(query_slice, dtype=np.float32)
-                    )
+            query = np.asarray(query_slice, dtype=np.float32)
+            if relevance_mode == "sketch":
+                if key_page_sketches is None:
+                    raise ValueError("sketch relevance gating requires key_page_sketches")
+                if len(key_page_sketches) != len(key_pages):
+                    raise ValueError("key_page_sketches must align with key_pages")
+                candidate_sketches = np.stack(
+                    [np.asarray(key_page_sketches[index], dtype=np.float32) for index in candidate_indices],
+                    axis=0,
                 )
-                for index in candidate_indices
-            ]
+                scores = np.max(candidate_sketches @ query, axis=1).astype(np.float32, copy=False)
+            elif relevance_mode == "envelope":
+                if key_page_minima is None or key_page_maxima is None:
+                    raise ValueError("envelope relevance gating requires page minima and maxima")
+                if len(key_page_minima) != len(key_pages) or len(key_page_maxima) != len(key_pages):
+                    raise ValueError("page minima and maxima must align with key_pages")
+                positive_query = np.maximum(query, 0.0)
+                negative_query = np.minimum(query, 0.0)
+                candidate_minima = np.stack(
+                    [np.asarray(key_page_minima[index], dtype=np.float32) for index in candidate_indices],
+                    axis=0,
+                )
+                candidate_maxima = np.stack(
+                    [np.asarray(key_page_maxima[index], dtype=np.float32) for index in candidate_indices],
+                    axis=0,
+                )
+                scores = (candidate_maxima @ positive_query + candidate_minima @ negative_query).astype(
+                    np.float32,
+                    copy=False,
+                )
+            else:
+                raise ValueError(f"unsupported relevance_mode: {relevance_mode}")
             ranked_candidates = [
                 index
                 for _, index in sorted(
-                    zip(scores, candidate_indices, strict=True),
+                    zip(scores.tolist(), candidate_indices, strict=True),
                     key=lambda item: item[0],
                     reverse=True,
                 )
@@ -174,7 +237,10 @@ def select_execution_page_pairs(
     sink_window_tokens: int = 0,
     query_slice: np.ndarray | None = None,
     key_page_sketches: Sequence[np.ndarray] | None = None,
+    key_page_minima: Sequence[np.ndarray] | None = None,
+    key_page_maxima: Sequence[np.ndarray] | None = None,
     relevance_top_k: int = 0,
+    relevance_mode: RelevanceMode = "sketch",
 ) -> tuple[list[PageLike], list[PageLike]]:
     if len(key_pages) != len(value_pages):
         raise ValueError("key_pages and value_pages must contain the same number of pages")
@@ -192,7 +258,10 @@ def select_execution_page_pairs(
         sink_window_tokens=sink_window_tokens,
         query_slice=query_slice,
         key_page_sketches=key_page_sketches,
+        key_page_minima=key_page_minima,
+        key_page_maxima=key_page_maxima,
         relevance_top_k=relevance_top_k,
+        relevance_mode=relevance_mode,
     )
     return (
         [key_pages[index] for index in selected_indices],
@@ -208,11 +277,14 @@ class PagedDecodeSession:
     sink_window_tokens: int = 0
     relevance_top_k: int = 0
     relevance_sketch_size: int = 1
+    relevance_mode: RelevanceMode = "sketch"
     exact_refine_top_k: int = 0
     approximate_old_pages: bool = False
     key_pages: list[PageLike] = field(default_factory=list)
     value_pages: list[PageLike] = field(default_factory=list)
     key_page_sketches: list[np.ndarray] = field(default_factory=list)
+    key_page_minima: list[np.ndarray] = field(default_factory=list)
+    key_page_maxima: list[np.ndarray] = field(default_factory=list)
     value_page_summaries: list[np.ndarray] = field(default_factory=list)
     last_selected_indices: list[int] = field(default_factory=list)
 
@@ -220,6 +292,8 @@ class PagedDecodeSession:
         self.key_pages.clear()
         self.value_pages.clear()
         self.key_page_sketches.clear()
+        self.key_page_minima.clear()
+        self.key_page_maxima.clear()
         self.value_page_summaries.clear()
         self.last_selected_indices.clear()
         if self.cache is not None:
@@ -263,6 +337,10 @@ class PagedDecodeSession:
         self.key_page_sketches.extend(
             sketch_key_page(page, sketch_size=self.relevance_sketch_size) for page in prepared_key_pages
         )
+        for page in prepared_key_pages:
+            page_min, page_max = envelope_key_page(page)
+            self.key_page_minima.append(page_min)
+            self.key_page_maxima.append(page_max)
         self.value_page_summaries.extend(summarize_value_page(page) for page in prepared_value_pages)
 
     def execution_pages(self, query_slice: np.ndarray | None = None) -> tuple[list[PageLike], list[PageLike]]:
@@ -273,7 +351,10 @@ class PagedDecodeSession:
             sink_window_tokens=self.sink_window_tokens,
             query_slice=query_slice,
             key_page_sketches=self.key_page_sketches,
+            key_page_minima=self.key_page_minima,
+            key_page_maxima=self.key_page_maxima,
             relevance_top_k=self.relevance_top_k,
+            relevance_mode=self.relevance_mode,
         )
 
     def execution_indices(
@@ -296,7 +377,10 @@ class PagedDecodeSession:
             sink_window_tokens=self.sink_window_tokens,
             query_slice=query_slice,
             key_page_sketches=self.key_page_sketches,
+            key_page_minima=self.key_page_minima,
+            key_page_maxima=self.key_page_maxima,
             relevance_top_k=self.relevance_top_k,
+            relevance_mode=self.relevance_mode,
         )
         if query_slice is None or self.exact_refine_top_k <= 0 or self.relevance_top_k <= 0:
             return stage1_indices, {}
@@ -381,7 +465,13 @@ class PagedDecodeSession:
                 all_logits.append(logits)
                 max_logit = max(max_logit, float(np.max(logits)))
                 continue
-            page_score = float(np.max(self.key_page_sketches[index] @ query))
+            page_score = score_page_relevance(
+                query,
+                relevance_mode=self.relevance_mode,
+                page_sketch=self.key_page_sketches[index],
+                page_min=self.key_page_minima[index],
+                page_max=self.key_page_maxima[index],
+            )
             logits = np.full(page.header.token_count, page_score, dtype=np.float32)
             all_logits.append(logits)
             max_logit = max(max_logit, page_score)

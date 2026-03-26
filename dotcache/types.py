@@ -54,6 +54,8 @@ class EncodedPage:
     escape_payload: np.ndarray | None = None
     runtime_page_mean: np.ndarray | None = None
     runtime_page_sketch: np.ndarray | None = None
+    runtime_page_min: np.ndarray | None = None
+    runtime_page_max: np.ndarray | None = None
     full_page_decode_calls: int = 0
     decode_group_calls: int = 0
 

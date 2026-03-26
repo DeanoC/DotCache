@@ -65,8 +65,12 @@ def test_encode_page_stores_runtime_sketch_metadata() -> None:
 
     assert page.runtime_page_mean is not None
     assert page.runtime_page_sketch is not None
+    assert page.runtime_page_min is not None
+    assert page.runtime_page_max is not None
     assert page.runtime_page_mean.shape == (config.head_dim,)
     assert page.runtime_page_sketch.shape == (4, config.head_dim)
+    assert page.runtime_page_min.shape == (config.head_dim,)
+    assert page.runtime_page_max.shape == (config.head_dim,)
 
 
 def test_select_execution_page_pairs_keeps_sink_and_recent_pages() -> None:
@@ -160,6 +164,32 @@ def test_select_execution_page_indices_prefers_chunk_sketch_match_over_page_mean
 
     assert selected_with_mean != [0, 2, 4]
     assert selected_with_chunked == [0, 2, 4]
+
+
+def test_select_execution_page_indices_envelope_admits_spiky_old_page() -> None:
+    rng = np.random.default_rng(203)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, tokens_per_page=64)
+    keys = rng.normal(size=(5 * config.tokens_per_page, config.head_dim)).astype(np.float32) * 0.01
+    key_pages = _encode_paged(keys, config, kind="K")
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    minima = [np.full(config.head_dim, -1.0, dtype=np.float32) for _ in key_pages]
+    maxima = [np.full(config.head_dim, -1.0, dtype=np.float32) for _ in key_pages]
+    maxima[2][0] = 10.0
+
+    selected_indices = select_execution_page_indices(
+        key_pages,
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        query_slice=query,
+        key_page_minima=minima,
+        key_page_maxima=maxima,
+        relevance_top_k=1,
+        relevance_mode="envelope",
+    )
+
+    assert selected_indices == [0, 2, 4]
 
 
 @requires_mps
@@ -632,6 +662,48 @@ def test_paged_decode_session_exact_refine_matches_selected_page_reference_on_mp
         relevance_top_k=2,
         relevance_sketch_size=4,
         exact_refine_top_k=1,
+    )
+    session.preload(key_pages, value_pages)
+    selected_indices = session.execution_indices(query)
+    selected_key_pages = [key_pages[index] for index in selected_indices]
+    selected_value_pages = [value_pages[index] for index in selected_indices]
+
+    exec_trace = ExecutionTrace()
+    logits, weights, output = session.decode(query, trace=exec_trace)
+    ref_logits, ref_weights, ref_output = decode_step(
+        query,
+        selected_key_pages,
+        selected_value_pages,
+        backend="cpu_ref",
+    )
+
+    np.testing.assert_allclose(logits, ref_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(weights, ref_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(output, ref_output, atol=1e-4, rtol=1e-4)
+    assert [page.header.token_start for page in selected_key_pages] == [0, 128, 256]
+    assert exec_trace.host_to_device_bytes == 0
+
+
+@requires_mps
+def test_paged_decode_session_envelope_relevance_matches_selected_page_reference_on_mps() -> None:
+    rng = np.random.default_rng(135)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 320
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32) * 0.02
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    keys[128:129, 0] += 7.0
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    session = PagedDecodeSession(
+        backend="torch_mps",
+        cache=PreparedPageCache(),
+        recent_window_tokens=64,
+        sink_window_tokens=64,
+        relevance_top_k=1,
+        relevance_mode="envelope",
     )
     session.preload(key_pages, value_pages)
     selected_indices = session.execution_indices(query)
