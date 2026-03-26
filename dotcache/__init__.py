@@ -12,11 +12,13 @@ from .planner import choose_mode
 from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
+from .model_kv_cache import ModelPagedKVCache
 
 __all__ = [
     "DotCacheConfig",
     "EncodedPage",
     "ExecutionTrace",
+    "ModelPagedKVCache",
     "PageHeader",
     "PagedDecodeSession",
     "PreparedPageCache",
@@ -32,3 +34,26 @@ __all__ = [
     "score_page",
     "score_page_ref",
 ]
+
+try:  # pragma: no cover - optional HF path
+    from .integrations import (
+        LlamaDotCacheHarness,
+        LlamaDotCacheModelAdapter,
+        LlamaReplayRecord,
+        run_llama_generation_harness,
+        run_llama_replay_harness,
+        transformers_available,
+    )
+except ImportError:  # pragma: no cover - exercised when optional deps are absent
+    pass
+else:
+    __all__.extend(
+        [
+            "LlamaDotCacheHarness",
+            "LlamaDotCacheModelAdapter",
+            "LlamaReplayRecord",
+            "run_llama_generation_harness",
+            "run_llama_replay_harness",
+            "transformers_available",
+        ]
+    )

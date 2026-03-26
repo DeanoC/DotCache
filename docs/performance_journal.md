@@ -10,6 +10,24 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 Current branch head: `working_tree`
 
+### Phase 5 model-integration snapshot
+
+The first exact Llama-family integration path is now implemented in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py) on top of [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py).
+
+Latest tiny-random Llama smoke runs:
+
+| Backend | Prompt Len | Decode Steps | Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
+|---|---:|---:|---:|---:|---:|
+| `cpu_ref` | `6` | `3` | `2.54` | `1.00` | `0.111` |
+| `torch_mps` | `6` | `2` | `50.61` | `0.667` | `0.080` |
+
+That is the right honest read of the new path:
+
+- the narrow Phase 5 harness works end to end on both CPU and this M4 MPS path
+- the CPU tiny-random smoke run kept full greedy agreement over the tested steps
+- the MPS tiny-random smoke run is operational, but it still shows meaningful model-level drift even when the teacher-forced logit delta stays numerically modest
+- this is still a correctness-and-integration milestone first, not yet a model-level quality or throughput win
+
 Latest exact session baseline on the M4 profile:
 
 - command: `.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8`

@@ -41,6 +41,12 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev,mps]"
 ```
 
+5. Optional Hugging Face dependency for the Phase 5 model-integration path:
+
+```bash
+.venv/bin/pip install -e ".[dev,mps,hf]"
+```
+
 ## Current package layout
 
 ```text
@@ -56,6 +62,48 @@ scripts/
 ## Status
 
 This is the CPU-reference bootstrap, not the final runtime. The next logical step on this M4 Mac is a `torch_mps` execution backend that reuses the same page format and correctness harness.
+
+## Phase 5 Llama Integration
+
+The repo now includes a narrow Phase 5 model-integration path in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py):
+
+- one Llama-family architecture path only
+- dense prefill
+- exact full-context DotCache decode only
+- batch=1 greedy generation only
+- no `generate()` patching, beam search, sampling, or vLLM integration in this phase
+
+The public model-facing bridge is [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py). It keeps per-layer, per-KV-head exact sessions and adds a tail-page builder so token-by-token append does not degenerate into persistent one-token pages.
+
+For a local no-download smoke benchmark, use:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cpu --max-new-tokens 4
+```
+
+On this M4, the same harness can also run on MPS:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend torch_mps --device mps --max-new-tokens 3
+```
+
+For the intended real-model path, the benchmark defaults to TinyLlama:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --backend torch_mps --device mps --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+```
+
+That benchmark reports:
+
+- prompt length
+- dense prefill time
+- prefill-cache ingest time
+- per-step decode time
+- internal append/decode runtime split inside the DotCache path
+- host-to-device bytes
+- resident bytes
+- greedy token agreement versus the dense path
+- teacher-forced logit drift versus the dense path
 
 ## MPS Tuning Notes
 
