@@ -399,6 +399,7 @@ class LlamaDotCacheModelAdapter:
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
             self.model_kv_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values, trace=trace)
+        self.model_kv_cache.prepare_static_pages(trace=trace)
 
     def load_prefill_cache_tensors(
         self,
@@ -411,6 +412,7 @@ class LlamaDotCacheModelAdapter:
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
             self.model_kv_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values, trace=trace)
+        self.model_kv_cache.prepare_static_pages(trace=trace)
 
 
 @dataclass(slots=True)

@@ -497,6 +497,35 @@ class ModelPagedKVCache:
             state.clear(clear_prepared_cache=False)
         self.cache.clear()
 
+    def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
+        if self.backend not in {"torch_mps", "auto"} or not mps_available():
+            return
+        key_refs: list[tuple[_HeadSessionState, int]] = []
+        key_pages: list[PageLike] = []
+        value_refs: list[tuple[_HeadSessionState, int]] = []
+        value_pages: list[PageLike] = []
+
+        for state in self._states.values():
+            for index, page in enumerate(state.session.key_pages):
+                if isinstance(page, PreparedPageMPS):
+                    continue
+                key_refs.append((state, index))
+                key_pages.append(page)
+            for index, page in enumerate(state.session.value_pages):
+                if isinstance(page, PreparedPageMPS):
+                    continue
+                value_refs.append((state, index))
+                value_pages.append(page)
+
+        if key_pages:
+            prepared_keys = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
+            for (state, index), prepared in zip(key_refs, prepared_keys, strict=True):
+                state.session.key_pages[index] = prepared
+        if value_pages:
+            prepared_values = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
+            for (state, index), prepared in zip(value_refs, prepared_values, strict=True):
+                state.session.value_pages[index] = prepared
+
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
             raise ValueError(f"layer_id must be in [0, {self.num_hidden_layers})")

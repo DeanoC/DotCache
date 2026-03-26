@@ -40,12 +40,12 @@ Latest real TinyLlama MPS checkpoints on this Mac:
 | On-device K/V append | `188.64` | `16.76` | `0` | `1.00` | `0.0625` |
 | On-device short-prompt prefill ingest | `149.40` | `4.55` | prefill `0`, decode `0` | `1.00` | `0.0625` |
 
-Longer-prompt exact TinyLlama checks after deferring full-page prefill preparation and letting decode warm the cache:
+Longer-prompt exact TinyLlama checks after prewarming deferred full pages once through the prepared-page cache:
 
 | Prompt Len | Prefill Ingest ms | Prefill Ingest H2D Bytes | Decode ms/step | Decode H2D Bytes/Step | Append ms/step | Greedy Agreement |
 |---|---:|---:|---:|---:|---:|---:|
-| `289` | `86.85` | `0` | `415.01` | `600,746.67` | `4.41` | `1.00` |
-| `577` | `105.21` | `0` | `432.13` | `1,201,493.33` | `4.38` | `1.00` |
+| `289` | `95.67` | `1,802,240` | `261.63` | `0` | `5.24` | `1.00` |
+| `577` | `103.45` | `3,604,480` | `351.09` | `0` | `4.71` | `1.00` |
 
 The current Phase 5 read is:
 
@@ -56,7 +56,7 @@ The current Phase 5 read is:
 - keeping the exact model-path query/context tensors on device pulled wall-clock decode back down near the better persistent-tail runs while preserving the lower append cost from batched tail uploads
 - keeping per-step `K`/`V` append on device removes model-path upload traffic entirely; short-run latency still has some benchmark noise, but the zero-upload result is durable and the end-to-end path is back in the high-100ms/step range instead of the 200ms-plus range
 - keeping short-prompt prefill KV ingest on device removes the last obvious host handoff in the exact TinyLlama path for prompts that stay inside the live tail; on the current 10-token prompt, both prefill ingest and decode now run with `0` host-to-device bytes
-- for prompts longer than one page, deferring full-page prefill preparation works better than eager prepare once the decode path uses the prepared-page cache correctly: ingest drops to `0` upload bytes, decode only pays a one-time warmup-style upload that averages down across steps, and total exact runtime improves versus the eager-prep version
+- for prompts longer than one page, prewarming the deferred full pages once through the prepared-page cache is a better operating point than paying that upload on the first decode step: prefill ingest stays near `100 ms` with the vectorized packing path, decode upload drops to `0`, and long-prompt decode time improves substantially
 - vectorizing the CPU bit-packing path takes the next big bite out of long-prompt prefill work: with the deferred-prefill path in place, prefill ingest falls from roughly `975/1892 ms` down to about `87/105 ms` for the `289` and `577` token prompts while preserving exact greedy agreement
 
 Latest exact session baseline on the M4 profile:
