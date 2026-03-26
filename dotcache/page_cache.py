@@ -43,6 +43,9 @@ class PreparedPageCache:
         self._order.clear()
 
     def _page_nbytes(self, page: PreparedPageTorch) -> int:
+        resident_nbytes = int(page.resident_nbytes)
+        if resident_nbytes > 0:
+            return resident_nbytes
         return int(page.host_to_device_nbytes)
 
     def _pinned_keys(self) -> set[int]:
@@ -81,7 +84,7 @@ class PreparedPageCache:
             return True
         if fallback_key is not None:
             self._order.pop(fallback_key, None)
-            cached_page = self._mps_pages.pop(fallback_key, None)
+            cached_page = self._prepared_pages.pop(fallback_key, None)
             if cached_page is None:
                 return False
             evicted_bytes = self._page_nbytes(cached_page)

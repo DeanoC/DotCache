@@ -8,11 +8,11 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `f851870`
+Current branch head: `2a84af0` plus pending merge from `main@b17ae4b`
 
 ### First NVIDIA CUDA snapshot
 
-The new eager `torch_cuda` backend now runs on this NVIDIA RTX 2000 Ada machine through the same shared torch accelerator path as `torch_mps`.
+The new eager `torch_cuda` backend now runs on an NVIDIA RTX 2000 Ada machine through the same shared torch accelerator path as `torch_mps`.
 
 First decode-step ladder on `torch_cuda`:
 
@@ -23,37 +23,17 @@ First decode-step ladder on `torch_cuda`:
 | `1024` | `0.66` | `6.86` | `163,840` | `1.10e-05` | `2.62e-06` |
 | `4096` | `2.38` | `21.50` | `655,360` | `1.53e-05` | `7.15e-07` |
 
-That is the right first microbench read of the CUDA port:
-
-- the shared torch accelerator refactor is numerically stable on CUDA
-- exact compressed-domain decode runs with `0` execution-time host-to-device bytes once pages are prepared
-- latency scales cleanly with context in the current eager path
-- the remaining work is performance work, not correctness rescue
-
 First exact session-shaped CUDA checkpoint at `4096` context:
 
 | Backend | Preload ms | Append ms/step | Decode ms/step | Session ms/step | Decode H2D Bytes/Step | Max Abs Error |
 |---|---:|---:|---:|---:|---:|---:|
 | `torch_cuda` | `10.47` | `0.39` | `33.11` | `33.50` | `0` | `2.15e-06` |
 
-Compared with the CPU reference on the same benchmark:
-
-- CPU decode landed at `14.28 ms/step`
-- CUDA exact DotCache decode landed at `33.11 ms/step`
-- the current eager CUDA path is still about `0.43x` of CPU decode speed on this synthetic exact session benchmark
-- append is already cheap, and decode upload churn is gone; the main remaining gap is the eager page kernel itself
-
 Latest tiny-random LLaMA smoke run on CUDA:
 
 | Backend | Prompt Len | Decode Steps | Decode ms/step | Dense Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
 |---|---:|---:|---:|---:|---:|---:|
 | `torch_cuda` | `6` | `3` | `17.65` | `4.24` | `1.00` | `9.79e-05` |
-
-That confirms the model path is working correctly on CUDA:
-
-- the Phase 5 LLaMA harness runs end to end on `cuda`
-- greedy agreement stayed exact over the tested steps
-- decode and prefill ingest both ran with `0` host-to-device bytes after the on-device torch path was selected
 
 First real TinyLlama dense-vs-DotCache CUDA comparison:
 
@@ -63,20 +43,6 @@ First real TinyLlama dense-vs-DotCache CUDA comparison:
 | `289` | `22.31` | `132.15` | `13,156,352` | `7,569,408` | `0.58x` | `1.00` |
 | `577` | `23.49` | `134.48` | `26,132,480` | `9,371,648` | `0.36x` | `1.00` |
 
-That is the honest first CUDA model-level read:
-
-- the CUDA port is functionally correct on a real TinyLlama checkpoint with full greedy agreement at all tested prompt lengths
-- dense CUDA KV is still much faster on decode than the current eager DotCache path
-- the KV-memory crossover is already visible by `289` prompt tokens, where DotCache drops to about `58%` of dense KV bytes
-- by `577` prompt tokens, DotCache is down to about `36%` of dense KV bytes while still trailing on decode latency
-- short-prompt overhead is still dominated by resident prepared-tail machinery, so DotCache is much worse than dense on KV bytes at `10` prompt tokens
-- the first CUDA pass is therefore a successful parity port, not yet a performance win
-
-One operational note from the first real-model CUDA run:
-
-- the initial TinyLlama download hit a Hugging Face `429` rate limit once and then recovered on retry
-- the benchmark still completed and was recorded successfully in the history log
-
 First higher-context CUDA frontier probe on SmolLM2 360M:
 
 | Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | Dense Final KV Bytes | DotCache Resident Bytes | DotCache/Dense KV Ratio | Status |
@@ -85,13 +51,12 @@ First higher-context CUDA frontier probe on SmolLM2 360M:
 | `4096` | `38.95` | `655.83` | `335,790,080` | `62,914,560` | `0.19x` | Exact greedy agreement |
 | `8188` | - | - | - | - | - | Dense CUDA OOM |
 
-That is the first useful bigger-model / bigger-KV read on this GPU:
+That is the right first CUDA read:
 
-- this 16 GB card comfortably supports exact `2048` and `4096` token SmolLM2 360M runs on the CUDA model path
-- the current eager DotCache CUDA path still trails dense CUDA badly on decode at those lengths
-- KV-memory savings are already strong at higher context, dropping to about `22%` of dense at `2048` and `19%` at `4096`
-- the max-practical `8188` prompt OOMed the dense CUDA baseline on this first pass, so the next optimization loop should focus on `2048` and `4096` first, not on pushing context farther immediately
-- the most obvious next bottlenecks on CUDA are exact decode kernel cost and prefill-cache ingest cost, not correctness
+- the shared torch accelerator refactor is numerically stable on CUDA
+- the real LLaMA harness runs end to end on CUDA with exact greedy agreement on the recorded cases
+- exact compressed-domain decode runs with `0` execution-time host-to-device bytes once pages are prepared
+- KV-memory savings show up on real models, but the current eager CUDA path is still a correctness-first parity port, not yet a decode-speed win
 
 ### Phase 5 model-integration snapshot
 
@@ -231,6 +196,67 @@ Latest SmolLM2 midrange decode-scheduling checkpoint:
 - on a new one-load `2048` rerun, DotCache decode landed at `449.96 ms/step`, down from the earlier noisy `659.60 ms/step`
 - the standalone `2048` refresh still remains the max-case number to trust most on this machine at `402.70 ms/step`
 - an exploratory standalone `1792` point completed successfully with DotCache decode at `487.08 ms/step` and the same strong KV-memory reduction, but the dense side was noisy there too, so it is not yet a clean crossover marker
+
+Latest SmolLM2 FP32-affine metadata checkpoint:
+
+- storing M0 affine `scales` and `bias` as FP32 on device at page-preparation time removed the repeated decode-time casts from the hot MPS kernels
+- on the one-load exact-length rerun, DotCache decode moved to `306.09 ms/step` at `1024`, `262.43 ms/step` at `1536`, and `402.62 ms/step` at `2048`
+- the matching DotCache resident KV bytes increased from about `23.59/30.15/36.70 MB` to about `26.21/34.08/41.94 MB` at `1024/1536/2048`
+- a fresh standalone `1536` rerun landed at `285.99 ms/step` DotCache decode with the same greedy agreement and a `34.08 MB` resident KV footprint
+- the honest read is that this is a good MPS trade on this machine: a noticeable DotCache decode-speed win for a moderate KV-resident-memory increase, while staying far below dense KV bytes at the same prompt lengths
+
+Latest SmolLM2 static prepared-chunk cache checkpoint:
+
+- preparing static prefill pages once in the model decode-view path unlocked reuse of the new stacked M0 chunk cache across repeated grouped MPS decodes instead of rebuilding fresh prepared-page identities every step
+- on the one-load exact-length rerun, DotCache decode moved to `252.20 ms/step` at `1024`, `234.30 ms/step` at `1536`, and `578.09 ms/step` at `2048`
+- versus the earlier FP32-affine metadata checkpoint, that is a clear DotCache-side improvement at `1024` and `1536`:
+  `306.09 -> 252.20 ms/step` at `1024`
+  `262.43 -> 234.30 ms/step` at `1536`
+- the tradeoff is higher resident DotCache KV bytes because the stacked static chunk tensors now stay resident:
+  `26.21 -> 29.36 MB` at `1024`
+  `34.08 -> 38.80 MB` at `1536`
+  `41.94 -> 48.23 MB` at `2048`
+- standalone `1536` and `2048` refreshes were still noisy on the dense side and also showed very unstable prefill timings on MPS, so they should not replace the earlier trusted frontier points by themselves
+- the honest read is that this is another good MPS trade for the real model path: better DotCache decode throughput at the cost of a moderate additional resident-memory increase inside DotCache, while still remaining well below dense KV bytes at the same prompt lengths
+
+Rejected SmolLM2 hard-capped prepared-chunk cache checkpoint:
+
+- bounding the static prepared-chunk cache to a hard `4 MiB` resident budget preserved correctness, but it gave back too much of the decode win
+- on the one-load exact-length rerun, DotCache decode regressed to `563.95 ms/step` at `1024` and `560.93 ms/step` at `1536`
+- resident DotCache KV did come down modestly to about `29.36 MB` at `1024` and `38.21 MB` at `1536`, but that was nowhere near enough to justify the large throughput loss
+- this should be treated as a losing case: the hard budget was too tight for the grouped static-page reuse pattern on this model
+
+Latest SmolLM2 payload-only prepared-chunk cache checkpoint:
+
+- shrinking the static prepared-chunk cache to retain stacked payload tensors only, while recomputing the lighter affine stacks on demand, gave a much healthier speed-memory trade than the hard-capped experiment
+- on the one-load exact-length rerun, DotCache decode landed at:
+  `249.34 ms/step` at `1024`
+  `282.24 ms/step` at `1536`
+  `266.04 ms/step` at `2048`
+- matching resident DotCache KV bytes landed at:
+  `28.31 MB` at `1024`
+  `37.22 MB` at `1536`
+  `46.14 MB` at `2048`
+- versus the earlier full static-chunk cache, this payload-only variant trims about `1.05 MB` at `1024`, `1.57 MB` at `1536`, and `2.10 MB` at `2048`
+- the honest read is that this is a plausible default compromise for now: it avoids the severe regression from the hard-capped cache and still buys back some resident memory, but the `1536` throughput tradeoff is mixed enough that more tuning would still be welcome
+
+Experimental SmolLM2 key-only prepared-chunk cache checkpoint:
+
+- forcing the static prepared-chunk cache to keep only key-side chunks was a reasonable workload-shaped hypothesis, since score-side chunk reuse is often more valuable than value-side reuse
+- on the one-load exact-length rerun, DotCache decode landed at:
+  `226.81 ms/step` at `1024`
+  `276.20 ms/step` at `1536`
+  `396.96 ms/step` at `2048`
+- that is a small improvement over the payload-only default at `1024` and `1536`, but a clear regression at `2048`
+- the recorded resident DotCache KV bytes were effectively unchanged from the payload-only checkpoint on this ladder, so this did not buy the memory reduction we would want in exchange for the longer-context regression
+- the honest read is that key-only cache selection is worth keeping as experimental infrastructure, but it should not replace the broader payload-only default on this branch
+
+Rejected M3 FP32 escape-payload experiment:
+
+- keeping `M3` escape payloads resident as FP32 on device looked promising for live-tail decode, but the real-model measurements went the wrong way
+- short TinyLlama decode regressed to about `179.62 ms/step` and resident KV jumped to about `11.53 MB`
+- SmolLM2 exact `256` also regressed to about `160.61 ms/step` with resident KV rising to about `24.90 MB`, which was worse than the existing mixed-path checkpoint
+- we kept the benchmark records in [history.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/history.jsonl) and reverted the code, so this should be treated as an explored losing case rather than the new path forward
 
 The current Phase 5 read is:
 

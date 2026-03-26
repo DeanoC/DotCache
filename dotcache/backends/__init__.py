@@ -15,6 +15,8 @@ from .torch_cuda import (
     score_pages_cuda,
 )
 from .torch_mps import (
+    clear_prepared_chunk_cache,
+    configure_prepared_chunk_cache,
     decode_grouped_multiquery_step_prepared_mps_tensor,
     decode_grouped_multiquery_step_mps_tensor,
     decode_grouped_multiquery_step_prepared_torch_tensor,
@@ -35,6 +37,7 @@ from .torch_mps import (
     prepare_page_torch,
     prepare_pages_mps,
     prepare_pages_torch,
+    prepared_chunk_cache_resident_bytes,
     score_pages_mps,
     score_pages_torch,
     score_page_mps,
@@ -44,6 +47,8 @@ from .torch_mps import (
 )
 
 __all__ = [
+    "clear_prepared_chunk_cache",
+    "configure_prepared_chunk_cache",
     "cuda_available",
     "decode_grouped_multiquery_step_cuda_tensor",
     "decode_grouped_multiquery_step_prepared_cuda_tensor",
@@ -77,6 +82,7 @@ __all__ = [
     "prepare_pages_cuda",
     "prepare_pages_torch",
     "prepare_pages_mps",
+    "prepared_chunk_cache_resident_bytes",
     "score_pages_cuda",
     "score_pages_torch",
     "score_pages_mps",

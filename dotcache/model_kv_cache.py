@@ -8,10 +8,12 @@ import numpy as np
 from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
 from .backends import (
     PreparedPageTorch,
+    clear_prepared_chunk_cache,
     cuda_available,
     decode_grouped_multiquery_step_prepared_torch_tensor,
     decode_multi_query_step_torch_tensor,
     mps_available,
+    prepared_chunk_cache_resident_bytes,
 )
 from .config import DotCacheConfig
 from .encode import encode_page
@@ -604,12 +606,14 @@ class ModelPagedKVCache:
                 tail_resident_bytes += state.persistent_key_tail.resident_nbytes
             if state.persistent_value_tail is not None:
                 tail_resident_bytes += state.persistent_value_tail.resident_nbytes
-        return self.cache.resident_bytes + tail_resident_bytes
+        chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self._torch_device_type == "mps" else 0
+        return self.cache.resident_bytes + tail_resident_bytes + chunk_resident_bytes
 
     def clear(self) -> None:
         for state in self._states.values():
             state.clear(clear_prepared_cache=False)
         self.cache.clear()
+        clear_prepared_chunk_cache()
 
     def _grouped_query_heads_for_mapping(self, q_head_to_kv_head: Sequence[int] | np.ndarray) -> tuple[tuple[int, ...], ...]:
         mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
@@ -693,6 +697,31 @@ class ModelPagedKVCache:
             for (state, index), prepared in zip(value_refs, prepared_values, strict=True):
                 state.session.value_pages[index] = prepared
                 state.invalidate_decode_views()
+
+    def _ensure_prepared_static_pages(
+        self,
+        state: _HeadSessionState,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        if self._torch_device_type is None:
+            return
+        if state.session.key_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
+            state.session.key_pages = prepare_pages(
+                state.session.key_pages,
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )
+            state.invalidate_decode_views()
+        if state.session.value_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages):
+            state.session.value_pages = prepare_pages(
+                state.session.value_pages,
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )
+            state.invalidate_decode_views()
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
@@ -1145,6 +1174,7 @@ class ModelPagedKVCache:
         trace: ExecutionTrace | None = None,
     ) -> tuple[list[PageLike], list[PageLike]]:
         state = self._state(layer_id, kv_head_id)
+        self._ensure_prepared_static_pages(state, trace=trace)
         if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
             prepared_key_tail = state.persistent_key_tail.active_page
             prepared_value_tail = state.persistent_value_tail.active_page

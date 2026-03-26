@@ -781,7 +781,7 @@ def test_prepared_page_cache_evicts_oldest_pages_when_capacity_is_capped() -> No
 
     warm_trace = ExecutionTrace()
     warm_page = prepare_page(page_a, backend="torch_mps")
-    cache = PreparedPageCache(max_resident_bytes=warm_page.host_to_device_nbytes)
+    cache = PreparedPageCache(max_resident_bytes=warm_page.resident_nbytes)
     cache.append_page(page_a, trace=warm_trace)
 
     evict_trace = ExecutionTrace()
@@ -789,8 +789,8 @@ def test_prepared_page_cache_evicts_oldest_pages_when_capacity_is_capped() -> No
 
     assert cache.size == 1
     assert evict_trace.prepared_page_cache_evictions == 1
-    assert evict_trace.cache_evicted_bytes == warm_page.host_to_device_nbytes
-    assert cache.resident_bytes == warm_page.host_to_device_nbytes
+    assert evict_trace.cache_evicted_bytes == warm_page.resident_nbytes
+    assert cache.resident_bytes == warm_page.resident_nbytes
 
 
 @requires_mps
@@ -805,7 +805,7 @@ def test_lru_policy_keeps_recently_reused_page_resident() -> None:
     page_c = encode_page(keys_c, config, kind="K", token_start=2 * config.tokens_per_page)
 
     sample_prepared = prepare_page(page_a, backend="torch_mps")
-    capacity = sample_prepared.host_to_device_nbytes * 2
+    capacity = sample_prepared.resident_nbytes * 2
     cache = PreparedPageCache(max_resident_bytes=capacity, policy="lru")
 
     cache.append_pages([page_a, page_b])
@@ -840,7 +840,7 @@ def test_pinned_recent_fifo_keeps_newest_page_resident_under_pressure() -> None:
     page_c = encode_page(keys_c, config, kind="K", token_start=2 * config.tokens_per_page)
 
     sample_prepared = prepare_page(page_a, backend="torch_mps")
-    capacity = sample_prepared.host_to_device_nbytes * 2
+    capacity = sample_prepared.resident_nbytes * 2
     cache = PreparedPageCache(max_resident_bytes=capacity, policy="pinned_recent_fifo", pinned_recent_pages=1)
 
     cache.append_pages([page_a, page_b])
