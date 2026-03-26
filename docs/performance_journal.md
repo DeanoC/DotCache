@@ -4,6 +4,7 @@ This file is the high-signal running summary of what we tried, what moved, and w
 
 Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/history.jsonl).
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
+The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
 ## Current Status
 
@@ -69,6 +70,19 @@ That heuristic was a useful experiment, but not a clear upgrade:
 - At `16384`, it reduced error a little versus the fixed profile, but it gave back a lot of latency.
 - For now, the fixed `256/1024/4` profile remains the simpler and better default approximate path on this repo.
 
+Budgeted long-context tuner summary:
+
+| Context | Fast Pick | Session ms/step | Max Abs Error | Balanced Pick | Session ms/step | Max Abs Error |
+|---|---|---:|---:|---|---:|---:|
+| `8192` | `256/2048/4` | 9.21 | `4.59` | `256/1024/8` | 10.86 | `4.51` |
+| `16384` | `256/1024/2` | 8.49 | `4.35` | `256/1024/2` | 8.49 | `4.35` |
+
+That is the most useful new data point from this pass:
+
+- The long-context frontier is not monotonic in the way the first auto profile assumed.
+- A simple fixed `fast` preset and a simple fixed `balanced` preset are reasonable to keep.
+- Context-aware tuning still matters, but it should probably be driven by measured budget/frontier data rather than a naive scale-up rule.
+
 ## Working Conclusions
 
 - Exact compressed-domain MPS decode is in very good shape.
@@ -79,6 +93,7 @@ That heuristic was a useful experiment, but not a clear upgrade:
 - A targeted sweep says `sink=256`, `recent=1024`, `top_k=4` is the best current balance for the M4 profile.
 - That same fixed `256/1024/4` profile does not hold quality steady at `8192+`, so longer contexts need a context-scaled retune.
 - The first context-aware heuristic did not outperform the simpler fixed profile strongly enough to replace it.
+- The budgeted long-context tuner is a better way to explore `8k+` tradeoffs than the first auto-scaling heuristic.
 - Precomputing runtime sketches during encode removed the preload/append regression from sketch-based experiments.
 - A two-stage shortlist with exact refine improves quality a bit, and score reuse helps a little, but it still gives back most of the latency win from sketch gating.
 - Adding exact refine on top of the envelope gate does not currently buy enough to justify the cost.
@@ -103,6 +118,7 @@ These are the important checkpoints so far. Some numbers come from earlier harne
 | `working tree` | Targeted envelope sweep around `256/1024` | Frontier points: `top_k=2` at `7.68 ms/step`, `3.54` error; `top_k=4` at `8.15 ms/step`, `3.19` error | The envelope gate should stay simple; `256/1024/top_k=4` is the best current default approximate profile |
 | `working tree` | Long-context validation of tuned envelope profile | `8192` at `10.74 ms/step`, `4.57` error; `16384` at `10.37 ms/step`, `4.73` error | Fixed-window latency scales well, but quality does not; long contexts need retuning |
 | `working tree` | First context-aware envelope auto profile | `8192` at `10.06 ms/step`, `4.59` error; `16384` at `13.68 ms/step`, `4.70` error | Context-aware scaling is implementable, but this first heuristic is not yet better enough than the fixed profile to promote |
+| `working tree` | Budgeted envelope tuner at `8k/16k` | `8192` fast `256/2048/4`; balanced `256/1024/8`. `16384` fast/balanced both `256/1024/2` | Long-context profile choice is better treated as a budgeted search problem than a simple stepwise heuristic |
 
 ## Current Path
 
@@ -111,9 +127,12 @@ What we are keeping:
 - Exact full-context MPS decode as the high-quality reference runtime.
 - Page-envelope relevance gating as the best current approximate shortlist mode.
 - `sink=256`, `recent=1024`, `top_k=4` as the best current M4 approximate profile.
+- Fixed named presets in [execution_profiles.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/execution_profiles.py): `m4_envelope_fast` and `m4_envelope_balanced`.
 - A wrapper entrypoint for that profile in [run_m4_envelope_session.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m4_envelope_session.sh).
+- A faster fixed wrapper in [run_m4_envelope_fast_session.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m4_envelope_fast_session.sh).
 - An experimental context-aware wrapper in [run_m4_envelope_autoscaled_session.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m4_envelope_autoscaled_session.sh).
 - Session-shaped benchmark harness with separate preload, append, and decode phases.
+- A budgeted long-context tuner in [bench_decode_envelope_tuner.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_decode_envelope_tuner.py).
 - Raw benchmark history checked into the repo.
 
 What is currently experimental:
@@ -128,7 +147,7 @@ What looks next-most-promising:
 
 - Keep exact full-context MPS decode as the production-shaped path while shortlist experiments stay opt-in.
 - Promote the envelope gate as the default approximate baseline in any higher-level harnesses we add next.
-- Retune the envelope profile as context grows past `4096`, likely with a smarter rule than simple stepwise scaling of `recent_window` and `top_k`.
+- Retune the envelope profile as context grows past `4096`, but do it with the budgeted tuner rather than a hand-written scale-up rule.
 - Only revisit exact refine if it can improve on the envelope gate without dragging decode time back toward the exact path.
 
 ## Recording New Runs

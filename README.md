@@ -148,6 +148,12 @@ To run that tuned M4 approximate profile directly, use:
 bash scripts/run_m4_envelope_session.sh --contexts 4096
 ```
 
+To run the faster fixed variant, use:
+
+```bash
+bash scripts/run_m4_envelope_fast_session.sh --contexts 4096
+```
+
 There is also an experimental context-aware variant:
 
 ```bash
@@ -164,6 +170,14 @@ bash scripts/run_envelope_sweep.sh --config configs/dotcache_m4_mps.yaml --conte
 
 That emits JSONL sweep records, tags Pareto-frontier points, and can be redirected into a file such as [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 At longer contexts like `8192` and `16384`, the same fixed `256/1024/4` profile keeps latency almost flat but max-abs error rises, so context-scaled tuning is still the next step rather than treating one window as universal.
+
+To tune `fast` and `balanced` long-context candidates under a runtime budget, use:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_envelope_tuner.py --config configs/dotcache_m4_mps.yaml --contexts 8192 16384 > benchmarks/results/envelope_tuner_8k_16k.jsonl
+```
+
+That emits all candidate rows plus a summary row per context. The latest committed tuner output is [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
 To refine that sketch shortlist with exact compressed-domain key scoring before final decode, add `--execution-exact-refine-top-k`:
 
