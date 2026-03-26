@@ -612,7 +612,10 @@ def _score_page_chunk_multiquery_mps(
     if not pages:
         raise ValueError("pages must be non-empty")
     header = pages[0].header
-    query_count = int(np.asarray(query_slices).shape[0])
+    if torch.is_tensor(query_slices):
+        query_count = int(query_slices.shape[0])
+    else:
+        query_count = int(np.asarray(query_slices).shape[0])
     if trace is not None:
         trace.record_page_read(
             sum(page.payload_nbytes for page in pages),
@@ -715,13 +718,13 @@ def _mix_page_chunk_multiquery_mps(
     return output
 
 
-def decode_multi_query_step_mps(
+def decode_multi_query_step_mps_tensor(
     query_slices: np.ndarray,
     key_pages: Sequence[EncodedPage | PreparedPageMPS],
     value_pages: Sequence[EncodedPage | PreparedPageMPS],
     *,
     trace: ExecutionTrace | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple:
     torch = _load_torch()
     prepared_key_pages = [prepare_page_mps(page, trace=trace) for page in key_pages]
     prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
@@ -735,7 +738,10 @@ def decode_multi_query_step_mps(
     weights = torch.softmax(logits, dim=1)
 
     output = torch.zeros(
-        (int(np.asarray(query_slices).shape[0]), prepared_value_pages[0].header.padded_head_dim),
+        (
+            int(query_slices.shape[0]) if torch.is_tensor(query_slices) else int(np.asarray(query_slices).shape[0]),
+            prepared_value_pages[0].header.padded_head_dim,
+        ),
         dtype=torch.float32,
         device="mps",
     )
@@ -751,8 +757,24 @@ def decode_multi_query_step_mps(
         offset += chunk_token_count
 
     head_dim = prepared_value_pages[0].header.head_dim
+    return logits, weights, output[:, :head_dim]
+
+
+def decode_multi_query_step_mps(
+    query_slices: np.ndarray,
+    key_pages: Sequence[EncodedPage | PreparedPageMPS],
+    value_pages: Sequence[EncodedPage | PreparedPageMPS],
+    *,
+    trace: ExecutionTrace | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    logits, weights, output = decode_multi_query_step_mps_tensor(
+        query_slices,
+        key_pages,
+        value_pages,
+        trace=trace,
+    )
     return (
         logits.detach().cpu().numpy(),
         weights.detach().cpu().numpy(),
-        output[:, :head_dim].detach().cpu().numpy(),
+        output.detach().cpu().numpy(),
     )

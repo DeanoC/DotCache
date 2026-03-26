@@ -181,3 +181,29 @@ def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> No
     assert outputs.shape == (2, config.head_dim)
     assert append_trace.host_to_device_bytes > 0
     assert decode_trace.host_to_device_bytes == 0
+
+
+def test_model_paged_kv_cache_decode_layer_torch_matches_numpy_path() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(306)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(4, config.head_dim)).astype(np.float32)
+    mapping = default_q_head_to_kv_head(4, 2)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    numpy_outputs = cache.decode_layer(0, queries, mapping)
+    torch_outputs = cache.decode_layer_torch(0, torch.from_numpy(queries).to(device="mps"), mapping)
+
+    np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-5, rtol=1e-5)

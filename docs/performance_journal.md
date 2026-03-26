@@ -19,7 +19,7 @@ Latest tiny-random Llama smoke runs:
 | Backend | Prompt Len | Decode Steps | Decode ms/step | Greedy Agreement | Teacher-Forced Max Abs Logit Drift |
 |---|---:|---:|---:|---:|---:|
 | `cpu_ref` | `6` | `3` | `2.54` | `1.00` | `0.111` |
-| `torch_mps` | `6` | `2` | `24.13` | `1.00` | `9.54e-05` |
+| `torch_mps` | `6` | `2` | `18.97` | `1.00` | `8.57e-05` |
 
 That is the right honest read of the new path:
 
@@ -36,6 +36,7 @@ Latest real TinyLlama MPS checkpoints on this Mac:
 | Batched KV-head decode | `442.27` | `0.22` | `84480` | `1.00` | `1.6860` |
 | Persistent resident tail pages | `187.89` | `32.55` | `22528` | `1.00` | `0.0625` |
 | Batched persistent tail uploads | `248.31` | `13.91` | `22528` | `1.00` | `0.0625` |
+| On-device query/context decode | `203.11` | `13.58` | `22528` | `1.00` | `0.0625` |
 
 The current Phase 5 read is:
 
@@ -43,6 +44,7 @@ The current Phase 5 read is:
 - batching decode by KV head was the biggest single model-path performance win so far
 - keeping tail pages resident on device removed most decode-time upload churn and sharply improved numerical agreement
 - batching tail uploads cut append cost from about `32.6 ms/step` to about `13.9 ms/step`, but total decode latency bounced upward on the short benchmark, so that optimization needs more tuning before we call it a clear end-to-end win
+- keeping the exact model-path query/context tensors on device pulled wall-clock decode back down near the better persistent-tail runs while preserving the lower append cost from batched tail uploads
 
 Latest exact session baseline on the M4 profile:
 

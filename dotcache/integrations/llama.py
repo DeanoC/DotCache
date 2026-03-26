@@ -221,7 +221,7 @@ class DotCacheLlamaAttention(nn.Module):
             raise ValueError("DotCache decode mode only supports batch=1 and query_len=1")
         token_index = self.adapter.current_token_index(cache_position)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
-        query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32).cpu().numpy()
+        query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32)
         key_step = key_states[0].detach().to(dtype=torch.float32).cpu().numpy()
         value_step = value_states[0].detach().to(dtype=torch.float32).cpu().numpy()
 
@@ -235,15 +235,26 @@ class DotCacheLlamaAttention(nn.Module):
         )
         self.adapter.append_runtime_ms_total += (time.perf_counter() - append_start) * 1000.0
         decode_start = time.perf_counter()
-        context_states = self.adapter.model_kv_cache.decode_layer(
-            self.layer_idx,
-            query_step,
-            self.adapter.q_head_to_kv_head,
-            query_scale=float(self.base_attention.scaling),
-            trace=self.adapter.active_trace,
-        )
+        if self.adapter.backend in {"torch_mps", "auto"} and hidden_states.device.type == "mps":
+            context_states = self.adapter.model_kv_cache.decode_layer_torch(
+                self.layer_idx,
+                query_step,
+                self.adapter.q_head_to_kv_head,
+                query_scale=float(self.base_attention.scaling),
+                trace=self.adapter.active_trace,
+            )
+        else:
+            context_states = self.adapter.model_kv_cache.decode_layer(
+                self.layer_idx,
+                query_step.detach().cpu().numpy(),
+                self.adapter.q_head_to_kv_head,
+                query_scale=float(self.base_attention.scaling),
+                trace=self.adapter.active_trace,
+            )
         self.adapter.decode_runtime_ms_total += (time.perf_counter() - decode_start) * 1000.0
-        context_tensor = torch.as_tensor(context_states, dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+        if not torch.is_tensor(context_states):
+            context_states = torch.as_tensor(context_states, dtype=torch.float32, device=hidden_states.device)
+        context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
         projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
 
         if self.adapter.capture_enabled:
@@ -252,10 +263,10 @@ class DotCacheLlamaAttention(nn.Module):
                     step_index=self.adapter.capture_step_index,
                     layer_id=self.layer_idx,
                     token_index=token_index,
-                    query_states=query_step,
+                    query_states=query_step.detach().cpu().numpy(),
                     key_states=key_step[:, 0, :],
                     value_states=value_step[:, 0, :],
-                    context_states=context_states.astype(np.float32, copy=False),
+                    context_states=context_states.detach().cpu().numpy().astype(np.float32, copy=False),
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )
             )

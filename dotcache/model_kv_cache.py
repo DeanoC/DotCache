@@ -7,7 +7,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from .attention_runtime import BackendName, decode_multi_query_step, prepare_pages
-from .backends import PreparedPageMPS, mps_available
+from .backends import PreparedPageMPS, decode_multi_query_step_mps_tensor, mps_available
 from .config import DotCacheConfig
 from .encode import encode_page
 from .page_cache import PreparedPageCache
@@ -725,6 +725,68 @@ class ModelPagedKVCache:
                 key_pages,
                 value_pages,
                 backend=self.backend,
+                trace=trace,
+            )
+            outputs[q_head_ids] = kv_outputs
+        return outputs
+
+    def decode_layer_torch(
+        self,
+        layer_id: int,
+        query_step,
+        q_head_to_kv_head: Sequence[int] | np.ndarray,
+        *,
+        query_scale: float = 1.0,
+        trace: ExecutionTrace | None = None,
+    ):
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for decode_layer_torch") from exc
+        if not torch.is_tensor(query_step):
+            raise TypeError("decode_layer_torch requires a torch.Tensor query_step")
+        if self.backend not in {"torch_mps", "auto"} or not mps_available():
+            raise RuntimeError("decode_layer_torch is only available for the torch_mps backend")
+        if query_step.ndim == 4:
+            if tuple(query_step.shape[:1] + query_step.shape[2:3]) != (1, 1):
+                raise ValueError("query_step must have shape [q_heads, head_dim] or [1, q_heads, 1, head_dim]")
+            queries = query_step[0, :, 0, :]
+        elif query_step.ndim == 2:
+            queries = query_step
+        else:
+            raise ValueError("query_step must have shape [q_heads, head_dim]")
+        if int(queries.shape[0]) != self.num_attention_heads:
+            raise ValueError(f"query_step must contain {self.num_attention_heads} query heads")
+        if int(queries.shape[1]) != self.config.head_dim:
+            raise ValueError(f"query_step head_dim must equal {self.config.head_dim}")
+
+        scaled_queries = queries.to(dtype=torch.float32) * float(query_scale)
+        mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
+        if mapping.shape != (self.num_attention_heads,):
+            raise ValueError("q_head_to_kv_head must have shape [num_attention_heads]")
+
+        grouped_query_heads: dict[int, list[int]] = defaultdict(list)
+        for q_head_id, kv_head_id in enumerate(mapping.tolist()):
+            if kv_head_id < 0 or kv_head_id >= self.num_key_value_heads:
+                raise ValueError("q_head_to_kv_head contains an invalid KV head id")
+            grouped_query_heads[kv_head_id].append(q_head_id)
+
+        outputs = torch.zeros(
+            (self.num_attention_heads, self.config.head_dim),
+            dtype=torch.float32,
+            device=scaled_queries.device,
+        )
+        prepared_page_pairs: dict[int, tuple[list[PageLike], list[PageLike]]] = {}
+        for kv_head_id, q_head_ids in grouped_query_heads.items():
+            prepared_page_pairs[kv_head_id] = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            key_pages, value_pages = prepared_page_pairs[kv_head_id]
+            if not key_pages:
+                raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            kv_queries = scaled_queries[q_head_ids]
+            _, _, kv_outputs = decode_multi_query_step_mps_tensor(
+                kv_queries,
+                key_pages,
+                value_pages,
                 trace=trace,
             )
             outputs[q_head_ids] = kv_outputs
