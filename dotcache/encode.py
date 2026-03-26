@@ -9,6 +9,16 @@ from .page_format import build_payload
 from .packing import words_per_group
 from .types import EncodedPage, Kind, PageHeader
 
+DEFAULT_RUNTIME_SKETCH_ROWS = 4
+
+
+def _build_runtime_page_sketch(values: np.ndarray, *, sketch_rows: int = DEFAULT_RUNTIME_SKETCH_ROWS) -> tuple[np.ndarray, np.ndarray]:
+    rows = min(max(1, sketch_rows), values.shape[0])
+    chunks = np.array_split(values, rows, axis=0)
+    sketch = np.stack([chunk.mean(axis=0) for chunk in chunks], axis=0).astype(np.float16)
+    page_mean = values.mean(axis=0).astype(np.float16)
+    return page_mean, sketch
+
 
 def encode_page(
     tensor_slice: np.ndarray,
@@ -34,6 +44,7 @@ def encode_page(
     page_layout = layout or (config.payload_layout_k if kind == "K" else config.payload_layout_v)
     scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
     token_count = values.shape[0]
+    runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
 
     if page_mode == "M3":
         header = PageHeader(
@@ -54,7 +65,12 @@ def encode_page(
             escape_dtype=config.escape_dtype,
         )
         escape_payload = encode_escape_payload(values, dtype=config.escape_dtype)
-        return EncodedPage(header=header, escape_payload=escape_payload)
+        return EncodedPage(
+            header=header,
+            escape_payload=escape_payload,
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+        )
 
     if page_mode != "M0":
         raise ValueError("only M0 and M3 are supported in the bootstrap")
@@ -85,5 +101,11 @@ def encode_page(
     )
     stored_scales = scales.astype(np.float16)
     stored_bias = None if bias is None else bias.astype(np.float16)
-    return EncodedPage(header=header, payload=payload, scales=stored_scales, bias=stored_bias)
-
+    return EncodedPage(
+        header=header,
+        payload=payload,
+        scales=stored_scales,
+        bias=stored_bias,
+        runtime_page_mean=runtime_page_mean,
+        runtime_page_sketch=runtime_page_sketch,
+    )

@@ -49,6 +49,18 @@ def test_auto_backend_falls_back_to_cpu_for_symmetric_page() -> None:
     assert trace.m0_full_page_materializations == 0
 
 
+def test_encode_page_stores_runtime_sketch_metadata() -> None:
+    rng = np.random.default_rng(19)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, tokens_per_page=64)
+    keys = rng.normal(size=(64, config.head_dim)).astype(np.float32)
+    page = encode_page(keys, config, kind="K")
+
+    assert page.runtime_page_mean is not None
+    assert page.runtime_page_sketch is not None
+    assert page.runtime_page_mean.shape == (config.head_dim,)
+    assert page.runtime_page_sketch.shape == (4, config.head_dim)
+
+
 def test_select_execution_page_pairs_keeps_sink_and_recent_pages() -> None:
     rng = np.random.default_rng(20)
     config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)

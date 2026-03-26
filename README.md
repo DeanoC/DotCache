@@ -63,6 +63,7 @@ The current eager `torch_mps` path is sensitive to page size.
 
 Decode-step execution now batches compatible prepared pages on-device, so warm-cache performance is substantially better than the original per-page loop.
 Preparation also batches compatible page uploads and keeps stored affine metadata compact on-device, so benchmarked `prepare_ms` and host-to-device bytes reflect the real page tensors rather than widened staging copies.
+Runtime sketches for page-gating experiments are now computed at encode time, so session preload/append measurements no longer absorb on-the-fly sketch generation cost.
 
 - With the current M4-tuned unpack path, `torch_mps` already wins over `cpu_ref` at long context for `tokens_per_page=64`.
 - Larger pages still matter a lot because they let MPS amortize per-page overhead much better.

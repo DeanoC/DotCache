@@ -54,6 +54,16 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
 def sketch_key_page(page: PageLike, *, sketch_size: int = 1) -> np.ndarray:
     if sketch_size <= 0:
         raise ValueError("sketch_size must be positive")
+    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    if source_page.runtime_page_sketch is not None:
+        stored = np.asarray(source_page.runtime_page_sketch, dtype=np.float32)
+        if sketch_size == 1 and source_page.runtime_page_mean is not None:
+            return np.asarray(source_page.runtime_page_mean, dtype=np.float32)[None, :]
+        if stored.shape[0] == sketch_size:
+            return stored
+        if stored.shape[0] > sketch_size and sketch_size > 1:
+            chunks = np.array_split(stored, sketch_size, axis=0)
+            return np.stack([chunk.mean(axis=0) for chunk in chunks], axis=0).astype(np.float32, copy=False)
     dense = _decode_page_dense(page)
     if sketch_size == 1:
         return dense.mean(axis=0, keepdims=True)
@@ -66,6 +76,9 @@ def summarize_key_page(page: PageLike) -> np.ndarray:
 
 
 def summarize_value_page(page: PageLike) -> np.ndarray:
+    source_page = page.source_page if isinstance(page, PreparedPageMPS) else page
+    if source_page.runtime_page_mean is not None:
+        return np.asarray(source_page.runtime_page_mean, dtype=np.float32)
     return _decode_page_dense(page).mean(axis=0)
 
 

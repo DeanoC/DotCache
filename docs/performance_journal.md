@@ -11,20 +11,20 @@ Current branch head: `24c1801`
 Latest exact session baseline on the M4 profile:
 
 - command: `.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8`
-- preload: `340.96 ms`
-- append: `22.95 ms/step`
-- exact decode: `22.34 ms/step`
-- full session runtime: `45.29 ms/step`
+- preload: `8.24 ms`
+- append: `1.99 ms/step`
+- exact decode: `20.58 ms/step`
+- full session runtime: `22.57 ms/step`
 - max abs error vs CPU full attention: `1.24e-05`
 
 Latest heuristic shortlist comparison on the same workload:
 
 | Policy | Active Pages | Decode ms/step | Session ms/step | Max Abs Error |
 |---|---:|---:|---:|---:|
-| Exact full context | 19.5 avg | 22.34 | 45.29 | `1.24e-05` |
+| Exact full context | 19.5 avg | 20.58 | 22.57 | `1.24e-05` |
 | Sink 256 + Recent 1024 | 5 | 7.70 | 32.65 | `4.43` |
 | Sink 256 + Recent 1024 + relevance `top_k=4` + sketch `1` | 9 | 8.55 | 31.75 | `4.26` |
-| Sink 256 + Recent 1024 + relevance `top_k=4` + sketch `4` | 9 | 7.83 | 31.08 | `4.38` |
+| Sink 256 + Recent 1024 + relevance `top_k=4` + sketch `4` | 9 | 9.29 | 11.36 | `4.35` |
 | Sink 256 + Recent 1024 + approximate old pages | 5 | 21.56 | 45.71 | `4.43` |
 
 ## Working Conclusions
@@ -33,7 +33,7 @@ Latest heuristic shortlist comparison on the same workload:
 - Batched decode and batched preparation were the big wins.
 - Heuristic pruning paths buy latency, but current quality loss is still too large.
 - Multi-vector sketches are better than a single page mean as a first-pass gate, but they still do not preserve full-context quality.
-- Summary/sketch generation is now a visible preload/append bottleneck in the session harness.
+- Precomputing runtime sketches during encode removed the preload/append regression from sketch-based experiments.
 
 ## Milestone Log
 
@@ -48,6 +48,7 @@ These are the important checkpoints so far. Some numbers come from earlier harne
 | `23c53f6` | Relevance-gated page selection | `top_k=4` cut decode to `9.17 ms/step`; max abs error improved only slightly to `4.26` | Simple page-mean relevance helps latency more than quality |
 | `260bfa3` | Approximate fallback for pruned pages | Decode climbed to `21.56 ms/step` while max abs error stayed `4.43` | Summary fallback was not worth the cost |
 | `24c1801` | Multi-vector page sketches for gating | Sketch size `4` improved relative error a lot versus sketch size `1` and kept decode at `7.83 ms/step` | Stronger key-side sketches are better than page means, but still not good enough |
+| `working tree` | Runtime sketch metadata computed during encode | Exact preload fell back to `8.24 ms`; exact session runtime to `22.57 ms/step`; sketch-gated session runtime to `11.36 ms/step` | Precomputing sketches fixed the preload/append regression and made gating cheap again |
 
 ## Current Path
 

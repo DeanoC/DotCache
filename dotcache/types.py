@@ -52,6 +52,8 @@ class EncodedPage:
     scales: np.ndarray | None = None
     bias: np.ndarray | None = None
     escape_payload: np.ndarray | None = None
+    runtime_page_mean: np.ndarray | None = None
+    runtime_page_sketch: np.ndarray | None = None
     full_page_decode_calls: int = 0
     decode_group_calls: int = 0
 
@@ -82,4 +84,3 @@ class EncodedPage:
 
     def record_group_decode(self) -> None:
         self.decode_group_calls += 1
-
