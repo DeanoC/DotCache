@@ -60,9 +60,9 @@ This is the CPU-reference bootstrap, not the final runtime. The next logical ste
 
 The current eager `torch_mps` path is sensitive to page size.
 
-- Small pages such as `tokens_per_page=64` favor the CPU reference path.
-- Larger pages let MPS amortize the per-page unpack and matmul overhead much better.
-- On this M4 Mac, the first strong crossover point showed up around `tokens_per_page=128`, and `256` is a good first serious tuning target for MPS experiments.
+- With the current M4-tuned unpack path, `torch_mps` already wins over `cpu_ref` at long context for `tokens_per_page=64`.
+- Larger pages still matter a lot because they let MPS amortize per-page overhead much better.
+- On this M4 Mac, `tokens_per_page=256` is a strong default for MPS experiments, and `512` can be significantly faster again when the runtime can tolerate fewer, larger pages.
 
 For a ready-made MPS-oriented profile, start from [configs/dotcache_m4_mps.yaml](./configs/dotcache_m4_mps.yaml).
 
