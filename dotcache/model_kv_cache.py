@@ -1099,19 +1099,11 @@ class ModelPagedKVCache:
             key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
-            if all(isinstance(page, PreparedPageMPS) for page in key_pages):
-                prepared_key_pages = key_pages
-            else:
-                prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
-            if all(isinstance(page, PreparedPageMPS) for page in value_pages):
-                prepared_value_pages = value_pages
-            else:
-                prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
             kv_queries = scaled_queries[list(q_head_ids)]
             _, _, kv_outputs = decode_multi_query_step_mps_tensor(
                 kv_queries,
-                prepared_key_pages,
-                prepared_value_pages,
+                key_pages,
+                value_pages,
                 trace=trace,
             )
             outputs[list(q_head_ids)] = kv_outputs

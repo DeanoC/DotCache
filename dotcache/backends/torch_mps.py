@@ -726,8 +726,14 @@ def decode_multi_query_step_mps_tensor(
     trace: ExecutionTrace | None = None,
 ) -> tuple:
     torch = _load_torch()
-    prepared_key_pages = [prepare_page_mps(page, trace=trace) for page in key_pages]
-    prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
+    if all(isinstance(page, PreparedPageMPS) for page in key_pages):
+        prepared_key_pages = list(key_pages)
+    else:
+        prepared_key_pages = [prepare_page_mps(page, trace=trace) for page in key_pages]
+    if all(isinstance(page, PreparedPageMPS) for page in value_pages):
+        prepared_value_pages = list(value_pages)
+    else:
+        prepared_value_pages = [prepare_page_mps(page, trace=trace) for page in value_pages]
     if not prepared_key_pages:
         raise ValueError("decode_multi_query_step_mps requires at least one page")
 

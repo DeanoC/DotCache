@@ -69,6 +69,12 @@ That comparison is the clearest current model-level frontier:
 - resident bytes grow in page-sized steps, which is why `145` and `217` share the same DotCache footprint and `289` / `433` share the next plateau
 - greedy token agreement stayed exact across the sweep, so this is a real latency-versus-KV-memory tradeoff rather than a correctness failure
 
+Latest long-prompt optimization checkpoint after skipping redundant `PreparedPageMPS` re-prepare work in the torch decode path:
+
+- targeted `865`-token rerun moved DotCache decode from `282.56 ms/step` down to `241.07 ms/step`
+- dense on that rerun was `178.78 ms/step`, so DotCache still trails on latency but the gap is materially smaller
+- KV-cache memory stayed the same at a `0.29x` DotCache/dense ratio with full greedy agreement
+
 The current Phase 5 read is:
 
 - exact TinyLlama decode on `torch_mps` is now functionally stable, with full greedy agreement on the short benchmark prompt
