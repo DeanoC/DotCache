@@ -94,6 +94,20 @@ def extract_past_key_values_arrays(past_key_values) -> list[tuple[np.ndarray, np
     return extracted
 
 
+def extract_past_key_values_tensors(past_key_values) -> list[tuple[Any, Any]]:
+    layers = getattr(past_key_values, "layers", None)
+    if layers is None:
+        raise ValueError("past_key_values must expose a .layers cache structure")
+    extracted: list[tuple[Any, Any]] = []
+    for layer in layers:
+        keys = layer.keys.detach().to(dtype=torch.float32)
+        values = layer.values.detach().to(dtype=torch.float32)
+        if keys.shape[0] != 1 or values.shape[0] != 1:
+            raise ValueError("Phase 5 Llama harness requires batch=1 past_key_values")
+        extracted.append((keys, values))
+    return extracted
+
+
 class DotCacheLlamaAttention(nn.Module):
     def __init__(self, base_attention: nn.Module, adapter: "LlamaDotCacheModelAdapter") -> None:
         super().__init__()
@@ -369,7 +383,10 @@ class LlamaDotCacheModelAdapter:
         self.decode_runtime_ms_total = 0.0
 
     def load_prefill_cache(self, past_key_values, *, trace: ExecutionTrace | None = None) -> None:
-        self.load_prefill_cache_arrays(extract_past_key_values_arrays(past_key_values), trace=trace)
+        if self.backend in {"torch_mps", "auto"} and self.device.type == "mps":
+            self.load_prefill_cache_tensors(extract_past_key_values_tensors(past_key_values), trace=trace)
+        else:
+            self.load_prefill_cache_arrays(extract_past_key_values_arrays(past_key_values), trace=trace)
 
     def load_prefill_cache_arrays(
         self,
@@ -382,6 +399,18 @@ class LlamaDotCacheModelAdapter:
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
             self.model_kv_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values, trace=trace)
+
+    def load_prefill_cache_tensors(
+        self,
+        prefill_layers: Sequence[tuple[Any, Any]],
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        if len(prefill_layers) != self.model.config.num_hidden_layers:
+            raise ValueError("prefill_layers must align with model.config.num_hidden_layers")
+        self.model_kv_cache.clear()
+        for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
+            self.model_kv_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values, trace=trace)
 
 
 @dataclass(slots=True)
@@ -465,7 +494,10 @@ def _prefill_prompt(
     adapter.set_mode("dense")
     adapter.set_capture(False)
     outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
-    prefill_layers = extract_past_key_values_arrays(outputs.past_key_values)
+    if adapter.backend in {"torch_mps", "auto"} and input_ids.device.type == "mps":
+        prefill_layers = extract_past_key_values_tensors(outputs.past_key_values)
+    else:
+        prefill_layers = extract_past_key_values_arrays(outputs.past_key_values)
     first_generated_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
     return outputs, prefill_layers, first_generated_token
 
@@ -560,10 +592,13 @@ def _run_dotcache_decode_inputs(
     *,
     input_ids,
     attention_mask,
-    prefill_layers: Sequence[tuple[np.ndarray, np.ndarray]],
+    prefill_layers: Sequence[tuple[Any, Any]],
     decode_inputs: Sequence[Any],
 ) -> dict[str, Any]:
-    adapter.load_prefill_cache_arrays(prefill_layers)
+    if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
+        adapter.load_prefill_cache_tensors(prefill_layers)
+    else:
+        adapter.load_prefill_cache_arrays(prefill_layers)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     current_attention_mask = attention_mask
@@ -607,11 +642,14 @@ def _run_dotcache_greedy_decode(
     *,
     input_ids,
     attention_mask,
-    prefill_layers: Sequence[tuple[np.ndarray, np.ndarray]],
+    prefill_layers: Sequence[tuple[Any, Any]],
     first_generated_token,
     max_new_tokens: int,
 ) -> dict[str, Any]:
-    adapter.load_prefill_cache_arrays(prefill_layers)
+    if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
+        adapter.load_prefill_cache_tensors(prefill_layers)
+    else:
+        adapter.load_prefill_cache_arrays(prefill_layers)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     generated_ids = [int(first_generated_token.item())]
@@ -706,7 +744,10 @@ def run_llama_replay_harness(
         cache=PreparedPageCache(),
     )
     for layer_idx, (layer_keys, layer_values) in enumerate(dense_result["prefill_layers"]):
-        replay_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values)
+        if torch.is_tensor(layer_keys):
+            replay_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values)
+        else:
+            replay_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values)
 
     replay_context_max_abs = 0.0
     replay_context_max_rel = 0.0
@@ -785,7 +826,10 @@ def run_llama_generation_harness(
 
     prefill_trace = ExecutionTrace()
     prefill_start = time.perf_counter()
-    adapter.load_prefill_cache_arrays(dense_result["prefill_layers"], trace=prefill_trace)
+    if dense_result["prefill_layers"] and torch.is_tensor(dense_result["prefill_layers"][0][0]):
+        adapter.load_prefill_cache_tensors(dense_result["prefill_layers"], trace=prefill_trace)
+    else:
+        adapter.load_prefill_cache_arrays(dense_result["prefill_layers"], trace=prefill_trace)
     prefill_ingest_ms = (time.perf_counter() - prefill_start) * 1000.0
 
     if max_new_tokens <= 1:

@@ -89,6 +89,27 @@ def _normalize_query_step(query_step: np.ndarray, *, num_attention_heads: int, h
     return queries
 
 
+def _normalize_prefill_tensor_torch(values, *, num_key_value_heads: int, head_dim: int, name: str):
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("torch is required for torch-native prefill ingest") from exc
+    if not torch.is_tensor(values):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    array = values.detach().to(dtype=torch.float32)
+    if array.ndim == 4:
+        if int(array.shape[0]) != 1:
+            raise ValueError(f"{name} batch dimension must be 1 for the Phase 5 Llama path")
+        array = array[0]
+    if array.ndim != 3:
+        raise ValueError(f"{name} must have shape [kv_heads, seq_len, head_dim] or [1, kv_heads, seq_len, head_dim]")
+    if int(array.shape[0]) != num_key_value_heads:
+        raise ValueError(f"{name} must contain {num_key_value_heads} KV heads")
+    if int(array.shape[2]) != head_dim:
+        raise ValueError(f"{name} head_dim must equal {head_dim}")
+    return array
+
+
 @dataclass(slots=True)
 class _TailPageBuilder:
     config: DotCacheConfig
@@ -657,6 +678,104 @@ class ModelPagedKVCache:
                 values[:, full_tokens:],
                 token_start=full_tokens,
                 trace=trace,
+            )
+
+    def ingest_prefill_cache_torch(
+        self,
+        layer_id: int,
+        layer_k,
+        layer_v,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("torch is required for ingest_prefill_cache_torch") from exc
+        if self.backend not in {"torch_mps", "auto"} or not mps_available():
+            raise RuntimeError("ingest_prefill_cache_torch is only available for the torch_mps backend")
+        keys = _normalize_prefill_tensor_torch(
+            layer_k,
+            num_key_value_heads=self.num_key_value_heads,
+            head_dim=self.config.head_dim,
+            name="layer_k",
+        )
+        values = _normalize_prefill_tensor_torch(
+            layer_v,
+            num_key_value_heads=self.num_key_value_heads,
+            head_dim=self.config.head_dim,
+            name="layer_v",
+        )
+        if tuple(keys.shape) != tuple(values.shape):
+            raise ValueError("layer_k and layer_v sequence lengths must match")
+
+        seq_len = int(keys.shape[1])
+        full_page_count = seq_len // self.config.tokens_per_page
+        full_tokens = full_page_count * self.config.tokens_per_page
+
+        for kv_head_id in range(self.num_key_value_heads):
+            state = self._state(layer_id, kv_head_id)
+            state.clear(clear_prepared_cache=False)
+            preload_key_pages: list[EncodedPage] = []
+            preload_value_pages: list[EncodedPage] = []
+            if full_tokens > 0:
+                dense_keys_cpu = keys[kv_head_id, :full_tokens].detach().cpu().numpy()
+                dense_values_cpu = values[kv_head_id, :full_tokens].detach().cpu().numpy()
+                for page_start in range(0, full_tokens, self.config.tokens_per_page):
+                    page_end = page_start + self.config.tokens_per_page
+                    preload_key_pages.append(
+                        encode_page(
+                            dense_keys_cpu[page_start:page_end],
+                            self.config,
+                            kind="K",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=page_start,
+                        )
+                    )
+                    preload_value_pages.append(
+                        encode_page(
+                            dense_values_cpu[page_start:page_end],
+                            self.config,
+                            kind="V",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=page_start,
+                        )
+                    )
+            if preload_key_pages:
+                state.session.append(preload_key_pages, preload_value_pages, trace=trace)
+            if self._use_persistent_mps_tail:
+                state.tail.clear()
+            else:
+                remainder_keys = keys[kv_head_id, full_tokens:].detach().cpu().numpy()
+                remainder_values = values[kv_head_id, full_tokens:].detach().cpu().numpy()
+                state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
+            state.sequence_length = seq_len
+
+        if self._use_persistent_mps_tail:
+            key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
+            value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+            for kv_head_id in range(self.num_key_value_heads):
+                tail = key_tails[kv_head_id]
+                if tail is not None:
+                    tail.clear()
+                    if int(keys[kv_head_id, full_tokens:].shape[0]) > 0:
+                        tail._ensure_allocated(token_start=full_tokens)
+                tail = value_tails[kv_head_id]
+                if tail is not None:
+                    tail.clear()
+                    if int(values[kv_head_id, full_tokens:].shape[0]) > 0:
+                        tail._ensure_allocated(token_start=full_tokens)
+            self._batch_append_persistent_tail_tensors(
+                key_tails,
+                keys[:, full_tokens:],
+                token_start=full_tokens,
+            )
+            self._batch_append_persistent_tail_tensors(
+                value_tails,
+                values[:, full_tokens:],
+                token_start=full_tokens,
             )
 
     def append_step(

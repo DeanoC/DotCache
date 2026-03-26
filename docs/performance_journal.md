@@ -38,6 +38,7 @@ Latest real TinyLlama MPS checkpoints on this Mac:
 | Batched persistent tail uploads | `248.31` | `13.91` | `22528` | `1.00` | `0.0625` |
 | On-device query/context decode | `203.11` | `13.58` | `22528` | `1.00` | `0.0625` |
 | On-device K/V append | `188.64` | `16.76` | `0` | `1.00` | `0.0625` |
+| On-device short-prompt prefill ingest | `149.40` | `4.55` | prefill `0`, decode `0` | `1.00` | `0.0625` |
 
 The current Phase 5 read is:
 
@@ -47,6 +48,7 @@ The current Phase 5 read is:
 - batching tail uploads cut append cost from about `32.6 ms/step` to about `13.9 ms/step`, but total decode latency bounced upward on the short benchmark, so that optimization needs more tuning before we call it a clear end-to-end win
 - keeping the exact model-path query/context tensors on device pulled wall-clock decode back down near the better persistent-tail runs while preserving the lower append cost from batched tail uploads
 - keeping per-step `K`/`V` append on device removes model-path upload traffic entirely; short-run latency still has some benchmark noise, but the zero-upload result is durable and the end-to-end path is back in the high-100ms/step range instead of the 200ms-plus range
+- keeping short-prompt prefill KV ingest on device removes the last obvious host handoff in the exact TinyLlama path for prompts that stay inside the live tail; on the current 10-token prompt, both prefill ingest and decode now run with `0` host-to-device bytes
 
 Latest exact session baseline on the M4 profile:
 
