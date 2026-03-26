@@ -45,7 +45,7 @@ Longer-prompt exact TinyLlama checks after prewarming deferred full pages once t
 | Prompt Len | Prefill Ingest ms | Prefill Ingest H2D Bytes | Decode ms/step | Decode H2D Bytes/Step | Append ms/step | Greedy Agreement |
 |---|---:|---:|---:|---:|---:|---:|
 | `289` | `95.67` | `1,802,240` | `261.63` | `0` | `5.24` | `1.00` |
-| `577` | `104.54` | `3,604,480` | `291.18` | `0` | `6.09` | `1.00` |
+| `577` | `111.14` | `3,604,480` | `289.33` | `0` | `4.33` | `1.00` |
 
 The current Phase 5 read is:
 
@@ -58,7 +58,7 @@ The current Phase 5 read is:
 - keeping short-prompt prefill KV ingest on device removes the last obvious host handoff in the exact TinyLlama path for prompts that stay inside the live tail; on the current 10-token prompt, both prefill ingest and decode now run with `0` host-to-device bytes
 - for prompts longer than one page, prewarming the deferred full pages once through the prepared-page cache is a better operating point than paying that upload on the first decode step: prefill ingest stays near `100 ms` with the vectorized packing path, decode upload drops to `0`, and long-prompt decode time improves substantially
 - vectorizing the CPU bit-packing path takes the next big bite out of long-prompt prefill work: with the deferred-prefill path in place, prefill ingest falls from roughly `975/1892 ms` down to about `87/105 ms` for the `289` and `577` token prompts while preserving exact greedy agreement
-- skipping decode-time attention-mask growth for unpadded one-token steps trims more wrapper/model overhead on long prompts: at `577` tokens, full model decode drops from about `351 ms/step` to about `291 ms/step` with no change to exact greedy agreement or page-path upload behavior
+- skipping decode-time attention-mask growth for unpadded one-token steps and removing per-layer token-index device sync trims a bit more wrapper/model overhead on long prompts: at `577` tokens, full model decode now lands around `289 ms/step` with no change to exact greedy agreement or page-path upload behavior
 
 Latest exact session baseline on the M4 profile:
 

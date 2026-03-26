@@ -333,6 +333,7 @@ class LlamaDotCacheModelAdapter:
         self._wrappers: list[DotCacheLlamaAttention] = []
         self.append_runtime_ms_total = 0.0
         self.decode_runtime_ms_total = 0.0
+        self._current_token_index_override: int | None = None
         self._install_wrappers()
 
     @property
@@ -369,6 +370,8 @@ class LlamaDotCacheModelAdapter:
         self._pending_records.append(record)
 
     def current_token_index(self, cache_position) -> int:
+        if self._current_token_index_override is not None:
+            return self._current_token_index_override
         if cache_position is None:
             raise ValueError("cache_position is required for the Phase 5 Llama path")
         token_positions = cache_position.reshape(-1)
@@ -376,12 +379,16 @@ class LlamaDotCacheModelAdapter:
             raise ValueError("Phase 5 Llama path requires a single cache_position per decode step")
         return int(token_positions.item())
 
+    def set_current_token_index(self, token_index: int | None) -> None:
+        self._current_token_index_override = None if token_index is None else int(token_index)
+
     def clear(self) -> None:
         self.model_kv_cache.clear()
         self._pending_records = []
         self.capture_enabled = False
         self.capture_step_index = -1
         self.active_trace = None
+        self._current_token_index_override = None
         self.reset_runtime_metrics()
 
     def reset_runtime_metrics(self) -> None:
@@ -562,14 +569,18 @@ def _run_dense_greedy_decode(
         decode_inputs.append(current_input_ids.detach().clone())
         if capture:
             adapter.begin_capture_step(step_index)
-        outputs = model(
-            input_ids=current_input_ids,
-            attention_mask=current_attention_mask,
-            past_key_values=past_key_values,
-            use_cache=True,
-            cache_position=cache_position,
-            position_ids=cache_position.unsqueeze(0),
-        )
+        adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+        try:
+            outputs = model(
+                input_ids=current_input_ids,
+                attention_mask=current_attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+                cache_position=cache_position,
+                position_ids=cache_position.unsqueeze(0),
+            )
+        finally:
+            adapter.set_current_token_index(None)
         if capture:
             capture_records.append(adapter.end_capture_step())
         past_key_values = outputs.past_key_values
@@ -619,16 +630,20 @@ def _run_dotcache_decode_inputs(
         cache_position = torch.tensor([input_ids.shape[1] + offset], dtype=torch.long, device=input_ids.device)
         step_trace = ExecutionTrace()
         adapter.active_trace = step_trace
+        adapter.set_current_token_index(int(input_ids.shape[1] + offset))
         start = time.perf_counter()
-        outputs = model(
-            input_ids=decode_input,
-            attention_mask=current_attention_mask,
-            use_cache=False,
-            cache_position=cache_position,
-            position_ids=cache_position.unsqueeze(0),
-        )
+        try:
+            outputs = model(
+                input_ids=decode_input,
+                attention_mask=current_attention_mask,
+                use_cache=False,
+                cache_position=cache_position,
+                position_ids=cache_position.unsqueeze(0),
+            )
+        finally:
+            adapter.active_trace = None
+            adapter.set_current_token_index(None)
         decode_ms_total += (time.perf_counter() - start) * 1000.0
-        adapter.active_trace = None
         trace_total.merge(step_trace)
         step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
 
@@ -679,6 +694,7 @@ def _run_dotcache_greedy_decode(
         else None
     )
     cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    current_token_index = int(input_ids.shape[1])
     step_logits: list[np.ndarray] = []
     decode_ms_total = 0.0
     trace_total = ExecutionTrace()
@@ -686,16 +702,20 @@ def _run_dotcache_greedy_decode(
     for _ in range(max_new_tokens - 1):
         step_trace = ExecutionTrace()
         adapter.active_trace = step_trace
+        adapter.set_current_token_index(current_token_index)
         start = time.perf_counter()
-        outputs = model(
-            input_ids=current_input_ids,
-            attention_mask=current_attention_mask,
-            use_cache=False,
-            cache_position=cache_position,
-            position_ids=cache_position.unsqueeze(0),
-        )
+        try:
+            outputs = model(
+                input_ids=current_input_ids,
+                attention_mask=current_attention_mask,
+                use_cache=False,
+                cache_position=cache_position,
+                position_ids=cache_position.unsqueeze(0),
+            )
+        finally:
+            adapter.active_trace = None
+            adapter.set_current_token_index(None)
         decode_ms_total += (time.perf_counter() - start) * 1000.0
-        adapter.active_trace = None
         trace_total.merge(step_trace)
         logits = outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()
         step_logits.append(logits)
@@ -707,6 +727,7 @@ def _run_dotcache_greedy_decode(
                 dim=1,
             )
         cache_position = cache_position + 1
+        current_token_index += 1
 
     return {
         "generated_ids": generated_ids,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -30,6 +29,15 @@ def default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: int
         np.int64,
         copy=False,
     )
+
+
+def _group_query_heads(mapping: np.ndarray, *, num_key_value_heads: int) -> tuple[tuple[int, ...], ...]:
+    grouped: list[list[int]] = [[] for _ in range(num_key_value_heads)]
+    for q_head_id, kv_head_id in enumerate(mapping.tolist()):
+        if kv_head_id < 0 or kv_head_id >= num_key_value_heads:
+            raise ValueError("q_head_to_kv_head contains an invalid KV head id")
+        grouped[kv_head_id].append(q_head_id)
+    return tuple(tuple(group) for group in grouped)
 
 
 def _normalize_prefill_tensor(
@@ -480,6 +488,10 @@ class ModelPagedKVCache:
         self.backend = backend
         self.cache = cache if cache is not None else PreparedPageCache()
         self.default_q_head_to_kv_head = default_q_head_to_kv_head(self.num_attention_heads, self.num_key_value_heads)
+        self.default_grouped_query_heads = _group_query_heads(
+            self.default_q_head_to_kv_head,
+            num_key_value_heads=self.num_key_value_heads,
+        )
         self._states: dict[tuple[int, int], _HeadSessionState] = {}
 
     @property
@@ -496,6 +508,14 @@ class ModelPagedKVCache:
         for state in self._states.values():
             state.clear(clear_prepared_cache=False)
         self.cache.clear()
+
+    def _grouped_query_heads_for_mapping(self, q_head_to_kv_head: Sequence[int] | np.ndarray) -> tuple[tuple[int, ...], ...]:
+        mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
+        if mapping.shape != (self.num_attention_heads,):
+            raise ValueError("q_head_to_kv_head must have shape [num_attention_heads]")
+        if np.array_equal(mapping, self.default_q_head_to_kv_head):
+            return self.default_grouped_query_heads
+        return _group_query_heads(mapping, num_key_value_heads=self.num_key_value_heads)
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
         if self.backend not in {"torch_mps", "auto"} or not mps_available():
@@ -978,21 +998,24 @@ class ModelPagedKVCache:
         trace: ExecutionTrace | None = None,
     ) -> tuple[list[PageLike], list[PageLike]]:
         state = self._state(layer_id, kv_head_id)
-        key_pages = list(state.session.key_pages)
-        value_pages = list(state.session.value_pages)
         if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
             prepared_key_tail = state.persistent_key_tail.active_page
             prepared_value_tail = state.persistent_value_tail.active_page
             if prepared_key_tail is not None and prepared_value_tail is not None:
+                key_pages = list(state.session.key_pages)
+                value_pages = list(state.session.value_pages)
                 key_pages.append(prepared_key_tail)
                 value_pages.append(prepared_value_tail)
-            return key_pages, value_pages
+                return key_pages, value_pages
+            return state.session.key_pages, state.session.value_pages
         temp_pages = state.tail.build_temp_pages()
         if temp_pages is None:
-            return key_pages, value_pages
+            return state.session.key_pages, state.session.value_pages
         temp_key_page, temp_value_page = temp_pages
         prepared_temp_key_page = prepare_pages([temp_key_page], backend=self.backend, cache=self.cache, trace=trace)[0]
         prepared_temp_value_page = prepare_pages([temp_value_page], backend=self.backend, cache=self.cache, trace=trace)[0]
+        key_pages = list(state.session.key_pages)
+        value_pages = list(state.session.value_pages)
         key_pages.append(prepared_temp_key_page)
         value_pages.append(prepared_temp_value_page)
         return key_pages, value_pages
@@ -1012,24 +1035,16 @@ class ModelPagedKVCache:
             head_dim=self.config.head_dim,
         )
         scaled_queries = queries * np.float32(query_scale)
-        mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
-        if mapping.shape != (self.num_attention_heads,):
-            raise ValueError("q_head_to_kv_head must have shape [num_attention_heads]")
-
-        grouped_query_heads: dict[int, list[int]] = defaultdict(list)
-        for q_head_id, kv_head_id in enumerate(mapping.tolist()):
-            if kv_head_id < 0 or kv_head_id >= self.num_key_value_heads:
-                raise ValueError("q_head_to_kv_head contains an invalid KV head id")
-            grouped_query_heads[kv_head_id].append(q_head_id)
+        grouped_query_heads = self._grouped_query_heads_for_mapping(q_head_to_kv_head)
 
         outputs = np.zeros((self.num_attention_heads, self.config.head_dim), dtype=np.float32)
-        prepared_page_pairs: dict[int, tuple[list[PageLike], list[PageLike]]] = {}
-        for kv_head_id, q_head_ids in grouped_query_heads.items():
-            prepared_page_pairs[kv_head_id] = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
-            key_pages, value_pages = prepared_page_pairs[kv_head_id]
+        for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
+            if not q_head_ids:
+                continue
+            key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
-            kv_queries = scaled_queries[q_head_ids]
+            kv_queries = scaled_queries[list(q_head_ids)]
             _, _, kv_outputs = decode_multi_query_step(
                 kv_queries,
                 key_pages,
@@ -1037,7 +1052,7 @@ class ModelPagedKVCache:
                 backend=self.backend,
                 trace=trace,
             )
-            outputs[q_head_ids] = kv_outputs
+            outputs[list(q_head_ids)] = kv_outputs
         return outputs
 
     def decode_layer_torch(
@@ -1071,35 +1086,33 @@ class ModelPagedKVCache:
             raise ValueError(f"query_step head_dim must equal {self.config.head_dim}")
 
         scaled_queries = queries.to(dtype=torch.float32) * float(query_scale)
-        mapping = np.asarray(q_head_to_kv_head, dtype=np.int64)
-        if mapping.shape != (self.num_attention_heads,):
-            raise ValueError("q_head_to_kv_head must have shape [num_attention_heads]")
-
-        grouped_query_heads: dict[int, list[int]] = defaultdict(list)
-        for q_head_id, kv_head_id in enumerate(mapping.tolist()):
-            if kv_head_id < 0 or kv_head_id >= self.num_key_value_heads:
-                raise ValueError("q_head_to_kv_head contains an invalid KV head id")
-            grouped_query_heads[kv_head_id].append(q_head_id)
+        grouped_query_heads = self._grouped_query_heads_for_mapping(q_head_to_kv_head)
 
         outputs = torch.zeros(
             (self.num_attention_heads, self.config.head_dim),
             dtype=torch.float32,
             device=scaled_queries.device,
         )
-        prepared_page_pairs: dict[int, tuple[list[PageLike], list[PageLike]]] = {}
-        for kv_head_id, q_head_ids in grouped_query_heads.items():
-            prepared_page_pairs[kv_head_id] = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
-            key_pages, value_pages = prepared_page_pairs[kv_head_id]
+        for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
+            if not q_head_ids:
+                continue
+            key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
-            prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
-            prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
-            kv_queries = scaled_queries[q_head_ids]
+            if all(isinstance(page, PreparedPageMPS) for page in key_pages):
+                prepared_key_pages = key_pages
+            else:
+                prepared_key_pages = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
+            if all(isinstance(page, PreparedPageMPS) for page in value_pages):
+                prepared_value_pages = value_pages
+            else:
+                prepared_value_pages = prepare_pages(value_pages, backend=self.backend, cache=self.cache, trace=trace)
+            kv_queries = scaled_queries[list(q_head_ids)]
             _, _, kv_outputs = decode_multi_query_step_mps_tensor(
                 kv_queries,
                 prepared_key_pages,
                 prepared_value_pages,
                 trace=trace,
             )
-            outputs[q_head_ids] = kv_outputs
+            outputs[list(q_head_ids)] = kv_outputs
         return outputs
