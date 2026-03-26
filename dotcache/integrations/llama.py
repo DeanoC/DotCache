@@ -80,6 +80,12 @@ def _ensure_attention_mask(input_ids, attention_mask, *, device) -> Any:
     return mask
 
 
+def _can_skip_decode_attention_mask(attention_mask) -> bool:
+    if attention_mask is None:
+        return True
+    return bool(torch.all(attention_mask != 0).item())
+
+
 def extract_past_key_values_arrays(past_key_values) -> list[tuple[np.ndarray, np.ndarray]]:
     layers = getattr(past_key_values, "layers", None)
     if layers is None:
@@ -603,16 +609,13 @@ def _run_dotcache_decode_inputs(
         adapter.load_prefill_cache_arrays(prefill_layers)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
-    current_attention_mask = attention_mask
+    use_attention_mask = not _can_skip_decode_attention_mask(attention_mask)
+    current_attention_mask = attention_mask if use_attention_mask else None
     step_logits: list[np.ndarray] = []
     decode_ms_total = 0.0
     trace_total = ExecutionTrace()
 
     for offset, decode_input in enumerate(decode_inputs):
-        current_attention_mask = torch.cat(
-            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
-            dim=1,
-        )
         cache_position = torch.tensor([input_ids.shape[1] + offset], dtype=torch.long, device=input_ids.device)
         step_trace = ExecutionTrace()
         adapter.active_trace = step_trace
@@ -666,9 +669,14 @@ def _run_dotcache_greedy_decode(
         }
 
     current_input_ids = first_generated_token
-    current_attention_mask = torch.cat(
-        [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
-        dim=1,
+    use_attention_mask = not _can_skip_decode_attention_mask(attention_mask)
+    current_attention_mask = (
+        torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
+            dim=1,
+        )
+        if use_attention_mask
+        else None
     )
     cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
     step_logits: list[np.ndarray] = []
@@ -693,10 +701,11 @@ def _run_dotcache_greedy_decode(
         step_logits.append(logits)
         current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated_ids.append(int(current_input_ids.item()))
-        current_attention_mask = torch.cat(
-            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
-            dim=1,
-        )
+        if current_attention_mask is not None:
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+                dim=1,
+            )
         cache_position = cache_position + 1
 
     return {
