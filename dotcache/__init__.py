@@ -6,6 +6,7 @@ from .attention_reference import (
 )
 from .attention_runtime import decode_step, mix_page, prepare_page, prepare_pages, score_page
 from .config import DotCacheConfig
+from .page_cache import PreparedPageCache
 from .encode import encode_page
 from .planner import choose_mode
 from .tracing import ExecutionTrace
@@ -16,6 +17,7 @@ __all__ = [
     "EncodedPage",
     "ExecutionTrace",
     "PageHeader",
+    "PreparedPageCache",
     "choose_mode",
     "decode_step",
     "encode_page",

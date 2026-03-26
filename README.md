@@ -72,6 +72,18 @@ Benchmark scripts accept `--config <path>` and then let explicit CLI flags overr
 .venv/bin/python benchmarks/bench_decode.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096
 ```
 
+To measure repeated decode steps with runtime page reuse, use:
+
+```bash
+.venv/bin/python benchmarks/bench_decode_reuse.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
+```
+
+That benchmark reports:
+
+- `no_cache_*`: re-preparing pages on every decode step
+- `cache_cold_*`: one cold cache fill amortized across repeated steps
+- `cache_warm_*`: steady-state decode with a warm prepared-page cache
+
 To reproduce the crossover sweep:
 
 ```bash

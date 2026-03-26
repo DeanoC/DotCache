@@ -15,6 +15,7 @@ from .backends import (
     score_page_cpu_ref,
     score_page_mps,
 )
+from .page_cache import PreparedPageCache
 from .tracing import ExecutionTrace
 from .types import EncodedPage
 
@@ -42,10 +43,13 @@ def prepare_page(
     page: PageLike,
     *,
     backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
     trace: ExecutionTrace | None = None,
 ) -> PageLike:
     resolved_backend = _resolve_backend(backend, page)
     if resolved_backend == "torch_mps":
+        if cache is not None:
+            return cache.prepare_page(page, trace=trace)
         return prepare_page_mps(page, trace=trace)
     return page.source_page if isinstance(page, PreparedPageMPS) else page
 
@@ -54,9 +58,10 @@ def prepare_pages(
     pages: Sequence[PageLike],
     *,
     backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
     trace: ExecutionTrace | None = None,
 ) -> list[PageLike]:
-    return [prepare_page(page, backend=backend, trace=trace) for page in pages]
+    return [prepare_page(page, backend=backend, cache=cache, trace=trace) for page in pages]
 
 
 def score_page(
@@ -92,10 +97,11 @@ def attention_step(
     value_page: PageLike,
     *,
     backend: BackendName = "cpu_ref",
+    cache: PreparedPageCache | None = None,
     trace: ExecutionTrace | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    prepared_key_page = prepare_page(key_page, backend=backend, trace=trace)
-    prepared_value_page = prepare_page(value_page, backend=backend, trace=trace)
+    prepared_key_page = prepare_page(key_page, backend=backend, cache=cache, trace=trace)
+    prepared_value_page = prepare_page(value_page, backend=backend, cache=cache, trace=trace)
     logits = score_page(query_slice, prepared_key_page, backend=backend, trace=trace)
     weights = softmax(logits)
     output = mix_page(weights, prepared_value_page, backend=backend, trace=trace)
@@ -108,6 +114,7 @@ def decode_step(
     value_pages: Sequence[PageLike],
     *,
     backend: BackendName = "auto",
+    cache: PreparedPageCache | None = None,
     trace: ExecutionTrace | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if len(key_pages) != len(value_pages):
@@ -115,8 +122,8 @@ def decode_step(
     if not key_pages:
         raise ValueError("decode_step requires at least one page")
 
-    prepared_key_pages = prepare_pages(key_pages, backend=backend, trace=trace)
-    prepared_value_pages = prepare_pages(value_pages, backend=backend, trace=trace)
+    prepared_key_pages = prepare_pages(key_pages, backend=backend, cache=cache, trace=trace)
+    prepared_value_pages = prepare_pages(value_pages, backend=backend, cache=cache, trace=trace)
 
     page_logits = [score_page(query_slice, page, backend=backend, trace=trace) for page in prepared_key_pages]
     logits = np.concatenate(page_logits).astype(np.float32, copy=False)

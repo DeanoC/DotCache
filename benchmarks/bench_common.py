@@ -25,6 +25,7 @@ def parse_args(description: str, *, default_repeats: int) -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--contexts", nargs="*", type=int, default=DEFAULT_CONTEXTS)
     parser.add_argument("--repeats", type=int, default=default_repeats)
+    parser.add_argument("--decode-steps", type=int, default=8)
     parser.add_argument("--head-dim", type=int, default=None)
     parser.add_argument("--group-size", type=int, default=None)
     parser.add_argument("--tokens-per-page", type=int, default=None)
@@ -72,6 +73,11 @@ def build_fixture(context_length: int, config: DotCacheConfig, *, seed: int) -> 
         "key_pages": encode_context(keys, config, kind="K"),
         "value_pages": encode_context(values, config, kind="V"),
     }
+
+
+def build_queries(context_length: int, head_dim: int, *, steps: int, seed: int) -> list[np.ndarray]:
+    rng = np.random.default_rng(seed + context_length + head_dim)
+    return [rng.normal(size=(head_dim,)).astype(np.float32) for _ in range(steps)]
 
 
 def split_weights(weights: np.ndarray, pages: list) -> list[np.ndarray]:

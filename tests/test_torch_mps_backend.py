@@ -6,6 +6,7 @@ from dotcache.attention_runtime import decode_step, mix_page, prepare_page, prep
 from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
+from dotcache.page_cache import PreparedPageCache
 from dotcache.tracing import ExecutionTrace
 
 requires_mps = pytest.mark.skipif(not mps_available(), reason="torch_mps is unavailable")
@@ -164,3 +165,54 @@ def test_m3_pages_work_on_mps() -> None:
         atol=1e-3,
         rtol=1e-3,
     )
+
+
+@requires_mps
+def test_prepared_page_cache_reuses_mps_pages_across_decode_steps() -> None:
+    rng = np.random.default_rng(27)
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
+    context_length = 160
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query_a = rng.normal(size=(config.head_dim,)).astype(np.float32)
+    query_b = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+    cache = PreparedPageCache()
+
+    first_trace = ExecutionTrace()
+    first_logits, _, first_output = decode_step(
+        query_a,
+        key_pages,
+        value_pages,
+        backend="torch_mps",
+        cache=cache,
+        trace=first_trace,
+    )
+    second_trace = ExecutionTrace()
+    second_logits, _, second_output = decode_step(
+        query_b,
+        key_pages,
+        value_pages,
+        backend="torch_mps",
+        cache=cache,
+        trace=second_trace,
+    )
+
+    ref_logits_a, _, ref_output_a = decode_step(query_a, key_pages, value_pages, backend="cpu_ref")
+    ref_logits_b, _, ref_output_b = decode_step(query_b, key_pages, value_pages, backend="cpu_ref")
+
+    np.testing.assert_allclose(first_logits, ref_logits_a, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(first_output, ref_output_a, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(second_logits, ref_logits_b, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(second_output, ref_output_b, atol=1e-4, rtol=1e-4)
+
+    total_pages = len(key_pages) + len(value_pages)
+    assert first_trace.prepared_page_cache_misses == total_pages
+    assert first_trace.prepared_page_cache_hits == 0
+    assert first_trace.host_to_device_bytes > 0
+    assert second_trace.prepared_page_cache_hits == total_pages
+    assert second_trace.prepared_page_cache_misses == 0
+    assert second_trace.host_to_device_bytes == 0
+    assert second_trace.cache_resident_bytes == cache.resident_bytes
