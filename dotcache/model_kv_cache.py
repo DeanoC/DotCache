@@ -194,6 +194,13 @@ def _grouped_pages_can_batch(
     value_pages_by_group: Sequence[Sequence[PageLike]],
     query_groups: Sequence[Any],
 ) -> bool:
+    def _m2_segment_count(page: PageLike) -> int:
+        basis = getattr(page, "m2_basis", None)
+        if basis is None:
+            return 0
+        ndim = int(basis.ndim) if hasattr(basis, "ndim") else int(basis.dim())
+        return int(basis.shape[1]) if ndim == 4 else 1
+
     if not key_pages_by_group or len(key_pages_by_group) != len(value_pages_by_group):
         return False
     group_count = len(key_pages_by_group)
@@ -232,6 +239,7 @@ def _grouped_pages_can_batch(
             key_pages_by_group[0][page_index].header.layout,
             key_pages_by_group[0][page_index].header.quant_scheme,
             int(key_pages_by_group[0][page_index].m2_sketch.shape[-1]) if key_pages_by_group[0][page_index].m2_sketch is not None else 0,
+            _m2_segment_count(key_pages_by_group[0][page_index]),
         )
         value_signature = (
             value_pages_by_group[0][page_index].header.mode_default,
@@ -245,6 +253,7 @@ def _grouped_pages_can_batch(
             value_pages_by_group[0][page_index].header.layout,
             value_pages_by_group[0][page_index].header.quant_scheme,
             int(value_pages_by_group[0][page_index].m2_sketch.shape[-1]) if value_pages_by_group[0][page_index].m2_sketch is not None else 0,
+            _m2_segment_count(value_pages_by_group[0][page_index]),
         )
         for group_index in range(1, group_count):
             key_page = key_pages_by_group[group_index][page_index]
@@ -261,6 +270,7 @@ def _grouped_pages_can_batch(
                 key_page.header.layout,
                 key_page.header.quant_scheme,
                 int(key_page.m2_sketch.shape[-1]) if key_page.m2_sketch is not None else 0,
+                _m2_segment_count(key_page),
             ) != key_signature:
                 return False
             if (
@@ -275,6 +285,7 @@ def _grouped_pages_can_batch(
                 value_page.header.layout,
                 value_page.header.quant_scheme,
                 int(value_page.m2_sketch.shape[-1]) if value_page.m2_sketch is not None else 0,
+                _m2_segment_count(value_page),
             ) != value_signature:
                 return False
     return True
