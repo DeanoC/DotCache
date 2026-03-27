@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokens-per-page", type=int, default=256)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--prompt-lengths", type=int, nargs="*", default=[])
+    parser.add_argument(
+        "--continue-on-error",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pass --continue-on-error through to runnable compare harnesses.",
+    )
     parser.add_argument("--output-format", choices=["jsonl", "pretty"], default="jsonl")
     return parser.parse_args()
 
@@ -41,6 +47,7 @@ def _default_compare_command(
     tokens_per_page: int,
     max_new_tokens: int,
     prompt_lengths: tuple[int, ...],
+    continue_on_error: bool,
 ) -> list[str] | None:
     if spec.benchmark_harness != "llama_compare" or not spec.dotcache_ready:
         return None
@@ -61,6 +68,8 @@ def _default_compare_command(
         "--target-prompt-lengths",
         *[str(length) for length in prompt_lengths],
     ]
+    if continue_on_error:
+        command.append("--continue-on-error")
     if device is not None:
         command.extend(["--device", device])
     return command
@@ -75,6 +84,7 @@ def _matrix_record(
     tokens_per_page: int,
     max_new_tokens: int,
     prompt_lengths_override: list[int],
+    continue_on_error: bool,
 ) -> dict[str, object]:
     prompt_lengths = tuple(prompt_lengths_override) if prompt_lengths_override else spec.prompt_lengths
     command = _default_compare_command(
@@ -85,6 +95,7 @@ def _matrix_record(
         tokens_per_page=tokens_per_page,
         max_new_tokens=max_new_tokens,
         prompt_lengths=prompt_lengths,
+        continue_on_error=continue_on_error,
     )
     return {
         **spec.to_dict(),
@@ -94,6 +105,7 @@ def _matrix_record(
         "torch_dtype": torch_dtype,
         "tokens_per_page": tokens_per_page,
         "max_new_tokens": max_new_tokens,
+        "continue_on_error": continue_on_error,
         "command": command,
         "status": "runnable" if command is not None else "scaffold_only",
     }
@@ -123,6 +135,7 @@ def main() -> None:
             tokens_per_page=args.tokens_per_page,
             max_new_tokens=args.max_new_tokens,
             prompt_lengths_override=args.prompt_lengths,
+            continue_on_error=args.continue_on_error,
         )
         _print_record(record, output_format=args.output_format)
         if not args.run_supported or record["command"] is None:
