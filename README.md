@@ -84,6 +84,13 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev,hf,vllm]"
 ```
 
+7. Dedicated local Turbo3 smoke lane on MPS:
+
+```bash
+bash scripts/run_turbo3_mps_suite.sh tinyllama
+bash scripts/run_turbo3_mps_suite.sh smollm2
+```
+
 ## Current package layout
 
 ```text

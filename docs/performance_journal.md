@@ -35,24 +35,31 @@ What that changed in our read:
 - `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
 - Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
 
-### Turbo3 first local read
+### Turbo3 local lane on MPS
 
-Turbo3 is now implemented on the standalone exact runtime and the `torch_mps` path as a 3-bit FWHT-rotated codec with per-token/per-group norm correction.
+Turbo3 now has its own repeatable local runner on this Mac through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The current implementation also shares device-resident Turbo3 centroids across prepared pages, which cut some redundant metadata traffic and improved short-prompt runtime versus the first naive version.
 
-First TinyLlama checks on this M4 were directionally clear and not yet good enough:
+The latest local read is still clearly negative on the real model path:
 
-- short prompt compare (`repeat_count=1`, about `10` prompt tokens):
-  - DotCache decode `4974.28 ms/step`
-  - dense decode `605.67 ms/step`
-  - greedy agreement `1.00`
-  - max abs logit drift `0.0234`
-- teacher-forced loss (`288 / 32`):
-  - loss delta `+3.1687`
-  - perplexity ratio `23.78`
-  - token agreement `0.3125`
-  - max abs logit drift `26.45`
+| Model | Prompt / Eval | Dense Decode ms/step | Turbo3 Decode ms/step | KV Ratio | Agreement | Loss Delta | Perplexity Ratio |
+|---|---|---:|---:|---:|---:|---:|---:|
+| TinyLlama | short compare (`10`) | `574.29` | `1552.43` | `9.85x` | `1.00` | n/a | n/a |
+| TinyLlama | exact compare (`289`) | `310.86` | `3865.21` | `0.55x` | `0.25` | n/a | n/a |
+| TinyLlama | loss (`288 / 32`) | `450.86` | `3351.38` | n/a | `0.3125` | `+3.16766` | `23.75` |
+| SmolLM2 360M | short compare (`7`) | `568.03` | `4205.62` | `12.80x` | `1.00` | n/a | n/a |
+| SmolLM2 360M | exact compare (`1024`) | `378.88` | `5910.64` | `0.25x` | `0.25` | n/a | n/a |
+| SmolLM2 360M | loss (`1024 / 16`) | `544.12` | `5496.32` | n/a | `0.50` | `+2.45040` | `11.59` |
 
-So Turbo3 is currently best understood as implemented reference infrastructure for future comparison with TurboQuant-style ideas, not as a usable local model-path winner.
+What that means:
+
+- Turbo3 is not realistically optimized on this MPS path yet, either for decode speed or for model quality.
+- The shared-centroid change was still worth doing because it made Turbo3 cheaper to prepare and removed obviously duplicated metadata, but it did not change the overall conclusion.
+- Turbo3 does become more memory-competitive than dense once prompts span enough full pages, but the runtime and quality regressions swamp that benefit locally.
+- DotCache can still learn from the Turbo3 implementation shape:
+  - shared static metadata on device instead of per-page duplication
+  - explicit dedicated benchmark lanes for codec-specific evaluation
+  - keeping exact model-path quality gates alongside raw decode timing
+- Turbo3 does not currently teach us a better end-to-end MPS decode strategy than the existing `M0` exact path.
 
 ### Phase 6 vLLM adapter status
 

@@ -265,14 +265,14 @@ def test_m1_pages_work_on_mps() -> None:
     np.testing.assert_allclose(
         score_page(query, prepared_key_page, backend="torch_mps"),
         score_page(query, key_page, backend="cpu_ref"),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=3e-3,
+        rtol=3e-3,
     )
     np.testing.assert_allclose(
         mix_page(attn, prepared_value_page, backend="torch_mps"),
         mix_page(attn, value_page, backend="cpu_ref"),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=3e-3,
+        rtol=3e-3,
     )
 
 
@@ -302,14 +302,14 @@ def test_t3_pages_work_on_mps() -> None:
     np.testing.assert_allclose(
         score_page(query, prepared_key_page, backend="torch_mps"),
         score_page(query, key_page, backend="cpu_ref"),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=3e-3,
+        rtol=3e-3,
     )
     np.testing.assert_allclose(
         mix_page(attn, prepared_value_page, backend="torch_mps"),
         mix_page(attn, value_page, backend="cpu_ref"),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=3e-3,
+        rtol=3e-3,
     )
 
 

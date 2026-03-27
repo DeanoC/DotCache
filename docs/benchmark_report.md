@@ -71,12 +71,20 @@ This changes the quality read in an important way:
 - Adaptive segmented `M2` is now stable after decode bucketing, but it still regresses both quality and speed on SmolLM2 versus the fixed segmented variant, so it should remain experimental.
 - That makes teacher-forced loss/perplexity the local quality metric to trust first for `M1/M2`, not greedy agreement alone.
 
-Turbo3 now also exists as a local exact-mode reference on CPU and MPS, but the first TinyLlama read was clearly losing:
+Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh), and the current answer is still negative.
 
-- short prompt compare (`repeat_count=1`): DotCache decode `4974.28 ms/step` vs dense `605.67 ms/step`, with greedy agreement `1.0`
-- teacher-forced loss (`288 / 32`): loss delta `+3.1687`, perplexity ratio `23.78`, token agreement `0.3125`
+Latest local Turbo3 results:
 
-That makes Turbo3 a useful comparison point for future TurboQuant-style work, but not a mode we should promote on the current model path.
+| Model | Case | Dense Decode ms/step | Turbo3 Decode ms/step | KV Ratio | Agreement | Loss Delta |
+|---|---|---:|---:|---:|---:|---:|
+| TinyLlama | compare `10` | `574.29` | `1552.43` | `9.85x` | `1.00` | n/a |
+| TinyLlama | compare `289` | `310.86` | `3865.21` | `0.55x` | `0.25` | n/a |
+| TinyLlama | loss `288 / 32` | `450.86` | `3351.38` | n/a | `0.3125` | `+3.16766` |
+| SmolLM2 360M | compare `7` | `568.03` | `4205.62` | `12.80x` | `1.00` | n/a |
+| SmolLM2 360M | compare `1024` | `378.88` | `5910.64` | `0.25x` | `0.25` | n/a |
+| SmolLM2 360M | loss `1024 / 16` | `544.12` | `5496.32` | n/a | `0.50` | `+2.45040` |
+
+So Turbo3 is still useful as a reference implementation and comparison point for future TurboQuant-style work, but not a mode we should promote on the current MPS model path.
 
 ## Memory
 
