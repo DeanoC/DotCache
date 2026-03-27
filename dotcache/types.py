@@ -53,6 +53,8 @@ class EncodedPage:
     bias: np.ndarray | None = None
     codebooks: np.ndarray | None = None
     escape_payload: np.ndarray | None = None
+    requested_mode: str | None = None
+    trial_quant_error: float | None = None
     runtime_page_mean: np.ndarray | None = None
     runtime_page_sketch: np.ndarray | None = None
     runtime_page_min: np.ndarray | None = None

@@ -798,6 +798,52 @@ class ModelPagedKVCache:
             raise RuntimeError(f"layer {layer_id} KV heads disagree on sequence length")
         return next(iter(lengths), 0)
 
+    def page_mode_summary(self) -> dict[str, float | int]:
+        counts: dict[str, int] = {
+            "total_static_pages": 0,
+            "m0_pages": 0,
+            "m1_pages": 0,
+            "m3_pages": 0,
+            "requested_m1_pages": 0,
+            "m1_fallback_pages": 0,
+            "active_tail_pages": 0,
+        }
+        m1_trial_errors: list[float] = []
+
+        def visit_page(page: PageLike) -> None:
+            source = page.source_page if isinstance(page, PreparedPageTorch) else page
+            counts["total_static_pages"] += 1
+            mode_name = str(source.header.mode_default)
+            key = f"{mode_name.lower()}_pages"
+            if key in counts:
+                counts[key] += 1
+            if source.requested_mode == "M1":
+                counts["requested_m1_pages"] += 1
+                if source.header.mode_default != "M1":
+                    counts["m1_fallback_pages"] += 1
+                if source.trial_quant_error is not None:
+                    m1_trial_errors.append(float(source.trial_quant_error))
+
+        for state in self._states.values():
+            for page in state.session.key_pages:
+                visit_page(page)
+            for page in state.session.value_pages:
+                visit_page(page)
+            if state.tail.token_count > 0:
+                counts["active_tail_pages"] += 2
+
+        summary: dict[str, float | int] = dict(counts)
+        if m1_trial_errors:
+            errors = np.asarray(m1_trial_errors, dtype=np.float32)
+            summary["m1_trial_error_mean"] = float(np.mean(errors))
+            summary["m1_trial_error_max"] = float(np.max(errors))
+            summary["m1_trial_error_p95"] = float(np.percentile(errors, 95))
+        else:
+            summary["m1_trial_error_mean"] = 0.0
+            summary["m1_trial_error_max"] = 0.0
+            summary["m1_trial_error_p95"] = 0.0
+        return summary
+
     def _batch_upload_persistent_tail_rows(
         self,
         tails: Sequence[_PersistentTailPage | None],

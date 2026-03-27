@@ -62,6 +62,8 @@ def encode_page(
     page_layout = layout or (config.payload_layout_k if kind == "K" else config.payload_layout_v)
     scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
     token_count = values.shape[0]
+    requested_mode = page_mode
+    trial_quant_error = None
     runtime_page_mean = None
     runtime_page_sketch = None
     runtime_page_min = None
@@ -92,6 +94,7 @@ def encode_page(
         return EncodedPage(
             header=header,
             escape_payload=escape_payload,
+            requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,
             runtime_page_min=runtime_page_min,
@@ -110,8 +113,8 @@ def encode_page(
         if config.m1_fallback_to_m0:
             reconstructed = _reconstruct_lut_page(codes, codebooks)[:, : config.head_dim]
             rms = float(np.sqrt(np.mean(np.square(values), dtype=np.float64)))
-            relative_mae = float(np.mean(np.abs(values - reconstructed), dtype=np.float64) / max(rms, 1e-6))
-            if relative_mae > config.m1_error_threshold:
+            trial_quant_error = float(np.mean(np.abs(values - reconstructed), dtype=np.float64) / max(rms, 1e-6))
+            if trial_quant_error > config.m1_error_threshold:
                 page_mode = "M0"
                 scheme = "affine"
         if page_mode == "M1":
@@ -137,6 +140,8 @@ def encode_page(
                 header=header,
                 payload=payload,
                 codebooks=codebooks.astype(np.float16),
+                requested_mode=requested_mode,
+                trial_quant_error=trial_quant_error,
                 runtime_page_mean=runtime_page_mean,
                 runtime_page_sketch=runtime_page_sketch,
                 runtime_page_min=runtime_page_min,
@@ -177,6 +182,8 @@ def encode_page(
         payload=payload,
         scales=stored_scales,
         bias=stored_bias,
+        requested_mode=requested_mode,
+        trial_quant_error=trial_quant_error,
         runtime_page_mean=runtime_page_mean,
         runtime_page_sketch=runtime_page_sketch,
         runtime_page_min=runtime_page_min,

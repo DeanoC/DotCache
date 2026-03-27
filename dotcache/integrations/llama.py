@@ -1168,6 +1168,7 @@ def run_llama_generation_harness(
         "teacher_forced_logit_max_abs_error": max_abs_logit_drift,
         "teacher_forced_logit_max_rel_error": max_rel_logit_drift,
     }
+    result.update(adapter.model_kv_cache.page_mode_summary())
     if tokenizer is not None:
         result["dense_text"] = tokenizer.decode(dense_generated_ids, skip_special_tokens=True)
         result["dotcache_text"] = tokenizer.decode(generated_ids, skip_special_tokens=True)

@@ -165,6 +165,39 @@ def test_model_paged_kv_cache_query_scale_matches_scaled_reference_query() -> No
     np.testing.assert_allclose(scaled_outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)
 
 
+def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
+    rng = np.random.default_rng(3041)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M1",
+        default_mode_v="M1",
+        quant_scheme_k="lut",
+        quant_scheme_v="lut",
+        m1_fallback_to_m0=True,
+        m1_error_threshold=1e-6,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+
+    assert int(summary["requested_m1_pages"]) == int(summary["total_static_pages"])
+    assert int(summary["m1_fallback_pages"]) == int(summary["total_static_pages"])
+    assert int(summary["m0_pages"]) == int(summary["total_static_pages"])
+    assert float(summary["m1_trial_error_max"]) > 0.0
+
+
 def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> None:
     if not mps_available():
         return
