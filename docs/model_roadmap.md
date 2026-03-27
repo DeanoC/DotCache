@@ -62,6 +62,17 @@ Recorded runs can then be summarized with:
 .venv/bin/python scripts/report_model_benchmarks.py --benchmark llama_compare
 ```
 
+Canonical 5090-era Qwen CUDA labels:
+
+```bash
+.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda -- bash scripts/run_qwen25_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
+.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-k-exact -- bash scripts/run_qwen25_compare_cuda.sh
+.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda -- bash scripts/run_qwen25_7b_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
+.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-k-exact -- bash scripts/run_qwen25_7b_compare_cuda.sh
+```
+
+Use the unlabeled wrapper defaults for the recommended path. Add the explicit `--default-mode-k M0 --default-mode-v M0` override only when you want the Qwen CUDA baseline lane for comparison.
+
 ## Current Read
 
 - This Mac already has working local lanes for:
