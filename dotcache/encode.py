@@ -4,6 +4,7 @@ import numpy as np
 
 from .config import DotCacheConfig
 from .modes.m0_affine import quantize_tensor
+from .modes.m1_lut import quantize_tensor_lut
 from .modes.m3_escape import encode_escape_payload
 from .page_format import build_payload
 from .packing import words_per_group
@@ -87,8 +88,42 @@ def encode_page(
             runtime_page_max=runtime_page_max,
         )
 
+    if page_mode == "M1":
+        codes, codebooks, padded_head_dim = quantize_tensor_lut(
+            values,
+            group_size=config.group_size,
+            bits=bits,
+        )
+        payload = build_payload(codes, bits, page_layout)
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=bits,
+            words_per_group=words_per_group(config.group_size, bits),
+            mode_default="M1",
+            layout=page_layout,
+            quant_scheme="lut",
+            escape_dtype=config.escape_dtype,
+        )
+        return EncodedPage(
+            header=header,
+            payload=payload,
+            codebooks=codebooks.astype(np.float16),
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
+        )
+
     if page_mode != "M0":
-        raise ValueError("only M0 and M3 are supported in the bootstrap")
+        raise ValueError("only M0, M1, and M3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
         values,

@@ -13,6 +13,7 @@ from .attention_runtime import (
     score_pages,
 )
 from .modes.m0_affine import dequantize_group
+from .modes.m1_lut import dequantize_group_lut
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
 from .packing import unpack_bits
@@ -33,24 +34,34 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
             raise ValueError("escape payload is missing")
         return np.asarray(source_page.escape_payload[:, : header.head_dim], dtype=np.float32)
 
-    if source_page.payload is None or source_page.scales is None:
-        raise ValueError("M0 page is missing payload or scales")
+    if source_page.payload is None:
+        raise ValueError(f"{header.mode_default} page is missing payload")
 
     dense = np.zeros((header.token_count, header.padded_head_dim), dtype=np.float32)
     for group_index in range(header.num_groups):
         words = load_group_words(source_page, group_index)
         codes = unpack_bits(words, header.bits, header.group_size)
-        scales = source_page.scales[:, group_index].astype(np.float32)[:, None]
-        bias = None
-        if source_page.bias is not None:
-            bias = source_page.bias[:, group_index].astype(np.float32)[:, None]
-        group_values = dequantize_group(
-            codes,
-            scales=scales,
-            bias=bias,
-            bits=header.bits,
-            scheme=header.quant_scheme,
-        )
+        if header.mode_default == "M1":
+            if source_page.codebooks is None:
+                raise ValueError("M1 page is missing codebooks")
+            group_values = dequantize_group_lut(
+                codes,
+                codebook=source_page.codebooks[group_index].astype(np.float32),
+            )
+        else:
+            if source_page.scales is None:
+                raise ValueError("M0 page is missing scales")
+            scales = source_page.scales[:, group_index].astype(np.float32)[:, None]
+            bias = None
+            if source_page.bias is not None:
+                bias = source_page.bias[:, group_index].astype(np.float32)[:, None]
+            group_values = dequantize_group(
+                codes,
+                scales=scales,
+                bias=bias,
+                bits=header.bits,
+                scheme=header.quant_scheme,
+            )
         start = group_index * header.group_size
         end = start + header.group_size
         dense[:, start:end] = group_values

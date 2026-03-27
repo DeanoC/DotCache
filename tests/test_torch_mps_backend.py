@@ -249,6 +249,34 @@ def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int) -
 
 
 @requires_mps
+def test_m1_pages_work_on_mps() -> None:
+    rng = np.random.default_rng(2401)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4)
+    keys = rng.normal(size=(16, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(16, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+    attn = softmax(rng.normal(size=(16,)).astype(np.float32))
+
+    key_page = encode_page(keys, config, kind="K", mode="M1")
+    value_page = encode_page(values, config, kind="V", mode="M1")
+    prepared_key_page = prepare_page(key_page, backend="torch_mps")
+    prepared_value_page = prepare_page(value_page, backend="torch_mps")
+
+    np.testing.assert_allclose(
+        score_page(query, prepared_key_page, backend="torch_mps"),
+        score_page(query, key_page, backend="cpu_ref"),
+        atol=1e-4,
+        rtol=1e-4,
+    )
+    np.testing.assert_allclose(
+        mix_page(attn, prepared_value_page, backend="torch_mps"),
+        mix_page(attn, value_page, backend="cpu_ref"),
+        atol=1e-4,
+        rtol=1e-4,
+    )
+
+
+@requires_mps
 def test_mix_page_mps_matches_cpu_reference() -> None:
     rng = np.random.default_rng(24)
     config = DotCacheConfig(head_dim=128, group_size=32, bits_v=4)

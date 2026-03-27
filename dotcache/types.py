@@ -8,8 +8,8 @@ import numpy as np
 
 Kind = Literal["K", "V"]
 Layout = Literal["group_major", "token_major"]
-Mode = Literal["M0", "M3"]
-QuantScheme = Literal["affine", "symmetric"]
+Mode = Literal["M0", "M1", "M3"]
+QuantScheme = Literal["affine", "symmetric", "lut"]
 
 
 @dataclass(slots=True)
@@ -51,6 +51,7 @@ class EncodedPage:
     payload: np.ndarray | None = None
     scales: np.ndarray | None = None
     bias: np.ndarray | None = None
+    codebooks: np.ndarray | None = None
     escape_payload: np.ndarray | None = None
     runtime_page_mean: np.ndarray | None = None
     runtime_page_sketch: np.ndarray | None = None
@@ -75,6 +76,8 @@ class EncodedPage:
             total += int(self.scales.nbytes)
         if self.bias is not None:
             total += int(self.bias.nbytes)
+        if self.codebooks is not None:
+            total += int(self.codebooks.nbytes)
         return total
 
     @property

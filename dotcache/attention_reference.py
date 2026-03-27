@@ -36,8 +36,8 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
         dense = page.escape_payload.astype(np.float32)[:, : header.head_dim]
         return dense @ query_slice.astype(np.float32)
 
-    if page.payload is None or page.scales is None:
-        raise ValueError("M0 page is missing payload or scales")
+    if page.payload is None:
+        raise ValueError(f"{header.mode_default} page is missing payload")
 
     query_groups = query.reshape(header.num_groups, header.group_size)
     query_group_sums = query_groups.sum(axis=-1)
@@ -45,8 +45,18 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
 
     for group_index in range(header.num_groups):
         words = load_group_words(page, group_index)
-        codes = unpack_bits(words, header.bits, header.group_size).astype(np.float32)
+        codes_u8 = unpack_bits(words, header.bits, header.group_size)
         qg = query_groups[group_index]
+        if header.mode_default == "M1":
+            if page.codebooks is None:
+                raise ValueError("M1 page is missing codebooks")
+            group = page.codebooks[group_index].astype(np.float32)[codes_u8.astype(np.int64)]
+            logits += group @ qg
+            continue
+
+        if page.scales is None:
+            raise ValueError("M0 page is missing scales")
+        codes = codes_u8.astype(np.float32)
         scales = page.scales[:, group_index].astype(np.float32)
 
         if header.quant_scheme == "affine":
@@ -79,21 +89,30 @@ def mix_page_ref(attn_weights: np.ndarray, page: EncodedPage, out_acc: np.ndarra
         output[: header.head_dim] += weights @ page.escape_payload.astype(np.float32)[:, : header.head_dim]
         return output[: header.head_dim].copy()
 
-    if page.payload is None or page.scales is None:
-        raise ValueError("M0 page is missing payload or scales")
+    if page.payload is None:
+        raise ValueError(f"{header.mode_default} page is missing payload")
 
     for group_index in range(header.num_groups):
         words = load_group_words(page, group_index)
-        codes = unpack_bits(words, header.bits, header.group_size).astype(np.float32)
-        scales = page.scales[:, group_index].astype(np.float32)[:, None]
+        codes_u8 = unpack_bits(words, header.bits, header.group_size)
 
-        if header.quant_scheme == "affine":
-            if page.bias is None:
-                raise ValueError("affine pages require bias metadata")
-            group = scales * codes + page.bias[:, group_index].astype(np.float32)[:, None]
+        if header.mode_default == "M1":
+            if page.codebooks is None:
+                raise ValueError("M1 page is missing codebooks")
+            group = page.codebooks[group_index].astype(np.float32)[codes_u8.astype(np.int64)]
         else:
-            zero_point = (1 << (header.bits - 1)) - 1
-            group = scales * (codes - zero_point)
+            if page.scales is None:
+                raise ValueError("M0 page is missing scales")
+            codes = codes_u8.astype(np.float32)
+            scales = page.scales[:, group_index].astype(np.float32)[:, None]
+
+            if header.quant_scheme == "affine":
+                if page.bias is None:
+                    raise ValueError("affine pages require bias metadata")
+                group = scales * codes + page.bias[:, group_index].astype(np.float32)[:, None]
+            else:
+                zero_point = (1 << (header.bits - 1)) - 1
+                group = scales * (codes - zero_point)
 
         start = group_index * header.group_size
         end = start + header.group_size
@@ -126,4 +145,3 @@ def explicit_dequantized_attention(query_slice: np.ndarray, key_page: EncodedPag
     weights = softmax(logits)
     output = explicit_dequantized_mix(weights, value_page)
     return logits, output
-

@@ -18,7 +18,7 @@ def _record_trace(page: EncodedPage, trace: ExecutionTrace | None) -> None:
     if trace is None:
         return
     trace.record_page_read(page.payload_nbytes, page.metadata_nbytes)
-    if page.header.mode_default == "M0":
+    if page.header.mode_default in ("M0", "M1"):
         trace.record_temporary(page.header.token_count * page.header.group_size * np.dtype(np.float32).itemsize)
 
 

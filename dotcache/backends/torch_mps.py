@@ -62,6 +62,7 @@ class PreparedPageTorch:
     payload: Any | None = None
     scales: Any | None = None
     bias: Any | None = None
+    codebooks: Any | None = None
     escape_payload: Any | None = None
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
@@ -288,13 +289,23 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
     if header.mode_default == "M3":
         return source_page.escape_payload is not None
     return (
-        header.mode_default == "M0"
+        header.mode_default in ("M0", "M1")
         and header.bits in (2, 4)
         and header.group_size in (32, 64)
-        and header.quant_scheme == "affine"
         and source_page.payload is not None
-        and source_page.scales is not None
-        and source_page.bias is not None
+        and (
+            (
+                header.mode_default == "M0"
+                and header.quant_scheme == "affine"
+                and source_page.scales is not None
+                and source_page.bias is not None
+            )
+            or (
+                header.mode_default == "M1"
+                and header.quant_scheme == "lut"
+                and source_page.codebooks is not None
+            )
+        )
     )
 
 
@@ -323,6 +334,8 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
         total += int(page.scales.nbytes)
     if page.bias is not None:
         total += int(page.bias.nbytes)
+    if page.codebooks is not None:
+        total += int(page.codebooks.nbytes)
     if page.escape_payload is not None:
         total += int(page.escape_payload.nbytes)
     return total
@@ -350,6 +363,38 @@ def _prepare_page_chunk_torch(
                 escape_payload=escape_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
                 resident_nbytes=int(escape_batch[index].numel() * escape_batch[index].element_size()),
+                cache_uid=_next_prepared_page_uid(),
+            )
+            for index, page in enumerate(pages)
+        ]
+        if trace is not None:
+            trace.record_host_to_device(total_host_to_device_nbytes)
+        return prepared_pages
+
+    if header.mode_default == "M1":
+        payload_array = np.stack([np.asarray(page.payload, dtype=np.int32) for page in pages], axis=0)
+        codebooks_array = np.stack([np.asarray(page.codebooks) for page in pages], axis=0)
+        payload_batch = _device_tensor(payload_array, device=device_type)
+        codebooks_batch = _device_tensor(codebooks_array, device=device_type)
+        total_host_to_device_nbytes += int(payload_array.nbytes)
+        total_host_to_device_nbytes += int(codebooks_array.nbytes)
+        if device_type == "mps":
+            codebooks_batch = codebooks_batch.to(dtype=_load_torch().float32)
+        unpack_shifts, unpack_mask = _unpack_metadata(header.bits, device_type=device_type)
+        prepared_pages = [
+            PreparedPageTorch(
+                device_type=device_type,
+                source_page=page,
+                header=page.header,
+                payload=payload_batch[index],
+                codebooks=codebooks_batch[index],
+                unpack_shifts=unpack_shifts,
+                unpack_mask=unpack_mask,
+                host_to_device_nbytes=_prepared_page_host_nbytes(page),
+                resident_nbytes=(
+                    int(payload_batch[index].numel() * payload_batch[index].element_size())
+                    + int(codebooks_batch[index].numel() * codebooks_batch[index].element_size())
+                ),
                 cache_uid=_next_prepared_page_uid(),
             )
             for index, page in enumerate(pages)
@@ -501,6 +546,25 @@ def _unpack_bits_torch(words, shifts, mask, group_size: int):
     return expanded.reshape(words.shape[0], group_size).to(torch.float32)
 
 
+def _lookup_lut_group_torch(codebooks, codes):
+    torch = _load_torch()
+    lut = codebooks.to(dtype=torch.float32)
+    code_indices = codes.to(dtype=torch.int64)
+    if lut.ndim == 1 and code_indices.ndim == 1:
+        return lut[code_indices]
+    if lut.ndim == 2 and code_indices.ndim == 2:
+        page_index = _load_torch().arange(lut.shape[0], device=lut.device)[:, None]
+        return lut[page_index, code_indices]
+    if lut.ndim == 2 and code_indices.ndim == 3:
+        page_index = _load_torch().arange(lut.shape[0], device=lut.device)[:, None, None]
+        return lut[page_index, code_indices]
+    if lut.ndim == 3 and code_indices.ndim == 4:
+        batch_index = torch.arange(lut.shape[0], device=lut.device)[:, None, None, None]
+        page_index = torch.arange(lut.shape[1], device=lut.device)[None, :, None, None]
+        return lut[batch_index, page_index, code_indices]
+    raise ValueError("unsupported LUT rank")
+
+
 def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[PreparedPageTorch], *, trace: ExecutionTrace | None = None):
     torch = _load_torch()
     if not pages:
@@ -520,6 +584,28 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         )
         query = _pad_query(query_slice, header.head_dim, device_type=device_type)
         return torch.matmul(dense, query).reshape(-1)
+
+    if header.mode_default == "M1":
+        query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
+        query_groups = query.reshape(header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack([page.codebooks[group_index] for page in pages], dim=0),
+                codes,
+            )
+            logits += torch.matmul(group, query_groups[group_index])
+        return logits.reshape(-1)
 
     query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
     query_groups = query.reshape(header.num_groups, header.group_size)
@@ -595,6 +681,26 @@ def _mix_page_chunk_torch(
             dim=0,
         )
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
+        return output
+
+    if header.mode_default == "M1":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack([page.codebooks[group_index] for page in pages], dim=0),
+                codes,
+            )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[start:end] += torch.einsum("pt,ptg->g", weights, group)
         return output
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
@@ -780,6 +886,28 @@ def _score_page_chunk_multiquery_torch(
         queries = _pad_queries(query_slices, header.head_dim, device_type=device_type)
         return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
 
+    if header.mode_default == "M1":
+        queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
+        query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack([page.codebooks[group_index] for page in pages], dim=0),
+                codes,
+            )
+            logits += torch.einsum("ptg,qg->qpt", group, query_groups[:, group_index, :])
+        return logits.reshape(query_count, -1)
+
     queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
     query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
     query_group_sums = query_groups.sum(dim=-1)
@@ -858,6 +986,26 @@ def _mix_page_chunk_multiquery_torch(
             dim=0,
         )
         output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
+        return output
+
+    if header.mode_default == "M1":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack([page.codebooks[group_index] for page in pages], dim=0),
+                codes,
+            )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[:, start:end] += torch.einsum("qpt,ptg->qg", weights, group)
         return output
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
@@ -945,6 +1093,40 @@ def _score_page_chunk_grouped_multiquery_torch(
             dim=0,
         )
         return torch.einsum("bpth,bqh->bqpt", dense, queries).reshape(batch_size, query_count, -1)
+
+    if header.mode_default == "M1":
+        padded_queries = _pad_queries(
+            queries.reshape(batch_size * query_count, header.head_dim),
+            header.padded_head_dim,
+            device_type=device_type,
+        ).reshape(batch_size, query_count, header.padded_head_dim)
+        query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
+        logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack(
+                [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages_by_group[0][0].unpack_shifts,
+                pages_by_group[0][0].unpack_mask,
+                header.group_size,
+            ).reshape(batch_size, page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack(
+                    [
+                        torch.stack([page.codebooks[group_index] for page in group_pages], dim=0)
+                        for group_pages in pages_by_group
+                    ],
+                    dim=0,
+                ),
+                codes,
+            )
+            logits += torch.einsum("bptg,bqg->bqpt", group, query_groups_tensor[:, :, group_index, :])
+        return logits.reshape(batch_size, query_count, -1)
 
     padded_queries = _pad_queries(
         queries.reshape(batch_size * query_count, header.head_dim),
@@ -1045,6 +1227,35 @@ def _mix_page_chunk_grouped_multiquery_torch(
             dim=0,
         )
         output[:, :, : header.head_dim] += torch.einsum("bqpt,bpth->bqh", weights, dense)
+        return output
+
+    if header.mode_default == "M1":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack(
+                [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages_by_group[0][0].unpack_shifts,
+                pages_by_group[0][0].unpack_mask,
+                header.group_size,
+            ).reshape(batch_size, page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            group = _lookup_lut_group_torch(
+                torch.stack(
+                    [
+                        torch.stack([page.codebooks[:, group_index, :] for page in group_pages], dim=0)
+                        for group_pages in pages_by_group
+                    ],
+                    dim=0,
+                ),
+                codes,
+            )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)
         return output
 
     prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
