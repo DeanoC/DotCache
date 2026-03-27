@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dotcache"
 version = "0.1.0"
-description = "Software-first DotCache prototype for compressed-domain KV-cache execution."
+description = "Compressed-domain KV-cache research runtime with HF model integration, MPS/CUDA backends, and vLLM scaffolding."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
