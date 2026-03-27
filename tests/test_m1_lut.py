@@ -7,6 +7,76 @@ from dotcache.encode import encode_page
 from dotcache.modes.m1_lut import quantize_tensor_lut
 
 
+def _quantize_tensor_lut_scalar_reference(
+    values: np.ndarray,
+    *,
+    group_size: int,
+    bits: int,
+    segment_count: int = 1,
+    refine_steps: int = 6,
+    preconditioner: str = "none",
+    precondition_strength: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    token_count, head_dim = values.shape
+    num_groups = (head_dim + group_size - 1) // group_size
+    padded_head_dim = num_groups * group_size
+    padded = np.pad(values, ((0, 0), (0, padded_head_dim - head_dim)))
+    grouped = padded.reshape(token_count, num_groups, group_size)
+    levels = 1 << bits
+    quantile_positions = np.linspace(0.0, 1.0, num=levels, dtype=np.float32)
+    segment_slices = np.array_split(np.arange(token_count, dtype=np.int32), max(1, min(int(segment_count), token_count)))
+
+    codebooks = np.zeros((num_groups, len(segment_slices), levels), dtype=np.float32)
+    codes = np.zeros((token_count, num_groups, group_size), dtype=np.uint8)
+    for group_index in range(num_groups):
+        group_codes = np.zeros((token_count, group_size), dtype=np.uint8)
+        for segment_index, token_indices in enumerate(segment_slices):
+            segment_values = grouped[token_indices, group_index, :]
+            flat_segment_values = segment_values.reshape(-1)
+            fit_values = flat_segment_values
+            restore_mean = 0.0
+            restore_scale = 1.0
+            if preconditioner == "tanh":
+                restore_mean = float(np.mean(flat_segment_values, dtype=np.float64))
+                centered = flat_segment_values - restore_mean
+                restore_scale = float(np.std(centered, dtype=np.float64))
+                if restore_scale < 1e-6:
+                    restore_scale = 1.0
+                fit_values = np.tanh(centered / (restore_scale * precondition_strength)).astype(np.float32)
+            elif preconditioner != "none":
+                raise ValueError("unsupported preconditioner")
+            lut = np.quantile(fit_values, quantile_positions).astype(np.float32)
+            if levels > 1:
+                for _ in range(refine_steps):
+                    boundaries = (lut[:-1] + lut[1:]) * 0.5
+                    flat_codes = np.searchsorted(boundaries, fit_values, side="left").astype(np.int32)
+                    updated = lut.copy()
+                    for code_index in range(levels):
+                        members = fit_values[flat_codes == code_index]
+                        if members.size > 0:
+                            updated[code_index] = float(np.mean(members, dtype=np.float64))
+                    if np.allclose(updated, lut, atol=1e-6, rtol=0.0):
+                        lut = updated
+                        break
+                    lut = updated
+                boundaries = (lut[:-1] + lut[1:]) * 0.5
+                source_values = segment_values
+                if preconditioner == "tanh":
+                    source_values = np.tanh(
+                        (source_values - restore_mean) / (restore_scale * precondition_strength)
+                    ).astype(np.float32)
+                group_codes[token_indices] = np.searchsorted(boundaries, source_values, side="left").astype(np.uint8)
+            if preconditioner == "tanh":
+                lut = np.clip(lut, -0.999, 0.999)
+                lut = (
+                    np.arctanh(lut).astype(np.float32) * np.float32(restore_scale * precondition_strength)
+                    + np.float32(restore_mean)
+                )
+            codebooks[group_index, segment_index] = lut
+        codes[:, group_index] = np.clip(group_codes, 0, levels - 1)
+    return codes, codebooks, padded_head_dim
+
+
 def test_lut_quantization_shapes_and_error() -> None:
     rng = np.random.default_rng(7)
     values = rng.normal(size=(4, 48)).astype(np.float32)
@@ -23,6 +93,34 @@ def test_lut_quantization_shapes_and_error() -> None:
     assert codebooks.shape == (2, 2, 16)
     assert padded_head_dim == 64
     assert np.max(np.abs(values - decoded[:, :48])) < 0.9
+
+
+def test_lut_quantization_matches_scalar_reference() -> None:
+    rng = np.random.default_rng(70)
+    values = rng.normal(size=(8, 48)).astype(np.float32)
+
+    ref_codes, ref_codebooks, ref_padded = _quantize_tensor_lut_scalar_reference(
+        values,
+        group_size=32,
+        bits=4,
+        segment_count=2,
+        refine_steps=4,
+        preconditioner="tanh",
+        precondition_strength=2.0,
+    )
+    fast_codes, fast_codebooks, fast_padded = quantize_tensor_lut(
+        values,
+        group_size=32,
+        bits=4,
+        segment_count=2,
+        refine_steps=4,
+        preconditioner="tanh",
+        precondition_strength=2.0,
+    )
+
+    assert fast_padded == ref_padded
+    np.testing.assert_array_equal(fast_codes, ref_codes)
+    np.testing.assert_allclose(fast_codebooks, ref_codebooks, atol=1e-6, rtol=0.0)
 
 
 def test_m1_page_decodes_and_matches_explicit_reference() -> None:
