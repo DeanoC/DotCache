@@ -13,11 +13,13 @@ from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 from .model_kv_cache import ModelPagedKVCache
+from .model_registry import ModelSpec, get_model_spec, list_model_specs
 
 __all__ = [
     "DotCacheConfig",
     "EncodedPage",
     "ExecutionTrace",
+    "ModelSpec",
     "ModelPagedKVCache",
     "PageHeader",
     "PagedDecodeSession",
@@ -26,6 +28,8 @@ __all__ = [
     "decode_step",
     "encode_page",
     "explicit_dequantized_attention",
+    "get_model_spec",
+    "list_model_specs",
     "mix_page",
     "mix_page_ref",
     "prepare_page",
