@@ -96,6 +96,8 @@ def _case_key(record: dict[str, Any], benchmark: str) -> tuple[Any, ...]:
         record.get("quant_scheme_k"),
         record.get("default_mode_v"),
         record.get("quant_scheme_v"),
+        tuple(record.get("key_mode_overrides") or []),
+        tuple(record.get("value_mode_overrides") or []),
         record.get("tokens_per_page"),
     )
     if _is_compare_benchmark(benchmark):
@@ -114,16 +116,26 @@ def _case_key(record: dict[str, Any], benchmark: str) -> tuple[Any, ...]:
 
 
 def _case_label(record: dict[str, Any], benchmark: str) -> str:
+    key_overrides = list(record.get("key_mode_overrides") or [])
+    value_overrides = list(record.get("value_mode_overrides") or [])
+    override_bits: list[str] = []
+    if key_overrides:
+        override_bits.append(f"K*={','.join(key_overrides)}")
+    if value_overrides:
+        override_bits.append(f"V*={','.join(value_overrides)}")
+    override_suffix = f" [{' ; '.join(override_bits)}]".replace(" ; ", "; ") if override_bits else ""
     if _is_compare_benchmark(benchmark):
         return (
             f"prompt={record.get('prompt_length')} "
             f"K={record.get('default_mode_k')}/{record.get('quant_scheme_k')} "
             f"V={record.get('default_mode_v')}/{record.get('quant_scheme_v')}"
+            f"{override_suffix}"
         )
     return (
         f"seq={record.get('sequence_length')} prefix={record.get('prefix_length')} eval={record.get('eval_steps')} "
         f"K={record.get('default_mode_k')}/{record.get('quant_scheme_k')} "
         f"V={record.get('default_mode_v')}/{record.get('quant_scheme_v')}"
+        f"{override_suffix}"
     )
 
 

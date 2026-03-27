@@ -70,6 +70,7 @@ Canonical 5090-era Qwen CUDA labels:
 .venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-selective -- bash scripts/run_qwen25_compare_cuda_selective.sh
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda -- bash scripts/run_qwen25_7b_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-k-exact -- bash scripts/run_qwen25_7b_compare_cuda.sh
+.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-selective -- bash scripts/run_qwen25_7b_compare_cuda_selective.sh
 ```
 
 Use the unlabeled wrapper defaults for the recommended path. Add the explicit `--default-mode-k M0 --default-mode-v M0` override only when you want the Qwen CUDA baseline lane for comparison.
@@ -92,6 +93,7 @@ The first pod-oriented HF scale-up lane should use the existing compare harnesse
 - public 3B wrapper: [scripts/run_qwen25_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda.sh)
 - selective 3B wrapper: [scripts/run_qwen25_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_selective.sh)
 - public 7B wrapper: [scripts/run_qwen25_7b_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda.sh)
+- selective 7B wrapper: [scripts/run_qwen25_7b_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_selective.sh)
 - Qwen key-exact research wrappers:
   - [scripts/run_qwen25_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_k_exact.sh)
   - [scripts/run_qwen25_7b_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_k_exact.sh)
@@ -230,6 +232,13 @@ This should be treated as a reusable capability, not just a Qwen quirk. The next
 - some models want whole-layer exact K
 - some want only specific KV groups
 - some still need full `K=M3`
+
+The same lightweight policy already transfers to Qwen2.5 7B at `1024/2048`:
+
+- `layer:0=M3`
+- `layer:27:kv:1=M3`
+- greedy agreement returns to `1.0`
+- KV ratio stays near the all-`M0` lane rather than the full exact-K lane
 
 ## GGUF Reference Lane
 

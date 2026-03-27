@@ -99,6 +99,12 @@ That policy is materially more efficient than full exact-K while preserving the 
 | Qwen2.5-3B | `4096` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.359x` | `240.47` |
 | Qwen2.5-3B | `4096` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.25` | `0.187x` | `407.81` |
 | Qwen2.5-3B | `4096` | selective | `4.17%` | `1.00` | `0.195x` | `390.58` |
+| Qwen2.5-7B | `1024` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.452x` | `184.21` |
+| Qwen2.5-7B | `1024` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.25` | `0.280x` | `263.10` |
+| Qwen2.5-7B | `1024` | selective | `4.46%` | `1.00` | `0.288x` | `285.32` |
+| Qwen2.5-7B | `2048` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.390x` | `235.19` |
+| Qwen2.5-7B | `2048` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.50` | `0.218x` | `342.25` |
+| Qwen2.5-7B | `2048` | selective | `4.46%` | `1.00` | `0.226x` | `342.57` |
 
 That is the result to track as this capability expands:
 

@@ -138,6 +138,55 @@ def test_report_model_benchmarks_keeps_structured_error_rows(tmp_path: Path) -> 
     assert "RuntimeError: CUDA out of memory" in stdout
 
 
+def test_report_model_benchmarks_distinguishes_override_cases(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "recorded_at": "2026-03-27T03:00:00+00:00",
+                        "benchmark": "qwen2_compare",
+                        "backend": "torch_cuda",
+                        "model_id": "Qwen/Qwen2.5-3B-Instruct",
+                        "default_mode_k": "M0",
+                        "quant_scheme_k": "affine",
+                        "default_mode_v": "M0",
+                        "quant_scheme_v": "affine",
+                        "key_mode_overrides": ["layer:0=M3", "layer:27:kv:1=M3"],
+                        "prompt_length": 2048,
+                        "dense_decode_ms_per_step": 20.0,
+                        "decode_ms_per_step": 280.0,
+                        "dotcache_vs_dense_kv_bytes_ratio": 0.226,
+                        "greedy_token_agreement_rate": 1.0,
+                        "prefill_cache_ingest_ms": 772.0,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/report_model_benchmarks.py",
+            "--input",
+            str(history_path),
+            "--benchmark",
+            "qwen2_compare",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+
+    stdout = completed.stdout
+    assert "K*=layer:0=M3,layer:27:kv:1=M3" in stdout
+
+
 def test_report_model_benchmarks_skips_nul_padded_corrupt_lines(tmp_path: Path) -> None:
     history_path = tmp_path / "history.jsonl"
     history_path.write_bytes(
