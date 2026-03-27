@@ -340,12 +340,28 @@ So the honest read is:
 - but this fixed random-projection sketch family is not good enough yet on the model path
 - compared with the earlier envelope/summary gating experiments, it still does not buy the quality we need for the cost
 - the next meaningful `M2` step would need a better key sketch family, not just another width tweak
-- matching resident DotCache KV bytes landed at:
-  `28.31 MB` at `1024`
-  `37.22 MB` at `1536`
-  `46.14 MB` at `2048`
-- versus the earlier full static-chunk cache, this payload-only variant trims about `1.05 MB` at `1024`, `1.57 MB` at `1536`, and `2.10 MB` at `2048`
-- the honest read is that this is a plausible default compromise for now: it avoids the severe regression from the hard-capped cache and still buys back some resident memory, but the `1536` throughput tradeoff is mixed enough that more tuning would still be welcome
+
+### Adaptive M2 low-rank snapshot
+
+The next `M2` step replaced the fixed random projections with a page-local low-rank basis: each key page now stores per-token coefficients plus a shared per-group basis, and scoring projects the query through that stored basis instead of through a fixed random matrix.
+
+That adaptive sketch family is materially better than the first `M2` version on the real model path:
+
+| Model | Prompt Len | Rank | Decode ms/step | Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement | Max Abs Logit Drift | Read |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `TinyLlama 1.1B` | `289` | `8` | `162.25` | `8,470,528` | `0.644x` | `1.00` | `7.45` | Much better than fixed random `M2`, still worse than exact `M0` |
+| `SmolLM2 360M` | `1024` | `8` | `274.67` | `32,243,712` | `0.383x` | `1.00` | `12.10` | Major quality recovery, still meaningfully driftier than `M0` |
+
+Compared with the earlier fixed random-projection `M2` at the same sketch width:
+
+- TinyLlama `289`: greedy agreement recovered from `0.50` to `1.00`, max abs drift improved from `27.54` to `7.45`, and decode improved from `248.02` to `162.25 ms/step`
+- SmolLM2 `1024`: greedy agreement recovered from `0.25` to `1.00`, max abs drift improved from `12.65` to `12.10`, and decode improved from `521.35` to `274.67 ms/step`
+
+The honest read now is:
+
+- adaptive low-rank `M2` is the first key-only approximate mode that looks technically credible on the real MPS model harness
+- it is still not good enough to replace exact `M0` on the model path, because the teacher-forced drift remains high even though greedy agreement recovered on these short checks
+- the main remaining quality question is whether a stronger basis construction, a mixed exact/approximate fallback, or a narrower use case such as prefiltering older pages can exploit this much better `M2` signal without paying full exact cost
 
 Experimental SmolLM2 key-only prepared-chunk cache checkpoint:
 

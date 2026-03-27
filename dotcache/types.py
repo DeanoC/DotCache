@@ -53,6 +53,7 @@ class EncodedPage:
     bias: np.ndarray | None = None
     codebooks: np.ndarray | None = None
     m2_sketch: np.ndarray | None = None
+    m2_basis: np.ndarray | None = None
     lut_segment_count: int = 1
     escape_payload: np.ndarray | None = None
     requested_mode: str | None = None
@@ -85,6 +86,8 @@ class EncodedPage:
             total += int(self.codebooks.nbytes)
         if self.m2_sketch is not None:
             total += int(self.m2_sketch.nbytes)
+        if self.m2_basis is not None:
+            total += int(self.m2_basis.nbytes)
         return total
 
     @property

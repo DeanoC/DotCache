@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
 import numpy as np
-
-from ..modes.m2_key_sketch import projection_matrices
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 
@@ -14,7 +12,6 @@ TorchDevice = Literal["mps", "cuda"]
 PreparedDevice = Literal["torch_mps", "torch_cuda"]
 
 _UNPACK_METADATA: dict[tuple[TorchDevice, int], tuple[Any, Any]] = {}
-_M2_PROJECTIONS: dict[tuple[TorchDevice, int, int, int], Any] = {}
 _MAX_PREPARE_PAGES_PER_CHUNK = 128
 _MAX_PREPARED_CHUNK_CACHE_ENTRIES = 64
 _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 64 * 1024 * 1024
@@ -66,6 +63,7 @@ class PreparedPageTorch:
     bias: Any | None = None
     codebooks: Any | None = None
     m2_sketch: Any | None = None
+    m2_basis: Any | None = None
     escape_payload: Any | None = None
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
@@ -296,7 +294,12 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
     if header.mode_default == "M3":
         return source_page.escape_payload is not None
     if header.mode_default == "M2":
-        return header.kind == "K" and header.quant_scheme == "sketch" and source_page.m2_sketch is not None
+        return (
+            header.kind == "K"
+            and header.quant_scheme == "sketch"
+            and source_page.m2_sketch is not None
+            and source_page.m2_basis is not None
+        )
     return (
         header.mode_default in ("M0", "M1")
         and header.bits in (2, 4)
@@ -335,17 +338,6 @@ def _unpack_metadata(bits: int, *, device_type: TorchDevice):
     return shifts, mask
 
 
-def _m2_projection_torch(*, num_groups: int, group_size: int, sketch_dim: int, device_type: TorchDevice):
-    cache_key = (device_type, num_groups, group_size, sketch_dim)
-    cached = _M2_PROJECTIONS.get(cache_key)
-    if cached is not None:
-        return cached
-    projection = projection_matrices(num_groups, group_size, sketch_dim)
-    projection_tensor = _device_tensor(projection.astype(np.float32, copy=False), device=device_type)
-    _M2_PROJECTIONS[cache_key] = projection_tensor
-    return projection_tensor
-
-
 def _prepared_page_host_nbytes(page: EncodedPage) -> int:
     total = 0
     if page.payload is not None:
@@ -358,6 +350,8 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
         total += int(page.codebooks.nbytes)
     if page.m2_sketch is not None:
         total += int(page.m2_sketch.nbytes)
+    if page.m2_basis is not None:
+        total += int(page.m2_basis.nbytes)
     if page.escape_payload is not None:
         total += int(page.escape_payload.nbytes)
     return total
@@ -395,18 +389,26 @@ def _prepare_page_chunk_torch(
 
     if header.mode_default == "M2":
         sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
+        basis_array = np.stack([np.asarray(page.m2_basis) for page in pages], axis=0)
         sketch_batch = _device_tensor(sketch_array, device=device_type)
+        basis_batch = _device_tensor(basis_array, device=device_type)
         total_host_to_device_nbytes += int(sketch_array.nbytes)
+        total_host_to_device_nbytes += int(basis_array.nbytes)
         if device_type == "mps":
             sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
+            basis_batch = basis_batch.to(dtype=_load_torch().float32)
         prepared_pages = [
             PreparedPageTorch(
                 device_type=device_type,
                 source_page=page,
                 header=page.header,
                 m2_sketch=sketch_batch[index],
+                m2_basis=basis_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
-                resident_nbytes=int(sketch_batch[index].numel() * sketch_batch[index].element_size()),
+                resident_nbytes=(
+                    int(sketch_batch[index].numel() * sketch_batch[index].element_size())
+                    + int(basis_batch[index].numel() * basis_batch[index].element_size())
+                ),
                 cache_uid=_next_prepared_page_uid(),
             )
             for index, page in enumerate(pages)
@@ -655,16 +657,11 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         query_groups = query.reshape(header.num_groups, header.group_size)
         page_count = len(pages)
         logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
-        projection = _m2_projection_torch(
-            num_groups=header.num_groups,
-            group_size=header.group_size,
-            sketch_dim=int(pages[0].m2_sketch.shape[-1]),
-            device_type=device_type,
-        )
         for group_index in range(header.num_groups):
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
-            q_proj = torch.matmul(query_groups[group_index], projection[group_index])
-            logits += torch.matmul(group_sketch, q_proj)
+            group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            q_proj = torch.einsum("prg,g->pr", group_basis, query_groups[group_index])
+            logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
         return logits.reshape(-1)
 
     if header.mode_default == "M1":
@@ -976,16 +973,11 @@ def _score_page_chunk_multiquery_torch(
         query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
         page_count = len(pages)
         logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        projection = _m2_projection_torch(
-            num_groups=header.num_groups,
-            group_size=header.group_size,
-            sketch_dim=int(pages[0].m2_sketch.shape[-1]),
-            device_type=device_type,
-        )
         for group_index in range(header.num_groups):
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
-            q_proj = torch.matmul(query_groups[:, group_index, :], projection[group_index])
-            logits += torch.einsum("ptd,qd->qpt", group_sketch, q_proj)
+            group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            q_proj = torch.einsum("prg,qg->qpr", group_basis, query_groups[:, group_index, :])
+            logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
         return logits.reshape(query_count, -1)
 
     if header.mode_default == "M1":
@@ -1207,19 +1199,17 @@ def _score_page_chunk_grouped_multiquery_torch(
         ).reshape(batch_size, query_count, header.padded_head_dim)
         query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        projection = _m2_projection_torch(
-            num_groups=header.num_groups,
-            group_size=header.group_size,
-            sketch_dim=int(pages_by_group[0][0].m2_sketch.shape[-1]),
-            device_type=device_type,
-        )
         for group_index in range(header.num_groups):
             group_sketch = torch.stack(
                 [torch.stack([page.m2_sketch[:, group_index, :] for page in group_pages], dim=0) for group_pages in pages_by_group],
                 dim=0,
             )
-            q_proj = torch.matmul(query_groups_tensor[:, :, group_index, :], projection[group_index])
-            logits += torch.einsum("bptd,bqd->bqpt", group_sketch, q_proj)
+            group_basis = torch.stack(
+                [torch.stack([page.m2_basis[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, query_groups_tensor[:, :, group_index, :])
+            logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
         return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":

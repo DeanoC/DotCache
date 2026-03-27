@@ -30,16 +30,13 @@ def _reconstruct_lut_page(codes: np.ndarray, codebooks: np.ndarray) -> np.ndarra
     return dense
 
 
-def _reconstruct_m2_page(sketches: np.ndarray, *, group_size: int) -> np.ndarray:
-    token_count, num_groups, sketch_dim = sketches.shape
+def _reconstruct_m2_page(coeffs: np.ndarray, basis: np.ndarray, *, group_size: int) -> np.ndarray:
+    token_count, num_groups, _ = coeffs.shape
     dense = np.zeros((token_count, num_groups * group_size), dtype=np.float32)
-    from .modes.m2_key_sketch import projection_matrices
-
-    projection = projection_matrices(num_groups, group_size, sketch_dim)
     for group_index in range(num_groups):
         start = group_index * group_size
         end = start + group_size
-        dense[:, start:end] = reconstruct_group_m2(sketches[:, group_index, :], projection=projection[group_index])
+        dense[:, start:end] = reconstruct_group_m2(coeffs[:, group_index, :], basis=basis[group_index])
     return dense
 
 
@@ -126,7 +123,7 @@ def encode_page(
     if page_mode == "M2":
         if kind != "K":
             raise ValueError("M2 is only supported for K pages in this phase")
-        sketches, padded_head_dim = quantize_tensor_m2(
+        coeffs, basis, padded_head_dim = quantize_tensor_m2(
             values,
             group_size=config.group_size,
             sketch_dim=config.m2_sketch_dim_k,
@@ -150,7 +147,8 @@ def encode_page(
         )
         return EncodedPage(
             header=header,
-            m2_sketch=sketches.astype(np.float16, copy=False),
+            m2_sketch=coeffs.astype(np.float16, copy=False),
+            m2_basis=basis.astype(np.float16, copy=False),
             requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,

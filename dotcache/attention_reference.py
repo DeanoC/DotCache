@@ -4,7 +4,6 @@ import numpy as np
 
 from .decode_reference import decode_page
 from .modes.m1_lut import dequantize_group_lut
-from .modes.m2_key_sketch import projection_matrices
 from .page_format import load_group_words
 from .packing import unpack_bits
 from .types import EncodedPage
@@ -39,13 +38,12 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
         return dense @ query_slice.astype(np.float32)
 
     if header.mode_default == "M2":
-        if page.m2_sketch is None:
+        if page.m2_sketch is None or page.m2_basis is None:
             raise ValueError("M2 page is missing sketch payload")
         query_groups = query.reshape(header.num_groups, header.group_size)
         logits = np.zeros(header.token_count, dtype=np.float32)
-        projection = projection_matrices(header.num_groups, header.group_size, page.m2_sketch.shape[-1])
         for group_index in range(header.num_groups):
-            q_proj = query_groups[group_index] @ projection[group_index]
+            q_proj = page.m2_basis[group_index].astype(np.float32) @ query_groups[group_index]
             logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
         return logits
 

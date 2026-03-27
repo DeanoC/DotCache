@@ -4,7 +4,7 @@ import numpy as np
 
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
-from .modes.m2_key_sketch import projection_matrices, reconstruct_group_m2
+from .modes.m2_key_sketch import reconstruct_group_m2
 from .modes.m3_escape import decode_escape_payload
 from .page_format import load_group_words
 from .packing import unpack_bits
@@ -23,11 +23,9 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
         return decode_escape_payload(page.escape_payload)[:, start:end]
 
     if header.mode_default == "M2":
-        if page.m2_sketch is None:
+        if page.m2_sketch is None or page.m2_basis is None:
             raise ValueError("M2 page is missing sketch payload")
-        sketch_dim = int(page.m2_sketch.shape[-1])
-        projection = projection_matrices(header.num_groups, header.group_size, sketch_dim)[group_index]
-        return reconstruct_group_m2(page.m2_sketch[:, group_index, :], projection=projection)
+        return reconstruct_group_m2(page.m2_sketch[:, group_index, :], basis=page.m2_basis[group_index])
 
     words = load_group_words(page, group_index)
     codes = unpack_bits(words, header.bits, header.group_size)
