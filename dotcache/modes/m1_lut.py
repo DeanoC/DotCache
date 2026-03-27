@@ -12,6 +12,7 @@ def quantize_tensor_lut(
     *,
     group_size: int,
     bits: int,
+    refine_steps: int = 6,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     array = np.asarray(values, dtype=np.float32)
     if array.ndim != 2:
@@ -33,6 +34,18 @@ def quantize_tensor_lut(
         group_values = grouped[:, group_index, :].reshape(-1)
         lut = np.quantile(group_values, quantile_positions).astype(np.float32)
         if levels > 1:
+            for _ in range(refine_steps):
+                boundaries = (lut[:-1] + lut[1:]) * 0.5
+                flat_codes = np.searchsorted(boundaries, group_values, side="left").astype(np.int32)
+                updated = lut.copy()
+                for code_index in range(levels):
+                    members = group_values[flat_codes == code_index]
+                    if members.size > 0:
+                        updated[code_index] = float(np.mean(members, dtype=np.float64))
+                if np.allclose(updated, lut, atol=1e-6, rtol=0.0):
+                    lut = updated
+                    break
+                lut = updated
             boundaries = (lut[:-1] + lut[1:]) * 0.5
             group_codes = np.searchsorted(boundaries, grouped[:, group_index, :], side="left").astype(np.uint8)
         else:

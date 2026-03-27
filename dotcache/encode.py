@@ -93,6 +93,7 @@ def encode_page(
             values,
             group_size=config.group_size,
             bits=bits,
+            refine_steps=config.lut_refine_steps,
         )
         payload = build_payload(codes, bits, page_layout)
         header = PageHeader(
