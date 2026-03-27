@@ -13,6 +13,16 @@ from .types import EncodedPage, Kind, PageHeader
 DEFAULT_RUNTIME_SKETCH_ROWS = 4
 
 
+def _reconstruct_lut_page(codes: np.ndarray, codebooks: np.ndarray) -> np.ndarray:
+    token_count, num_groups, group_size = codes.shape
+    dense = np.zeros((token_count, num_groups * group_size), dtype=np.float32)
+    for group_index in range(num_groups):
+        start = group_index * group_size
+        end = start + group_size
+        dense[:, start:end] = codebooks[group_index][codes[:, group_index].astype(np.int64)]
+    return dense
+
+
 def _build_runtime_page_sketch(values: np.ndarray, *, sketch_rows: int = DEFAULT_RUNTIME_SKETCH_ROWS) -> tuple[np.ndarray, np.ndarray]:
     rows = min(max(1, sketch_rows), values.shape[0])
     chunks = np.array_split(values, rows, axis=0)
@@ -97,33 +107,41 @@ def encode_page(
             preconditioner=config.preconditioner,
             precondition_strength=config.precondition_strength,
         )
-        payload = build_payload(codes, bits, page_layout)
-        header = PageHeader(
-            layer_id=layer_id,
-            kv_head_id=kv_head_id,
-            kind=kind,
-            token_start=token_start,
-            token_count=token_count,
-            head_dim=config.head_dim,
-            padded_head_dim=padded_head_dim,
-            group_size=config.group_size,
-            num_groups=config.num_groups,
-            bits=bits,
-            words_per_group=words_per_group(config.group_size, bits),
-            mode_default="M1",
-            layout=page_layout,
-            quant_scheme="lut",
-            escape_dtype=config.escape_dtype,
-        )
-        return EncodedPage(
-            header=header,
-            payload=payload,
-            codebooks=codebooks.astype(np.float16),
-            runtime_page_mean=runtime_page_mean,
-            runtime_page_sketch=runtime_page_sketch,
-            runtime_page_min=runtime_page_min,
-            runtime_page_max=runtime_page_max,
-        )
+        if config.m1_fallback_to_m0:
+            reconstructed = _reconstruct_lut_page(codes, codebooks)[:, : config.head_dim]
+            rms = float(np.sqrt(np.mean(np.square(values), dtype=np.float64)))
+            relative_mae = float(np.mean(np.abs(values - reconstructed), dtype=np.float64) / max(rms, 1e-6))
+            if relative_mae > config.m1_error_threshold:
+                page_mode = "M0"
+                scheme = "affine"
+        if page_mode == "M1":
+            payload = build_payload(codes, bits, page_layout)
+            header = PageHeader(
+                layer_id=layer_id,
+                kv_head_id=kv_head_id,
+                kind=kind,
+                token_start=token_start,
+                token_count=token_count,
+                head_dim=config.head_dim,
+                padded_head_dim=padded_head_dim,
+                group_size=config.group_size,
+                num_groups=config.num_groups,
+                bits=bits,
+                words_per_group=words_per_group(config.group_size, bits),
+                mode_default="M1",
+                layout=page_layout,
+                quant_scheme="lut",
+                escape_dtype=config.escape_dtype,
+            )
+            return EncodedPage(
+                header=header,
+                payload=payload,
+                codebooks=codebooks.astype(np.float16),
+                runtime_page_mean=runtime_page_mean,
+                runtime_page_sketch=runtime_page_sketch,
+                runtime_page_min=runtime_page_min,
+                runtime_page_max=runtime_page_max,
+            )
 
     if page_mode != "M0":
         raise ValueError("only M0, M1, and M3 are supported in this bootstrap")

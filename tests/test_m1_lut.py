@@ -77,3 +77,42 @@ def test_tanh_preconditioning_preserves_valid_lut_decode() -> None:
     assert np.isfinite(conditioned_error)
     assert conditioned_error > 0.0
     assert plain_error > 0.0
+
+
+def test_m1_can_fallback_to_m0_for_bad_pages() -> None:
+    rng = np.random.default_rng(10)
+    values = rng.standard_cauchy(size=(32, 48)).astype(np.float32) * np.float32(3.0)
+    config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M1",
+        quant_scheme_k="lut",
+        m1_fallback_to_m0=True,
+        m1_error_threshold=1e-6,
+    )
+
+    page = encode_page(values, config, kind="K", mode="M1")
+
+    assert page.header.mode_default == "M0"
+    assert page.scales is not None
+    assert page.codebooks is None
+
+
+def test_m1_can_stay_enabled_for_reasonable_pages() -> None:
+    rng = np.random.default_rng(11)
+    values = rng.normal(scale=0.4, size=(32, 48)).astype(np.float32)
+    config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M1",
+        quant_scheme_k="lut",
+        m1_fallback_to_m0=True,
+        m1_error_threshold=0.8,
+    )
+
+    page = encode_page(values, config, kind="K", mode="M1")
+
+    assert page.header.mode_default == "M1"
+    assert page.codebooks is not None
