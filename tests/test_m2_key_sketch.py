@@ -106,6 +106,53 @@ def test_segmented_m2_reduces_reconstruction_error_on_piecewise_data() -> None:
     assert segmented_error < single_error
 
 
+def test_adaptive_segmented_m2_selects_more_segments_for_piecewise_data() -> None:
+    rng = np.random.default_rng(341)
+    left = rng.normal(loc=2.0, scale=0.1, size=(6, 48)).astype(np.float32)
+    right = rng.normal(loc=-2.5, scale=0.1, size=(6, 48)).astype(np.float32)
+    keys = np.concatenate([left, right], axis=0)
+
+    adaptive_config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M2",
+        quant_scheme_k="sketch",
+        m2_sketch_dim_k=8,
+        m2_segment_count_k=4,
+        m2_adaptive_segments_k=True,
+        m2_adaptive_min_improvement_k=0.05,
+    )
+
+    page = encode_page(keys, adaptive_config, kind="K", mode="M2")
+
+    assert page.m2_basis is not None
+    assert int(page.m2_basis.shape[1]) > 1
+
+
+def test_adaptive_segmented_m2_stays_single_segment_for_smooth_data() -> None:
+    rng = np.random.default_rng(342)
+    prototype = rng.normal(size=(1, 48)).astype(np.float32)
+    keys = np.repeat(prototype, 12, axis=0) + rng.normal(scale=0.01, size=(12, 48)).astype(np.float32)
+
+    adaptive_config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M2",
+        quant_scheme_k="sketch",
+        m2_sketch_dim_k=8,
+        m2_segment_count_k=4,
+        m2_adaptive_segments_k=True,
+        m2_adaptive_min_improvement_k=0.2,
+    )
+
+    page = encode_page(keys, adaptive_config, kind="K", mode="M2")
+
+    assert page.m2_basis is not None
+    assert int(page.m2_basis.shape[1]) < adaptive_config.m2_segment_count_k
+
+
 def test_m2_value_pages_are_rejected() -> None:
     rng = np.random.default_rng(42)
     config = DotCacheConfig(head_dim=48, group_size=32, bits_v=4)

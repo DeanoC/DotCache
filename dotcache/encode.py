@@ -7,6 +7,7 @@ from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
 from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
 from .modes.m3_escape import encode_escape_payload
+from .modes.turbo3 import quantize_tensor_turbo3
 from .page_format import build_payload
 from .packing import words_per_group
 from .types import EncodedPage, Kind, PageHeader
@@ -58,6 +59,50 @@ def _build_runtime_page_envelope(values: np.ndarray) -> tuple[np.ndarray, np.nda
     return page_min, page_max
 
 
+def _candidate_m2_segment_counts(max_segment_count: int) -> list[int]:
+    max_count = max(1, int(max_segment_count))
+    counts = [1]
+    candidate = 2
+    while candidate < max_count:
+        counts.append(candidate)
+        candidate *= 2
+    if max_count not in counts:
+        counts.append(max_count)
+    return counts
+
+
+def _encode_m2_tensor(values: np.ndarray, config: DotCacheConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    best_coeffs, best_basis, best_mean, padded_head_dim = quantize_tensor_m2(
+        values,
+        group_size=config.group_size,
+        sketch_dim=config.m2_sketch_dim_k,
+        center=config.m2_center_k,
+        segment_count=1 if config.m2_adaptive_segments_k else config.m2_segment_count_k,
+    )
+    if not config.m2_adaptive_segments_k or config.m2_segment_count_k <= 1:
+        return best_coeffs, best_basis, best_mean, padded_head_dim
+
+    baseline = _reconstruct_m2_page(best_coeffs, best_basis, best_mean, group_size=config.group_size)[:, : config.head_dim]
+    rms = float(np.sqrt(np.mean(np.square(values), dtype=np.float64)))
+    best_error = float(np.mean(np.abs(values - baseline), dtype=np.float64) / max(rms, 1e-6))
+
+    for segment_count in _candidate_m2_segment_counts(config.m2_segment_count_k)[1:]:
+        coeffs, basis, mean, padded_head_dim = quantize_tensor_m2(
+            values,
+            group_size=config.group_size,
+            sketch_dim=config.m2_sketch_dim_k,
+            center=config.m2_center_k,
+            segment_count=segment_count,
+        )
+        reconstructed = _reconstruct_m2_page(coeffs, basis, mean, group_size=config.group_size)[:, : config.head_dim]
+        trial_error = float(np.mean(np.abs(values - reconstructed), dtype=np.float64) / max(rms, 1e-6))
+        if (best_error - trial_error) / max(best_error, 1e-6) >= config.m2_adaptive_min_improvement_k:
+            best_coeffs, best_basis, best_mean = coeffs, basis, mean
+            best_error = trial_error
+
+    return best_coeffs, best_basis, best_mean, padded_head_dim
+
+
 def encode_page(
     tensor_slice: np.ndarray,
     config: DotCacheConfig,
@@ -98,13 +143,7 @@ def encode_page(
         sidecar_enabled = config.m2_prefilter_top_k > 0 if build_m2_sidecar is None else bool(build_m2_sidecar)
         if kind != "K" or not sidecar_enabled:
             return None, None, None
-        coeffs, basis, mean, _ = quantize_tensor_m2(
-            values,
-            group_size=config.group_size,
-            sketch_dim=config.m2_sketch_dim_k,
-            center=config.m2_center_k,
-            segment_count=config.m2_segment_count_k,
-        )
+        coeffs, basis, mean, _ = _encode_m2_tensor(values, config)
         return (
             coeffs.astype(np.float16, copy=False),
             basis.astype(np.float16, copy=False),
@@ -145,13 +184,7 @@ def encode_page(
     if page_mode == "M2":
         if kind != "K":
             raise ValueError("M2 is only supported for K pages in this phase")
-        coeffs, basis, mean, padded_head_dim = quantize_tensor_m2(
-            values,
-            group_size=config.group_size,
-            sketch_dim=config.m2_sketch_dim_k,
-            center=config.m2_center_k,
-            segment_count=config.m2_segment_count_k,
-        )
+        coeffs, basis, mean, padded_head_dim = _encode_m2_tensor(values, config)
         header = PageHeader(
             layer_id=layer_id,
             kv_head_id=kv_head_id,
@@ -239,10 +272,49 @@ def encode_page(
                 runtime_page_sketch=runtime_page_sketch,
                 runtime_page_min=runtime_page_min,
                 runtime_page_max=runtime_page_max,
-            )
+        )
+
+    if page_mode == "T3":
+        codes, correction, centroids, padded_head_dim = quantize_tensor_turbo3(
+            values,
+            group_size=config.group_size,
+        )
+        sidecar_sketch, sidecar_basis, sidecar_mean = _build_m2_sidecar()
+        payload = build_payload(codes, 3, page_layout)
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=3,
+            words_per_group=words_per_group(config.group_size, 3),
+            mode_default="T3",
+            layout=page_layout,
+            quant_scheme="turbo3",
+            escape_dtype=config.escape_dtype,
+        )
+        return EncodedPage(
+            header=header,
+            payload=payload,
+            scales=correction,
+            codebooks=centroids,
+            m2_sketch=sidecar_sketch,
+            m2_basis=sidecar_basis,
+            m2_mean=sidecar_mean,
+            requested_mode=requested_mode,
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
+        )
 
     if page_mode != "M0":
-        raise ValueError("only M0, M1, M2, and M3 are supported in this bootstrap")
+        raise ValueError("only M0, M1, M2, M3, and T3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
         values,

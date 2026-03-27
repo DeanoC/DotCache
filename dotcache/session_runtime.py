@@ -15,6 +15,7 @@ from .attention_runtime import (
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import reconstruct_group_m2
+from .modes.turbo3 import dequantize_group_turbo3
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
 from .packing import unpack_bits
@@ -62,6 +63,14 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
             group_values = dequantize_group_lut(
                 codes,
                 codebook=np.asarray(source_page.codebooks[group_index], dtype=np.float32),
+            )
+        elif header.mode_default == "T3":
+            if source_page.scales is None or source_page.codebooks is None:
+                raise ValueError("T3 page is missing correction metadata")
+            group_values = dequantize_group_turbo3(
+                codes,
+                correction=source_page.scales[:, group_index].astype(np.float32),
+                centroids=np.asarray(source_page.codebooks, dtype=np.float32),
             )
         else:
             if source_page.scales is None:

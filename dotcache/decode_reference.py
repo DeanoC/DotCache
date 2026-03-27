@@ -6,6 +6,7 @@ from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import reconstruct_group_m2
 from .modes.m3_escape import decode_escape_payload
+from .modes.turbo3 import dequantize_group_turbo3
 from .page_format import load_group_words
 from .packing import unpack_bits
 from .types import EncodedPage
@@ -38,6 +39,15 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
             raise ValueError("M1 page is missing codebooks")
         codebook = np.asarray(page.codebooks[group_index], dtype=np.float32)
         return dequantize_group_lut(codes, codebook=codebook)
+    if header.mode_default == "T3":
+        if page.scales is None or page.codebooks is None:
+            raise ValueError("T3 page is missing correction metadata")
+        correction = page.scales[:, group_index].astype(np.float32)
+        return dequantize_group_turbo3(
+            codes,
+            correction=correction,
+            centroids=np.asarray(page.codebooks, dtype=np.float32),
+        )
     if page.payload is None or page.scales is None:
         raise ValueError("M0 page is missing payload or scales")
     scales = page.scales[:, group_index].astype(np.float32)[:, None]
