@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
-TORCH_SPEC="${TORCH_SPEC:-torch==2.4.1}"
+TORCH_SPEC="${TORCH_SPEC:-torch>=2.8}"
 VENV_SYSTEM_SITE_PACKAGES="${VENV_SYSTEM_SITE_PACKAGES:-1}"
 
 VENV_ARGS=()

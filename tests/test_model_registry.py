@@ -7,7 +7,9 @@ def test_model_registry_contains_expected_keys() -> None:
     assert "smollm2_360m_hf" in specs
     assert "llama32_3b_hf" in specs
     assert "qwen25_3b_hf" in specs
+    assert "qwen25_7b_hf" in specs
     assert "llama32_3b_gguf" in specs
+    assert "qwen25_7b_gguf" in specs
 
 
 def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> None:
@@ -22,6 +24,11 @@ def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> Non
     assert qwen_spec.benchmark_harness == "qwen2_compare"
     assert qwen_spec.runtime == "dotcache_hf"
 
+    qwen7b_spec = get_model_spec("qwen25_7b_hf")
+    assert qwen7b_spec.dotcache_ready is True
+    assert qwen7b_spec.benchmark_harness == "qwen2_compare"
+    assert qwen7b_spec.runtime == "dotcache_hf"
+
 
 def test_model_registry_marks_qwen35_as_reference_only() -> None:
     spec = get_model_spec("qwen35_4b_hf")
@@ -35,3 +42,8 @@ def test_model_registry_marks_gguf_lanes_as_external_runnable() -> None:
     assert spec.runtime == "llama_cpp"
     assert spec.benchmark_harness == "gguf_external"
     assert spec.tokenizer_model_id == "meta-llama/Llama-3.2-3B-Instruct"
+
+    qwen_spec = get_model_spec("qwen25_7b_gguf")
+    assert qwen_spec.runtime == "llama_cpp"
+    assert qwen_spec.benchmark_harness == "gguf_external"
+    assert qwen_spec.tokenizer_model_id == "Qwen/Qwen2.5-7B-Instruct"

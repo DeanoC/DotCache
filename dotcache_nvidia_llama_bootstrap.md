@@ -1,23 +1,22 @@
-# DotCache NVIDIA bootstrap guide for non-MPS Llama development
+# DotCache NVIDIA bootstrap guide for 5090-era CUDA development
 
 This guide is for the current Linux + NVIDIA path in this repo.
 
 Today that path means:
 
-- Hugging Face Llama-family models run on `cuda`
-- DotCache decode stays on `cpu_ref`
-- the existing Llama integration harness is used to validate correctness and workflow before a CUDA DotCache backend exists
+- Hugging Face Llama-family and Qwen2-family models run on `cuda`
+- DotCache exact decode can run on the implemented `torch_cuda` backend
+- the RTX 5090 pod is the preferred box for larger-model HF scale-up work
+- the optional vLLM path is still a follow-on milestone, not the first bring-up target
 
 ## Scope
 
 Use this machine setup when you want to work on:
 
-- the non-MPS Llama integration path
-- CUDA-hosted dense prefill and decode comparisons
-- model-loading, prompt-shaping, and replay/generation harness work
-- future CUDA backend development from an already-working NVIDIA environment
-
-Do not treat this as a claim that DotCache already has a CUDA execution backend. It does not.
+- exact HF model integration on CUDA
+- CUDA-hosted dense prefill and DotCache decode comparisons
+- larger-model benchmark recording on the 5090 pod
+- future vLLM bring-up from an already-working NVIDIA environment
 
 ## Bootstrap
 
@@ -31,14 +30,15 @@ That script:
 
 - creates `.venv`
 - upgrades `pip`, `setuptools`, and `wheel`
-- installs `torch==2.4.1` by default
+- reuses an already-working system CUDA torch when present
+- otherwise installs `torch>=2.8` by default
 - installs the repo with `.[dev,hf]`
 - verifies `torch.cuda.is_available()`
 
-If you update the NVIDIA driver later and want to try a newer PyTorch build, override the install target explicitly:
+If you want to override the fallback install target explicitly:
 
 ```bash
-TORCH_SPEC='torch>=2.5' bash scripts/bootstrap_nvidia_llama_dev.sh
+TORCH_SPEC='torch>=2.8' bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
 ## Verification
@@ -60,10 +60,12 @@ Run the tiny random Llama smoke benchmark on CUDA:
 .venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cuda --max-new-tokens 4
 ```
 
-Run the Llama integration test file:
+Run the CUDA backend and integration test files:
 
 ```bash
+.venv/bin/python -m pytest -q tests/test_torch_cuda_backend.py
 .venv/bin/python -m pytest -q tests/test_llama_integration.py
+.venv/bin/python -m pytest -q tests/test_qwen2_integration.py
 ```
 
 The MPS-specific test in that file is skipped automatically on NVIDIA systems.
@@ -72,12 +74,21 @@ The MPS-specific test in that file is skipped automatically on NVIDIA systems.
 
 Use `--device cuda` when you want the model on the GPU.
 
-Use `--backend cpu_ref` when you want DotCache decode to remain on the implemented reference path.
+Use `--backend torch_cuda` when you want the implemented CUDA DotCache path.
 
-That combination is the intended non-MPS development baseline for this repo until a CUDA backend is added.
+Use `--backend cpu_ref` only when you explicitly want the reference-oracle path for comparison.
 
-## First real-model command
+## First scale-up commands
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --backend cpu_ref --device cuda --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+bash scripts/run_qwen25_compare_cuda.sh
+bash scripts/run_qwen25_7b_compare_cuda.sh
+bash scripts/run_llama32_compare_cuda.sh
+```
+
+To summarize recorded runs afterward:
+
+```bash
+.venv/bin/python scripts/report_model_benchmarks.py --benchmark qwen2_compare
+.venv/bin/python scripts/report_model_benchmarks.py --benchmark llama_compare
 ```
