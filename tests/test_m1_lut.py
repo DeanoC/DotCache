@@ -44,3 +44,36 @@ def test_m1_page_decodes_and_matches_explicit_reference() -> None:
 
     np.testing.assert_allclose(score_page_ref(query, key_page), explicit_dequantized_score(query, key_page), atol=1e-5, rtol=1e-5)
     np.testing.assert_allclose(mix_page_ref(attn, value_page), explicit_dequantized_mix(attn, value_page), atol=1e-5, rtol=1e-5)
+
+
+def test_tanh_preconditioning_preserves_valid_lut_decode() -> None:
+    rng = np.random.default_rng(9)
+    core = rng.normal(scale=0.5, size=(32, 48)).astype(np.float32)
+    outliers = rng.normal(loc=0.0, scale=6.0, size=(32, 48)).astype(np.float32)
+    mask = rng.random(size=(32, 48)) < 0.08
+    values = np.where(mask, outliers, core).astype(np.float32)
+
+    plain_config = DotCacheConfig(head_dim=48, group_size=32, bits_k=4, default_mode_k="M1", quant_scheme_k="lut")
+    conditioned_config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M1",
+        quant_scheme_k="lut",
+        preconditioner="tanh",
+        precondition_strength=2.0,
+    )
+
+    conditioned_page = encode_page(values, conditioned_config, kind="K", mode="M1")
+    plain_page = encode_page(values, plain_config, kind="K", mode="M1")
+
+    plain_error = np.mean(np.abs(values - decode_page(plain_page)))
+    conditioned_decoded = decode_page(conditioned_page)
+    conditioned_error = np.mean(np.abs(values - conditioned_decoded))
+
+    assert conditioned_page.codebooks is not None
+    assert conditioned_decoded.shape == values.shape
+    assert np.isfinite(conditioned_decoded).all()
+    assert np.isfinite(conditioned_error)
+    assert conditioned_error > 0.0
+    assert plain_error > 0.0

@@ -23,6 +23,8 @@ class DotCacheConfig:
     quant_scheme_v: str = "affine"
     escape_dtype: str = "float16"
     lut_refine_steps: int = 6
+    preconditioner: str = "none"
+    precondition_strength: float = 2.0
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -49,6 +51,10 @@ class DotCacheConfig:
             raise ValueError("quant_scheme_v must be affine, symmetric, or lut")
         if self.lut_refine_steps < 0:
             raise ValueError("lut_refine_steps must be non-negative")
+        if self.preconditioner not in ("none", "tanh"):
+            raise ValueError("preconditioner must be none or tanh")
+        if self.precondition_strength <= 0:
+            raise ValueError("precondition_strength must be positive")
 
     @property
     def num_groups(self) -> int:
