@@ -6,6 +6,7 @@ from typing import Any, Literal, Sequence
 
 import numpy as np
 
+from ..modes.m2_key_sketch import projection_matrices
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 
@@ -13,6 +14,7 @@ TorchDevice = Literal["mps", "cuda"]
 PreparedDevice = Literal["torch_mps", "torch_cuda"]
 
 _UNPACK_METADATA: dict[tuple[TorchDevice, int], tuple[Any, Any]] = {}
+_M2_PROJECTIONS: dict[tuple[TorchDevice, int, int, int], Any] = {}
 _MAX_PREPARE_PAGES_PER_CHUNK = 128
 _MAX_PREPARED_CHUNK_CACHE_ENTRIES = 64
 _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 64 * 1024 * 1024
@@ -63,6 +65,7 @@ class PreparedPageTorch:
     scales: Any | None = None
     bias: Any | None = None
     codebooks: Any | None = None
+    m2_sketch: Any | None = None
     escape_payload: Any | None = None
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
@@ -135,6 +138,7 @@ def _next_prepared_page_uid() -> int:
 def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str, ...]:
     source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     header = source_page.header
+    sketch_dim = int(source_page.m2_sketch.shape[-1]) if source_page.m2_sketch is not None else 0
     return (
         header.kind,
         header.mode_default,
@@ -148,11 +152,13 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
         header.layout,
         header.quant_scheme,
         header.escape_dtype,
+        sketch_dim,
     )
 
 
 def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
     header = page.header
+    sketch_dim = int(page.m2_sketch.shape[-1]) if page.m2_sketch is not None else 0
     return (
         page.device_type,
         header.kind,
@@ -166,6 +172,7 @@ def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
         header.words_per_group,
         header.layout,
         header.quant_scheme,
+        sketch_dim,
     )
 
 
@@ -288,6 +295,8 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
         return False
     if header.mode_default == "M3":
         return source_page.escape_payload is not None
+    if header.mode_default == "M2":
+        return header.kind == "K" and header.quant_scheme == "sketch" and source_page.m2_sketch is not None
     return (
         header.mode_default in ("M0", "M1")
         and header.bits in (2, 4)
@@ -326,6 +335,17 @@ def _unpack_metadata(bits: int, *, device_type: TorchDevice):
     return shifts, mask
 
 
+def _m2_projection_torch(*, num_groups: int, group_size: int, sketch_dim: int, device_type: TorchDevice):
+    cache_key = (device_type, num_groups, group_size, sketch_dim)
+    cached = _M2_PROJECTIONS.get(cache_key)
+    if cached is not None:
+        return cached
+    projection = projection_matrices(num_groups, group_size, sketch_dim)
+    projection_tensor = _device_tensor(projection.astype(np.float32, copy=False), device=device_type)
+    _M2_PROJECTIONS[cache_key] = projection_tensor
+    return projection_tensor
+
+
 def _prepared_page_host_nbytes(page: EncodedPage) -> int:
     total = 0
     if page.payload is not None:
@@ -336,6 +356,8 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
         total += int(page.bias.nbytes)
     if page.codebooks is not None:
         total += int(page.codebooks.nbytes)
+    if page.m2_sketch is not None:
+        total += int(page.m2_sketch.nbytes)
     if page.escape_payload is not None:
         total += int(page.escape_payload.nbytes)
     return total
@@ -363,6 +385,28 @@ def _prepare_page_chunk_torch(
                 escape_payload=escape_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
                 resident_nbytes=int(escape_batch[index].numel() * escape_batch[index].element_size()),
+                cache_uid=_next_prepared_page_uid(),
+            )
+            for index, page in enumerate(pages)
+        ]
+        if trace is not None:
+            trace.record_host_to_device(total_host_to_device_nbytes)
+        return prepared_pages
+
+    if header.mode_default == "M2":
+        sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
+        sketch_batch = _device_tensor(sketch_array, device=device_type)
+        total_host_to_device_nbytes += int(sketch_array.nbytes)
+        if device_type == "mps":
+            sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
+        prepared_pages = [
+            PreparedPageTorch(
+                device_type=device_type,
+                source_page=page,
+                header=page.header,
+                m2_sketch=sketch_batch[index],
+                host_to_device_nbytes=_prepared_page_host_nbytes(page),
+                resident_nbytes=int(sketch_batch[index].numel() * sketch_batch[index].element_size()),
                 cache_uid=_next_prepared_page_uid(),
             )
             for index, page in enumerate(pages)
@@ -606,6 +650,23 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         query = _pad_query(query_slice, header.head_dim, device_type=device_type)
         return torch.matmul(dense, query).reshape(-1)
 
+    if header.mode_default == "M2":
+        query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
+        query_groups = query.reshape(header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
+        projection = _m2_projection_torch(
+            num_groups=header.num_groups,
+            group_size=header.group_size,
+            sketch_dim=int(pages[0].m2_sketch.shape[-1]),
+            device_type=device_type,
+        )
+        for group_index in range(header.num_groups):
+            group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            q_proj = torch.matmul(query_groups[group_index], projection[group_index])
+            logits += torch.matmul(group_sketch, q_proj)
+        return logits.reshape(-1)
+
     if header.mode_default == "M1":
         query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
         query_groups = query.reshape(header.num_groups, header.group_size)
@@ -703,6 +764,9 @@ def _mix_page_chunk_torch(
         )
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
+
+    if header.mode_default == "M2":
+        raise ValueError("M2 is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):
@@ -907,6 +971,23 @@ def _score_page_chunk_multiquery_torch(
         queries = _pad_queries(query_slices, header.head_dim, device_type=device_type)
         return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
 
+    if header.mode_default == "M2":
+        queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
+        query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        projection = _m2_projection_torch(
+            num_groups=header.num_groups,
+            group_size=header.group_size,
+            sketch_dim=int(pages[0].m2_sketch.shape[-1]),
+            device_type=device_type,
+        )
+        for group_index in range(header.num_groups):
+            group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            q_proj = torch.matmul(query_groups[:, group_index, :], projection[group_index])
+            logits += torch.einsum("ptd,qd->qpt", group_sketch, q_proj)
+        return logits.reshape(query_count, -1)
+
     if header.mode_default == "M1":
         queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
         query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
@@ -1008,6 +1089,9 @@ def _mix_page_chunk_multiquery_torch(
         )
         output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
         return output
+
+    if header.mode_default == "M2":
+        raise ValueError("M2 is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):
@@ -1114,6 +1198,29 @@ def _score_page_chunk_grouped_multiquery_torch(
             dim=0,
         )
         return torch.einsum("bpth,bqh->bqpt", dense, queries).reshape(batch_size, query_count, -1)
+
+    if header.mode_default == "M2":
+        padded_queries = _pad_queries(
+            queries.reshape(batch_size * query_count, header.head_dim),
+            header.padded_head_dim,
+            device_type=device_type,
+        ).reshape(batch_size, query_count, header.padded_head_dim)
+        query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
+        logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        projection = _m2_projection_torch(
+            num_groups=header.num_groups,
+            group_size=header.group_size,
+            sketch_dim=int(pages_by_group[0][0].m2_sketch.shape[-1]),
+            device_type=device_type,
+        )
+        for group_index in range(header.num_groups):
+            group_sketch = torch.stack(
+                [torch.stack([page.m2_sketch[:, group_index, :] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            q_proj = torch.matmul(query_groups_tensor[:, :, group_index, :], projection[group_index])
+            logits += torch.einsum("bptd,bqd->bqpt", group_sketch, q_proj)
+        return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":
         padded_queries = _pad_queries(
@@ -1249,6 +1356,9 @@ def _mix_page_chunk_grouped_multiquery_torch(
         )
         output[:, :, : header.head_dim] += torch.einsum("bqpt,bpth->bqh", weights, dense)
         return output
+
+    if header.mode_default == "M2":
+        raise ValueError("M2 is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):

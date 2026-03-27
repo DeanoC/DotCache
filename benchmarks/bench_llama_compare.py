@@ -19,10 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
-    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M3"], default="M0")
+    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3"], default="M0")
     parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3"], default="M0")
-    parser.add_argument("--quant-scheme-k", choices=["affine", "lut"], default="affine")
+    parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch"], default="affine")
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut"], default="affine")
+    parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--lut-refine-steps", type=int, default=0)
     parser.add_argument("--preconditioner", choices=["none", "tanh"], default="none")
     parser.add_argument("--precondition-strength", type=float, default=1.0)
@@ -124,6 +125,7 @@ def main() -> None:
         default_mode_v=args.default_mode_v,
         quant_scheme_k=args.quant_scheme_k,
         quant_scheme_v=args.quant_scheme_v,
+        m2_sketch_dim_k=args.m2_sketch_dim_k,
         lut_refine_steps=args.lut_refine_steps,
         preconditioner=args.preconditioner,
         precondition_strength=args.precondition_strength,
@@ -168,6 +170,7 @@ def main() -> None:
                 "default_mode_v": args.default_mode_v,
                 "quant_scheme_k": args.quant_scheme_k,
                 "quant_scheme_v": args.quant_scheme_v,
+                "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,
@@ -207,6 +210,7 @@ def main() -> None:
                 "default_mode_v": args.default_mode_v,
                 "quant_scheme_k": args.quant_scheme_k,
                 "quant_scheme_v": args.quant_scheme_v,
+                "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,

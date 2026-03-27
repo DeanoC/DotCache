@@ -315,6 +315,31 @@ So the honest read is:
 - the improved fallback metric is doing real work now
 - but the segmented value-side codec is not a win on these current MPS model-path checks
 - the repo keeps both features as explicit tuning knobs, while the safer single-segment `M1` path remains the default
+
+### First M2 key-sketch snapshot
+
+The first real `M2` implementation is now in the repo as a key-only approximate mode: page-local fixed-projection key sketches stored per token/group, with exact `M0` values left unchanged. This is the first codec-backed key-side approximation path, not just a page-summary gating heuristic.
+
+The first real-model `K=M2, V=M0` checks on MPS were not good enough:
+
+| Model | Prompt Len | Sketch Dim | Decode ms/step | Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement | Max Abs Logit Drift | Notes |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `TinyLlama 1.1B` | `289` | `8` | `248.02` | `8,290,304` | `0.630x` | `0.50` | `27.54` | Recorded in `history.jsonl` |
+| `SmolLM2 360M` | `1024` | `8` | `521.35` | `30,932,992` | `0.368x` | `0.25` | `12.65` | Recorded in `history.jsonl` |
+
+I also probed a wider sketch for quick quality-vs-cost context:
+
+| Model | Prompt Len | Sketch Dim | Decode ms/step | Resident Bytes | Greedy Agreement | Max Abs Logit Drift | Read |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `TinyLlama 1.1B` | `289` | `16` | `198.57` | `9,732,096` | `0.50` | `26.09` | Slightly better latency, still very wrong |
+| `SmolLM2 360M` | `1024` | `16` | `435.16` | `41,418,752` | `0.75` | `20.46` | Better agreement, worse drift/memory, still not viable |
+
+So the honest read is:
+
+- this first `M2` is useful infrastructure, because it proves a real key-only approximate codec can be wired through the exact runtime and model harness cleanly
+- but this fixed random-projection sketch family is not good enough yet on the model path
+- compared with the earlier envelope/summary gating experiments, it still does not buy the quality we need for the cost
+- the next meaningful `M2` step would need a better key sketch family, not just another width tweak
 - matching resident DotCache KV bytes landed at:
   `28.31 MB` at `1024`
   `37.22 MB` at `1536`

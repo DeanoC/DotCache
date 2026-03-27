@@ -14,6 +14,7 @@ from .attention_runtime import (
 )
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
+from .modes.m2_key_sketch import projection_matrices, reconstruct_group_m2
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
 from .packing import unpack_bits
@@ -33,6 +34,21 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
         if source_page.escape_payload is None:
             raise ValueError("escape payload is missing")
         return np.asarray(source_page.escape_payload[:, : header.head_dim], dtype=np.float32)
+
+    if header.mode_default == "M2":
+        if source_page.m2_sketch is None:
+            raise ValueError("M2 page is missing sketch payload")
+        sketch_dim = int(source_page.m2_sketch.shape[-1])
+        projection = projection_matrices(header.num_groups, header.group_size, sketch_dim)
+        dense = np.zeros((header.token_count, header.padded_head_dim), dtype=np.float32)
+        for group_index in range(header.num_groups):
+            start = group_index * header.group_size
+            end = start + header.group_size
+            dense[:, start:end] = reconstruct_group_m2(
+                source_page.m2_sketch[:, group_index, :],
+                projection=projection[group_index],
+            )
+        return dense[:, : header.head_dim]
 
     if source_page.payload is None:
         raise ValueError(f"{header.mode_default} page is missing payload")

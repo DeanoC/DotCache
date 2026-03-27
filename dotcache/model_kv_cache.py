@@ -90,6 +90,7 @@ def _grouped_pages_can_batch(
             key_pages_by_group[0][page_index].header.words_per_group,
             key_pages_by_group[0][page_index].header.layout,
             key_pages_by_group[0][page_index].header.quant_scheme,
+            int(key_pages_by_group[0][page_index].m2_sketch.shape[-1]) if key_pages_by_group[0][page_index].m2_sketch is not None else 0,
         )
         value_signature = (
             value_pages_by_group[0][page_index].header.mode_default,
@@ -102,6 +103,7 @@ def _grouped_pages_can_batch(
             value_pages_by_group[0][page_index].header.words_per_group,
             value_pages_by_group[0][page_index].header.layout,
             value_pages_by_group[0][page_index].header.quant_scheme,
+            int(value_pages_by_group[0][page_index].m2_sketch.shape[-1]) if value_pages_by_group[0][page_index].m2_sketch is not None else 0,
         )
         for group_index in range(1, group_count):
             key_page = key_pages_by_group[group_index][page_index]
@@ -117,6 +119,7 @@ def _grouped_pages_can_batch(
                 key_page.header.words_per_group,
                 key_page.header.layout,
                 key_page.header.quant_scheme,
+                int(key_page.m2_sketch.shape[-1]) if key_page.m2_sketch is not None else 0,
             ) != key_signature:
                 return False
             if (
@@ -130,6 +133,7 @@ def _grouped_pages_can_batch(
                 value_page.header.words_per_group,
                 value_page.header.layout,
                 value_page.header.quant_scheme,
+                int(value_page.m2_sketch.shape[-1]) if value_page.m2_sketch is not None else 0,
             ) != value_signature:
                 return False
     return True
@@ -803,6 +807,7 @@ class ModelPagedKVCache:
             "total_static_pages": 0,
             "m0_pages": 0,
             "m1_pages": 0,
+            "m2_pages": 0,
             "m3_pages": 0,
             "requested_m1_pages": 0,
             "m1_fallback_pages": 0,
@@ -811,9 +816,11 @@ class ModelPagedKVCache:
             "v_total_static_pages": 0,
             "k_m0_pages": 0,
             "k_m1_pages": 0,
+            "k_m2_pages": 0,
             "k_m3_pages": 0,
             "v_m0_pages": 0,
             "v_m1_pages": 0,
+            "v_m2_pages": 0,
             "v_m3_pages": 0,
             "k_requested_m1_pages": 0,
             "v_requested_m1_pages": 0,

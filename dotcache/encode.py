@@ -5,6 +5,7 @@ import numpy as np
 from .config import DotCacheConfig
 from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
+from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
 from .modes.m3_escape import encode_escape_payload
 from .page_format import build_payload
 from .packing import words_per_group
@@ -26,6 +27,19 @@ def _reconstruct_lut_page(codes: np.ndarray, codebooks: np.ndarray) -> np.ndarra
             segment_count = group_codebook.shape[0]
             segment_ids = (np.arange(token_count, dtype=np.int64) * segment_count) // max(token_count, 1)
             dense[:, start:end] = group_codebook[segment_ids[:, None], codes[:, group_index].astype(np.int64)]
+    return dense
+
+
+def _reconstruct_m2_page(sketches: np.ndarray, *, group_size: int) -> np.ndarray:
+    token_count, num_groups, sketch_dim = sketches.shape
+    dense = np.zeros((token_count, num_groups * group_size), dtype=np.float32)
+    from .modes.m2_key_sketch import projection_matrices
+
+    projection = projection_matrices(num_groups, group_size, sketch_dim)
+    for group_index in range(num_groups):
+        start = group_index * group_size
+        end = start + group_size
+        dense[:, start:end] = reconstruct_group_m2(sketches[:, group_index, :], projection=projection[group_index])
     return dense
 
 
@@ -107,6 +121,43 @@ def encode_page(
             runtime_page_max=runtime_page_max,
         )
 
+    trial_token_p95_error = None
+
+    if page_mode == "M2":
+        if kind != "K":
+            raise ValueError("M2 is only supported for K pages in this phase")
+        sketches, padded_head_dim = quantize_tensor_m2(
+            values,
+            group_size=config.group_size,
+            sketch_dim=config.m2_sketch_dim_k,
+        )
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=bits,
+            words_per_group=0,
+            mode_default="M2",
+            layout=page_layout,
+            quant_scheme="sketch",
+            escape_dtype=config.escape_dtype,
+        )
+        return EncodedPage(
+            header=header,
+            m2_sketch=sketches.astype(np.float16, copy=False),
+            requested_mode=page_mode,
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
+        )
+
     if page_mode == "M1":
         codes, codebooks, padded_head_dim = quantize_tensor_lut(
             values,
@@ -130,8 +181,6 @@ def encode_page(
             ):
                 page_mode = "M0"
                 scheme = "affine"
-        else:
-            trial_token_p95_error = None
         if page_mode == "M1":
             payload = build_payload(codes, bits, page_layout)
             header = PageHeader(
@@ -166,7 +215,7 @@ def encode_page(
             )
 
     if page_mode != "M0":
-        raise ValueError("only M0, M1, and M3 are supported in this bootstrap")
+        raise ValueError("only M0, M1, M2, and M3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
         values,

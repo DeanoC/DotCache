@@ -8,8 +8,8 @@ import numpy as np
 
 Kind = Literal["K", "V"]
 Layout = Literal["group_major", "token_major"]
-Mode = Literal["M0", "M1", "M3"]
-QuantScheme = Literal["affine", "symmetric", "lut"]
+Mode = Literal["M0", "M1", "M2", "M3"]
+QuantScheme = Literal["affine", "symmetric", "lut", "sketch"]
 
 
 @dataclass(slots=True)
@@ -52,6 +52,7 @@ class EncodedPage:
     scales: np.ndarray | None = None
     bias: np.ndarray | None = None
     codebooks: np.ndarray | None = None
+    m2_sketch: np.ndarray | None = None
     lut_segment_count: int = 1
     escape_payload: np.ndarray | None = None
     requested_mode: str | None = None
@@ -82,6 +83,8 @@ class EncodedPage:
             total += int(self.bias.nbytes)
         if self.codebooks is not None:
             total += int(self.codebooks.nbytes)
+        if self.m2_sketch is not None:
+            total += int(self.m2_sketch.nbytes)
         return total
 
     @property
