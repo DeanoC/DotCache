@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
+import os
 import time
 from typing import Any
+
+try:
+    import torch
+except ImportError:  # pragma: no cover
+    torch = None
 
 from transformers import AutoConfig
 
@@ -37,6 +44,13 @@ def _require_vllm_runtime() -> None:
     require_supported_vllm_version()
 
 
+def _configure_vllm_runtime_env() -> None:
+    # The Phase 6 adapter wraps the in-process executor model. vLLM 0.18
+    # defaults the high-level LLM entrypoint to a detached engine-core process,
+    # which hides the model object from this prototype adapter.
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+
+
 def _sampling_params(max_new_tokens: int):
     from vllm import SamplingParams
 
@@ -59,6 +73,19 @@ def _build_llm(args: argparse.Namespace):
     return LLM(**kwargs)
 
 
+def _shutdown_llm(llm: Any) -> None:
+    llm_engine = getattr(llm, "llm_engine", None)
+    if llm_engine is not None and hasattr(llm_engine, "shutdown"):
+        llm_engine.shutdown()
+    if torch is not None and hasattr(torch, "distributed") and torch.distributed.is_available():
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+    del llm
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _extract_generated_token_ids(output: Any) -> list[int]:
     outputs = getattr(output, "outputs", None)
     if outputs:
@@ -72,8 +99,7 @@ def _extract_generated_token_ids(output: Any) -> list[int]:
     raise RuntimeError("could not extract generated token ids from the vLLM output object")
 
 
-def _run_mode(args: argparse.Namespace, *, mode: str) -> dict[str, Any]:
-    llm = _build_llm(args)
+def _build_dotcache_adapter(args: argparse.Namespace, llm: Any):
     model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=bool(args.trust_remote_code))
     head_dim = int(model_config.hidden_size // model_config.num_attention_heads)
     dotcache_config = DotCacheConfig(
@@ -83,15 +109,18 @@ def _run_mode(args: argparse.Namespace, *, mode: str) -> dict[str, Any]:
         bits_v=4,
         tokens_per_page=args.block_size,
     )
-    adapter = None
-    if mode != "dense":
-        adapter = install_dotcache_on_vllm_runtime(
-            llm,
-            dotcache_config,
-            block_size=args.block_size,
-            backend=args.backend,
-            mode=mode,
-        )
+    return install_dotcache_on_vllm_runtime(
+        llm,
+        dotcache_config,
+        block_size=args.block_size,
+        backend=args.backend,
+        mode="dotcache_shadow",
+    )
+
+
+def _run_mode(args: argparse.Namespace, llm: Any, *, mode: str, adapter: Any | None) -> dict[str, Any]:
+    if adapter is not None:
+        adapter.set_mode(mode)
         adapter.clear()
         adapter.reset_runtime_metrics()
     sampling_params = _sampling_params(args.max_new_tokens)
@@ -114,7 +143,7 @@ def _run_mode(args: argparse.Namespace, *, mode: str) -> dict[str, Any]:
         "wall_ms_total": wall_ms,
         "decode_ms_per_step": wall_ms / max(len(token_ids), 1),
     }
-    if adapter is None:
+    if adapter is None or mode == "dense":
         return record
     trace = adapter.runtime_trace if adapter is not None else ExecutionTrace()
     record.update(
@@ -135,8 +164,14 @@ def _run_mode(args: argparse.Namespace, *, mode: str) -> dict[str, Any]:
 def main() -> None:
     args = parse_args()
     _require_vllm_runtime()
+    _configure_vllm_runtime_env()
     modes = ["dense", "dotcache_shadow", "dotcache_active"] if args.mode == "all" else [args.mode]
-    records = [_run_mode(args, mode=mode) for mode in modes]
+    llm = _build_llm(args)
+    try:
+        adapter = _build_dotcache_adapter(args, llm) if any(mode != "dense" for mode in modes) else None
+        records = [_run_mode(args, llm, mode=mode, adapter=adapter) for mode in modes]
+    finally:
+        _shutdown_llm(llm)
     dense_record = next((record for record in records if record["mode"] == "dense"), None)
     if dense_record is not None:
         dense_ids = dense_record["generated_token_ids"]

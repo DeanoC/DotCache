@@ -1,9 +1,9 @@
 .DS_Store
 .pytest_cache/
 .venv/
+.venv-vllm/
 __pycache__/
 *.pyc
 build/
 dist/
 *.egg-info/
-
