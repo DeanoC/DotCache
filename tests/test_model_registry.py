@@ -5,7 +5,9 @@ def test_model_registry_contains_expected_keys() -> None:
     specs = {spec.key: spec for spec in list_model_specs()}
     assert "tinyllama_hf" in specs
     assert "smollm2_360m_hf" in specs
+    assert "smollm2_1p7b_hf" in specs
     assert "llama32_3b_hf" in specs
+    assert "qwen25_1p5b_hf" in specs
     assert "qwen25_3b_hf" in specs
     assert "qwen25_7b_hf" in specs
     assert "llama32_3b_gguf" in specs
@@ -28,6 +30,16 @@ def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> Non
     assert qwen7b_spec.dotcache_ready is True
     assert qwen7b_spec.benchmark_harness == "qwen2_compare"
     assert qwen7b_spec.runtime == "dotcache_hf"
+
+    qwen15b_spec = get_model_spec("qwen25_1p5b_hf")
+    assert qwen15b_spec.dotcache_ready is True
+    assert qwen15b_spec.benchmark_harness == "qwen2_compare"
+    assert qwen15b_spec.runtime == "dotcache_hf"
+
+    smollm17b_spec = get_model_spec("smollm2_1p7b_hf")
+    assert smollm17b_spec.dotcache_ready is True
+    assert smollm17b_spec.benchmark_harness == "llama_compare"
+    assert smollm17b_spec.runtime == "dotcache_hf"
 
 
 def test_model_registry_marks_qwen35_as_reference_only() -> None:

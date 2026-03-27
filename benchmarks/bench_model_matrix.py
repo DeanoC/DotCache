@@ -45,7 +45,29 @@ def _selected_specs(model_keys: list[str]) -> tuple[ModelSpec, ...]:
 
 
 def _recommended_mode_flags(spec: ModelSpec, *, backend: str) -> list[str]:
-    if spec.family == "qwen2" and backend == "torch_cuda":
+    if backend != "torch_cuda":
+        return []
+    if spec.key == "qwen25_1p5b_hf":
+        return [
+            "--default-mode-k",
+            "M0",
+            "--default-mode-v",
+            "M0",
+            "--key-mode-override",
+            "layer:0=M3",
+        ]
+    if spec.key in {"qwen25_3b_hf", "qwen25_7b_hf"}:
+        return [
+            "--default-mode-k",
+            "M0",
+            "--default-mode-v",
+            "M0",
+            "--key-mode-override",
+            "layer:0=M3",
+            "--key-mode-override",
+            "layer:27:kv:1=M3",
+        ]
+    if spec.family == "qwen2":
         return ["--default-mode-k", "M3", "--default-mode-v", "M0"]
     return []
 
