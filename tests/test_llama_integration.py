@@ -8,6 +8,7 @@ from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.integrations.llama import (
     LlamaDotCacheModelAdapter,
+    run_llama_loss_harness,
     run_llama_generation_harness,
     run_llama_replay_harness,
 )
@@ -58,7 +59,6 @@ def test_llama_generation_harness_runs_on_tiny_random_model() -> None:
     assert np.isfinite(result["decode_ms_per_step"])
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
 
-
 def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     model, adapter = _tiny_llama_model()
     input_ids = torch.tensor([[7, 8, 9, 10, 11, 12]], dtype=torch.long)
@@ -70,6 +70,21 @@ def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     assert profile["prefill_cache_ingest"]["host_to_device_bytes"] >= 0
     assert profile["dotcache_decode"]["model_forward_ms_total"] >= 0.0
     assert len(profile["dotcache_decode"]["per_layer"]) == model.config.num_hidden_layers
+
+
+def test_llama_loss_harness_runs_on_tiny_random_model() -> None:
+    model, adapter = _tiny_llama_model()
+    input_ids = torch.tensor([[7, 8, 9, 10, 11, 12, 13, 14]], dtype=torch.long)
+
+    result = run_llama_loss_harness(model, adapter, input_ids=input_ids, prefix_length=4, eval_steps=4)
+
+    assert result["sequence_length"] == 8
+    assert result["prefix_length"] == 4
+    assert result["eval_steps"] == 4
+    assert np.isfinite(result["dense_teacher_forced_loss"])
+    assert np.isfinite(result["dotcache_teacher_forced_loss"])
+    assert np.isfinite(result["teacher_forced_loss_delta"])
+    assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
 
 
 @requires_mps

@@ -701,6 +701,26 @@ class LlamaDotCacheHarness:
             profile=profile,
         )
 
+    def evaluate_loss(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        prefix_length: int,
+        eval_steps: int,
+    ) -> dict[str, Any]:
+        return run_llama_loss_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            prefix_length=prefix_length,
+            eval_steps=eval_steps,
+            tokenizer=self.tokenizer,
+        )
+
 
 def _prefill_prompt(
     model,
@@ -864,6 +884,49 @@ def _run_dotcache_decode_inputs(
         "decode_runtime_ms_total": adapter.decode_runtime_ms_total,
         "step_logits": step_logits,
         "trace": trace_total,
+    }
+
+
+def _run_dense_decode_inputs(
+    model,
+    adapter: LlamaDotCacheModelAdapter,
+    *,
+    input_ids,
+    attention_mask,
+    prefill_outputs,
+    decode_inputs: Sequence[Any],
+) -> dict[str, Any]:
+    adapter.set_mode("dense")
+    adapter.set_capture(False)
+    past_key_values = prefill_outputs.past_key_values
+    current_attention_mask = attention_mask
+    cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    step_logits: list[np.ndarray] = []
+    decode_ms_total = 0.0
+
+    for decode_input in decode_inputs:
+        start = time.perf_counter()
+        outputs = model(
+            input_ids=decode_input,
+            attention_mask=current_attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+            cache_position=cache_position,
+            position_ids=cache_position.unsqueeze(0),
+        )
+        decode_ms_total += (time.perf_counter() - start) * 1000.0
+        step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        past_key_values = outputs.past_key_values
+        if current_attention_mask is not None:
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+                dim=1,
+            )
+        cache_position = cache_position + 1
+
+    return {
+        "decode_ms_total": decode_ms_total,
+        "step_logits": step_logits,
     }
 
 
@@ -1188,4 +1251,104 @@ def run_llama_generation_harness(
                 **dotcache_cuda_stats,
             },
         }
+    return result
+
+
+def run_llama_loss_harness(
+    model,
+    adapter: LlamaDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    prefix_length: int,
+    eval_steps: int,
+    tokenizer=None,
+) -> dict[str, Any]:
+    _require_transformers()
+    if prompt is not None:
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when prompt text is provided")
+        encoded = tokenizer(prompt, return_tensors="pt")
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded["attention_mask"]
+    input_ids = _normalize_input_ids(input_ids, device=adapter.device)
+    attention_mask = _ensure_attention_mask(input_ids, attention_mask, device=adapter.device)
+    if prefix_length <= 0 or prefix_length >= int(input_ids.shape[1]):
+        raise ValueError("prefix_length must be in [1, sequence_length)")
+    available_eval_steps = int(input_ids.shape[1]) - prefix_length
+    if eval_steps <= 0 or eval_steps > available_eval_steps:
+        raise ValueError("eval_steps must be positive and fit inside the provided sequence after prefix_length")
+
+    prefix_input_ids = input_ids[:, :prefix_length]
+    prefix_attention_mask = attention_mask[:, :prefix_length]
+    continuation_ids = input_ids[:, prefix_length : prefix_length + eval_steps]
+    decode_inputs = [continuation_ids[:, index : index + 1] for index in range(max(eval_steps - 1, 0))]
+
+    prefill_start = time.perf_counter()
+    prefill_outputs, prefill_layers, _ = _prefill_prompt(model, adapter, prefix_input_ids, prefix_attention_mask)
+    prefill_ms = (time.perf_counter() - prefill_start) * 1000.0
+    dense_prefill_logits = prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()
+    dense_decode = _run_dense_decode_inputs(
+        model,
+        adapter,
+        input_ids=prefix_input_ids,
+        attention_mask=prefix_attention_mask,
+        prefill_outputs=prefill_outputs,
+        decode_inputs=decode_inputs,
+    )
+    dotcache_decode = _run_dotcache_decode_inputs(
+        model,
+        adapter,
+        input_ids=prefix_input_ids,
+        attention_mask=prefix_attention_mask,
+        prefill_layers=prefill_layers,
+        decode_inputs=decode_inputs,
+    )
+
+    dense_logits_list = [dense_prefill_logits, *dense_decode["step_logits"]]
+    dotcache_logits_list = [dense_prefill_logits, *dotcache_decode["step_logits"]]
+    dense_logits = np.concatenate(dense_logits_list, axis=0).astype(np.float32, copy=False)
+    dotcache_logits = np.concatenate(dotcache_logits_list, axis=0).astype(np.float32, copy=False)
+    target_tokens = continuation_ids[0, : dense_logits.shape[0]].detach().cpu().numpy().astype(np.int64, copy=False)
+
+    def _loss_metrics(logits: np.ndarray) -> tuple[float, float, np.ndarray]:
+        max_logits = np.max(logits, axis=-1, keepdims=True)
+        stabilized = logits - max_logits
+        log_probs = stabilized - np.log(np.sum(np.exp(stabilized), axis=-1, keepdims=True))
+        token_losses = -log_probs[np.arange(target_tokens.shape[0]), target_tokens]
+        mean_loss = float(np.mean(token_losses))
+        perplexity = float(np.exp(min(mean_loss, 50.0)))
+        predictions = np.argmax(logits, axis=-1).astype(np.int64, copy=False)
+        return mean_loss, perplexity, predictions
+
+    dense_loss, dense_perplexity, dense_predictions = _loss_metrics(dense_logits)
+    dotcache_loss, dotcache_perplexity, dotcache_predictions = _loss_metrics(dotcache_logits)
+    token_agreement = float(np.mean((dense_predictions == dotcache_predictions).astype(np.float32)))
+    target_agreement = float(np.mean((dotcache_predictions == target_tokens).astype(np.float32)))
+    logit_delta = np.abs(dotcache_logits - dense_logits)
+    logit_denom = np.maximum(np.abs(dense_logits), 1e-8)
+
+    result: dict[str, Any] = {
+        "sequence_length": int(input_ids.shape[1]),
+        "prefix_length": int(prefix_length),
+        "eval_steps": int(eval_steps),
+        "prefill_ms": float(prefill_ms),
+        "dense_decode_ms_per_step": float(dense_decode["decode_ms_total"] / max(len(decode_inputs), 1)),
+        "dotcache_decode_ms_per_step": float(dotcache_decode["decode_ms_total"] / max(len(decode_inputs), 1)),
+        "dotcache_append_runtime_ms_per_step": float(dotcache_decode["append_runtime_ms_total"] / max(len(decode_inputs), 1)),
+        "dotcache_decode_runtime_ms_per_step": float(dotcache_decode["decode_runtime_ms_total"] / max(len(decode_inputs), 1)),
+        "dense_teacher_forced_loss": dense_loss,
+        "dense_teacher_forced_perplexity": dense_perplexity,
+        "dotcache_teacher_forced_loss": dotcache_loss,
+        "dotcache_teacher_forced_perplexity": dotcache_perplexity,
+        "teacher_forced_loss_delta": float(dotcache_loss - dense_loss),
+        "teacher_forced_perplexity_ratio": float(dotcache_perplexity / max(dense_perplexity, 1e-8)),
+        "teacher_forced_token_agreement_rate": token_agreement,
+        "teacher_forced_target_match_rate": target_agreement,
+        "teacher_forced_logit_max_abs_error": float(np.max(logit_delta)),
+        "teacher_forced_logit_max_rel_error": float(np.max(logit_delta / logit_denom)),
+        "prefill_cache_ingest_host_to_device_bytes": dotcache_decode["trace"].host_to_device_bytes,
+    }
+    result.update(adapter.model_kv_cache.page_mode_summary())
     return result
