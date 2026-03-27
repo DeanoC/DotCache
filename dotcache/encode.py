@@ -7,6 +7,7 @@ from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
 from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
 from .modes.m3_escape import encode_escape_payload
+from .modes.turbo3 import quantize_tensor_turbo3
 from .page_format import build_payload
 from .packing import words_per_group
 from .types import EncodedPage, Kind, PageHeader
@@ -271,10 +272,49 @@ def encode_page(
                 runtime_page_sketch=runtime_page_sketch,
                 runtime_page_min=runtime_page_min,
                 runtime_page_max=runtime_page_max,
-            )
+        )
+
+    if page_mode == "T3":
+        codes, correction, centroids, padded_head_dim = quantize_tensor_turbo3(
+            values,
+            group_size=config.group_size,
+        )
+        sidecar_sketch, sidecar_basis, sidecar_mean = _build_m2_sidecar()
+        payload = build_payload(codes, 3, page_layout)
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=3,
+            words_per_group=words_per_group(config.group_size, 3),
+            mode_default="T3",
+            layout=page_layout,
+            quant_scheme="turbo3",
+            escape_dtype=config.escape_dtype,
+        )
+        return EncodedPage(
+            header=header,
+            payload=payload,
+            scales=correction,
+            codebooks=centroids,
+            m2_sketch=sidecar_sketch,
+            m2_basis=sidecar_basis,
+            m2_mean=sidecar_mean,
+            requested_mode=requested_mode,
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
+        )
 
     if page_mode != "M0":
-        raise ValueError("only M0, M1, M2, and M3 are supported in this bootstrap")
+        raise ValueError("only M0, M1, M2, M3, and T3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
         values,

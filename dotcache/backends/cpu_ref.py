@@ -18,7 +18,7 @@ def _record_trace(page: EncodedPage, trace: ExecutionTrace | None) -> None:
     if trace is None:
         return
     trace.record_page_read(page.payload_nbytes, page.metadata_nbytes)
-    if page.header.mode_default in ("M0", "M1"):
+    if page.header.mode_default in ("M0", "M1", "T3"):
         trace.record_temporary(page.header.token_count * page.header.group_size * np.dtype(np.float32).itemsize)
     elif page.header.mode_default == "M2" and page.m2_sketch is not None:
         trace.record_temporary(int(page.m2_sketch.shape[0] * page.m2_sketch.shape[-1] * np.dtype(np.float32).itemsize))

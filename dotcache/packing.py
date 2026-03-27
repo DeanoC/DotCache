@@ -42,10 +42,14 @@ def pack_bits(codes: np.ndarray, bits: int) -> np.ndarray:
             value = int(raw_value) & mask
             word_index = bit_offset // 32
             bit_index = bit_offset % 32
-            packed[row_index, word_index] |= np.uint32(value << bit_index)
+            current = int(packed[row_index, word_index])
+            current |= (value << bit_index) & 0xFFFFFFFF
+            packed[row_index, word_index] = np.uint32(current)
             spill = bit_index + bits - 32
             if spill > 0:
-                packed[row_index, word_index + 1] |= np.uint32(value >> (bits - spill))
+                next_word = int(packed[row_index, word_index + 1])
+                next_word |= (value >> (bits - spill)) & 0xFFFFFFFF
+                packed[row_index, word_index + 1] = np.uint32(next_word)
             bit_offset += bits
     return packed.reshape(*values.shape[:-1], word_count)
 
