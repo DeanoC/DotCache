@@ -7,6 +7,7 @@ from typing import Any, Literal, Sequence
 import numpy as np
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
+from ..modes.m2_key_sketch import segment_ids_for_token_count
 
 TorchDevice = Literal["mps", "cuda"]
 PreparedDevice = Literal["torch_mps", "torch_cuda"]
@@ -138,6 +139,7 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
     source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     header = source_page.header
     sketch_dim = int(source_page.m2_sketch.shape[-1]) if source_page.m2_sketch is not None else 0
+    segment_count = int(source_page.m2_basis.shape[1]) if source_page.m2_basis is not None and source_page.m2_basis.ndim == 4 else 1
     centered = int(source_page.m2_mean is not None)
     return (
         header.kind,
@@ -153,6 +155,7 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
         header.quant_scheme,
         header.escape_dtype,
         sketch_dim,
+        segment_count,
         centered,
     )
 
@@ -160,6 +163,7 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
 def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
     header = page.header
     sketch_dim = int(page.m2_sketch.shape[-1]) if page.m2_sketch is not None else 0
+    segment_count = int(page.m2_basis.shape[1]) if page.m2_basis is not None and page.m2_basis.dim() == 4 else 1
     centered = int(page.m2_mean is not None)
     return (
         page.device_type,
@@ -175,6 +179,7 @@ def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
         header.layout,
         header.quant_scheme,
         sketch_dim,
+        segment_count,
         centered,
     )
 
@@ -729,9 +734,15 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
             group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
-            q_proj = torch.einsum("prg,g->pr", group_basis, query_groups[group_index])
-            logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
-            logits += torch.einsum("pg,g->p", group_mean, query_groups[group_index])[:, None]
+            if group_basis.dim() == 3:
+                q_proj = torch.einsum("prg,g->pr", group_basis, query_groups[group_index])
+                logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
+                logits += torch.einsum("pg,g->p", group_mean, query_groups[group_index])[:, None]
+                continue
+            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
+            q_proj = torch.einsum("psrg,g->psr", group_basis, query_groups[group_index])
+            logits += torch.einsum("ptr,ptr->pt", group_sketch, q_proj[:, segment_ids, :])
+            logits += torch.einsum("ptg,g->pt", group_mean[:, segment_ids, :], query_groups[group_index])
         return logits.reshape(-1)
 
     if header.mode_default == "M1":
@@ -1047,9 +1058,15 @@ def _score_page_chunk_multiquery_torch(
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
             group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
-            q_proj = torch.einsum("prg,qg->qpr", group_basis, query_groups[:, group_index, :])
-            logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
-            logits += torch.einsum("pg,qg->qp", group_mean, query_groups[:, group_index, :])[:, :, None]
+            if group_basis.dim() == 3:
+                q_proj = torch.einsum("prg,qg->qpr", group_basis, query_groups[:, group_index, :])
+                logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
+                logits += torch.einsum("pg,qg->qp", group_mean, query_groups[:, group_index, :])[:, :, None]
+                continue
+            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
+            q_proj = torch.einsum("psrg,qg->qpsr", group_basis, query_groups[:, group_index, :])
+            logits += torch.einsum("ptr,qptr->qpt", group_sketch, q_proj[:, :, segment_ids, :])
+            logits += torch.einsum("ptg,qg->qpt", group_mean[:, segment_ids, :], query_groups[:, group_index, :])
         return logits.reshape(query_count, -1)
 
     if header.mode_default == "M1":
@@ -1284,9 +1301,15 @@ def _score_page_chunk_grouped_multiquery_torch(
                 [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
                 dim=0,
             )
-            q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, query_groups_tensor[:, :, group_index, :])
-            logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
-            logits += torch.einsum("bpg,bqg->bqp", group_mean, query_groups_tensor[:, :, group_index, :])[:, :, :, None]
+            if group_basis.dim() == 4:
+                q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, query_groups_tensor[:, :, group_index, :])
+                logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
+                logits += torch.einsum("bpg,bqg->bqp", group_mean, query_groups_tensor[:, :, group_index, :])[:, :, :, None]
+                continue
+            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[2]))).to(device=device_type)
+            q_proj = torch.einsum("bpsrg,bqg->bqpsr", group_basis, query_groups_tensor[:, :, group_index, :])
+            logits += torch.einsum("bptr,bqptr->bqpt", group_sketch, q_proj[:, :, :, segment_ids, :])
+            logits += torch.einsum("bptg,bqg->bqpt", group_mean[:, :, segment_ids, :], query_groups_tensor[:, :, group_index, :])
         return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":

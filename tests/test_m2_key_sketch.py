@@ -70,6 +70,42 @@ def test_centered_m2_reduces_reconstruction_error_on_offset_data() -> None:
     assert centered_error < uncentered_error
 
 
+def test_segmented_m2_reduces_reconstruction_error_on_piecewise_data() -> None:
+    rng = np.random.default_rng(241)
+    left = rng.normal(loc=2.5, scale=0.15, size=(6, 48)).astype(np.float32)
+    right = rng.normal(loc=-2.0, scale=0.15, size=(6, 48)).astype(np.float32)
+    keys = np.concatenate([left, right], axis=0)
+
+    single_segment = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M2",
+        quant_scheme_k="sketch",
+        m2_sketch_dim_k=2,
+        m2_center_k=False,
+        m2_segment_count_k=1,
+    )
+    two_segments = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M2",
+        quant_scheme_k="sketch",
+        m2_sketch_dim_k=2,
+        m2_center_k=False,
+        m2_segment_count_k=2,
+    )
+
+    single_page = encode_page(keys, single_segment, kind="K", mode="M2")
+    segmented_page = encode_page(keys, two_segments, kind="K", mode="M2")
+
+    single_error = float(np.mean(np.abs(decode_page(single_page) - keys)))
+    segmented_error = float(np.mean(np.abs(decode_page(segmented_page) - keys)))
+
+    assert segmented_error < single_error
+
+
 def test_m2_value_pages_are_rejected() -> None:
     rng = np.random.default_rng(42)
     config = DotCacheConfig(head_dim=48, group_size=32, bits_v=4)
@@ -89,6 +125,7 @@ def test_m2_key_pages_work_on_mps() -> None:
         default_mode_k="M2",
         quant_scheme_k="sketch",
         m2_sketch_dim_k=8,
+        m2_segment_count_k=2,
     )
     keys = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
     query = rng.normal(size=(config.head_dim,)).astype(np.float32)

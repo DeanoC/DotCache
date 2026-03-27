@@ -4,6 +4,7 @@ import numpy as np
 
 from .decode_reference import decode_page
 from .modes.m1_lut import dequantize_group_lut
+from .modes.m2_key_sketch import segment_ids_for_token_count
 from .page_format import load_group_words
 from .packing import unpack_bits
 from .types import EncodedPage
@@ -44,10 +45,18 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
         logits = np.zeros(header.token_count, dtype=np.float32)
         for group_index in range(header.num_groups):
             group_mean = None if page.m2_mean is None else page.m2_mean[group_index].astype(np.float32)
-            q_proj = page.m2_basis[group_index].astype(np.float32) @ query_groups[group_index]
-            logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
+            group_basis = page.m2_basis[group_index].astype(np.float32)
+            if group_basis.ndim == 2:
+                q_proj = group_basis @ query_groups[group_index]
+                logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
+                if group_mean is not None:
+                    logits += np.dot(group_mean, query_groups[group_index]).astype(np.float32)
+                continue
+            segment_ids = segment_ids_for_token_count(header.token_count, int(group_basis.shape[0]))
+            q_proj = np.einsum("srg,g->sr", group_basis, query_groups[group_index])
+            logits += np.einsum("tr,tr->t", page.m2_sketch[:, group_index, :].astype(np.float32), q_proj[segment_ids])
             if group_mean is not None:
-                logits += np.dot(group_mean, query_groups[group_index]).astype(np.float32)
+                logits += group_mean[segment_ids].astype(np.float32) @ query_groups[group_index]
         return logits
 
     if page.payload is None:

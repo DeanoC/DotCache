@@ -24,6 +24,7 @@ class DotCacheConfig:
     escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
     m2_center_k: bool = False
+    m2_segment_count_k: int = 1
     m2_prefilter_top_k: int = 0
     m2_prefilter_min_pages: int = 8
     lut_refine_steps: int = 6
@@ -62,6 +63,8 @@ class DotCacheConfig:
             raise ValueError("m2_sketch_dim_k must be positive")
         if not isinstance(self.m2_center_k, bool):
             raise ValueError("m2_center_k must be a bool")
+        if self.m2_segment_count_k <= 0:
+            raise ValueError("m2_segment_count_k must be positive")
         if self.m2_prefilter_top_k < 0:
             raise ValueError("m2_prefilter_top_k must be non-negative")
         if self.m2_prefilter_min_pages < 0:

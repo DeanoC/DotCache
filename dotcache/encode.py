@@ -103,6 +103,7 @@ def encode_page(
             group_size=config.group_size,
             sketch_dim=config.m2_sketch_dim_k,
             center=config.m2_center_k,
+            segment_count=config.m2_segment_count_k,
         )
         return (
             coeffs.astype(np.float16, copy=False),
@@ -149,6 +150,7 @@ def encode_page(
             group_size=config.group_size,
             sketch_dim=config.m2_sketch_dim_k,
             center=config.m2_center_k,
+            segment_count=config.m2_segment_count_k,
         )
         header = PageHeader(
             layer_id=layer_id,

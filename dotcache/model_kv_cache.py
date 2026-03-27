@@ -22,6 +22,7 @@ from .packing import words_per_group
 from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
+from .modes.m2_key_sketch import segment_ids_for_token_count
 
 PageLike = EncodedPage | PreparedPageTorch
 
@@ -61,11 +62,21 @@ def _page_m2_prefilter_score_numpy(queries: np.ndarray, page: PageLike) -> float
     query_groups = queries.reshape(queries.shape[0], source_page.header.num_groups, source_page.header.group_size)
     logits = np.zeros((queries.shape[0], source_page.header.token_count), dtype=np.float32)
     for group_index in range(source_page.header.num_groups):
-        q_proj = query_groups[:, group_index, :] @ source_page.m2_basis[group_index].astype(np.float32).T
-        logits += np.einsum("tr,qr->qt", source_page.m2_sketch[:, group_index, :].astype(np.float32), q_proj)
-        logits += np.einsum("g,qg->q", source_page.m2_mean[group_index].astype(np.float32), query_groups[:, group_index, :])[
-            :, None
-        ]
+        group_basis = source_page.m2_basis[group_index].astype(np.float32)
+        group_mean = source_page.m2_mean[group_index].astype(np.float32)
+        if group_basis.ndim == 2:
+            q_proj = query_groups[:, group_index, :] @ group_basis.T
+            logits += np.einsum("tr,qr->qt", source_page.m2_sketch[:, group_index, :].astype(np.float32), q_proj)
+            logits += np.einsum("g,qg->q", group_mean, query_groups[:, group_index, :])[:, None]
+            continue
+        segment_ids = segment_ids_for_token_count(source_page.header.token_count, int(group_basis.shape[0]))
+        q_proj = np.einsum("srg,qg->qsr", group_basis, query_groups[:, group_index, :])
+        logits += np.einsum(
+            "tr,qtr->qt",
+            source_page.m2_sketch[:, group_index, :].astype(np.float32),
+            q_proj[:, segment_ids, :],
+        )
+        logits += np.einsum("tg,qg->qt", group_mean[segment_ids], query_groups[:, group_index, :])
     return float(np.max(logits))
 
 
@@ -82,9 +93,19 @@ def _page_m2_prefilter_score_torch(queries, page: PageLike) -> float:
     query_groups = queries.reshape(int(queries.shape[0]), prepared.header.num_groups, prepared.header.group_size)
     logits = torch.zeros((int(queries.shape[0]), prepared.header.token_count), dtype=torch.float32, device=queries.device)
     for group_index in range(prepared.header.num_groups):
-        q_proj = torch.einsum("qg,rg->qr", query_groups[:, group_index, :], prepared.m2_basis[group_index])
-        logits += torch.einsum("tr,qr->qt", prepared.m2_sketch[:, group_index, :], q_proj)
-        logits += torch.einsum("g,qg->q", prepared.m2_mean[group_index], query_groups[:, group_index, :])[:, None]
+        group_basis = prepared.m2_basis[group_index]
+        group_mean = prepared.m2_mean[group_index]
+        if group_basis.dim() == 2:
+            q_proj = torch.einsum("qg,rg->qr", query_groups[:, group_index, :], group_basis)
+            logits += torch.einsum("tr,qr->qt", prepared.m2_sketch[:, group_index, :], q_proj)
+            logits += torch.einsum("g,qg->q", group_mean, query_groups[:, group_index, :])[:, None]
+            continue
+        segment_ids = torch.from_numpy(
+            segment_ids_for_token_count(prepared.header.token_count, int(group_basis.shape[0]))
+        ).to(device=queries.device)
+        q_proj = torch.einsum("srg,qg->qsr", group_basis, query_groups[:, group_index, :])
+        logits += torch.einsum("tr,qtr->qt", prepared.m2_sketch[:, group_index, :], q_proj[:, segment_ids, :])
+        logits += torch.einsum("tg,qg->qt", group_mean[segment_ids], query_groups[:, group_index, :])
     return float(torch.max(logits).item())
 
 
@@ -99,6 +120,7 @@ def _pages_can_batch_m2_prefilter(pages: Sequence[PageLike]) -> bool:
     num_groups = int(first_source.header.num_groups)
     group_size = int(first_source.header.group_size)
     sketch_dim = int(first_source.m2_sketch.shape[-1])
+    segment_count = int(first_source.m2_basis.shape[1]) if first_source.m2_basis.ndim == 4 else 1
     prepared_device = first.device_type if isinstance(first, PreparedPageTorch) else None
     for page in pages[1:]:
         source = page.source_page if isinstance(page, PreparedPageTorch) else page
@@ -109,6 +131,8 @@ def _pages_can_batch_m2_prefilter(pages: Sequence[PageLike]) -> bool:
         if int(source.header.num_groups) != num_groups or int(source.header.group_size) != group_size:
             return False
         if int(source.m2_sketch.shape[-1]) != sketch_dim:
+            return False
+        if (int(source.m2_basis.shape[1]) if source.m2_basis.ndim == 4 else 1) != segment_count:
             return False
         if prepared_device is not None:
             if not isinstance(page, PreparedPageTorch) or page.device_type != prepared_device:
@@ -123,9 +147,17 @@ def _page_m2_prefilter_scores_numpy(queries: np.ndarray, pages: Sequence[PageLik
     sketch = np.stack([page.m2_sketch for page in source_pages], axis=0).astype(np.float32, copy=False)
     basis = np.stack([page.m2_basis for page in source_pages], axis=0).astype(np.float32, copy=False)
     mean = np.stack([page.m2_mean for page in source_pages], axis=0).astype(np.float32, copy=False)
-    q_proj = np.einsum("pgrd,qgd->qpgr", basis, query_groups)
-    logits = np.einsum("ptgr,qpgr->qpt", sketch, q_proj)
-    logits += np.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
+    if basis.ndim == 4:
+        q_proj = np.einsum("pgrd,qgd->qpgr", basis, query_groups)
+        logits = np.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+        logits += np.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
+        return np.max(logits, axis=(0, 2)).astype(np.float32, copy=False)
+    segment_ids = segment_ids_for_token_count(first.header.token_count, int(basis.shape[2]))
+    logits = np.zeros((queries.shape[0], len(source_pages), first.header.token_count), dtype=np.float32)
+    for group_index in range(first.header.num_groups):
+        q_proj = np.einsum("psrd,qd->qpsr", basis[:, group_index], query_groups[:, group_index, :])
+        logits += np.einsum("ptr,qptr->qpt", sketch[:, :, group_index, :], q_proj[:, :, segment_ids, :])
+        logits += np.einsum("ptg,qg->qpt", mean[:, group_index, segment_ids, :], query_groups[:, group_index, :])
     return np.max(logits, axis=(0, 2)).astype(np.float32, copy=False)
 
 
@@ -143,9 +175,17 @@ def _page_m2_prefilter_scores_torch(queries, pages: Sequence[PageLike]) -> np.nd
     sketch = torch.stack([page.m2_sketch for page in pages], dim=0)
     basis = torch.stack([page.m2_basis for page in pages], dim=0)
     mean = torch.stack([page.m2_mean for page in pages], dim=0)
-    q_proj = torch.einsum("pgrd,qgd->qpgr", basis, query_groups)
-    logits = torch.einsum("ptgr,qpgr->qpt", sketch, q_proj)
-    logits += torch.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
+    if basis.dim() == 4:
+        q_proj = torch.einsum("pgrd,qgd->qpgr", basis, query_groups)
+        logits = torch.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+        logits += torch.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
+        return torch.amax(logits, dim=(0, 2)).detach().cpu().numpy().astype(np.float32, copy=False)
+    segment_ids = torch.from_numpy(segment_ids_for_token_count(first.header.token_count, int(basis.shape[2]))).to(device=queries.device)
+    logits = torch.zeros((int(queries.shape[0]), len(pages), first.header.token_count), dtype=torch.float32, device=queries.device)
+    for group_index in range(first.header.num_groups):
+        q_proj = torch.einsum("psrd,qg->qpsr", basis[:, group_index], query_groups[:, group_index, :])
+        logits += torch.einsum("ptr,qptr->qpt", sketch[:, :, group_index, :], q_proj[:, :, segment_ids, :])
+        logits += torch.einsum("ptg,qg->qpt", mean[:, group_index, segment_ids, :], query_groups[:, group_index, :])
     return torch.amax(logits, dim=(0, 2)).detach().cpu().numpy().astype(np.float32, copy=False)
 
 
