@@ -40,9 +40,17 @@ try:  # pragma: no cover - optional HF path
         LlamaDotCacheHarness,
         LlamaDotCacheModelAdapter,
         LlamaReplayRecord,
+        VllmAdapterConfig,
+        VllmDotCacheModelAdapter,
+        VllmPagedKVCache,
+        get_vllm_version,
+        install_dotcache_on_vllm_model,
+        install_dotcache_on_vllm_runtime,
+        require_supported_vllm_version,
         run_llama_generation_harness,
         run_llama_replay_harness,
         transformers_available,
+        vllm_available,
     )
 except ImportError:  # pragma: no cover - exercised when optional deps are absent
     pass
@@ -52,8 +60,16 @@ else:
             "LlamaDotCacheHarness",
             "LlamaDotCacheModelAdapter",
             "LlamaReplayRecord",
+            "VllmAdapterConfig",
+            "VllmDotCacheModelAdapter",
+            "VllmPagedKVCache",
+            "get_vllm_version",
+            "install_dotcache_on_vllm_model",
+            "install_dotcache_on_vllm_runtime",
+            "require_supported_vllm_version",
             "run_llama_generation_harness",
             "run_llama_replay_harness",
             "transformers_available",
+            "vllm_available",
         ]
     )

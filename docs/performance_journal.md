@@ -10,6 +10,31 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 Current branch head: `2a84af0` plus pending merge from `main@b17ae4b`
 
+### Phase 6 vLLM adapter status
+
+The first correctness-first Phase 6 surface is now implemented in [dotcache/integrations/vllm_adapter](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/vllm_adapter).
+
+What landed:
+
+- a pinned `vLLM 0.18.x` compatibility guard
+- a block-indexed page bridge keyed by `(layer, kv_head, block_id, kind)`
+- finalized-block plus live-partial-block handling on top of the existing exact DotCache runtime
+- `dense`, `dotcache_shadow`, and `dotcache_active` adapter modes for Llama-family attention modules
+- an offline benchmark entrypoint in [bench_vllm_offline.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_vllm_offline.py)
+
+What we verified locally:
+
+- block ownership is stable
+- finalized-block decode matches the quantized-page oracle
+- live partial blocks stay visible through the intended `M3` tail path
+- active-mode DotCache outputs match shadow-mode DotCache outputs on the tested tiny fake-vLLM Llama path
+
+What is still pending:
+
+- the first real CUDA/vLLM offline benchmark run on the cloud instance
+- dense vs shadow vs active timing numbers on real checkpoints
+- real shadow-mode drift metrics on vLLM itself
+
 ### First NVIDIA CUDA snapshot
 
 The new eager `torch_cuda` backend now runs on an NVIDIA RTX 2000 Ada machine through the same shared torch accelerator path as `torch_mps`.

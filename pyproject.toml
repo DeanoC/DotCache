@@ -24,9 +24,19 @@ hf = [
   "sentencepiece>=0.2.1",
   "safetensors>=0.7.0",
 ]
+vllm = [
+  "torch>=2.5",
+  "vllm>=0.18,<0.19",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["dotcache", "dotcache.backends", "dotcache.integrations", "dotcache.modes"]
+packages = [
+  "dotcache",
+  "dotcache.backends",
+  "dotcache.integrations",
+  "dotcache.integrations.vllm_adapter",
+  "dotcache.modes",
+]
