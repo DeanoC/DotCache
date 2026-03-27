@@ -326,6 +326,14 @@ def install_dotcache_on_vllm_runtime(
     require_supported_vllm_version()
     model = _search_for_model(target)
     if model is None:
+        llm_engine = getattr(target, "llm_engine", None)
+        engine_core = getattr(llm_engine, "engine_core", None)
+        if engine_core is not None and engine_core.__class__.__name__ != "InprocClient":
+            raise RuntimeError(
+                "could not locate a supported vLLM Llama-family executor model inside the target runtime; "
+                "for vLLM 0.18.x use the in-process engine path by setting "
+                "VLLM_ENABLE_V1_MULTIPROCESSING=0 before constructing vllm.LLM"
+            )
         raise RuntimeError("could not locate a supported vLLM Llama-family executor model inside the target runtime")
     resolved_block_size = int(block_size) if block_size is not None else _infer_block_size_from_target(target)
     if resolved_block_size is None:

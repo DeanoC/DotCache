@@ -22,11 +22,11 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 
 ## Quick start on NVIDIA Linux for non-MPS Llama work
 
-This repo's accelerated backend is currently `torch_mps`, so the NVIDIA development path today is:
+This repo now has a `torch_cuda` backend for NVIDIA development, so the practical CUDA path today is:
 
-- run the dense Hugging Face model on `cuda`
-- keep DotCache decode on `cpu_ref` until a CUDA backend exists
-- use the Llama harness and tests to verify model integration on this machine
+- run both the dense Hugging Face model and DotCache decode on `cuda`
+- use the CUDA unit tests plus the Llama harness to verify parity on this machine
+- use the optional vLLM adapter only when you are ready for the Phase 6 offline benchmark path
 
 Bootstrap the local environment with:
 
@@ -34,7 +34,7 @@ Bootstrap the local environment with:
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
-That script creates `.venv`, installs a driver-compatible PyTorch build plus the dev and Hugging Face dependencies, and fails fast if `torch.cuda.is_available()` is false.
+That script creates `.venv`, reuses a working system CUDA PyTorch when the pod already has one, otherwise installs the pinned driver-compatible wheel, then installs the dev and Hugging Face dependencies and fails fast if `torch.cuda.is_available()` is false.
 
 For a local no-download smoke run on this machine, use:
 
