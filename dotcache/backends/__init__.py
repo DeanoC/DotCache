@@ -33,6 +33,7 @@ from .torch_mps import (
     mps_available,
     page_supported_mps,
     page_supported_torch,
+    prepare_m0_affine_pages_from_tensor_torch,
     prepare_page_mps,
     prepare_page_torch,
     prepare_pages_mps,
@@ -42,6 +43,7 @@ from .torch_mps import (
     score_pages_torch,
     score_page_mps,
     score_page_torch,
+    set_prepared_chunk_cache_budget_override,
     torch_device_available,
     mix_page_torch,
 )
@@ -76,6 +78,7 @@ __all__ = [
     "page_supported_cuda",
     "page_supported_mps",
     "page_supported_torch",
+    "prepare_m0_affine_pages_from_tensor_torch",
     "prepare_page_cuda",
     "prepare_page_torch",
     "prepare_page_mps",
@@ -90,5 +93,6 @@ __all__ = [
     "score_page_cuda",
     "score_page_torch",
     "score_page_mps",
+    "set_prepared_chunk_cache_budget_override",
     "torch_device_available",
 ]

@@ -28,6 +28,8 @@ class ExecutionTrace:
     unpack_calls: int = 0
     fwht_ms_total: float = 0.0
     fwht_calls: int = 0
+    chunk_assembly_ms_total: float = 0.0
+    chunk_assembly_calls: int = 0
 
     def record_page_read(self, payload_bytes: int, metadata_bytes: int) -> None:
         self.payload_bytes_read += int(payload_bytes)
@@ -80,6 +82,10 @@ class ExecutionTrace:
             self.fwht_ms_total += float(ms)
             self.fwht_calls += int(count)
             return
+        if section == "chunk_assembly":
+            self.chunk_assembly_ms_total += float(ms)
+            self.chunk_assembly_calls += int(count)
+            return
         raise ValueError(f"unknown timing section: {section}")
 
     def merge(self, other: "ExecutionTrace") -> None:
@@ -105,8 +111,10 @@ class ExecutionTrace:
         self.unpack_calls += other.unpack_calls
         self.fwht_ms_total += other.fwht_ms_total
         self.fwht_calls += other.fwht_calls
+        self.chunk_assembly_ms_total += other.chunk_assembly_ms_total
+        self.chunk_assembly_calls += other.chunk_assembly_calls
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, int | float]:
         return {
             "m0_full_page_materializations": self.m0_full_page_materializations,
             "payload_bytes_read": self.payload_bytes_read,
@@ -130,4 +138,6 @@ class ExecutionTrace:
             "unpack_calls": self.unpack_calls,
             "fwht_ms_total": self.fwht_ms_total,
             "fwht_calls": self.fwht_calls,
+            "chunk_assembly_ms_total": self.chunk_assembly_ms_total,
+            "chunk_assembly_calls": self.chunk_assembly_calls,
         }

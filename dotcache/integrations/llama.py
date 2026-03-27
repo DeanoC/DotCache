@@ -123,6 +123,32 @@ def _timed_call(fn, *, device: Any) -> tuple[Any, float]:
     return result, (time.perf_counter() - start) * 1000.0
 
 
+def _prewarm_torch_decode_layers(adapter: "LlamaDotCacheModelAdapter", *, device: Any) -> None:
+    device_type = _device_type(device)
+    if device_type != "cuda" or not _torch_backend_matches_device(adapter.backend, device_type):
+        return
+    if adapter.model_kv_cache._torch_device_type is None:
+        return
+
+    zero_query = torch.zeros(
+        (adapter.model.config.num_attention_heads, adapter.dotcache_config.head_dim),
+        dtype=torch.float32,
+        device=device,
+    )
+    with torch.no_grad():
+        for layer_id in range(adapter.model.config.num_hidden_layers):
+            if adapter.model_kv_cache.layer_sequence_length(layer_id) <= 0:
+                continue
+            adapter.model_kv_cache.decode_layer_torch(
+                layer_id,
+                zero_query,
+                adapter.q_head_to_kv_head,
+                query_scale=1.0,
+                trace=None,
+            )
+    _synchronize_device(device)
+
+
 def _begin_cuda_memory_region(device: Any) -> dict[str, int] | None:
     if _device_type(device) != "cuda" or not torch.cuda.is_available():
         return None
@@ -863,6 +889,7 @@ def _run_dotcache_decode_inputs(
         adapter.load_prefill_cache_tensors(prefill_layers)
     else:
         adapter.load_prefill_cache_arrays(prefill_layers)
+    _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     use_attention_mask = not _can_skip_decode_attention_mask(attention_mask)
@@ -961,6 +988,7 @@ def _run_dotcache_greedy_decode(
         adapter.load_prefill_cache_tensors(prefill_layers)
     else:
         adapter.load_prefill_cache_arrays(prefill_layers)
+    _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     generated_ids = [int(first_generated_token.item())]
@@ -1224,6 +1252,7 @@ def run_llama_generation_harness(
         max_abs_logit_drift = 0.0
         max_rel_logit_drift = 0.0
 
+    resident_byte_summary = adapter.model_kv_cache.resident_byte_summary()
     result: dict[str, Any] = {
         "prompt_length": int(input_ids.shape[1]),
         "decode_steps": max(max_new_tokens - 1, 0),
@@ -1240,8 +1269,19 @@ def run_llama_generation_harness(
         "append_ms_per_step": float(append_ms_per_step),
         "append_runtime_ms_per_step": float(append_runtime_ms_per_step),
         "decode_runtime_ms_per_step": float(decode_runtime_ms_per_step),
-        "resident_bytes": adapter.model_kv_cache.resident_bytes,
-        "dotcache_vs_dense_kv_bytes_ratio": float(adapter.model_kv_cache.resident_bytes / max(dense_final_kv_cache_bytes, 1)),
+        "resident_bytes": int(resident_byte_summary["resident_bytes"]),
+        "kv_resident_bytes": int(resident_byte_summary["kv_resident_bytes"]),
+        "prepared_page_cache_resident_bytes": int(resident_byte_summary["prepared_page_cache_resident_bytes"]),
+        "direct_page_resident_bytes": int(resident_byte_summary["direct_page_resident_bytes"]),
+        "tail_resident_bytes": int(resident_byte_summary["tail_resident_bytes"]),
+        "prepared_chunk_cache_budget_bytes": int(resident_byte_summary["prepared_chunk_cache_budget_bytes"]),
+        "prepared_chunk_resident_bytes": int(resident_byte_summary["prepared_chunk_resident_bytes"]),
+        "dotcache_vs_dense_kv_bytes_ratio": float(
+            resident_byte_summary["kv_resident_bytes"] / max(dense_final_kv_cache_bytes, 1)
+        ),
+        "dotcache_vs_dense_total_resident_bytes_ratio": float(
+            resident_byte_summary["resident_bytes"] / max(dense_final_kv_cache_bytes, 1)
+        ),
         "dotcache_vs_dense_decode_speedup": float(dense_decode_ms_per_step / max(decode_ms_per_step, 1e-8))
         if decode_ms_per_step > 0.0
         else 0.0,
