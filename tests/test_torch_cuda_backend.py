@@ -153,6 +153,89 @@ def test_model_paged_kv_cache_ingest_prefill_cache_torch_prepares_aligned_m0_pag
 
 
 @requires_cuda
+def test_model_paged_kv_cache_decode_layer_torch_works_with_cached_prepared_chunks_on_cuda() -> None:
+    rng = np.random.default_rng(906)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="cuda")
+    layer_values = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="cuda")
+    queries = torch.from_numpy(rng.normal(size=(4, config.head_dim)).astype(np.float32)).to(device="cuda")
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        outputs = cache.decode_layer_torch(0, queries, np.array([0, 0, 1, 1], dtype=np.int64))
+        assert tuple(outputs.shape) == (4, config.head_dim)
+        assert cache.resident_bytes > 0
+    finally:
+        clear_prepared_chunk_cache()
+
+
+@requires_cuda
+def test_model_paged_kv_cache_decode_layer_torch_matches_numpy_path_on_cuda_head_dim64_fused_cache() -> None:
+    rng = np.random.default_rng(907)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(4, config.head_dim)).astype(np.float32)
+    mapping = default_q_head_to_kv_head(4, 2)
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache(0, layer_keys, layer_values)
+        numpy_outputs = cache.decode_layer(0, queries, mapping)
+        torch_outputs = cache.decode_layer_torch(0, torch.from_numpy(queries).to(device="cuda"), mapping)
+
+        np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-4, rtol=1e-4)
+    finally:
+        clear_prepared_chunk_cache()
+
+
+@requires_cuda
+def test_model_paged_kv_cache_resident_byte_summary_separates_chunk_cache_on_cuda() -> None:
+    rng = np.random.default_rng(908)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="cuda")
+    layer_values = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="cuda")
+    queries = torch.from_numpy(rng.normal(size=(4, config.head_dim)).astype(np.float32)).to(device="cuda")
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        before = cache.resident_byte_summary()
+        cache.decode_layer_torch(0, queries, np.array([0, 0, 1, 1], dtype=np.int64))
+        after = cache.resident_byte_summary()
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert before["prepared_chunk_resident_bytes"] == 0
+    assert before["resident_bytes"] == before["kv_resident_bytes"]
+    assert after["prepared_chunk_resident_bytes"] > 0
+    assert after["prepared_chunk_resident_bytes"] <= after["prepared_chunk_cache_budget_bytes"]
+    assert after["resident_bytes"] == after["kv_resident_bytes"] + after["prepared_chunk_resident_bytes"]
+
+
+@requires_cuda
 def test_llama_generation_harness_runs_on_cuda_tiny_random_model() -> None:
     config = LlamaConfig(
         hidden_size=128,
@@ -174,3 +257,6 @@ def test_llama_generation_harness_runs_on_cuda_tiny_random_model() -> None:
 
     assert len(result["dotcache_generated_ids"]) == 3
     assert result["resident_bytes"] >= 0
+    assert result["resident_bytes"] >= result["kv_resident_bytes"]
+    assert result["prepared_chunk_resident_bytes"] <= result["prepared_chunk_cache_budget_bytes"]
+    assert result["dotcache_vs_dense_total_resident_bytes_ratio"] >= result["dotcache_vs_dense_kv_bytes_ratio"]

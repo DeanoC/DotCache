@@ -43,6 +43,7 @@ from .torch_mps import (
     score_pages_torch,
     score_page_mps,
     score_page_torch,
+    set_prepared_chunk_cache_budget_override,
     torch_device_available,
     mix_page_torch,
 )
@@ -92,5 +93,6 @@ __all__ = [
     "score_page_cuda",
     "score_page_torch",
     "score_page_mps",
+    "set_prepared_chunk_cache_budget_override",
     "torch_device_available",
 ]

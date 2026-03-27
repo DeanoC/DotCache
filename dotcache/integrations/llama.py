@@ -966,6 +966,7 @@ def _run_dotcache_greedy_decode(
     prefill_layers: Sequence[tuple[Any, Any]],
     first_generated_token,
     max_new_tokens: int,
+    profile: bool = False,
 ) -> dict[str, Any]:
     if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
         adapter.load_prefill_cache_tensors(prefill_layers)
@@ -982,7 +983,7 @@ def _run_dotcache_greedy_decode(
             "append_runtime_ms_total": 0.0,
             "decode_runtime_ms_total": 0.0,
             "step_count": 0,
-            "trace": ExecutionTrace(),
+            "trace": ExecutionTrace(collect_runtime_breakdown=bool(profile)),
         }
 
     current_input_ids = first_generated_token
@@ -999,10 +1000,10 @@ def _run_dotcache_greedy_decode(
     current_token_index = int(input_ids.shape[1])
     step_count = 0
     decode_ms_total = 0.0
-    trace_total = ExecutionTrace()
+    trace_total = ExecutionTrace(collect_runtime_breakdown=bool(profile))
 
     for _ in range(max_new_tokens - 1):
-        step_trace = ExecutionTrace()
+        step_trace = ExecutionTrace(collect_runtime_breakdown=bool(profile))
         adapter.active_trace = step_trace
         adapter.set_current_token_index(current_token_index)
         try:
@@ -1174,7 +1175,7 @@ def run_llama_generation_harness(
         generated_ids = dense_result["generated_ids"]
         decode_ms_per_step = 0.0
         append_ms_per_step = 0.0
-        decode_trace = ExecutionTrace()
+        decode_trace = ExecutionTrace(collect_runtime_breakdown=True)
         step_count = 0
         append_runtime_ms_per_step = 0.0
         decode_runtime_ms_per_step = 0.0
@@ -1190,6 +1191,7 @@ def run_llama_generation_harness(
             prefill_layers=dense_result["prefill_layers"],
             first_generated_token=torch.as_tensor([[dense_result["generated_ids"][0]]], dtype=torch.long, device=input_ids.device),
             max_new_tokens=max_new_tokens,
+            profile=profile,
         )
         step_count = int(dotcache_result["step_count"])
         decode_trace = dotcache_result["trace"]
@@ -1234,6 +1236,7 @@ def run_llama_generation_harness(
         max_abs_logit_drift = 0.0
         max_rel_logit_drift = 0.0
 
+    resident_byte_summary = adapter.model_kv_cache.resident_byte_summary()
     result: dict[str, Any] = {
         "prompt_length": int(input_ids.shape[1]),
         "decode_steps": max(max_new_tokens - 1, 0),
@@ -1250,8 +1253,19 @@ def run_llama_generation_harness(
         "append_ms_per_step": float(append_ms_per_step),
         "append_runtime_ms_per_step": float(append_runtime_ms_per_step),
         "decode_runtime_ms_per_step": float(decode_runtime_ms_per_step),
-        "resident_bytes": adapter.model_kv_cache.resident_bytes,
-        "dotcache_vs_dense_kv_bytes_ratio": float(adapter.model_kv_cache.resident_bytes / max(dense_final_kv_cache_bytes, 1)),
+        "resident_bytes": int(resident_byte_summary["resident_bytes"]),
+        "kv_resident_bytes": int(resident_byte_summary["kv_resident_bytes"]),
+        "prepared_page_cache_resident_bytes": int(resident_byte_summary["prepared_page_cache_resident_bytes"]),
+        "direct_page_resident_bytes": int(resident_byte_summary["direct_page_resident_bytes"]),
+        "tail_resident_bytes": int(resident_byte_summary["tail_resident_bytes"]),
+        "prepared_chunk_cache_budget_bytes": int(resident_byte_summary["prepared_chunk_cache_budget_bytes"]),
+        "prepared_chunk_resident_bytes": int(resident_byte_summary["prepared_chunk_resident_bytes"]),
+        "dotcache_vs_dense_kv_bytes_ratio": float(
+            resident_byte_summary["kv_resident_bytes"] / max(dense_final_kv_cache_bytes, 1)
+        ),
+        "dotcache_vs_dense_total_resident_bytes_ratio": float(
+            resident_byte_summary["resident_bytes"] / max(dense_final_kv_cache_bytes, 1)
+        ),
         "dotcache_vs_dense_decode_speedup": float(dense_decode_ms_per_step / max(decode_ms_per_step, 1e-8))
         if decode_ms_per_step > 0.0
         else 0.0,
@@ -1276,6 +1290,7 @@ def run_llama_generation_harness(
                 "step_count": int(step_count),
                 "host_to_device_bytes_total": int(decode_trace.host_to_device_bytes),
                 "host_to_device_bytes_per_step": float(decode_trace.host_to_device_bytes / max(step_count, 1)),
+                **decode_trace.to_dict(),
                 **dotcache_cuda_stats,
             },
         }

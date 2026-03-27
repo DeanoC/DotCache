@@ -37,6 +37,9 @@ class DotCacheConfig:
     m1_fallback_to_m0: bool = True
     m1_error_threshold: float = 0.35
     m1_token_p95_error_threshold: float = 1000000.0
+    prepared_chunk_cache_budget_ratio: float = 0.5
+    prepared_chunk_cache_min_bytes: int = 1 * 1024 * 1024
+    prepared_chunk_cache_max_bytes: int = 64 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -89,6 +92,17 @@ class DotCacheConfig:
             raise ValueError("m1_error_threshold must be positive")
         if self.m1_token_p95_error_threshold <= 0:
             raise ValueError("m1_token_p95_error_threshold must be positive")
+        if self.prepared_chunk_cache_budget_ratio < 0:
+            raise ValueError("prepared_chunk_cache_budget_ratio must be non-negative")
+        if self.prepared_chunk_cache_min_bytes < 0:
+            raise ValueError("prepared_chunk_cache_min_bytes must be non-negative")
+        if self.prepared_chunk_cache_max_bytes < 0:
+            raise ValueError("prepared_chunk_cache_max_bytes must be non-negative")
+        if (
+            self.prepared_chunk_cache_max_bytes > 0
+            and self.prepared_chunk_cache_min_bytes > self.prepared_chunk_cache_max_bytes
+        ):
+            raise ValueError("prepared_chunk_cache_min_bytes must not exceed prepared_chunk_cache_max_bytes")
 
     @property
     def num_groups(self) -> int:

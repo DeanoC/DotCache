@@ -68,6 +68,10 @@ def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     result = run_llama_generation_harness(model, adapter, input_ids=input_ids, max_new_tokens=4, profile=True)
 
     profile = result["profile"]
+    assert result["resident_bytes"] >= result["kv_resident_bytes"]
+    assert result["dotcache_vs_dense_total_resident_bytes_ratio"] >= result["dotcache_vs_dense_kv_bytes_ratio"]
+    assert result["resident_bytes"] == result["kv_resident_bytes"] + result["prepared_chunk_resident_bytes"]
+    assert result["prepared_chunk_resident_bytes"] <= result["prepared_chunk_cache_budget_bytes"]
     assert profile["device_type"] == "cpu"
     assert profile["prefill_cache_ingest"]["host_to_device_bytes"] >= 0
     assert profile["dotcache_decode"]["model_forward_ms_total"] >= 0.0

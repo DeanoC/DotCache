@@ -142,6 +142,42 @@ That profiling pass clarified the next CUDA phase:
 - The new CUDA profiler hooks now report per-layer QKV, append, decode, and output-projection timings, plus CUDA allocation and peak-memory counters, through the LLaMA harness and benchmark CLIs.
 - A follow-up optimization generalized the prepared-chunk cache to CUDA and cached stacked affine metadata there as well, but that did not materially change the exact `2048` and `4096` decode results. The next useful CUDA optimization will need to change the decode kernel structure itself rather than just remove small stacking overheads.
 
+Latest exact-length CUDA profiling checkpoint on the RTX 5090 32 GB:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | DotCache Append Runtime ms/step | Prefill Ingest ms | DotCache/Dense KV Ratio | DotCache/Dense Total Resident Ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `2048` | `56.35` | `329.23` | `281.53` | `11.88` | `546.31` | `0.22x` | `0.42x` |
+| `4096` | `19.54` | `416.66` | `383.47` | `7.97` | `807.13` | `0.19x` | `0.39x` |
+
+The synthetic grouped-64 CUDA microbenchmark on the same 5090 run is directionally consistent with that improvement:
+
+| Shape | Score Speedup | Mix Speedup | Combined Speedup | Max Abs Error |
+|---|---:|---:|---:|---:|
+| Two-group `64`-dim exact M0 path | `2.68x` | `1.82x` | `2.00x` | `7.63e-05` logits, `1.91e-06` output |
+
+That newer checkpoint changes the CUDA read in a useful way:
+
+- The stronger 5090 hardware plus the fused two-group `64`-dim path materially improve exact SmolLM2 decode latency. Relative to the earlier profiled checkpoint, DotCache decode ms/step dropped from `489.52` to `329.23` at `2048` and from `735.94` to `416.66` at `4096`.
+- The breakdown is still clean: unpack time is `0`, softmax is negligible, and score and mix dominate almost evenly. On the trimmed-cache `2048` profile they were `391.53 ms` and `380.79 ms` total; on the `4096` profile they were `549.21 ms` and `529.81 ms` total.
+- Append is no longer the interesting cost center on this path. It stayed at `11.88 ms/step` at `2048` and `7.97 ms/step` at `4096`, while decode runtime remained hundreds of milliseconds per step.
+- Prefill ingest also got materially faster on the 5090: `546.31 ms` at `2048` and `807.13 ms` at `4096`, versus `1118.28 ms` and `2262.02 ms` on the earlier RTX 2000 Ada profiling run.
+- Separating KV residency from prepared-cache overhead restores the original memory picture for exact M0 itself: the DotCache KV ratio is back at `0.22x` for `2048` and `0.19x` for `4096`.
+- Trimming the fused prepared chunk representation and avoiding a second grouped cached copy materially improves the total resident footprint. The prepared chunk cache now adds `34.60 MiB` at `2048` and `67.04 MiB` at `4096`, which brings the total resident ratio down to `0.42x` and `0.39x` respectively while keeping the fused decode path active.
+
+Latest exact-length CUDA profiling checkpoint on the RTX 5090 32 GB with an adaptive prepared-chunk budget:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | DotCache Append Runtime ms/step | Prepared Chunk Budget | Prepared Chunk Resident | DotCache/Dense Total Resident Ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `2048` | `53.49` | `350.59` | `302.67` | `10.59` | `17.50 MiB` | `17.02 MiB` | `0.32x` |
+| `4096` | `22.98` | `512.20` | `476.56` | `8.93` | `30.00 MiB` | `29.91 MiB` | `0.28x` |
+
+That adaptive-budget checkpoint is useful, but it changes the tradeoff:
+
+- The lazy synchronized budget logic fixes the earlier pathological regression from recomputing the cache limit on every per-layer append. The recorded `adaptive_chunk_budget_v2` run is the real behavior of the memory-first path.
+- At `2048`, the `0.5x`-KV chunk budget is attractive. Total resident ratio drops from `0.42x` to `0.32x`, prepared chunk residency falls from `34.60 MiB` to `17.02 MiB`, and decode still lands in the same rough band as the trimmed-cache checkpoint.
+- At `4096`, the same policy is much more clearly a memory-first trade. Total resident ratio drops further from `0.39x` to `0.28x`, but decode slows from `416.66 ms/step` to `512.20 ms/step`.
+- The right read is that this budgeted path is not a free win. It is a useful guardrail for memory-sensitive deployments, but the 5090 data says the uncapped trimmed fused cache remains the better throughput-oriented default for longer exact contexts unless we make the cache policy more workload-shaped.
+
 ### Phase 5 model-integration snapshot
 
 The first exact Llama-family integration path is now implemented in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py) on top of [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py).

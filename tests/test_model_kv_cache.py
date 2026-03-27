@@ -405,9 +405,12 @@ def test_model_paged_kv_cache_direct_prefill_pages_count_toward_resident_bytes()
     clear_prepared_chunk_cache()
     try:
         cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        resident_summary = cache.resident_byte_summary()
 
         assert cache.cache.resident_bytes == 0
         assert cache.resident_bytes == 8 * (64 + 8 + 8)
+        assert resident_summary["kv_resident_bytes"] == cache.resident_bytes
+        assert resident_summary["prepared_chunk_resident_bytes"] == 0
     finally:
         clear_prepared_chunk_cache()
 
@@ -456,6 +459,83 @@ def test_model_paged_kv_cache_static_chunk_cache_is_reused_across_decodes() -> N
     )
     assert resident_after_first_decode > resident_before_decode
     assert resident_after_third_decode == resident_after_second_decode
+
+
+def test_model_paged_kv_cache_resident_byte_summary_separates_chunk_cache() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(3101)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    queries = torch.from_numpy(rng.normal(size=(2, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        before = cache.resident_byte_summary()
+        cache.decode_layer_torch(0, queries, np.array([0, 1]))
+        after = cache.resident_byte_summary()
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert before["prepared_chunk_resident_bytes"] == 0
+    assert before["resident_bytes"] == before["kv_resident_bytes"]
+    assert after["prepared_chunk_resident_bytes"] > 0
+    assert after["prepared_chunk_resident_bytes"] <= after["prepared_chunk_cache_budget_bytes"]
+    assert after["resident_bytes"] == after["kv_resident_bytes"] + after["prepared_chunk_resident_bytes"]
+
+
+def test_model_paged_kv_cache_adaptive_chunk_budget_tracks_kv_residency() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(3102)
+    config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        prepared_chunk_cache_budget_ratio=0.25,
+        prepared_chunk_cache_min_bytes=512,
+        prepared_chunk_cache_max_bytes=4096,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(2, 16, config.head_dim)).astype(np.float32)).to(device="mps")
+    queries = torch.from_numpy(rng.normal(size=(4, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+        cache.decode_layer_torch(0, queries, np.array([0, 0, 1, 1], dtype=np.int64))
+        summary = cache.resident_byte_summary()
+    finally:
+        clear_prepared_chunk_cache()
+
+    expected_budget = min(
+        config.prepared_chunk_cache_max_bytes,
+        max(config.prepared_chunk_cache_min_bytes, int(summary["kv_resident_bytes"] * config.prepared_chunk_cache_budget_ratio)),
+    )
+    assert summary["prepared_chunk_cache_budget_bytes"] == expected_budget
+    assert summary["prepared_chunk_resident_bytes"] <= expected_budget
 
 
 def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:

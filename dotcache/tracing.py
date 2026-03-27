@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class ExecutionTrace:
+    collect_runtime_breakdown: bool = False
     m0_full_page_materializations: int = 0
     payload_bytes_read: int = 0
     metadata_bytes_read: int = 0
@@ -15,6 +16,11 @@ class ExecutionTrace:
     cache_resident_bytes: int = 0
     prepared_page_cache_evictions: int = 0
     cache_evicted_bytes: int = 0
+    score_runtime_ms_total: float = 0.0
+    mix_runtime_ms_total: float = 0.0
+    unpack_runtime_ms_total: float = 0.0
+    softmax_runtime_ms_total: float = 0.0
+    chunk_assembly_runtime_ms_total: float = 0.0
 
     def record_page_read(self, payload_bytes: int, metadata_bytes: int) -> None:
         self.payload_bytes_read += int(payload_bytes)
@@ -42,6 +48,21 @@ class ExecutionTrace:
         self.prepared_page_cache_evictions += int(count)
         self.cache_evicted_bytes += int(nbytes)
 
+    def record_score_runtime_ms(self, ms: float) -> None:
+        self.score_runtime_ms_total += float(ms)
+
+    def record_mix_runtime_ms(self, ms: float) -> None:
+        self.mix_runtime_ms_total += float(ms)
+
+    def record_unpack_runtime_ms(self, ms: float) -> None:
+        self.unpack_runtime_ms_total += float(ms)
+
+    def record_softmax_runtime_ms(self, ms: float) -> None:
+        self.softmax_runtime_ms_total += float(ms)
+
+    def record_chunk_assembly_runtime_ms(self, ms: float) -> None:
+        self.chunk_assembly_runtime_ms_total += float(ms)
+
     def merge(self, other: "ExecutionTrace") -> None:
         self.m0_full_page_materializations += other.m0_full_page_materializations
         self.payload_bytes_read += other.payload_bytes_read
@@ -53,6 +74,11 @@ class ExecutionTrace:
         self.cache_resident_bytes = max(self.cache_resident_bytes, other.cache_resident_bytes)
         self.prepared_page_cache_evictions += other.prepared_page_cache_evictions
         self.cache_evicted_bytes += other.cache_evicted_bytes
+        self.score_runtime_ms_total += other.score_runtime_ms_total
+        self.mix_runtime_ms_total += other.mix_runtime_ms_total
+        self.unpack_runtime_ms_total += other.unpack_runtime_ms_total
+        self.softmax_runtime_ms_total += other.softmax_runtime_ms_total
+        self.chunk_assembly_runtime_ms_total += other.chunk_assembly_runtime_ms_total
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -66,4 +92,9 @@ class ExecutionTrace:
             "cache_resident_bytes": self.cache_resident_bytes,
             "prepared_page_cache_evictions": self.prepared_page_cache_evictions,
             "cache_evicted_bytes": self.cache_evicted_bytes,
+            "score_runtime_ms_total": float(self.score_runtime_ms_total),
+            "mix_runtime_ms_total": float(self.mix_runtime_ms_total),
+            "unpack_runtime_ms_total": float(self.unpack_runtime_ms_total),
+            "softmax_runtime_ms_total": float(self.softmax_runtime_ms_total),
+            "chunk_assembly_runtime_ms_total": float(self.chunk_assembly_runtime_ms_total),
         }
