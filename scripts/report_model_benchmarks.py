@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any
 
 
+COMPARE_BENCHMARKS = {"llama_compare", "qwen2_compare"}
+LOSS_BENCHMARKS = {"llama_loss"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Summarize comparable Llama benchmark records across torch_mps and torch_cuda."
+        description="Summarize comparable DotCache model benchmark records across torch_mps and torch_cuda."
     )
     parser.add_argument(
         "--input",
@@ -17,7 +21,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="JSONL input. Supports benchmark history entries and raw benchmark records.",
     )
-    parser.add_argument("--benchmark", choices=["llama_compare", "llama_loss"], required=True)
+    parser.add_argument("--benchmark", choices=sorted(COMPARE_BENCHMARKS | LOSS_BENCHMARKS), required=True)
     parser.add_argument("--model-id", default=None, help="Optional exact model-id filter.")
     parser.add_argument(
         "--format",
@@ -73,11 +77,16 @@ def _normalized_record(record: dict[str, Any]) -> dict[str, Any]:
         "quant_scheme_v": "affine",
         "tokens_per_page": 256,
         "torch_dtype": "float16",
+        "status": "ok",
     }
     for key, value in defaults.items():
         if normalized.get(key) is None:
             normalized[key] = value
     return normalized
+
+
+def _is_compare_benchmark(benchmark: str) -> bool:
+    return benchmark in COMPARE_BENCHMARKS
 
 
 def _case_key(record: dict[str, Any], benchmark: str) -> tuple[Any, ...]:
@@ -87,9 +96,11 @@ def _case_key(record: dict[str, Any], benchmark: str) -> tuple[Any, ...]:
         record.get("quant_scheme_k"),
         record.get("default_mode_v"),
         record.get("quant_scheme_v"),
+        tuple(record.get("key_mode_overrides") or []),
+        tuple(record.get("value_mode_overrides") or []),
         record.get("tokens_per_page"),
     )
-    if benchmark == "llama_compare":
+    if _is_compare_benchmark(benchmark):
         return (
             benchmark,
             *common,
@@ -105,21 +116,31 @@ def _case_key(record: dict[str, Any], benchmark: str) -> tuple[Any, ...]:
 
 
 def _case_label(record: dict[str, Any], benchmark: str) -> str:
-    if benchmark == "llama_compare":
+    key_overrides = list(record.get("key_mode_overrides") or [])
+    value_overrides = list(record.get("value_mode_overrides") or [])
+    override_bits: list[str] = []
+    if key_overrides:
+        override_bits.append(f"K*={','.join(key_overrides)}")
+    if value_overrides:
+        override_bits.append(f"V*={','.join(value_overrides)}")
+    override_suffix = f" [{' ; '.join(override_bits)}]".replace(" ; ", "; ") if override_bits else ""
+    if _is_compare_benchmark(benchmark):
         return (
             f"prompt={record.get('prompt_length')} "
             f"K={record.get('default_mode_k')}/{record.get('quant_scheme_k')} "
             f"V={record.get('default_mode_v')}/{record.get('quant_scheme_v')}"
+            f"{override_suffix}"
         )
     return (
         f"seq={record.get('sequence_length')} prefix={record.get('prefix_length')} eval={record.get('eval_steps')} "
         f"K={record.get('default_mode_k')}/{record.get('quant_scheme_k')} "
         f"V={record.get('default_mode_v')}/{record.get('quant_scheme_v')}"
+        f"{override_suffix}"
     )
 
 
 def _metric(record: dict[str, Any] | None, key: str) -> float | None:
-    if record is None:
+    if record is None or record.get("status") == "error":
         return None
     value = record.get(key)
     if value is None:
@@ -134,6 +155,29 @@ def _format_number(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "-"
     return f"{value:.{digits}f}"
+
+
+def _status_label(record: dict[str, Any] | None) -> str:
+    if record is None:
+        return "-"
+    status = str(record.get("status") or "ok")
+    return "error" if status == "error" else "ok"
+
+
+def _status_note(record: dict[str, Any] | None) -> str:
+    if record is None:
+        return "-"
+    if record.get("status") == "error":
+        error_type = record.get("error_type") or "Error"
+        error_message = record.get("error_message") or "benchmark failed"
+        return f"{error_type}: {error_message}"
+    note = record.get("entry_notes")
+    if note:
+        return str(note)
+    label = record.get("entry_label")
+    if label:
+        return str(label)
+    return "-"
 
 
 def build_rows(records: list[dict[str, Any]], benchmark: str, model_id: str | None) -> list[dict[str, Any]]:
@@ -158,7 +202,7 @@ def build_rows(records: list[dict[str, Any]], benchmark: str, model_id: str | No
         assert sample is not None
         mps = case_backends.get("torch_mps")
         cuda = case_backends.get("torch_cuda")
-        if benchmark == "llama_compare":
+        if _is_compare_benchmark(benchmark):
             agreement_key = "greedy_token_agreement_rate"
             primary_key = "decode_ms_per_step"
             secondary_key = "dense_decode_ms_per_step"
@@ -178,13 +222,15 @@ def build_rows(records: list[dict[str, Any]], benchmark: str, model_id: str | No
             "mps_agreement": _metric(mps, agreement_key),
             "mps_aux": _metric(mps, aux_key),
             "mps_tertiary": _metric(mps, tertiary_key),
-            "mps_recorded_at": None if mps is None else mps.get("entry_recorded_at"),
+            "mps_status": _status_label(mps),
+            "mps_note": _status_note(mps),
             "cuda_dotcache_ms": _metric(cuda, primary_key),
             "cuda_dense_ms": _metric(cuda, secondary_key),
             "cuda_agreement": _metric(cuda, agreement_key),
             "cuda_aux": _metric(cuda, aux_key),
             "cuda_tertiary": _metric(cuda, tertiary_key),
-            "cuda_recorded_at": None if cuda is None else cuda.get("entry_recorded_at"),
+            "cuda_status": _status_label(cuda),
+            "cuda_note": _status_note(cuda),
         }
         row["cuda_vs_mps_dotcache"] = (
             None
@@ -198,7 +244,7 @@ def build_rows(records: list[dict[str, Any]], benchmark: str, model_id: str | No
 
 
 def render_markdown(rows: list[dict[str, Any]], benchmark: str) -> str:
-    if benchmark == "llama_compare":
+    if _is_compare_benchmark(benchmark):
         aux_label = "Prefill Ingest ms"
         tertiary_label = "KV Ratio"
     else:
@@ -206,8 +252,9 @@ def render_markdown(rows: list[dict[str, Any]], benchmark: str) -> str:
         tertiary_label = "Loss Delta"
     header = (
         "| Model | Case | MPS Dense | MPS DotCache | CUDA Dense | CUDA DotCache | CUDA/MPS DotCache | "
-        f"MPS {tertiary_label} | CUDA {tertiary_label} | MPS Agreement | CUDA Agreement | MPS {aux_label} | CUDA {aux_label} |\n"
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        f"MPS {tertiary_label} | CUDA {tertiary_label} | MPS Agreement | CUDA Agreement | MPS {aux_label} | CUDA {aux_label} | "
+        "MPS Status | CUDA Status | MPS Note | CUDA Note |\n"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|"
     )
     lines = [header]
     for row in rows:
@@ -228,6 +275,10 @@ def render_markdown(rows: list[dict[str, Any]], benchmark: str) -> str:
                     _format_number(row["cuda_agreement"], digits=3),
                     _format_number(row["mps_aux"]),
                     _format_number(row["cuda_aux"]),
+                    str(row["mps_status"]),
+                    str(row["cuda_status"]),
+                    str(row["mps_note"]),
+                    str(row["cuda_note"]),
                 ]
             )
             + " |"

@@ -207,6 +207,55 @@ def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
     assert float(summary["v_m1_trial_token_p95_error_max"]) > 0.0
 
 
+def test_dotcache_config_resolves_specific_mode_overrides() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        default_mode_k="M0",
+        default_mode_v="M0",
+        key_mode_overrides=("layer:0=M1", "layer:0:kv:1=M3"),
+        value_mode_overrides=("layer:0=M3",),
+    )
+
+    assert config.has_mode_overrides() is True
+    assert config.resolve_page_mode(kind="K", layer_id=0, kv_head_id=0) == "M1"
+    assert config.resolve_page_mode(kind="K", layer_id=0, kv_head_id=1) == "M3"
+    assert config.resolve_page_mode(kind="K", layer_id=1, kv_head_id=0) == "M0"
+    assert config.resolve_page_mode(kind="V", layer_id=0, kv_head_id=0) == "M3"
+    assert config.resolve_page_mode(kind="V", layer_id=1, kv_head_id=0) == "M0"
+
+
+def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head() -> None:
+    rng = np.random.default_rng(30415)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M0",
+        default_mode_v="M0",
+        key_mode_overrides=("layer:0=M1", "layer:0:kv:1=M3"),
+        quant_scheme_k="lut",
+        m1_fallback_to_m0=False,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+
+    kv0_page = cache._states[(0, 0)].session.key_pages[0]
+    kv1_page = cache._states[(0, 1)].session.key_pages[0]
+    assert kv0_page.header.mode_default == "M1"
+    assert kv1_page.header.mode_default == "M3"
+
+
 def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:
     rng = np.random.default_rng(3042)
     config = DotCacheConfig(

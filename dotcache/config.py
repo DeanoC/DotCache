@@ -4,6 +4,26 @@ from dataclasses import dataclass
 from math import ceil
 
 
+_VALID_KEY_MODES = ("M0", "M1", "M2", "M3", "T3")
+_VALID_VALUE_MODES = ("M0", "M1", "M3", "T3")
+
+
+def _parse_mode_override_spec(spec: str, *, allowed_modes: tuple[str, ...], field_name: str) -> tuple[int, int | None, str]:
+    if "=" not in spec:
+        raise ValueError(f"{field_name} entries must use layer:<id>=<mode> or layer:<id>:kv:<id>=<mode>")
+    target, mode = spec.split("=", 1)
+    mode = mode.strip()
+    if mode not in allowed_modes:
+        allowed = ", ".join(allowed_modes)
+        raise ValueError(f"{field_name} mode must be one of {allowed}")
+    parts = target.strip().split(":")
+    if len(parts) == 2 and parts[0] == "layer":
+        return int(parts[1]), None, mode
+    if len(parts) == 4 and parts[0] == "layer" and parts[2] == "kv":
+        return int(parts[1]), int(parts[3]), mode
+    raise ValueError(f"{field_name} entries must use layer:<id>=<mode> or layer:<id>:kv:<id>=<mode>")
+
+
 @dataclass(frozen=True, slots=True)
 class DotCacheConfig:
     head_dim: int
@@ -40,6 +60,8 @@ class DotCacheConfig:
     prepared_chunk_cache_budget_ratio: float = 0.5
     prepared_chunk_cache_min_bytes: int = 1 * 1024 * 1024
     prepared_chunk_cache_max_bytes: int = 64 * 1024 * 1024
+    key_mode_overrides: tuple[str, ...] = ()
+    value_mode_overrides: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -56,9 +78,9 @@ class DotCacheConfig:
             raise ValueError("payload_layout_k must be group_major or token_major")
         if self.payload_layout_v not in ("group_major", "token_major"):
             raise ValueError("payload_layout_v must be group_major or token_major")
-        if self.default_mode_k not in ("M0", "M1", "M2", "M3", "T3"):
+        if self.default_mode_k not in _VALID_KEY_MODES:
             raise ValueError("default_mode_k must be M0, M1, M2, M3, or T3")
-        if self.default_mode_v not in ("M0", "M1", "M3", "T3"):
+        if self.default_mode_v not in _VALID_VALUE_MODES:
             raise ValueError("default_mode_v must be M0, M1, M3, or T3")
         if self.quant_scheme_k not in ("affine", "symmetric", "lut", "sketch", "turbo3"):
             raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, or turbo3")
@@ -103,6 +125,10 @@ class DotCacheConfig:
             and self.prepared_chunk_cache_min_bytes > self.prepared_chunk_cache_max_bytes
         ):
             raise ValueError("prepared_chunk_cache_min_bytes must not exceed prepared_chunk_cache_max_bytes")
+        for spec in self.key_mode_overrides:
+            _parse_mode_override_spec(spec, allowed_modes=_VALID_KEY_MODES, field_name="key_mode_overrides")
+        for spec in self.value_mode_overrides:
+            _parse_mode_override_spec(spec, allowed_modes=_VALID_VALUE_MODES, field_name="value_mode_overrides")
 
     @property
     def num_groups(self) -> int:
@@ -111,3 +137,36 @@ class DotCacheConfig:
     @property
     def padded_head_dim(self) -> int:
         return self.num_groups * self.group_size
+
+    def has_mode_overrides(self, *, kind: str | None = None) -> bool:
+        if kind == "K":
+            return bool(self.key_mode_overrides)
+        if kind == "V":
+            return bool(self.value_mode_overrides)
+        return bool(self.key_mode_overrides or self.value_mode_overrides)
+
+    def resolve_page_mode(self, *, kind: str, layer_id: int, kv_head_id: int) -> str:
+        if kind == "K":
+            resolved = self.default_mode_k
+            specs = self.key_mode_overrides
+            allowed_modes = _VALID_KEY_MODES
+            field_name = "key_mode_overrides"
+        elif kind == "V":
+            resolved = self.default_mode_v
+            specs = self.value_mode_overrides
+            allowed_modes = _VALID_VALUE_MODES
+            field_name = "value_mode_overrides"
+        else:
+            raise ValueError("kind must be K or V")
+        for spec in specs:
+            override_layer_id, override_kv_head_id, override_mode = _parse_mode_override_spec(
+                spec,
+                allowed_modes=allowed_modes,
+                field_name=field_name,
+            )
+            if override_layer_id != int(layer_id):
+                continue
+            if override_kv_head_id is not None and override_kv_head_id != int(kv_head_id):
+                continue
+            resolved = override_mode
+        return resolved

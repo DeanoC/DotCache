@@ -224,6 +224,7 @@ class VllmPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start,
+                    mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
                     build_runtime_metadata=False,
                 )
                 value_page = encode_page(
@@ -233,6 +234,7 @@ class VllmPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start,
+                    mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
                     build_runtime_metadata=False,
                 )
                 self._blocks[VllmBlockKey(layer_id, kv_head_id, block_id, "K")] = VllmBlockEntry(
@@ -355,7 +357,11 @@ class VllmPagedKVCache:
             layer_id=layer_id,
             kv_head_id=kv_head_id,
             token_start=token_start,
-            mode=None if finalized else "M3",
+            mode=(
+                self.config.resolve_page_mode(kind=kind, layer_id=layer_id, kv_head_id=kv_head_id)
+                if finalized
+                else "M3"
+            ),
             build_runtime_metadata=False,
         )
         self._blocks[VllmBlockKey(layer_id, kv_head_id, block_id, kind)] = VllmBlockEntry(
@@ -471,8 +477,8 @@ class VllmPagedKVCache:
                 key_rows = np.stack(state.key_rows, axis=0).astype(np.float32, copy=False)
                 value_rows = np.stack(state.value_rows, axis=0).astype(np.float32, copy=False)
                 finalized = key_rows.shape[0] == self.block_size
-                key_mode = None if finalized else "M3"
-                value_mode = None if finalized else "M3"
+                key_mode = self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id) if finalized else "M3"
+                value_mode = self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id) if finalized else "M3"
                 key_page = encode_page(
                     key_rows,
                     self.config,

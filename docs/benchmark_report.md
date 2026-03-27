@@ -71,6 +71,67 @@ This changes the quality read in an important way:
 - Adaptive segmented `M2` is now stable after decode bucketing, but it still regresses both quality and speed on SmolLM2 versus the fixed segmented variant, so it should remain experimental.
 - That makes teacher-forced loss/perplexity the local quality metric to trust first for `M1/M2`, not greedy agreement alone.
 
+### Selective Key Precision
+
+DotCache now has a useful new capability beyond one global key mode per model:
+
+- Selective Key Precision
+- a model-specific Sensitivity Map keeps exact key pages only in fragile layers or KV groups
+- the rest of the key cache stays compressed
+
+The first validated example is Qwen2.5 3B on the 5090-era CUDA lane. The current selective policy is:
+
+- `layer:0=M3`
+- `layer:27:kv:1=M3`
+- all other K pages stay `M0`
+- all V pages stay `M0`
+
+That policy is materially more efficient than full exact-K while preserving the same greedy agreement on the recorded Qwen2.5 3B prompts.
+
+| Model | Prompt | Policy | % K exact | Agreement | Relative KV memory | Decode ms/step |
+|---|---:|---|---:|---:|---:|---:|
+| Qwen2.5-3B | `1024` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.452x` | `157.11` |
+| Qwen2.5-3B | `1024` | all `M0` (`K=M0 / V=M0`) | `0%` | `1.00` | `0.280x` | `239.82` |
+| Qwen2.5-3B | `1024` | selective | `4.17%` | `1.00` | `0.288x` | `269.45` |
+| Qwen2.5-3B | `2048` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.390x` | `186.94` |
+| Qwen2.5-3B | `2048` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.75` | `0.218x` | `292.03` |
+| Qwen2.5-3B | `2048` | selective | `4.17%` | `1.00` | `0.226x` | `281.68` |
+| Qwen2.5-3B | `4096` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.359x` | `240.47` |
+| Qwen2.5-3B | `4096` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.25` | `0.187x` | `407.81` |
+| Qwen2.5-3B | `4096` | selective | `4.17%` | `1.00` | `0.195x` | `390.58` |
+| Qwen2.5-7B | `1024` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.452x` | `184.21` |
+| Qwen2.5-7B | `1024` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.25` | `0.280x` | `263.10` |
+| Qwen2.5-7B | `1024` | selective | `4.46%` | `1.00` | `0.288x` | `285.32` |
+| Qwen2.5-7B | `2048` | exact K (`K=M3 / V=M0`) | `100%` | `1.00` | `0.390x` | `235.19` |
+| Qwen2.5-7B | `2048` | all `M0` (`K=M0 / V=M0`) | `0%` | `0.50` | `0.218x` | `342.25` |
+| Qwen2.5-7B | `2048` | selective | `4.46%` | `1.00` | `0.226x` | `342.57` |
+
+That is the result to track as this capability expands:
+
+- selective policy keeps agreement where all-`M0` fails
+- selective policy stays much closer to the `M0` KV footprint than full exact-K
+- the exact latency outcome is model- and backend-dependent, so it should be reported separately rather than assumed
+
+Recommended multi-model table shape for future selective-policy reports:
+
+| Model | Prompt | Policy | % K exact | Agreement | Relative KV memory | Decode tok/s |
+|---|---:|---|---:|---:|---:|---:|
+| Qwen2.5-3B | `2048` | exact K | `100%` | `1.00` | `1.00x` | baseline |
+| Qwen2.5-3B | `2048` | all `M0` | `0%` | lower | lowest | fastest |
+| Qwen2.5-3B | `2048` | selective | tiny % | `1.00` | near-`M0` | near-`M0` |
+| Qwen2.5-7B | `2048` | selective | tiny % | `1.00` | near-`M0` | near-`M0` |
+
+That table now has a dedicated generator:
+
+```bash
+.venv/bin/python scripts/report_compressibility_profiles.py --backend torch_cuda
+```
+
+It emits two compact views:
+
+- a per-model classification table (`tolerates all-M0`, `benefits from selective exact K`, or `needs global exact K`)
+- the underlying policy rows with `% K exact`, agreement, KV memory versus exact-K, KV memory versus dense, and decode throughput
+
 Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The most important recent improvement there was a correct vectorized `3`-bit spill-unpack path on MPS using advanced indexing rather than repeated-index `torch.gather(...)`.
 
 Latest local Turbo3 results:

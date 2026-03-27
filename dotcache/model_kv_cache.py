@@ -445,6 +445,7 @@ class _TailPageBuilder:
                     layer_id=self.layer_id,
                     kv_head_id=self.kv_head_id,
                     token_start=self.token_start,
+                    mode=self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
                 )
             )
             finalized_value_pages.append(
@@ -455,6 +456,7 @@ class _TailPageBuilder:
                     layer_id=self.layer_id,
                     kv_head_id=self.kv_head_id,
                     token_start=self.token_start,
+                    mode=self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
                 )
             )
             self.key_rows.clear()
@@ -901,6 +903,7 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
+                        mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
                         build_runtime_metadata=False,
                         build_m2_sidecar=build_key_sidecar,
                     )
@@ -913,6 +916,7 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
+                        mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
                         build_runtime_metadata=False,
                     )
                 )
@@ -922,6 +926,8 @@ class ModelPagedKVCache:
         if not self._use_persistent_torch_tail:
             return False
         if int(self.config.m2_prefilter_top_k) > 0:
+            return False
+        if self.config.has_mode_overrides():
             return False
         if self.config.default_mode_k != "M0" or self.config.default_mode_v != "M0":
             return False
@@ -1649,6 +1655,7 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
+                    mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
                     build_runtime_metadata=False,
                     build_m2_sidecar=(
                         self.config.m2_prefilter_top_k > 0
@@ -1662,6 +1669,7 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
+                    mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
                     build_runtime_metadata=False,
                 )
                 state.session.append([finalized_key_page], [finalized_value_page], trace=trace)
