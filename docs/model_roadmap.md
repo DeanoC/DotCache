@@ -79,6 +79,9 @@ The first pod-oriented HF scale-up lane should use the existing compare harnesse
 
 - public 3B wrapper: [scripts/run_qwen25_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda.sh)
 - public 7B wrapper: [scripts/run_qwen25_7b_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda.sh)
+- Qwen key-exact research wrappers:
+  - [scripts/run_qwen25_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_k_exact.sh)
+  - [scripts/run_qwen25_7b_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_k_exact.sh)
 - optional gated Llama wrapper: [scripts/run_llama32_compare_cuda.sh](/workspace/DotCache/scripts/run_llama32_compare_cuda.sh)
 
 Use the public path first:
@@ -173,6 +176,12 @@ This lane intentionally reuses the existing Qwen2 adapter rather than expanding 
 - same exact `M0/M0` default path
 - same `1024 2048 4096` prompt grid
 - same `--continue-on-error` stretch-model behavior
+
+Current 5090-era research note:
+
+- Qwen2.5 3B on CUDA is materially more stable with `K=M3 / V=M0` than with default `M0/M0`.
+- At `2048` tokens, the key-exact lane restored greedy agreement to `1.0` in local pod validation.
+- Treat this as a research lane for Qwen sensitivity, not as the default benchmark contract.
 
 ## GGUF Reference Lane
 
