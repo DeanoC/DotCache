@@ -286,7 +286,7 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
             pages[0].unpack_shifts,
             pages[0].unpack_mask,
             header.group_size,
-        ).reshape(len(pages), header.token_count, header.group_size)
+        ).reshape(len(pages), header.token_count, header.group_size).to(dtype=torch.float16)
         for group_index in range(header.num_groups)
     )
     scales_groups = tuple(
@@ -839,15 +839,16 @@ def prepare_m0_affine_pages_from_tensor_torch(
     qmax = float((1 << int(bits)) - 1)
     eps = 1e-8
 
-    values_f32 = values.to(dtype=torch.float32, device=device_type)
+    values_device = values.to(device=device_type)
+    work_dtype = values_device.dtype if values_device.dtype in (torch.float16, torch.bfloat16, torch.float32) else torch.float32
+    values_work = values_device.to(dtype=work_dtype)
     if padded_head_dim > int(config.head_dim):
-        padded = torch.nn.functional.pad(values_f32, (0, padded_head_dim - int(config.head_dim)))
+        padded = torch.nn.functional.pad(values_work, (0, padded_head_dim - int(config.head_dim)))
     else:
-        padded = values_f32
+        padded = values_work
     grouped = padded.reshape(page_count, token_count, num_groups, group_size)
-    x_min = grouped.amin(dim=-1)
-    x_max = grouped.amax(dim=-1)
-    scales = torch.clamp((x_max - x_min) / max(qmax, 1.0), min=eps)
+    x_min, x_max = torch.aminmax(grouped, dim=-1)
+    scales = torch.clamp(((x_max - x_min).to(dtype=torch.float32) / max(qmax, 1.0)), min=eps).to(dtype=grouped.dtype)
     shifted = (grouped - x_min.unsqueeze(-1)) / scales.unsqueeze(-1)
     codes = torch.clamp(torch.round(shifted), 0.0, qmax).to(dtype=torch.int32)
     payload = _torch_pack_codes(codes, bits=int(bits), layout=layout)
