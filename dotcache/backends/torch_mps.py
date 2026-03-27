@@ -1246,7 +1246,7 @@ def _mix_page_chunk_grouped_multiquery_torch(
             group = _lookup_lut_group_torch(
                 torch.stack(
                     [
-                        torch.stack([page.codebooks[:, group_index, :] for page in group_pages], dim=0)
+                        torch.stack([page.codebooks[group_index] for page in group_pages], dim=0)
                         for group_pages in pages_by_group
                     ],
                     dim=0,
