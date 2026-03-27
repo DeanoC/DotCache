@@ -99,6 +99,18 @@ To batch that validated search across the current public CUDA model set and emit
 
 That batch report validates `all M0`, validates the top selective candidates, and emits a compact per-model row with the chosen policy, exact-K fraction, KV-memory ratio, and decode throughput.
 
+For a narrow high-context CUDA slice that fits this pod cleanly, use:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True .venv/bin/python scripts/build_compressibility_map.py \
+  --spec 'qwen2|Qwen/Qwen2.5-3B-Instruct|4096' \
+  --spec 'llama|HuggingFaceTB/SmolLM2-360M-Instruct|4096' \
+  --backend torch_cuda \
+  --device cuda
+```
+
+That is the current practical route to a `4096` public-model data point here: Qwen2.5 3B selective plus a SmolLM2 360M tolerant reference.
+
 And summarize recorded benchmark history with:
 
 ```bash
