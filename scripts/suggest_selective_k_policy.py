@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import subprocess
 from typing import Any
 
 from probe_attention_score_fidelity import (
@@ -43,6 +44,24 @@ def parse_args() -> argparse.Namespace:
         help="Recommend the smallest selective policy whose composite recovery is within this fraction of the best selective policy.",
     )
     parser.add_argument("--top-policies", type=int, default=8)
+    parser.add_argument(
+        "--validate-top-policies",
+        type=int,
+        default=0,
+        help="Optionally run end-to-end compare benchmarks for the top-N selective candidates.",
+    )
+    parser.add_argument(
+        "--validation-max-new-tokens",
+        type=int,
+        default=4,
+        help="Greedy decode length used by optional end-to-end candidate validation.",
+    )
+    parser.add_argument(
+        "--validation-agreement-threshold",
+        type=float,
+        default=0.99,
+        help="Agreement threshold for considering a validated policy successful.",
+    )
     parser.add_argument("--format", choices=["json", "markdown"], default="markdown")
     return parser.parse_args()
 
@@ -153,12 +172,12 @@ def _candidate_rows(
     )
 
 
-def _benchmark_command(
+def _benchmark_command_args(
     args: argparse.Namespace,
     *,
     label: str,
     targets: tuple[tuple[int, int | None], ...],
-) -> str:
+) -> list[str]:
     script_name = "bench_llama_compare.py" if args.family == "llama" else "bench_qwen2_compare.py"
     command = [
         ".venv/bin/python",
@@ -169,6 +188,10 @@ def _benchmark_command(
         args.backend,
         "--target-prompt-lengths",
         str(args.prompt_length),
+        "--max-new-tokens",
+        str(args.validation_max_new_tokens),
+        "--repeat-counts",
+        "--continue-on-error",
     ]
     if args.device is not None:
         command.extend(["--device", args.device])
@@ -177,7 +200,96 @@ def _benchmark_command(
     else:
         command.extend(["--default-mode-k", "M0", "--default-mode-v", "M0"])
         command.extend(_override_flags(targets))
-    return " ".join(command)
+    return command
+
+
+def _benchmark_command(
+    args: argparse.Namespace,
+    *,
+    label: str,
+    targets: tuple[tuple[int, int | None], ...],
+) -> str:
+    return " ".join(_benchmark_command_args(args, label=label, targets=targets))
+
+
+def _parse_json_records(text: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def _policy_target_count(policy: dict[str, Any]) -> int:
+    return len(tuple(policy.get("targets") or ()))
+
+
+def _matching_validation_record(records: list[dict[str, Any]], *, prompt_length: int) -> dict[str, Any] | None:
+    for record in records:
+        if int(record.get("prompt_length") or -1) != int(prompt_length):
+            continue
+        prompt_mode = record.get("prompt_mode")
+        if prompt_mode not in {None, "exact_length"}:
+            continue
+        return record
+    return None
+
+
+def _validate_candidate_policy(
+    args: argparse.Namespace,
+    *,
+    label: str,
+    targets: tuple[tuple[int, int | None], ...],
+) -> dict[str, Any]:
+    command = _benchmark_command_args(args, label=label, targets=targets)
+    completed = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    records = _parse_json_records(completed.stdout)
+    record = _matching_validation_record(records, prompt_length=args.prompt_length)
+    validation: dict[str, Any] = {
+        "label": label,
+        "targets": [
+            {"layer_id": int(layer_id), "kv_head_id": None if kv_head_id is None else int(kv_head_id)}
+            for layer_id, kv_head_id in targets
+        ],
+        "command": " ".join(command),
+        "returncode": int(completed.returncode),
+        "record_found": record is not None,
+    }
+    if record is None:
+        validation.update(
+            {
+                "status": "error",
+                "agreement": None,
+                "decode_ms_per_step": None,
+                "error_type": "MissingRecord",
+                "error_message": "benchmark output did not contain an exact-length prompt record",
+            }
+        )
+        return validation
+    status = str(record.get("status") or "ok")
+    validation.update(
+        {
+            "status": status,
+            "agreement": None if status == "error" else float(record.get("greedy_token_agreement_rate") or 0.0),
+            "decode_ms_per_step": None if status == "error" else float(record.get("decode_ms_per_step") or 0.0),
+            "error_type": record.get("error_type"),
+            "error_message": record.get("error_message"),
+        }
+    )
+    return validation
 
 
 def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
@@ -353,6 +465,72 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
     elif recommended is None and selective_policies:
         recommended = selective_policies[0]
 
+    validated_policies: list[dict[str, Any]] = []
+    validated_recommended = None
+    if args.validate_top_policies > 0:
+        selective_candidates = [
+            policy
+            for policy in enriched_policies
+            if policy["label"] not in {"all_m0", "exact_k"}
+        ]
+        selected: list[dict[str, Any]] = selective_candidates[: args.validate_top_policies]
+        extras: list[dict[str, Any]] = []
+        whole_layer_candidates = [
+            policy
+            for policy in selective_candidates
+            if all(kv_head_id is None for _, kv_head_id in policy["targets"])
+        ]
+        if whole_layer_candidates:
+            extras.append(
+                min(
+                    whole_layer_candidates,
+                    key=lambda policy: (
+                        float(policy["estimated_k_exact_fraction"]),
+                        _policy_target_count(policy),
+                        -float(policy["recovery"]["composite_recovery"]),
+                    ),
+                )
+            )
+        if selective_candidates:
+            extras.append(
+                min(
+                    selective_candidates,
+                    key=lambda policy: (
+                        float(policy["estimated_k_exact_fraction"]),
+                        _policy_target_count(policy),
+                        -float(policy["recovery"]["composite_recovery"]),
+                    ),
+                )
+            )
+        seen_labels: set[str] = set()
+        policies_to_validate: list[dict[str, Any]] = []
+        for policy in selected + extras:
+            label = str(policy["label"])
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
+            policies_to_validate.append(policy)
+        for policy in policies_to_validate:
+            validation = _validate_candidate_policy(args, label=policy["label"], targets=policy["targets"])
+            policy_copy = dict(policy)
+            policy_copy["validation"] = validation
+            validated_policies.append(policy_copy)
+        successful = [
+            policy
+            for policy in validated_policies
+            if policy["validation"]["status"] != "error"
+            and float(policy["validation"]["agreement"] or 0.0) >= float(args.validation_agreement_threshold)
+        ]
+        if successful:
+            validated_recommended = min(
+                successful,
+                key=lambda policy: (
+                    float(policy["estimated_k_exact_fraction"]),
+                    float(policy["validation"]["decode_ms_per_step"] or float("inf")),
+                    -float(policy["recovery"]["composite_recovery"]),
+                ),
+            )
+
     return {
         "family": args.family,
         "model_id": args.model_id,
@@ -366,10 +544,13 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
         "exact_summary": exact,
         "best_selective_policy": best_selective,
         "recommended_policy": recommended,
+        "validated_candidate_policies": validated_policies,
+        "validated_recommended_policy": validated_recommended,
         "candidate_policies": enriched_policies[: max(args.top_policies, 0)],
         "hot_layers_considered": hot_layers,
         "target_recovery": args.target_recovery,
         "budget_recovery_margin": args.budget_recovery_margin,
+        "validation_agreement_threshold": args.validation_agreement_threshold,
     }
 
 
@@ -413,6 +594,45 @@ def render_markdown(result: dict[str, Any]) -> str:
                 f"- KL recovery: `{recommended['recovery']['kl_recovery']:.3f}`",
                 f"- Summary: top1 `{recommended['summary']['score_top1_match_rate']:.6f}`, top8 `{recommended['summary']['score_topk_overlap_mean']:.6f}`, rank `{recommended['summary']['score_rank_corr_mean']:.6f}`, KL `{recommended['summary']['attn_kl_mean']:.6f}`",
                 f"- Benchmark command: `{recommended['benchmark_command']}`",
+            ]
+        )
+    if result.get("validated_candidate_policies"):
+        lines.extend(
+            [
+                "",
+                "## Validated Candidates",
+                "| Policy | % K Exact | Agreement | Decode ms/step | Status |",
+                "|---|---:|---:|---:|---|",
+            ]
+        )
+        for policy in result["validated_candidate_policies"]:
+            validation = policy["validation"]
+            agreement = validation["agreement"]
+            decode_ms = validation["decode_ms_per_step"]
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(policy["label"]),
+                        f"{policy['estimated_k_exact_fraction'] * 100:.2f}%",
+                        "-" if agreement is None else f"{float(agreement):.3f}",
+                        "-" if decode_ms is None else f"{float(decode_ms):.2f}",
+                        str(validation["status"]),
+                    ]
+                )
+                + " |"
+            )
+    validated_recommended = result.get("validated_recommended_policy")
+    if validated_recommended is not None:
+        lines.extend(
+            [
+                "",
+                "## Validated Recommendation",
+                f"- Overrides: `{validated_recommended['label']}`",
+                f"- Estimated exact K fraction: `{validated_recommended['estimated_k_exact_fraction'] * 100:.2f}%`",
+                f"- Agreement: `{validated_recommended['validation']['agreement']:.3f}`",
+                f"- Decode ms/step: `{validated_recommended['validation']['decode_ms_per_step']:.2f}`",
+                f"- Benchmark command: `{validated_recommended['validation']['command']}`",
             ]
         )
     lines.extend(
