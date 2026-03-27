@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import itertools
 import json
 import subprocess
@@ -64,6 +65,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--format", choices=["json", "markdown"], default="markdown")
     return parser.parse_args()
+
+
+def _cleanup_accelerator_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        try:
+            torch.mps.empty_cache()
+        except RuntimeError:
+            pass
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
@@ -315,6 +331,7 @@ def _validate_candidate_policy(
 
 
 def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
+    _cleanup_accelerator_memory()
     probe_args = argparse.Namespace(
         family=args.family,
         model_id=args.model_id,
@@ -490,6 +507,14 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
     validated_policies: list[dict[str, Any]] = []
     validated_recommended = None
     if args.validate_top_policies > 0:
+        # The offline probe can retain large CUDA tensors. Release them before
+        # spawning end-to-end validation benchmarks so large models like Qwen 7B
+        # do not OOM in the child process due to parent-held GPU state.
+        del result
+        del rows_by_variant
+        del d5_rows
+        del d6_rows
+        _cleanup_accelerator_memory()
         selective_candidates = [
             policy
             for policy in enriched_policies
@@ -552,6 +577,7 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
                     -float(policy["recovery"]["composite_recovery"]),
                 ),
             )
+        _cleanup_accelerator_memory()
 
     return {
         "family": args.family,

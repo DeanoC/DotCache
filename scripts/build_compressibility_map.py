@@ -222,6 +222,20 @@ def _synthetic_policy(case_args: argparse.Namespace, *, label: str, exact_fracti
     }
 
 
+def _preferred_command(selected_policy: dict[str, Any] | None, selected_validation: dict[str, Any] | None) -> str | None:
+    policy_command = None if selected_policy is None else selected_policy.get("benchmark_command")
+    validation_command = None if selected_validation is None else selected_validation.get("command")
+    validation_label = None if selected_validation is None else selected_validation.get("label")
+    policy_label = None if selected_policy is None else selected_policy.get("label")
+    if policy_command and policy_label is not None and policy_label != validation_label:
+        return str(policy_command)
+    if validation_command:
+        return str(validation_command)
+    if policy_command:
+        return str(policy_command)
+    return None
+
+
 def build_compressibility_map(args: argparse.Namespace) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     case_results: list[dict[str, Any]] = []
@@ -294,16 +308,7 @@ def build_compressibility_map(args: argparse.Namespace) -> dict[str, Any]:
                     None if selected_validation is None else selected_validation.get("decode_ms_per_step")
                 ),
                 "status": None if selected_validation is None else selected_validation.get("status"),
-                "recommended_command": (
-                    None
-                    if selected_validation is None and selected_policy is None
-                    else (
-                        None
-                        if selected_validation is None
-                        else selected_validation.get("command")
-                    )
-                    or (None if selected_policy is None else selected_policy.get("benchmark_command"))
-                ),
+                "recommended_command": _preferred_command(selected_policy, selected_validation),
                 "error_type": None,
                 "error_message": None,
             }
