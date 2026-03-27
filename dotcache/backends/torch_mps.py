@@ -20,6 +20,7 @@ _SPILL_UNPACK_METADATA: dict[tuple[TorchDevice, int, int], tuple[Any, Any, Any, 
 _TURBO3_CENTROID_TENSORS: dict[TorchDevice, Any] = {}
 _FWHT_MATRICES: dict[tuple[TorchDevice, int], Any] = {}
 _MAX_PREPARE_PAGES_PER_CHUNK = 128
+_MPS_M0_KEY_PREPARE_PAGES_PER_CHUNK = 256
 _MAX_PREPARED_CHUNK_CACHE_ENTRIES = 64
 _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 64 * 1024 * 1024
 _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT = 4
@@ -182,6 +183,13 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
     )
 
 
+def _max_prepare_pages_for_source_page(page: EncodedPage | PreparedPageTorch, *, device_type: TorchDevice) -> int:
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+    if device_type == "mps" and source_page.header.mode_default == "M0" and source_page.header.kind == "K":
+        return _MPS_M0_KEY_PREPARE_PAGES_PER_CHUNK
+    return _MAX_PREPARE_PAGES_PER_CHUNK
+
+
 def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
     header = page.header
     sketch_dim = int(page.m2_sketch.shape[-1]) if page.m2_sketch is not None else 0
@@ -208,21 +216,26 @@ def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
 
 def _chunk_compatible_source_pages(
     pages: Sequence[EncodedPage | PreparedPageTorch],
+    *,
+    device_type: TorchDevice,
 ) -> list[list[EncodedPage | PreparedPageTorch]]:
     chunks: list[list[EncodedPage | PreparedPageTorch]] = []
     current_chunk: list[EncodedPage | PreparedPageTorch] = []
     current_signature: tuple[int | str, ...] | None = None
+    current_limit = _MAX_PREPARE_PAGES_PER_CHUNK
     for page in pages:
         signature = _prepare_signature(page)
         if current_chunk and (
-            signature != current_signature or len(current_chunk) >= _MAX_PREPARE_PAGES_PER_CHUNK
+            signature != current_signature or len(current_chunk) >= current_limit
         ):
             chunks.append(current_chunk)
             current_chunk = [page]
             current_signature = signature
+            current_limit = _max_prepare_pages_for_source_page(page, device_type=device_type)
             continue
         if not current_chunk:
             current_signature = signature
+            current_limit = _max_prepare_pages_for_source_page(page, device_type=device_type)
         current_chunk.append(page)
     if current_chunk:
         chunks.append(current_chunk)
@@ -846,7 +859,7 @@ def prepare_pages_torch(
     if not torch_device_available(device_type):
         raise RuntimeError(f"{backend_name} is unavailable on this machine")
     prepared_pages: list[PreparedPageTorch] = []
-    for page_chunk in _chunk_compatible_source_pages(pages):
+    for page_chunk in _chunk_compatible_source_pages(pages, device_type=device_type):
         if all(isinstance(page, PreparedPageTorch) and page.device_type == device_type for page in page_chunk):
             prepared_pages.extend(page_chunk)  # type: ignore[arg-type]
             continue
