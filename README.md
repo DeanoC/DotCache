@@ -96,6 +96,7 @@ bash scripts/run_turbo3_mps_suite.sh smollm2
 
 ```bash
 bash scripts/run_llama32_compare.sh
+bash scripts/run_qwen25_compare.sh
 ```
 
 9. External GGUF / llama.cpp reference lane:
@@ -197,6 +198,14 @@ That wrapper targets `meta-llama/Llama-3.2-3B-Instruct` with exact prompt length
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
 ```
+
+For the first non-Llama native-weight target on the same HF path, use Qwen2.5 3B:
+
+```bash
+bash scripts/run_qwen25_compare.sh
+```
+
+That wrapper targets `Qwen/Qwen2.5-3B-Instruct` through the new Qwen2-specific attention adapter in [qwen2.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen2.py), but reuses the same replay/generation/loss harness shape as the existing Llama path. It is treated as a stretch-model lane on this Mac and defaults to exact prompt lengths `1024 2048` with `--continue-on-error`.
 
 For the external GGUF / `llama.cpp` reference lane, use:
 
