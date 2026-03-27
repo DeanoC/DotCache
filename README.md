@@ -106,6 +106,13 @@ bash scripts/run_llama32_gguf_reference.sh
 bash scripts/run_qwen25_gguf_reference.sh
 ```
 
+10. Optional mounted-HF fetch lane via `hf-mount`:
+
+```bash
+bash scripts/run_llama32_compare_mounted.sh
+bash scripts/run_qwen25_compare_mounted.sh
+```
+
 ## Current package layout
 
 ```text
@@ -225,6 +232,26 @@ The same reference lanes are also exposed through the shared model matrix:
 
 ```bash
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
+```
+
+If you want to avoid fully downloading large HF repos first, there is now an optional `hf-mount` lane:
+
+```bash
+bash scripts/run_llama32_compare_mounted.sh
+bash scripts/run_qwen25_compare_mounted.sh
+```
+
+Those wrappers call [bench_hf_mount_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_hf_mount_compare.py), which:
+
+- probes `hf-mount`
+- mounts the target HF repo as a local filesystem
+- runs the existing HF compare harness against the mounted path
+- stops the mount afterward unless you ask to keep it
+
+You can also ask the shared matrix to emit mounted-HF commands instead of direct Hub loads:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf qwen25_3b_hf --mount-hf-models --output-format pretty
 ```
 
 ## Phase 6 vLLM Integration
