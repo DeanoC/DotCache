@@ -210,3 +210,51 @@ def test_report_llama_benchmarks_normalizes_missing_default_modes(tmp_path: Path
     assert len(lines) == 1
     assert "254.40" in lines[0]
     assert "132.15" in lines[0]
+
+
+def test_report_llama_benchmarks_skips_nul_padded_corrupt_lines(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.jsonl"
+    history_path.write_bytes(
+        (
+            json.dumps(
+                {
+                    "recorded_at": "2026-03-27T01:00:00+00:00",
+                    "records": [
+                        {
+                            "benchmark": "llama_compare",
+                            "backend": "torch_cuda",
+                            "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                            "prompt_length": 1024,
+                            "dense_decode_ms_per_step": 21.14,
+                            "decode_ms_per_step": 487.26,
+                            "dotcache_vs_dense_kv_bytes_ratio": 0.187,
+                            "greedy_token_agreement_rate": 1.0,
+                            "prefill_cache_ingest_ms": 270.0,
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+            + b"\n"
+            + (b"\x00" * 128)
+            + b"\n"
+        )
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/report_llama_benchmarks.py",
+            "--input",
+            str(history_path),
+            "--benchmark",
+            "llama_compare",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+
+    stdout = completed.stdout
+    assert "TinyLlama/TinyLlama-1.1B-Chat-v1.0" in stdout
+    assert "487.26" in stdout

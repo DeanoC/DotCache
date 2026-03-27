@@ -33,11 +33,14 @@ def _load_jsonl_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"input file not found: {path}")
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.strip()
+    for raw_line in path.read_bytes().splitlines():
+        stripped = raw_line.decode("utf-8", errors="ignore").replace("\x00", "").strip()
         if not stripped:
             continue
-        payload = json.loads(stripped)
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
         if not isinstance(payload, dict):
             continue
         meta = {
