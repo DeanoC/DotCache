@@ -67,6 +67,7 @@ Canonical 5090-era Qwen CUDA labels:
 ```bash
 .venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda -- bash scripts/run_qwen25_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
 .venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-k-exact -- bash scripts/run_qwen25_compare_cuda.sh
+.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-selective -- bash scripts/run_qwen25_compare_cuda_selective.sh
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda -- bash scripts/run_qwen25_7b_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-k-exact -- bash scripts/run_qwen25_7b_compare_cuda.sh
 ```
@@ -89,6 +90,7 @@ Use the unlabeled wrapper defaults for the recommended path. Add the explicit `-
 The first pod-oriented HF scale-up lane should use the existing compare harnesses on `torch_cuda`:
 
 - public 3B wrapper: [scripts/run_qwen25_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda.sh)
+- selective 3B wrapper: [scripts/run_qwen25_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_selective.sh)
 - public 7B wrapper: [scripts/run_qwen25_7b_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda.sh)
 - Qwen key-exact research wrappers:
   - [scripts/run_qwen25_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_k_exact.sh)
@@ -195,6 +197,39 @@ Current 5090-era research note:
 - Qwen2.5 3B on CUDA is materially more stable with `K=M3 / V=M0` than with default `M0/M0`.
 - Qwen2.5 7B on CUDA shows the same pattern at `1024/2048`.
 - The repo now treats `K=M3 / V=M0` as the recommended Qwen CUDA default, while keeping `M0/M0` as the baseline comparison lane.
+
+## Selective Key Precision
+
+DotCache now has the beginnings of a more general capability than “pick one global key mode for the whole model”:
+
+- Selective Key Precision
+- a model-specific Sensitivity Map can keep exact key pages only in fragile layers or KV groups
+- the rest of the key cache can stay on `M0`
+- value pages can remain compressed independently
+
+The first validated case is Qwen2.5 3B on CUDA. Offline score probes and live benchmark runs both point to:
+
+- broad early fragility at `layer 0`
+- a narrower late hotspot at `layer 27`, mostly `KV1`
+
+That gives a first practical selective policy:
+
+- `layer:0=M3`
+- `layer:27:kv:1=M3`
+- all other K pages stay `M0`
+- V stays `M0`
+
+The current selective wrapper is:
+
+```bash
+bash scripts/run_qwen25_compare_cuda_selective.sh
+```
+
+This should be treated as a reusable capability, not just a Qwen quirk. The next roadmap step is to build sensitivity maps for other models and check whether:
+
+- some models want whole-layer exact K
+- some want only specific KV groups
+- some still need full `K=M3`
 
 ## GGUF Reference Lane
 
