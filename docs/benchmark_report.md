@@ -140,6 +140,40 @@ For a fresh validated map across the current public CUDA model set, use:
 
 That runner executes the policy suggester per model, validates `all M0`, validates the top selective candidates, validates exact-K for the KV-memory baseline, and emits one compact table you can reuse as the public compressibility-map artifact.
 
+### Validated `4096` slice
+
+The first practical high-prompt-length CUDA slice on this pod is a narrow `4096` map rather than the full public preset. The useful pair is:
+
+- `Qwen/Qwen2.5-3B-Instruct` as the higher-sensitivity real-model case
+- `HuggingFaceTB/SmolLM2-360M-Instruct` as the tolerant reference case
+
+Run it with:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True .venv/bin/python scripts/build_compressibility_map.py \
+  --spec 'qwen2|Qwen/Qwen2.5-3B-Instruct|4096' \
+  --spec 'llama|HuggingFaceTB/SmolLM2-360M-Instruct|4096' \
+  --backend torch_cuda \
+  --device cuda
+```
+
+Latest validated `4096` map:
+
+| Model | Prompt | Classification | Baseline M0 | Policy | % K exact | KV vs Exact-K | KV vs Dense | Decode tok/s |
+|---|---:|---|---:|---|---:|---:|---:|---:|
+| Qwen2.5-3B | `4096` | benefits from selective exact K | `0.25` | `layer:0=M3` | `2.78%` | `0.535x` | `0.192x` | `2.62` |
+| SmolLM2-360M | `4096` | tolerates all-M0 | `1.00` | all `M0` | `0.00%` | `0.522x` | `0.187x` | `2.19` |
+
+And the directly recorded Qwen2.5-3B selective benchmark at `4096` remains useful as the fuller policy reference:
+
+- policy: `layer:0=M3`, `layer:27:kv:1=M3`
+- greedy agreement: `1.00`
+- `% K exact`: `4.17%`
+- KV vs dense: `0.195x`
+- decode: `376.21 ms/step`
+
+That is the current route to a high-context data point on this pod: use Qwen2.5-3B selective at `4096`, not Qwen2.5-7B, which still does not have a stable `4096` path here.
+
 Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The most important recent improvement there was a correct vectorized `3`-bit spill-unpack path on MPS using advanced indexing rather than repeated-index `torch.gather(...)`.
 
 Latest local Turbo3 results:
