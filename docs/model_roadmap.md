@@ -47,6 +47,12 @@ The matrix now also emits runnable external GGUF reference commands for `llama.c
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
 ```
 
+And it can emit optional mounted-HF commands for large native-weight repos:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf qwen25_3b_hf --mount-hf-models --output-format pretty
+```
+
 ## Current Local Read
 
 - This Mac already has working local lanes for:
@@ -79,6 +85,22 @@ Or through the shared matrix:
 ```
 
 The matrix now passes `--continue-on-error` through to runnable compare harnesses by default so stretch-model lanes can be exercised without treating a single OOM or gated-model failure as a framework bug.
+
+## Optional hf-mount Lane
+
+For large Hub repos where disk/download friction is the problem, there is now an optional `hf-mount` scaffold:
+
+- runner: [benchmarks/bench_hf_mount_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_hf_mount_compare.py)
+- wrappers:
+  - [scripts/run_llama32_compare_mounted.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_llama32_compare_mounted.sh)
+  - [scripts/run_qwen25_compare_mounted.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen25_compare_mounted.sh)
+
+This lane is intentionally about fetch ergonomics, not runtime magic:
+
+- it mounts a Hub repo as a local filesystem with `hf-mount`
+- it runs the normal HF compare harness against the mounted path
+- it helps when full repo download size is the main annoyance
+- it does not change the real RAM / VRAM / decode-time limits of the model itself
 
 ## First Non-Llama Native-Weight Lane
 

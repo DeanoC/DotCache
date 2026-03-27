@@ -764,3 +764,22 @@ For the max practical SmolLM2 point, refresh `2048` on its own so the result is 
 ```
 
 If we want, we can later add a small exporter that turns `history.jsonl` into CSV for spreadsheets.
+
+## Qwen2.5 3B Local Read
+
+Qwen2.5 3B is now confirmed runnable on this M4 through the native HF path, but it is clearly a stretch-model lane rather than a comfortable local development target.
+
+- Exact `256` prompt tokens:
+  - dense decode `1658.82 ms/step`
+  - DotCache decode `7386.23 ms/step`
+  - DotCache KV ratio `0.68x`
+- Exact `512` prompt tokens:
+  - dense decode `1073.71 ms/step`
+  - DotCache decode `7156.34 ms/step`
+  - DotCache KV ratio `0.44x`
+- Exact `1024` prompt tokens:
+  - dense decode `74658.40 ms/step`
+  - DotCache decode `9637.94 ms/step`
+  - DotCache KV ratio `1.71x`
+
+The `1024` dense point is clearly noisy and should not be treated as a clean crossover claim. The trustworthy takeaway is simpler: this Mac can host and run Qwen2.5 3B for smoke tests and frontier checks up to at least exact `1024` prompt tokens, but it is near the limit of what is useful for sustained 3B-class optimization work.

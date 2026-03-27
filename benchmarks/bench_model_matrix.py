@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--prompt-lengths", type=int, nargs="*", default=[])
     parser.add_argument(
+        "--mount-hf-models",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use hf-mount-backed compare commands for HF model lanes instead of direct Hub loads.",
+    )
+    parser.add_argument(
         "--continue-on-error",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -47,9 +53,34 @@ def _default_compare_command(
     tokens_per_page: int,
     max_new_tokens: int,
     prompt_lengths: tuple[int, ...],
+    mount_hf_models: bool,
     continue_on_error: bool,
 ) -> list[str] | None:
     root = Path(__file__).resolve().parent.parent
+    if spec.benchmark_harness in {"llama_compare", "qwen2_compare"} and spec.dotcache_ready and mount_hf_models:
+        command = [
+            str(root / ".venv" / "bin" / "python"),
+            str(root / "benchmarks" / "bench_hf_mount_compare.py"),
+            "--repo-id",
+            spec.model_id,
+            "--benchmark-kind",
+            spec.benchmark_harness,
+            "--backend",
+            backend,
+            "--torch-dtype",
+            torch_dtype,
+            "--tokens-per-page",
+            str(tokens_per_page),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            "--target-prompt-lengths",
+            *[str(length) for length in prompt_lengths],
+        ]
+        if continue_on_error:
+            command.append("--continue-on-error")
+        if device is not None:
+            command.extend(["--device", device])
+        return command
     if spec.benchmark_harness in {"llama_compare", "qwen2_compare"} and spec.dotcache_ready:
         benchmark_script = "bench_llama_compare.py" if spec.benchmark_harness == "llama_compare" else "bench_qwen2_compare.py"
         command = [
@@ -101,6 +132,7 @@ def _matrix_record(
     tokens_per_page: int,
     max_new_tokens: int,
     prompt_lengths_override: list[int],
+    mount_hf_models: bool,
     continue_on_error: bool,
 ) -> dict[str, object]:
     prompt_lengths = tuple(prompt_lengths_override) if prompt_lengths_override else spec.prompt_lengths
@@ -112,6 +144,7 @@ def _matrix_record(
         tokens_per_page=tokens_per_page,
         max_new_tokens=max_new_tokens,
         prompt_lengths=prompt_lengths,
+        mount_hf_models=mount_hf_models,
         continue_on_error=continue_on_error,
     )
     return {
@@ -122,6 +155,7 @@ def _matrix_record(
         "torch_dtype": torch_dtype,
         "tokens_per_page": tokens_per_page,
         "max_new_tokens": max_new_tokens,
+        "mount_hf_models": mount_hf_models,
         "continue_on_error": continue_on_error,
         "command": command,
         "status": "runnable" if command is not None else "scaffold_only",
@@ -152,6 +186,7 @@ def main() -> None:
             tokens_per_page=args.tokens_per_page,
             max_new_tokens=args.max_new_tokens,
             prompt_lengths_override=args.prompt_lengths,
+            mount_hf_models=args.mount_hf_models,
             continue_on_error=args.continue_on_error,
         )
         _print_record(record, output_format=args.output_format)

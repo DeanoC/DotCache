@@ -203,6 +203,14 @@ These runs confirm the shared torch accelerator path is correct and scales clean
 | `2048` | `51.64` | `436.20` | Dense faster |
 | `4096` | `38.95` | `655.83` | Dense faster |
 
+#### Qwen2.5 3B on MPS
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | KV Ratio | Read |
+|---|---:|---:|---:|---|
+| `256` | `1658.82` | `7386.23` | `0.68x` | Runs, but slow |
+| `512` | `1073.71` | `7156.34` | `0.44x` | Runs, still very slow |
+| `1024` | `74658.40` | `9637.94` | `1.71x` | Completes, but the dense baseline is noisy; do not treat this as a trusted crossover |
+
 ### Model-path optimization progression on MPS
 
 The strongest exact MPS path improvements came from:
@@ -250,6 +258,7 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - TinyLlama exact decode remains slower than dense on both MPS and CUDA in the recorded runs.
 - CUDA is currently a correctness/parity backend, not a performance-leading one.
 - Prefill ingest and page preparation are still expensive at longer contexts, especially before warmup and caching effects settle.
+- Qwen2.5 3B can run on this Mac for small exact-length smokes, but it is not a good box for sustained 3B-class optimization work.
 
 ### Likely causes
 
