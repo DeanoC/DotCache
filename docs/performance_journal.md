@@ -363,6 +363,28 @@ The honest read now is:
 - it is still not good enough to replace exact `M0` on the model path, because the teacher-forced drift remains high even though greedy agreement recovered on these short checks
 - the main remaining quality question is whether a stronger basis construction, a mixed exact/approximate fallback, or a narrower use case such as prefiltering older pages can exploit this much better `M2` signal without paying full exact cost
 
+### Experimental adaptive M2 prefilter snapshot
+
+I also wired the adaptive `M2` basis in as a sidecar on exact `M0` key pages so decode can do approximate page selection first and then exact rescoring/mixing only on the shortlisted pages. This is fully opt-in through `m2_prefilter_top_k`.
+
+The first real-model result is a losing case on this M4:
+
+| Model | Prompt Len | Top-K | Decode ms/step | Resident Bytes | DotCache/Dense KV Ratio | Greedy Agreement | Max Abs Logit Drift | Read |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `SmolLM2 360M` | `1024` | `2` | `649.74` | `38,010,880` | `0.452x` | `1.00` | `5.25` | Shortlist works, but the sidecar + prefilter cost outweighs the exact decode saved |
+
+Useful instrumentation from that run:
+
+- `m2_sidecar_pages=640`: all static key pages carried the adaptive `M2` sidecar as intended
+- `m2_prefilter_candidate_pages=1920` and `m2_prefilter_selected_pages=1440`: the shortlist is actively dropping static pages, not just passing everything through
+- despite that, total decode time still regressed badly versus the exact `M0` path on the same model family
+
+So the honest read is:
+
+- adaptive `M2` is more promising as a page-selection signal than as a full replacement codec
+- but this first sidecar-prefilter implementation is not yet a win on the real MPS harness
+- the next meaningful improvement would need to make shortlist scoring much cheaper, or apply it only in regimes where page count is high enough to amortize the extra work
+
 Experimental SmolLM2 key-only prepared-chunk cache checkpoint:
 
 - forcing the static prepared-chunk cache to keep only key-side chunks was a reasonable workload-shaped hypothesis, since score-side chunk reuse is often more valuable than value-side reuse

@@ -23,6 +23,7 @@ class DotCacheConfig:
     quant_scheme_v: str = "affine"
     escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
+    m2_prefilter_top_k: int = 0
     lut_refine_steps: int = 6
     preconditioner: str = "none"
     precondition_strength: float = 2.0
@@ -57,6 +58,8 @@ class DotCacheConfig:
             raise ValueError("quant_scheme_v must be affine, symmetric, or lut")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
+        if self.m2_prefilter_top_k < 0:
+            raise ValueError("m2_prefilter_top_k must be non-negative")
         if self.lut_refine_steps < 0:
             raise ValueError("lut_refine_steps must be non-negative")
         if self.preconditioner not in ("none", "tanh"):

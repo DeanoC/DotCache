@@ -207,6 +207,46 @@ def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
     assert float(summary["v_m1_trial_token_p95_error_max"]) > 0.0
 
 
+def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:
+    rng = np.random.default_rng(3042)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M0",
+        default_mode_v="M0",
+        quant_scheme_k="affine",
+        quant_scheme_v="affine",
+        m2_prefilter_top_k=1,
+        m2_sketch_dim_k=4,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(2, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    outputs = cache.decode_layer(0, queries, np.array([0, 1], dtype=np.int64))
+    summary = cache.page_mode_summary()
+
+    assert outputs.shape == (2, config.head_dim)
+    assert int(summary["m2_sidecar_pages"]) == int(summary["k_total_static_pages"])
+    assert int(summary["k_m2_sidecar_pages"]) == int(summary["k_total_static_pages"])
+    assert int(summary["v_m2_sidecar_pages"]) == 0
+    assert int(summary["m2_prefilter_top_k"]) == 1
+    assert int(summary["m2_prefilter_invocations"]) == 2
+    assert int(summary["m2_prefilter_candidate_pages"]) == 4
+    assert int(summary["m2_prefilter_selected_pages"]) == 2
+
+
 def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> None:
     if not mps_available():
         return

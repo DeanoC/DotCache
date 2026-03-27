@@ -357,6 +357,25 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
     return total
 
 
+def _optional_m2_sidecar_batches(
+    pages: Sequence[EncodedPage],
+    *,
+    device_type: TorchDevice,
+) -> tuple[Any | None, Any | None, int, int]:
+    if not pages or not all(page.m2_sketch is not None and page.m2_basis is not None for page in pages):
+        return None, None, 0, 0
+    sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
+    basis_array = np.stack([np.asarray(page.m2_basis) for page in pages], axis=0)
+    sketch_batch = _device_tensor(sketch_array, device=device_type)
+    basis_batch = _device_tensor(basis_array, device=device_type)
+    if device_type == "mps":
+        sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
+        basis_batch = basis_batch.to(dtype=_load_torch().float32)
+    return sketch_batch, basis_batch, int(sketch_array.nbytes + basis_array.nbytes), int(
+        sketch_batch.numel() * sketch_batch.element_size() + basis_batch.numel() * basis_batch.element_size()
+    )
+
+
 def _prepare_page_chunk_torch(
     pages: Sequence[EncodedPage],
     *,
@@ -422,8 +441,13 @@ def _prepare_page_chunk_torch(
         codebooks_array = np.stack([np.asarray(page.codebooks) for page in pages], axis=0)
         payload_batch = _device_tensor(payload_array, device=device_type)
         codebooks_batch = _device_tensor(codebooks_array, device=device_type)
+        sidecar_sketch_batch, sidecar_basis_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
+            pages,
+            device_type=device_type,
+        )
         total_host_to_device_nbytes += int(payload_array.nbytes)
         total_host_to_device_nbytes += int(codebooks_array.nbytes)
+        total_host_to_device_nbytes += sidecar_h2d_nbytes
         if device_type == "mps":
             codebooks_batch = codebooks_batch.to(dtype=_load_torch().float32)
         unpack_shifts, unpack_mask = _unpack_metadata(header.bits, device_type=device_type)
@@ -434,12 +458,20 @@ def _prepare_page_chunk_torch(
                 header=page.header,
                 payload=payload_batch[index],
                 codebooks=codebooks_batch[index],
+                m2_sketch=None if sidecar_sketch_batch is None else sidecar_sketch_batch[index],
+                m2_basis=None if sidecar_basis_batch is None else sidecar_basis_batch[index],
                 unpack_shifts=unpack_shifts,
                 unpack_mask=unpack_mask,
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
                 resident_nbytes=(
                     int(payload_batch[index].numel() * payload_batch[index].element_size())
                     + int(codebooks_batch[index].numel() * codebooks_batch[index].element_size())
+                    + (
+                        0
+                        if sidecar_sketch_batch is None or sidecar_basis_batch is None
+                        else int(sidecar_sketch_batch[index].numel() * sidecar_sketch_batch[index].element_size())
+                        + int(sidecar_basis_batch[index].numel() * sidecar_basis_batch[index].element_size())
+                    )
                 ),
                 cache_uid=_next_prepared_page_uid(),
             )
@@ -455,9 +487,14 @@ def _prepare_page_chunk_torch(
     payload_batch = _device_tensor(payload_array, device=device_type)
     scales_batch = _device_tensor(scales_array, device=device_type)
     bias_batch = _device_tensor(bias_array, device=device_type)
+    sidecar_sketch_batch, sidecar_basis_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
+        pages,
+        device_type=device_type,
+    )
     total_host_to_device_nbytes += int(payload_array.nbytes)
     total_host_to_device_nbytes += int(scales_array.nbytes)
     total_host_to_device_nbytes += int(bias_array.nbytes)
+    total_host_to_device_nbytes += sidecar_h2d_nbytes
     if device_type == "mps":
         scales_batch = scales_batch.to(dtype=_load_torch().float32)
         bias_batch = bias_batch.to(dtype=_load_torch().float32)
@@ -471,6 +508,8 @@ def _prepare_page_chunk_torch(
             payload=payload_batch[index],
             scales=scales_batch[index],
             bias=bias_batch[index],
+            m2_sketch=None if sidecar_sketch_batch is None else sidecar_sketch_batch[index],
+            m2_basis=None if sidecar_basis_batch is None else sidecar_basis_batch[index],
             unpack_shifts=unpack_shifts,
             unpack_mask=unpack_mask,
             host_to_device_nbytes=_prepared_page_host_nbytes(page),
@@ -478,6 +517,12 @@ def _prepare_page_chunk_torch(
                 int(payload_batch[index].numel() * payload_batch[index].element_size())
                 + int(scales_batch[index].numel() * scales_batch[index].element_size())
                 + int(bias_batch[index].numel() * bias_batch[index].element_size())
+                + (
+                    0
+                    if sidecar_sketch_batch is None or sidecar_basis_batch is None
+                    else int(sidecar_sketch_batch[index].numel() * sidecar_sketch_batch[index].element_size())
+                    + int(sidecar_basis_batch[index].numel() * sidecar_basis_batch[index].element_size())
+                )
             ),
             cache_uid=_next_prepared_page_uid(),
         )

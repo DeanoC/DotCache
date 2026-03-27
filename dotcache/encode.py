@@ -89,6 +89,16 @@ def encode_page(
         runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
         runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
 
+    def _build_m2_sidecar() -> tuple[np.ndarray | None, np.ndarray | None]:
+        if kind != "K" or config.m2_prefilter_top_k <= 0:
+            return None, None
+        coeffs, basis, _ = quantize_tensor_m2(
+            values,
+            group_size=config.group_size,
+            sketch_dim=config.m2_sketch_dim_k,
+        )
+        return coeffs.astype(np.float16, copy=False), basis.astype(np.float16, copy=False)
+
     if page_mode == "M3":
         header = PageHeader(
             layer_id=layer_id,
@@ -180,6 +190,7 @@ def encode_page(
                 page_mode = "M0"
                 scheme = "affine"
         if page_mode == "M1":
+            sidecar_sketch, sidecar_basis = _build_m2_sidecar()
             payload = build_payload(codes, bits, page_layout)
             header = PageHeader(
                 layer_id=layer_id,
@@ -202,6 +213,8 @@ def encode_page(
                 header=header,
                 payload=payload,
                 codebooks=codebooks.astype(np.float16),
+                m2_sketch=sidecar_sketch,
+                m2_basis=sidecar_basis,
                 lut_segment_count=int(codebooks.shape[1]) if codebooks.ndim == 3 else 1,
                 requested_mode=requested_mode,
                 trial_quant_error=trial_quant_error,
@@ -241,11 +254,14 @@ def encode_page(
     )
     stored_scales = scales.astype(np.float16)
     stored_bias = None if bias is None else bias.astype(np.float16)
+    sidecar_sketch, sidecar_basis = _build_m2_sidecar()
     return EncodedPage(
         header=header,
         payload=payload,
         scales=stored_scales,
         bias=stored_bias,
+        m2_sketch=sidecar_sketch,
+        m2_basis=sidecar_basis,
         requested_mode=requested_mode,
         trial_quant_error=trial_quant_error,
         trial_token_p95_error=trial_token_p95_error if "trial_token_p95_error" in locals() else None,
