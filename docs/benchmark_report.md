@@ -121,6 +121,17 @@ Recommended multi-model table shape for future selective-policy reports:
 | Qwen2.5-3B | `2048` | selective | tiny % | `1.00` | near-`M0` | near-`M0` |
 | Qwen2.5-7B | `2048` | selective | tiny % | `1.00` | near-`M0` | near-`M0` |
 
+That table now has a dedicated generator:
+
+```bash
+.venv/bin/python scripts/report_compressibility_profiles.py --backend torch_cuda
+```
+
+It emits two compact views:
+
+- a per-model classification table (`tolerates all-M0`, `benefits from selective exact K`, or `needs global exact K`)
+- the underlying policy rows with `% K exact`, agreement, KV memory versus exact-K, KV memory versus dense, and decode throughput
+
 Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The most important recent improvement there was a correct vectorized `3`-bit spill-unpack path on MPS using advanced indexing rather than repeated-index `torch.gather(...)`.
 
 Latest local Turbo3 results:
