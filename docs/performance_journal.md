@@ -273,6 +273,30 @@ Latest SmolLM2 payload-only prepared-chunk cache checkpoint:
   `249.34 ms/step` at `1024`
   `282.24 ms/step` at `1536`
   `266.04 ms/step` at `2048`
+
+### Experimental M1 LUT asymmetry snapshot
+
+The first paper-shaped `M1` LUT experiments are now wired through the real-model harness and recorded in [history.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/history.jsonl), including per-kind page counts and fallback/error stats.
+
+The most useful asymmetric result so far is `V`-only `M1`: keep keys on `M0`, switch values to refined shared-LUT `M1`, and leave the page-level `M1 -> M0` fallback enabled.
+
+| Model | Prompt Len | K Mode | V Mode | Decode ms/step | Resident Bytes | DotCache/Dense KV Ratio | Max Abs Logit Drift | Notes |
+|---|---:|---|---|---:|---:|---:|---:|---|
+| `TinyLlama 1.1B` | `289` | `M0` | `M1` | `340.89` | `7,580,672` | `0.576x` | `3.2510` | `88` value pages in `M1`, `0` fallbacks |
+| `SmolLM2 360M` | `1024` | `M0` | `M1` | `317.52` | `25,772,032` | `0.306x` | `3.8877` | `640` value pages in `M1`, `0` fallbacks |
+
+Compared with the earlier experiments:
+
+- `V`-only `M1` is clearly better than `K`-only `M1`; the logit drift is materially lower while the KV-memory ratio is the same.
+- `V`-only `M1` is also better than the earlier full `M1` runs on drift.
+- But on these current MPS model-path checks it is still not better than plain `M0` overall, because `M0` keeps much smaller drift and better decode latency.
+
+So the honest current read is:
+
+- the paper’s K/V asymmetry shows up clearly on this machine
+- `M1` on values is the only promising local `M1` variant so far
+- the page-level fallback hook works, but it is not rescuing quality on these workloads because almost no pages trip it under the current reconstruction-error metric
+- the next meaningful `M1` step should be a stronger value-side codec or a better fallback signal, not more threshold guessing
 - matching resident DotCache KV bytes landed at:
   `28.31 MB` at `1024`
   `37.22 MB` at `1536`
@@ -492,6 +516,31 @@ For the higher-context exact-length frontier on SmolLM2 360M, use:
   --output benchmarks/results/history.jsonl \
   -- \
   bash scripts/run_smollm2_frontier_compare.sh
+```
+
+For the current best asymmetric `V`-only `M1` checks on the real model path, use:
+
+```bash
+.venv/bin/python scripts/record_benchmark.py \
+  --label "llama smollm2 mps v_only_m1" \
+  --notes "Exact SmolLM2 360M comparison on MPS with M0 keys and refined+tanh M1 values only." \
+  --output benchmarks/results/history.jsonl \
+  -- \
+  .venv/bin/python benchmarks/bench_llama_compare.py \
+    --model-id HuggingFaceTB/SmolLM2-360M-Instruct \
+    --backend torch_mps \
+    --device mps \
+    --max-new-tokens 4 \
+    --repeat-counts \
+    --target-prompt-lengths 1024 \
+    --default-mode-k M0 \
+    --quant-scheme-k affine \
+    --default-mode-v M1 \
+    --quant-scheme-v lut \
+    --lut-refine-steps 6 \
+    --preconditioner tanh \
+    --m1-fallback-to-m0 \
+    --m1-error-threshold 0.2
 ```
 
 For the max practical SmolLM2 point, refresh `2048` on its own so the result is not distorted by the earlier ladder cases sharing the same process:

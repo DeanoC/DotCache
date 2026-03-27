@@ -19,6 +19,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
+    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M3"], default="M0")
+    parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3"], default="M0")
+    parser.add_argument("--quant-scheme-k", choices=["affine", "lut"], default="affine")
+    parser.add_argument("--quant-scheme-v", choices=["affine", "lut"], default="affine")
+    parser.add_argument("--lut-refine-steps", type=int, default=0)
+    parser.add_argument("--preconditioner", choices=["none", "tanh"], default="none")
+    parser.add_argument("--precondition-strength", type=float, default=1.0)
+    parser.add_argument("--m1-fallback-to-m0", action="store_true")
+    parser.add_argument("--m1-error-threshold", type=float, default=0.2)
     parser.add_argument("--tokens-per-page", type=int, default=256)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32, 64])
@@ -108,6 +117,15 @@ def main() -> None:
         group_size=args.group_size,
         bits_k=args.bits_k,
         bits_v=args.bits_v,
+        default_mode_k=args.default_mode_k,
+        default_mode_v=args.default_mode_v,
+        quant_scheme_k=args.quant_scheme_k,
+        quant_scheme_v=args.quant_scheme_v,
+        lut_refine_steps=args.lut_refine_steps,
+        preconditioner=args.preconditioner,
+        precondition_strength=args.precondition_strength,
+        m1_fallback_to_m0=args.m1_fallback_to_m0,
+        m1_error_threshold=args.m1_error_threshold,
         tokens_per_page=args.tokens_per_page,
     )
     harness = LlamaDotCacheHarness.from_pretrained(
@@ -140,6 +158,15 @@ def main() -> None:
                 "device": args.device,
                 "torch_dtype": args.torch_dtype,
                 "tokens_per_page": args.tokens_per_page,
+                "default_mode_k": args.default_mode_k,
+                "default_mode_v": args.default_mode_v,
+                "quant_scheme_k": args.quant_scheme_k,
+                "quant_scheme_v": args.quant_scheme_v,
+                "lut_refine_steps": args.lut_refine_steps,
+                "preconditioner": args.preconditioner,
+                "precondition_strength": args.precondition_strength,
+                "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
+                "m1_error_threshold": args.m1_error_threshold,
                 "prompt_mode": "repeat_count",
                 "repeat_count": repeat_count,
                 "prompt_unit": args.prompt_unit,
@@ -167,6 +194,15 @@ def main() -> None:
                 "device": args.device,
                 "torch_dtype": args.torch_dtype,
                 "tokens_per_page": args.tokens_per_page,
+                "default_mode_k": args.default_mode_k,
+                "default_mode_v": args.default_mode_v,
+                "quant_scheme_k": args.quant_scheme_k,
+                "quant_scheme_v": args.quant_scheme_v,
+                "lut_refine_steps": args.lut_refine_steps,
+                "preconditioner": args.preconditioner,
+                "precondition_strength": args.precondition_strength,
+                "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
+                "m1_error_threshold": args.m1_error_threshold,
                 "prompt_mode": "exact_length",
                 "requested_prompt_length": prompt_length,
                 "prompt_unit": args.prompt_unit,
