@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import itertools
 import json
 import subprocess
@@ -64,6 +65,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--format", choices=["json", "markdown"], default="markdown")
     return parser.parse_args()
+
+
+def _cleanup_accelerator_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        try:
+            torch.mps.empty_cache()
+        except RuntimeError:
+            pass
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
@@ -274,6 +290,11 @@ def _validate_candidate_policy(
                 "status": "error",
                 "agreement": None,
                 "decode_ms_per_step": None,
+                "kv_vs_dense": None,
+                "kv_resident_bytes": None,
+                "k_total_static_pages": None,
+                "k_m3_pages": None,
+                "k_exact_fraction": None,
                 "error_type": "MissingRecord",
                 "error_message": "benchmark output did not contain an exact-length prompt record",
             }
@@ -285,14 +306,32 @@ def _validate_candidate_policy(
             "status": status,
             "agreement": None if status == "error" else float(record.get("greedy_token_agreement_rate") or 0.0),
             "decode_ms_per_step": None if status == "error" else float(record.get("decode_ms_per_step") or 0.0),
+            "kv_vs_dense": None
+            if status == "error" or record.get("dotcache_vs_dense_kv_bytes_ratio") is None
+            else float(record.get("dotcache_vs_dense_kv_bytes_ratio") or 0.0),
+            "kv_resident_bytes": None
+            if status == "error" or record.get("kv_resident_bytes") is None
+            else int(record.get("kv_resident_bytes") or 0),
+            "k_total_static_pages": None
+            if status == "error" or record.get("k_total_static_pages") is None
+            else int(record.get("k_total_static_pages") or 0),
+            "k_m3_pages": None
+            if status == "error" or record.get("k_m3_pages") is None
+            else int(record.get("k_m3_pages") or 0),
+            "k_exact_fraction": None,
             "error_type": record.get("error_type"),
             "error_message": record.get("error_message"),
         }
     )
+    total_pages = validation.get("k_total_static_pages")
+    exact_pages = validation.get("k_m3_pages")
+    if status != "error" and isinstance(total_pages, int) and total_pages > 0 and isinstance(exact_pages, int):
+        validation["k_exact_fraction"] = float(exact_pages / total_pages)
     return validation
 
 
 def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
+    _cleanup_accelerator_memory()
     probe_args = argparse.Namespace(
         family=args.family,
         model_id=args.model_id,
@@ -468,6 +507,14 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
     validated_policies: list[dict[str, Any]] = []
     validated_recommended = None
     if args.validate_top_policies > 0:
+        # The offline probe can retain large CUDA tensors. Release them before
+        # spawning end-to-end validation benchmarks so large models like Qwen 7B
+        # do not OOM in the child process due to parent-held GPU state.
+        del result
+        del rows_by_variant
+        del d5_rows
+        del d6_rows
+        _cleanup_accelerator_memory()
         selective_candidates = [
             policy
             for policy in enriched_policies
@@ -530,6 +577,7 @@ def build_policy_suggestions(args: argparse.Namespace) -> dict[str, Any]:
                     -float(policy["recovery"]["composite_recovery"]),
                 ),
             )
+        _cleanup_accelerator_memory()
 
     return {
         "family": args.family,

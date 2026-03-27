@@ -91,6 +91,14 @@ For automated sensitivity-map suggestions on a single model/prompt, use:
 
 That tool runs one offline fidelity capture, scores selective exact-K candidates, and emits a budget-aware recommended policy plus a ready-to-run benchmark command.
 
+To batch that validated search across the current public CUDA model set and emit one compact table, use:
+
+```bash
+.venv/bin/python scripts/build_compressibility_map.py --backend torch_cuda --device cuda
+```
+
+That batch report validates `all M0`, validates the top selective candidates, and emits a compact per-model row with the chosen policy, exact-K fraction, KV-memory ratio, and decode throughput.
+
 And summarize recorded benchmark history with:
 
 ```bash
