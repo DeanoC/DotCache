@@ -91,6 +91,8 @@ bash scripts/run_qwen25_compare_cuda.sh
 bash scripts/run_qwen25_7b_compare_cuda.sh
 ```
 
+Those public Qwen CUDA wrappers now default to `K=M3 / V=M0`.
+
 Then add the optional Llama lane if available:
 
 ```bash
@@ -173,15 +175,15 @@ Qwen2.5 7B is now the first larger public model lane for the 5090 pod:
 This lane intentionally reuses the existing Qwen2 adapter rather than expanding the architecture surface:
 
 - same `qwen2_compare` harness
-- same exact `M0/M0` default path
+- CUDA default is now `K=M3 / V=M0`
 - same `1024 2048 4096` prompt grid
 - same `--continue-on-error` stretch-model behavior
 
 Current 5090-era research note:
 
 - Qwen2.5 3B on CUDA is materially more stable with `K=M3 / V=M0` than with default `M0/M0`.
-- At `2048` tokens, the key-exact lane restored greedy agreement to `1.0` in local pod validation.
-- Treat this as a research lane for Qwen sensitivity, not as the default benchmark contract.
+- Qwen2.5 7B on CUDA shows the same pattern at `1024/2048`.
+- The repo now treats `K=M3 / V=M0` as the recommended Qwen CUDA default, while keeping `M0/M0` as the baseline comparison lane.
 
 ## GGUF Reference Lane
 

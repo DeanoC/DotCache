@@ -41,6 +41,7 @@ def test_matrix_record_for_qwen25_emits_qwen2_runner_command() -> None:
     assert "bench_qwen2_compare.py" in " ".join(command)
     assert "Qwen/Qwen2.5-3B-Instruct" in command
     assert "--continue-on-error" in command
+    assert "--default-mode-k" not in command
     assert record["status"] == "runnable"
 
 
@@ -61,6 +62,10 @@ def test_matrix_record_for_qwen25_7b_emits_qwen2_runner_command() -> None:
     assert isinstance(command, list)
     assert "bench_qwen2_compare.py" in " ".join(command)
     assert "Qwen/Qwen2.5-7B-Instruct" in command
+    assert "--default-mode-k" in command
+    assert "M3" in command
+    assert "--default-mode-v" in command
+    assert "M0" in command
     assert "--device" in command
     assert "cuda" in command
     assert record["planned_prompt_lengths"] == (1024, 2048, 4096)

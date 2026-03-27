@@ -88,7 +88,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         dotcache_ready=True,
         benchmark_harness="qwen2_compare",
         prompt_lengths=(1024, 2048, 4096),
-        notes="First non-Llama native-weight DotCache target on the HF path, using a Qwen2-specific attention adapter.",
+        notes="First non-Llama native-weight DotCache target on the HF path. On CUDA, the recommended lane is key-exact K=M3 / V=M0 because default M0/M0 drifts on Qwen2.5.",
     ),
     "qwen25_7b_hf": ModelSpec(
         key="qwen25_7b_hf",
@@ -103,7 +103,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         dotcache_ready=True,
         benchmark_harness="qwen2_compare",
         prompt_lengths=(1024, 2048, 4096),
-        notes="First larger CUDA-native Qwen2 scale-up lane on the existing HF DotCache path.",
+        notes="First larger CUDA-native Qwen2 scale-up lane. On the 5090 pod, key-exact K=M3 / V=M0 restored 1024/2048 agreement where default M0/M0 drifted.",
     ),
     "qwen35_4b_hf": ModelSpec(
         key="qwen35_4b_hf",

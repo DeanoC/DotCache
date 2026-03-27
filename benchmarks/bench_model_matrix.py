@@ -44,6 +44,12 @@ def _selected_specs(model_keys: list[str]) -> tuple[ModelSpec, ...]:
     return tuple(get_model_spec(key) for key in model_keys)
 
 
+def _recommended_mode_flags(spec: ModelSpec, *, backend: str) -> list[str]:
+    if spec.family == "qwen2" and backend == "torch_cuda":
+        return ["--default-mode-k", "M3", "--default-mode-v", "M0"]
+    return []
+
+
 def _default_compare_command(
     spec: ModelSpec,
     *,
@@ -76,6 +82,7 @@ def _default_compare_command(
             "--target-prompt-lengths",
             *[str(length) for length in prompt_lengths],
         ]
+        command.extend(_recommended_mode_flags(spec, backend=backend))
         if continue_on_error:
             command.append("--continue-on-error")
         if device is not None:
@@ -99,6 +106,7 @@ def _default_compare_command(
             "--target-prompt-lengths",
             *[str(length) for length in prompt_lengths],
         ]
+        command.extend(_recommended_mode_flags(spec, backend=backend))
         if continue_on_error:
             command.append("--continue-on-error")
         if device is not None:
