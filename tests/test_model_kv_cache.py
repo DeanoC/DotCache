@@ -220,6 +220,7 @@ def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:
         quant_scheme_k="affine",
         quant_scheme_v="affine",
         m2_prefilter_top_k=1,
+        m2_prefilter_min_pages=1,
         m2_sketch_dim_k=4,
     )
     cache = ModelPagedKVCache(
@@ -242,6 +243,7 @@ def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:
     assert int(summary["k_m2_sidecar_pages"]) == int(summary["k_total_static_pages"])
     assert int(summary["v_m2_sidecar_pages"]) == 0
     assert int(summary["m2_prefilter_top_k"]) == 1
+    assert int(summary["m2_prefilter_min_pages"]) == 1
     assert int(summary["m2_prefilter_invocations"]) == 2
     assert int(summary["m2_prefilter_candidate_pages"]) == 4
     assert int(summary["m2_prefilter_selected_pages"]) == 2

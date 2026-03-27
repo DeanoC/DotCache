@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut"], default="affine")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-prefilter-top-k", type=int, default=0)
+    parser.add_argument("--m2-prefilter-min-pages", type=int, default=8)
     parser.add_argument("--lut-refine-steps", type=int, default=0)
     parser.add_argument("--preconditioner", choices=["none", "tanh"], default="none")
     parser.add_argument("--precondition-strength", type=float, default=1.0)
@@ -128,6 +129,7 @@ def main() -> None:
         quant_scheme_v=args.quant_scheme_v,
         m2_sketch_dim_k=args.m2_sketch_dim_k,
         m2_prefilter_top_k=args.m2_prefilter_top_k,
+        m2_prefilter_min_pages=args.m2_prefilter_min_pages,
         lut_refine_steps=args.lut_refine_steps,
         preconditioner=args.preconditioner,
         precondition_strength=args.precondition_strength,
@@ -174,6 +176,7 @@ def main() -> None:
                 "quant_scheme_v": args.quant_scheme_v,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
+                "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,
@@ -215,6 +218,7 @@ def main() -> None:
                 "quant_scheme_v": args.quant_scheme_v,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
+                "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,

@@ -84,6 +84,63 @@ def _page_m2_prefilter_score_torch(queries, page: PageLike) -> float:
     return float(torch.max(logits).item())
 
 
+def _pages_can_batch_m2_prefilter(pages: Sequence[PageLike]) -> bool:
+    if not pages:
+        return False
+    first = pages[0]
+    first_source = first.source_page if isinstance(first, PreparedPageTorch) else first
+    if first_source.m2_sketch is None or first_source.m2_basis is None:
+        return False
+    token_count = int(first_source.header.token_count)
+    num_groups = int(first_source.header.num_groups)
+    group_size = int(first_source.header.group_size)
+    sketch_dim = int(first_source.m2_sketch.shape[-1])
+    prepared_device = first.device_type if isinstance(first, PreparedPageTorch) else None
+    for page in pages[1:]:
+        source = page.source_page if isinstance(page, PreparedPageTorch) else page
+        if source.m2_sketch is None or source.m2_basis is None:
+            return False
+        if int(source.header.token_count) != token_count:
+            return False
+        if int(source.header.num_groups) != num_groups or int(source.header.group_size) != group_size:
+            return False
+        if int(source.m2_sketch.shape[-1]) != sketch_dim:
+            return False
+        if prepared_device is not None:
+            if not isinstance(page, PreparedPageTorch) or page.device_type != prepared_device:
+                return False
+    return True
+
+
+def _page_m2_prefilter_scores_numpy(queries: np.ndarray, pages: Sequence[PageLike]) -> np.ndarray:
+    source_pages = [page.source_page if isinstance(page, PreparedPageTorch) else page for page in pages]
+    first = source_pages[0]
+    query_groups = queries.reshape(queries.shape[0], first.header.num_groups, first.header.group_size)
+    sketch = np.stack([page.m2_sketch for page in source_pages], axis=0).astype(np.float32, copy=False)
+    basis = np.stack([page.m2_basis for page in source_pages], axis=0).astype(np.float32, copy=False)
+    q_proj = np.einsum("pgrd,qgd->qpgr", basis, query_groups)
+    logits = np.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+    return np.max(logits, axis=(0, 2)).astype(np.float32, copy=False)
+
+
+def _page_m2_prefilter_scores_torch(queries, pages: Sequence[PageLike]) -> np.ndarray:
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("torch is required for torch-side M2 prefiltering") from exc
+    if not torch.is_tensor(queries):
+        raise TypeError("queries must be a torch.Tensor")
+    if not all(isinstance(page, PreparedPageTorch) for page in pages):
+        return _page_m2_prefilter_scores_numpy(queries.detach().cpu().numpy().astype(np.float32, copy=False), pages)
+    first = pages[0]
+    query_groups = queries.reshape(int(queries.shape[0]), first.header.num_groups, first.header.group_size)
+    sketch = torch.stack([page.m2_sketch for page in pages], dim=0)
+    basis = torch.stack([page.m2_basis for page in pages], dim=0)
+    q_proj = torch.einsum("pgrd,qgd->qpgr", basis, query_groups)
+    logits = torch.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+    return torch.amax(logits, dim=(0, 2)).detach().cpu().numpy().astype(np.float32, copy=False)
+
+
 def _grouped_pages_can_batch(
     key_pages_by_group: Sequence[Sequence[PageLike]],
     value_pages_by_group: Sequence[Sequence[PageLike]],
@@ -697,6 +754,11 @@ class ModelPagedKVCache:
             return key_pages_by_head, value_pages_by_head
 
         page_size = self.config.tokens_per_page
+        full_page_count = full_tokens // page_size
+        build_key_sidecar = (
+            self.config.m2_prefilter_top_k > 0
+            and full_page_count >= int(self.config.m2_prefilter_min_pages)
+        )
         full_keys = np.ascontiguousarray(keys[:, :full_tokens], dtype=np.float32)
         full_values = np.ascontiguousarray(values[:, :full_tokens], dtype=np.float32)
 
@@ -712,6 +774,7 @@ class ModelPagedKVCache:
                         kv_head_id=kv_head_id,
                         token_start=page_start,
                         build_runtime_metadata=False,
+                        build_m2_sidecar=build_key_sidecar,
                     )
                 )
                 value_pages_by_head[kv_head_id].append(
@@ -862,11 +925,18 @@ class ModelPagedKVCache:
                 always_keep.append(page_index)
                 continue
             candidate_indices.append(page_index)
-            candidate_scores.append(_page_m2_prefilter_score_numpy(queries, page))
-        if len(candidate_indices) <= top_k:
+        candidate_pages = [key_pages[index] for index in candidate_indices]
+        if (
+            len(candidate_indices) <= top_k
+            or len(candidate_indices) < int(self.config.m2_prefilter_min_pages)
+        ):
             return list(key_pages), list(value_pages)
-
-        score_array = np.asarray(candidate_scores, dtype=np.float32)
+        if _pages_can_batch_m2_prefilter(candidate_pages):
+            score_array = _page_m2_prefilter_scores_numpy(queries, candidate_pages)
+        else:
+            for page in candidate_pages:
+                candidate_scores.append(_page_m2_prefilter_score_numpy(queries, page))
+            score_array = np.asarray(candidate_scores, dtype=np.float32)
         selected_order = np.argpartition(score_array, -top_k)[-top_k:]
         selected_indices = sorted(always_keep + [candidate_indices[index] for index in selected_order.tolist()])
         self._m2_prefilter_invocations += 1
@@ -892,11 +962,18 @@ class ModelPagedKVCache:
                 always_keep.append(page_index)
                 continue
             candidate_indices.append(page_index)
-            candidate_scores.append(_page_m2_prefilter_score_torch(queries, page))
-        if len(candidate_indices) <= top_k:
+        candidate_pages = [key_pages[index] for index in candidate_indices]
+        if (
+            len(candidate_indices) <= top_k
+            or len(candidate_indices) < int(self.config.m2_prefilter_min_pages)
+        ):
             return list(key_pages), list(value_pages)
-
-        score_array = np.asarray(candidate_scores, dtype=np.float32)
+        if _pages_can_batch_m2_prefilter(candidate_pages):
+            score_array = _page_m2_prefilter_scores_torch(queries, candidate_pages)
+        else:
+            for page in candidate_pages:
+                candidate_scores.append(_page_m2_prefilter_score_torch(queries, page))
+            score_array = np.asarray(candidate_scores, dtype=np.float32)
         selected_order = np.argpartition(score_array, -top_k)[-top_k:]
         selected_indices = sorted(always_keep + [candidate_indices[index] for index in selected_order.tolist()])
         self._m2_prefilter_invocations += 1
@@ -1023,6 +1100,7 @@ class ModelPagedKVCache:
                 summary[f"{prefix}_m1_trial_token_p95_error_max"] = 0.0
                 summary[f"{prefix}_m1_trial_token_p95_error_p95"] = 0.0
         summary["m2_prefilter_top_k"] = int(self.config.m2_prefilter_top_k)
+        summary["m2_prefilter_min_pages"] = int(self.config.m2_prefilter_min_pages)
         summary["m2_prefilter_invocations"] = int(self._m2_prefilter_invocations)
         summary["m2_prefilter_candidate_pages"] = int(self._m2_prefilter_candidate_pages)
         summary["m2_prefilter_selected_pages"] = int(self._m2_prefilter_selected_pages)
@@ -1394,6 +1472,10 @@ class ModelPagedKVCache:
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
                     build_runtime_metadata=False,
+                    build_m2_sidecar=(
+                        self.config.m2_prefilter_top_k > 0
+                        and (len(state.session.key_pages) + 1) >= int(self.config.m2_prefilter_min_pages)
+                    ),
                 )
                 finalized_value_page = encode_page(
                     dense_values,

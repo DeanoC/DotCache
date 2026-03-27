@@ -66,6 +66,7 @@ def encode_page(
     layout: str | None = None,
     quant_scheme: str | None = None,
     build_runtime_metadata: bool = True,
+    build_m2_sidecar: bool | None = None,
 ) -> EncodedPage:
     values = np.asarray(tensor_slice, dtype=np.float32)
     if values.ndim != 2:
@@ -90,7 +91,8 @@ def encode_page(
         runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
 
     def _build_m2_sidecar() -> tuple[np.ndarray | None, np.ndarray | None]:
-        if kind != "K" or config.m2_prefilter_top_k <= 0:
+        sidecar_enabled = config.m2_prefilter_top_k > 0 if build_m2_sidecar is None else bool(build_m2_sidecar)
+        if kind != "K" or not sidecar_enabled:
             return None, None
         coeffs, basis, _ = quantize_tensor_m2(
             values,

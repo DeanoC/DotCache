@@ -24,6 +24,7 @@ class DotCacheConfig:
     escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
     m2_prefilter_top_k: int = 0
+    m2_prefilter_min_pages: int = 8
     lut_refine_steps: int = 6
     preconditioner: str = "none"
     precondition_strength: float = 2.0
@@ -60,6 +61,8 @@ class DotCacheConfig:
             raise ValueError("m2_sketch_dim_k must be positive")
         if self.m2_prefilter_top_k < 0:
             raise ValueError("m2_prefilter_top_k must be non-negative")
+        if self.m2_prefilter_min_pages < 0:
+            raise ValueError("m2_prefilter_min_pages must be non-negative")
         if self.lut_refine_steps < 0:
             raise ValueError("lut_refine_steps must be non-negative")
         if self.preconditioner not in ("none", "tanh"):
