@@ -24,3 +24,10 @@ def test_pack_unpack_handles_partial_word() -> None:
     unpacked = unpack_bits(packed, bits=2, group_size=24)
     np.testing.assert_array_equal(unpacked, codes)
 
+
+def test_pack_unpack_roundtrip_3bit_with_spill() -> None:
+    codes = (np.arange(32, dtype=np.uint8)[None, :] % 8).astype(np.uint8)
+    packed = pack_bits(codes, bits=3)
+    assert packed.shape[-1] == words_per_group(32, 3)
+    unpacked = unpack_bits(packed, bits=3, group_size=32)
+    np.testing.assert_array_equal(unpacked, codes)

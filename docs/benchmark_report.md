@@ -58,15 +58,25 @@ The new [bench_llama_loss.py](/Users/deanocalver/Documents/Projects/DotCache/ben
 | TinyLlama | `288 / 32` | `K=M0, V=M0` | `-0.00101` | `0.99899` | `1.00` | `8.15` |
 | TinyLlama | `288 / 32` | `K=M0, V=M1` | `-0.00014` | `0.99986` | `1.00` | `12.89` |
 | TinyLlama | `288 / 32` | `K=M2, V=M0` | `+0.00002` | `1.00002` | `1.00` | `12.12` |
+| TinyLlama | `288 / 32` | `K=M2 adaptive, V=M0` | `-0.00135` | `0.99865` | `1.00` | `8.70` |
 | SmolLM2 360M | `1024 / 16` | `K=M0, V=M0` | `-0.00198` | `0.99803` | `1.00` | `7.57` |
 | SmolLM2 360M | `1024 / 16` | `K=M0, V=M1` | `+0.01717` | `1.01732` | `1.00` | `14.54` |
 | SmolLM2 360M | `1024 / 16` | `K=M2, V=M0` | `+0.02865` | `1.02907` | `1.00` | `17.64` |
+| SmolLM2 360M | `1024 / 16` | `K=M2 adaptive, V=M0` | `+0.03948` | `1.04027` | `1.00` | `16.33` |
 
 This changes the quality read in an important way:
 
 - TinyLlama is relatively forgiving: `V`-only `M1` and adaptive `K`-only `M2` both keep teacher-forced loss almost flat on the tested continuation.
 - SmolLM2 is not: both approximate modes materially worsen teacher-forced loss at `1024` prefix tokens, even though token agreement still stays at `1.0`.
+- Adaptive segmented `M2` is now stable after decode bucketing, but it still regresses both quality and speed on SmolLM2 versus the fixed segmented variant, so it should remain experimental.
 - That makes teacher-forced loss/perplexity the local quality metric to trust first for `M1/M2`, not greedy agreement alone.
+
+Turbo3 now also exists as a local exact-mode reference on CPU and MPS, but the first TinyLlama read was clearly losing:
+
+- short prompt compare (`repeat_count=1`): DotCache decode `4974.28 ms/step` vs dense `605.67 ms/step`, with greedy agreement `1.0`
+- teacher-forced loss (`288 / 32`): loss delta `+3.1687`, perplexity ratio `23.78`, token agreement `0.3125`
+
+That makes Turbo3 a useful comparison point for future TurboQuant-style work, but not a mode we should promote on the current model path.
 
 ## Memory
 

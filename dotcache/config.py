@@ -25,6 +25,8 @@ class DotCacheConfig:
     m2_sketch_dim_k: int = 8
     m2_center_k: bool = False
     m2_segment_count_k: int = 1
+    m2_adaptive_segments_k: bool = False
+    m2_adaptive_min_improvement_k: float = 0.1
     m2_prefilter_top_k: int = 0
     m2_prefilter_min_pages: int = 8
     lut_refine_steps: int = 6
@@ -51,20 +53,24 @@ class DotCacheConfig:
             raise ValueError("payload_layout_k must be group_major or token_major")
         if self.payload_layout_v not in ("group_major", "token_major"):
             raise ValueError("payload_layout_v must be group_major or token_major")
-        if self.default_mode_k not in ("M0", "M1", "M2", "M3"):
-            raise ValueError("default_mode_k must be M0, M1, M2, or M3")
-        if self.default_mode_v not in ("M0", "M1", "M3"):
-            raise ValueError("default_mode_v must be M0, M1, or M3")
-        if self.quant_scheme_k not in ("affine", "symmetric", "lut", "sketch"):
-            raise ValueError("quant_scheme_k must be affine, symmetric, lut, or sketch")
-        if self.quant_scheme_v not in ("affine", "symmetric", "lut"):
-            raise ValueError("quant_scheme_v must be affine, symmetric, or lut")
+        if self.default_mode_k not in ("M0", "M1", "M2", "M3", "T3"):
+            raise ValueError("default_mode_k must be M0, M1, M2, M3, or T3")
+        if self.default_mode_v not in ("M0", "M1", "M3", "T3"):
+            raise ValueError("default_mode_v must be M0, M1, M3, or T3")
+        if self.quant_scheme_k not in ("affine", "symmetric", "lut", "sketch", "turbo3"):
+            raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, or turbo3")
+        if self.quant_scheme_v not in ("affine", "symmetric", "lut", "turbo3"):
+            raise ValueError("quant_scheme_v must be affine, symmetric, lut, or turbo3")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
         if not isinstance(self.m2_center_k, bool):
             raise ValueError("m2_center_k must be a bool")
         if self.m2_segment_count_k <= 0:
             raise ValueError("m2_segment_count_k must be positive")
+        if not isinstance(self.m2_adaptive_segments_k, bool):
+            raise ValueError("m2_adaptive_segments_k must be a bool")
+        if self.m2_adaptive_min_improvement_k < 0:
+            raise ValueError("m2_adaptive_min_improvement_k must be non-negative")
         if self.m2_prefilter_top_k < 0:
             raise ValueError("m2_prefilter_top_k must be non-negative")
         if self.m2_prefilter_min_pages < 0:

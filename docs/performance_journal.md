@@ -21,16 +21,38 @@ Latest teacher-forced loss checks on this M4:
 | TinyLlama | `288 / 32` | `K=M0, V=M0` | `-0.00101` | `0.99899` | `1.00` | `8.15` | `3966.95` |
 | TinyLlama | `288 / 32` | `K=M0, V=M1` | `-0.00014` | `0.99986` | `1.00` | `12.89` | `2384.70` |
 | TinyLlama | `288 / 32` | `K=M2, V=M0` | `+0.00002` | `1.00002` | `1.00` | `12.12` | `2593.00` |
+| TinyLlama | `288 / 32` | `K=M2 adaptive, V=M0` | `-0.00135` | `0.99865` | `1.00` | `8.70` | `3230.76` |
 | SmolLM2 360M | `1024 / 16` | `K=M0, V=M0` | `-0.00198` | `0.99803` | `1.00` | `7.57` | `2309.06` |
 | SmolLM2 360M | `1024 / 16` | `K=M0, V=M1` | `+0.01717` | `1.01732` | `1.00` | `14.54` | `2601.01` |
 | SmolLM2 360M | `1024 / 16` | `K=M2, V=M0` | `+0.02865` | `1.02907` | `1.00` | `17.64` | `2512.91` |
+| SmolLM2 360M | `1024 / 16` | `K=M2 adaptive, V=M0` | `+0.03948` | `1.04027` | `1.00` | `16.33` | `5158.50` |
 
 What that changed in our read:
 
 - TinyLlama is much more forgiving than the earlier max-logit drift numbers suggested. Both `V`-only `M1` and adaptive `K`-only `M2` kept teacher-forced loss essentially flat on the tested `32`-token continuation.
 - SmolLM2 is not nearly as forgiving. At `1024` prefix tokens, both approximate modes materially worsen teacher-forced loss even though teacher-forced token agreement still stays at `1.00`.
+- Adaptive segmented `M2` no longer crashes after segment-shape bucketing, but it still loses badly on SmolLM2 and is slower than the fixed segmented variants because mixed segment counts reduce grouped decode efficiency.
 - `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
 - Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
+
+### Turbo3 first local read
+
+Turbo3 is now implemented on the standalone exact runtime and the `torch_mps` path as a 3-bit FWHT-rotated codec with per-token/per-group norm correction.
+
+First TinyLlama checks on this M4 were directionally clear and not yet good enough:
+
+- short prompt compare (`repeat_count=1`, about `10` prompt tokens):
+  - DotCache decode `4974.28 ms/step`
+  - dense decode `605.67 ms/step`
+  - greedy agreement `1.00`
+  - max abs logit drift `0.0234`
+- teacher-forced loss (`288 / 32`):
+  - loss delta `+3.1687`
+  - perplexity ratio `23.78`
+  - token agreement `0.3125`
+  - max abs logit drift `26.45`
+
+So Turbo3 is currently best understood as implemented reference infrastructure for future comparison with TurboQuant-style ideas, not as a usable local model-path winner.
 
 ### Phase 6 vLLM adapter status
 

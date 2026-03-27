@@ -8,6 +8,7 @@ import numpy as np
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 from ..modes.m2_key_sketch import segment_ids_for_token_count
+from ..modes.turbo3 import TURBO3_CENTROIDS
 
 TorchDevice = Literal["mps", "cuda"]
 PreparedDevice = Literal["torch_mps", "torch_cuda"]
@@ -434,6 +435,15 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and source_page.m2_basis is not None
             and source_page.m2_mean is not None
         )
+    if header.mode_default == "T3":
+        return (
+            header.quant_scheme == "turbo3"
+            and header.bits == 3
+            and header.group_size in (32, 64)
+            and source_page.payload is not None
+            and source_page.scales is not None
+            and source_page.codebooks is not None
+        )
     return (
         header.mode_default in ("M0", "M1")
         and header.bits in (2, 4)
@@ -630,6 +640,59 @@ def _prepare_page_chunk_torch(
             trace.record_host_to_device(total_host_to_device_nbytes)
         return prepared_pages
 
+    if header.mode_default == "T3":
+        payload_array = np.stack([np.asarray(page.payload, dtype=np.int32) for page in pages], axis=0)
+        scales_array = np.stack([np.asarray(page.scales) for page in pages], axis=0)
+        codebooks_array = np.stack([np.asarray(page.codebooks) for page in pages], axis=0)
+        payload_batch = _device_tensor(payload_array, device=device_type)
+        scales_batch = _device_tensor(scales_array, device=device_type)
+        codebooks_batch = _device_tensor(codebooks_array, device=device_type)
+        sidecar_sketch_batch, sidecar_basis_batch, sidecar_mean_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
+            pages,
+            device_type=device_type,
+        )
+        total_host_to_device_nbytes += int(payload_array.nbytes)
+        total_host_to_device_nbytes += int(scales_array.nbytes)
+        total_host_to_device_nbytes += int(codebooks_array.nbytes)
+        total_host_to_device_nbytes += sidecar_h2d_nbytes
+        if device_type == "mps":
+            scales_batch = scales_batch.to(dtype=_load_torch().float32)
+            codebooks_batch = codebooks_batch.to(dtype=_load_torch().float32)
+        unpack_shifts, unpack_mask = _unpack_metadata(header.bits, device_type=device_type)
+        prepared_pages = [
+            PreparedPageTorch(
+                device_type=device_type,
+                source_page=page,
+                header=page.header,
+                payload=payload_batch[index],
+                scales=scales_batch[index],
+                codebooks=codebooks_batch[index],
+                m2_sketch=None if sidecar_sketch_batch is None else sidecar_sketch_batch[index],
+                m2_basis=None if sidecar_basis_batch is None else sidecar_basis_batch[index],
+                m2_mean=None if sidecar_mean_batch is None else sidecar_mean_batch[index],
+                unpack_shifts=unpack_shifts,
+                unpack_mask=unpack_mask,
+                host_to_device_nbytes=_prepared_page_host_nbytes(page),
+                resident_nbytes=(
+                    int(payload_batch[index].numel() * payload_batch[index].element_size())
+                    + int(scales_batch[index].numel() * scales_batch[index].element_size())
+                    + int(codebooks_batch[index].numel() * codebooks_batch[index].element_size())
+                    + (
+                        0
+                        if sidecar_sketch_batch is None or sidecar_basis_batch is None or sidecar_mean_batch is None
+                        else int(sidecar_sketch_batch[index].numel() * sidecar_sketch_batch[index].element_size())
+                        + int(sidecar_basis_batch[index].numel() * sidecar_basis_batch[index].element_size())
+                        + int(sidecar_mean_batch[index].numel() * sidecar_mean_batch[index].element_size())
+                    )
+                ),
+                cache_uid=_next_prepared_page_uid(),
+            )
+            for index, page in enumerate(pages)
+        ]
+        if trace is not None:
+            trace.record_host_to_device(total_host_to_device_nbytes)
+        return prepared_pages
+
     payload_array = np.stack([np.asarray(page.payload, dtype=np.int32) for page in pages], axis=0)
     scales_array = np.stack([np.asarray(page.scales) for page in pages], axis=0)
     bias_array = np.stack([np.asarray(page.bias) for page in pages], axis=0)
@@ -784,8 +847,27 @@ def _unpack_bits_torch(words, shifts, mask, group_size: int):
         raise ValueError("words must have shape [token_count, words_per_group]")
     if shifts is None or mask is None:
         raise ValueError("prepared torch pages require unpack metadata")
-    expanded = torch.bitwise_and(torch.bitwise_right_shift(words[..., None], shifts), mask)
-    return expanded.reshape(words.shape[0], group_size).to(torch.float32)
+    words_u64 = torch.bitwise_and(words.to(dtype=torch.int64), 0xFFFFFFFF)
+    mask_i64 = torch.as_tensor(mask, dtype=torch.int64, device=words.device)
+    bits = int(mask_i64.item()).bit_length()
+    if 32 % bits == 0:
+        shifts_i64 = shifts.to(dtype=torch.int64)
+        expanded = torch.bitwise_and(torch.bitwise_right_shift(words_u64[..., None], shifts_i64), mask_i64)
+        return expanded.reshape(words.shape[0], -1)[:, :group_size].to(torch.float32)
+
+    unpacked = torch.zeros((words.shape[0], group_size), dtype=torch.int64, device=words.device)
+    for symbol_index in range(group_size):
+        bit_offset = symbol_index * bits
+        word_index = bit_offset // 32
+        bit_index = bit_offset % 32
+        value = torch.bitwise_right_shift(words_u64[:, word_index], bit_index)
+        spill = bit_index + bits - 32
+        if spill > 0:
+            spill_mask = (1 << spill) - 1
+            spilled = torch.bitwise_and(words_u64[:, word_index + 1], spill_mask)
+            value = torch.bitwise_or(value, torch.bitwise_left_shift(spilled, bits - spill))
+        unpacked[:, symbol_index] = torch.bitwise_and(value, mask_i64)
+    return unpacked.to(torch.float32)
 
 
 def _lookup_lut_group_torch(codebooks, codes):
@@ -826,6 +908,44 @@ def _lookup_lut_group_torch(codebooks, codes):
         segment_ids = (torch.arange(token_count, device=lut.device, dtype=torch.int64) * segment_count) // max(token_count, 1)
         return lut[batch_index, page_index, segment_ids[None, None, :, None], code_indices]
     raise ValueError("unsupported LUT rank")
+
+
+def _lookup_turbo_group_torch(codebooks, codes):
+    torch = _load_torch()
+    lut = codebooks.to(dtype=torch.float32)
+    code_indices = codes.to(dtype=torch.int64)
+    if lut.ndim == 1 and code_indices.ndim == 2:
+        return lut[code_indices]
+    if lut.ndim == 2 and code_indices.ndim == 3 and lut.shape[0] == code_indices.shape[0]:
+        page_index = torch.arange(lut.shape[0], device=lut.device)[:, None, None]
+        return lut[page_index, code_indices]
+    if lut.ndim == 3 and code_indices.ndim == 4:
+        batch_index = torch.arange(lut.shape[0], device=lut.device)[:, None, None, None]
+        page_index = torch.arange(lut.shape[1], device=lut.device)[None, :, None, None]
+        return lut[batch_index, page_index, code_indices]
+    raise ValueError("unsupported turbo3 LUT rank")
+
+
+def _fwht_last_dim_torch(values):
+    torch = _load_torch()
+    width = int(values.shape[-1])
+    if width <= 0:
+        return values
+    if width & (width - 1):
+        raise ValueError("FWHT requires the last dimension to be a power of two")
+    original_shape = tuple(values.shape)
+    transformed = values.to(dtype=torch.float32).reshape(-1, width)
+    step = 1
+    while step < width:
+        block = step * 2
+        reshaped = transformed.reshape(-1, width // block, block)
+        left = reshaped[..., :step].clone()
+        right = reshaped[..., step:block].clone()
+        reshaped[..., :step] = left + right
+        reshaped[..., step:block] = left - right
+        transformed = reshaped.reshape(-1, width)
+        step = block
+    return (transformed / float(width**0.5)).reshape(original_shape)
 
 
 def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[PreparedPageTorch], *, trace: ExecutionTrace | None = None):
@@ -888,6 +1008,28 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
                 codes,
             )
             logits += torch.matmul(group, query_groups[group_index])
+        return logits.reshape(-1)
+
+    if header.mode_default == "T3":
+        query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
+        rotated_query_groups = _fwht_last_dim_torch(query.reshape(header.num_groups, header.group_size))
+        page_count = len(pages)
+        logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            corrected = _lookup_turbo_group_torch(
+                torch.stack([page.codebooks for page in pages], dim=0),
+                codes,
+            ) * torch.stack([page.scales[:, group_index] for page in pages], dim=0)[..., None]
+            logits += torch.matmul(corrected, rotated_query_groups[group_index])
         return logits.reshape(-1)
 
     query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
@@ -983,6 +1125,27 @@ def _mix_page_chunk_torch(
                 torch.stack([page.codebooks[group_index] for page in pages], dim=0),
                 codes,
             )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[start:end] += torch.einsum("pt,ptg->g", weights, group)
+        return output
+
+    if header.mode_default == "T3":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            rotated_group = _lookup_turbo_group_torch(
+                torch.stack([page.codebooks for page in pages], dim=0),
+                codes,
+            ) * torch.stack([page.scales[:, group_index] for page in pages], dim=0)[..., None]
+            group = _fwht_last_dim_torch(rotated_group)
             start = group_index * header.group_size
             end = start + header.group_size
             output[start:end] += torch.einsum("pt,ptg->g", weights, group)
@@ -1212,6 +1375,28 @@ def _score_page_chunk_multiquery_torch(
             logits += torch.einsum("ptg,qg->qpt", group, query_groups[:, group_index, :])
         return logits.reshape(query_count, -1)
 
+    if header.mode_default == "T3":
+        queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
+        rotated_query_groups = _fwht_last_dim_torch(queries.reshape(query_count, header.num_groups, header.group_size))
+        page_count = len(pages)
+        logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            corrected = _lookup_turbo_group_torch(
+                torch.stack([page.codebooks for page in pages], dim=0),
+                codes,
+            ) * torch.stack([page.scales[:, group_index] for page in pages], dim=0)[..., None]
+            logits += torch.einsum("ptg,qg->qpt", corrected, rotated_query_groups[:, group_index, :])
+        return logits.reshape(query_count, -1)
+
     queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
     query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
     query_group_sums = query_groups.sum(dim=-1)
@@ -1309,6 +1494,27 @@ def _mix_page_chunk_multiquery_torch(
                 torch.stack([page.codebooks[group_index] for page in pages], dim=0),
                 codes,
             )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[:, start:end] += torch.einsum("qpt,ptg->qg", weights, group)
+        return output
+
+    if header.mode_default == "T3":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack([page.payload[group_index] for page in pages], dim=0)
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            rotated_group = _lookup_turbo_group_torch(
+                torch.stack([page.codebooks for page in pages], dim=0),
+                codes,
+            ) * torch.stack([page.scales[:, group_index] for page in pages], dim=0)[..., None]
+            group = _fwht_last_dim_torch(rotated_group)
             start = group_index * header.group_size
             end = start + header.group_size
             output[:, start:end] += torch.einsum("qpt,ptg->qg", weights, group)
@@ -1465,6 +1671,42 @@ def _score_page_chunk_grouped_multiquery_torch(
             logits += torch.einsum("bptg,bqg->bqpt", group, query_groups_tensor[:, :, group_index, :])
         return logits.reshape(batch_size, query_count, -1)
 
+    if header.mode_default == "T3":
+        padded_queries = _pad_queries(
+            queries.reshape(batch_size * query_count, header.head_dim),
+            header.padded_head_dim,
+            device_type=device_type,
+        ).reshape(batch_size, query_count, header.padded_head_dim)
+        rotated_query_groups = _fwht_last_dim_torch(
+            padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
+        )
+        logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        for group_index in range(header.num_groups):
+            group_words = torch.stack(
+                [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages_by_group[0][0].unpack_shifts,
+                pages_by_group[0][0].unpack_mask,
+                header.group_size,
+            ).reshape(batch_size, page_count, header.token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            corrected = _lookup_turbo_group_torch(
+                torch.stack(
+                    [torch.stack([page.codebooks for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                ),
+                codes,
+            ) * torch.stack(
+                [torch.stack([page.scales[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )[..., None]
+            logits += torch.einsum("bptg,bqg->bqpt", corrected, rotated_query_groups[:, :, group_index, :])
+        return logits.reshape(batch_size, query_count, -1)
+
     padded_queries = _pad_queries(
         queries.reshape(batch_size * query_count, header.head_dim),
         header.padded_head_dim,
@@ -1605,6 +1847,36 @@ def _mix_page_chunk_grouped_multiquery_torch(
                 ),
                 codes,
             )
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)
+        return output
+
+    if header.mode_default == "T3":
+        for group_index in range(header.num_groups):
+            group_words = torch.stack(
+                [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
+            codes = _unpack_bits_torch(
+                group_words.reshape(-1, header.words_per_group),
+                pages_by_group[0][0].unpack_shifts,
+                pages_by_group[0][0].unpack_mask,
+                header.group_size,
+            ).reshape(batch_size, page_count, token_count, header.group_size)
+            if trace is not None:
+                trace.record_temporary(int(codes.numel() * codes.element_size()))
+            rotated_group = _lookup_turbo_group_torch(
+                torch.stack(
+                    [torch.stack([page.codebooks for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                ),
+                codes,
+            ) * torch.stack(
+                [torch.stack([page.scales[:, group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )[..., None]
+            group = _fwht_last_dim_torch(rotated_group)
             start = group_index * header.group_size
             end = start + header.group_size
             output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)

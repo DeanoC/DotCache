@@ -19,13 +19,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
-    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3"], default="M0")
-    parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3"], default="M0")
-    parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch"], default="affine")
-    parser.add_argument("--quant-scheme-v", choices=["affine", "lut"], default="affine")
+    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3", "T3"], default="M0")
+    parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3", "T3"], default="M0")
+    parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "turbo3"], default="affine")
+    parser.add_argument("--quant-scheme-v", choices=["affine", "lut", "turbo3"], default="affine")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
+    parser.add_argument("--m2-adaptive-segments-k", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--m2-adaptive-min-improvement-k", type=float, default=0.1)
     parser.add_argument("--m2-prefilter-top-k", type=int, default=0)
     parser.add_argument("--m2-prefilter-min-pages", type=int, default=8)
     parser.add_argument("--lut-refine-steps", type=int, default=0)
@@ -132,6 +134,8 @@ def main() -> None:
         m2_sketch_dim_k=args.m2_sketch_dim_k,
         m2_center_k=args.m2_center_k,
         m2_segment_count_k=args.m2_segment_count_k,
+        m2_adaptive_segments_k=args.m2_adaptive_segments_k,
+        m2_adaptive_min_improvement_k=args.m2_adaptive_min_improvement_k,
         m2_prefilter_top_k=args.m2_prefilter_top_k,
         m2_prefilter_min_pages=args.m2_prefilter_min_pages,
         lut_refine_steps=args.lut_refine_steps,
@@ -181,6 +185,8 @@ def main() -> None:
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "m2_center_k": args.m2_center_k,
                 "m2_segment_count_k": args.m2_segment_count_k,
+                "m2_adaptive_segments_k": args.m2_adaptive_segments_k,
+                "m2_adaptive_min_improvement_k": args.m2_adaptive_min_improvement_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
                 "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
                 "lut_refine_steps": args.lut_refine_steps,
@@ -225,6 +231,8 @@ def main() -> None:
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
                 "m2_center_k": args.m2_center_k,
                 "m2_segment_count_k": args.m2_segment_count_k,
+                "m2_adaptive_segments_k": args.m2_adaptive_segments_k,
+                "m2_adaptive_min_improvement_k": args.m2_adaptive_min_improvement_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
                 "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
                 "lut_refine_steps": args.lut_refine_steps,

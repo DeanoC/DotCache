@@ -5,6 +5,7 @@ import numpy as np
 from .decode_reference import decode_page
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import segment_ids_for_token_count
+from .modes.turbo3 import fwht_last_dim
 from .page_format import load_group_words
 from .packing import unpack_bits
 from .types import EncodedPage
@@ -57,6 +58,19 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
             logits += np.einsum("tr,tr->t", page.m2_sketch[:, group_index, :].astype(np.float32), q_proj[segment_ids])
             if group_mean is not None:
                 logits += group_mean[segment_ids].astype(np.float32) @ query_groups[group_index]
+        return logits
+
+    if header.mode_default == "T3":
+        if page.payload is None or page.scales is None or page.codebooks is None:
+            raise ValueError("T3 page is missing payload or correction metadata")
+        rotated_query_groups = fwht_last_dim(query.reshape(header.num_groups, header.group_size))
+        logits = np.zeros(header.token_count, dtype=np.float32)
+        centroids = np.asarray(page.codebooks, dtype=np.float32)
+        for group_index in range(header.num_groups):
+            words = load_group_words(page, group_index)
+            codes_u8 = unpack_bits(words, header.bits, header.group_size).astype(np.int64, copy=False)
+            corrected = centroids[codes_u8] * page.scales[:, group_index].astype(np.float32)[:, None]
+            logits += corrected @ rotated_query_groups[group_index]
         return logits
 
     if page.payload is None:
@@ -114,6 +128,20 @@ def mix_page_ref(attn_weights: np.ndarray, page: EncodedPage, out_acc: np.ndarra
 
     if header.mode_default == "M2":
         raise ValueError("M2 is only supported for key scoring in this phase")
+
+    if header.mode_default == "T3":
+        if page.payload is None or page.scales is None or page.codebooks is None:
+            raise ValueError("T3 page is missing payload or correction metadata")
+        centroids = np.asarray(page.codebooks, dtype=np.float32)
+        for group_index in range(header.num_groups):
+            words = load_group_words(page, group_index)
+            codes_u8 = unpack_bits(words, header.bits, header.group_size).astype(np.int64, copy=False)
+            rotated_group = centroids[codes_u8] * page.scales[:, group_index].astype(np.float32)[:, None]
+            group = fwht_last_dim(rotated_group)
+            start = group_index * header.group_size
+            end = start + header.group_size
+            output[start:end] += weights @ group
+        return output[: header.head_dim].copy()
 
     if page.payload is None:
         raise ValueError(f"{header.mode_default} page is missing payload")
