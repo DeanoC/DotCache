@@ -39,7 +39,7 @@ The prototype state reflected here is:
 
 ## Correctness
 
-- pack/unpack: covered by the unit suite and compressed-domain parity tests; current suite status is `65 passed, 5 skipped`
+- pack/unpack: covered by the unit suite and compressed-domain parity tests; current suite status is `85 passed, 5 skipped`
 - score parity: standalone MPS and CUDA decode-step ladders stay in the low `1e-5` max-abs-logit range on recorded runs
 - mix parity: standalone output errors stay in the low `1e-6` range on recorded exact ladders
 - full attention parity: exact session and decode harnesses continue to match the explicit dequantized baseline within test tolerances
@@ -48,6 +48,25 @@ The prototype state reflected here is:
   - real TinyLlama and SmolLM2 exact DotCache paths keep `1.0` greedy agreement on the recorded MPS and CUDA comparisons
 
 One important caveat: teacher-forced model-logit drift is still non-zero on real checkpoints, especially on longer contexts, so the current end-to-end claim is "stable exact decode behavior with matching greedy tokens on tested prompts", not "bit-identical logits to dense attention."
+
+### Teacher-forced quality snapshot
+
+The new [bench_llama_loss.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_loss.py) harness is now the best local quality yardstick for `M1` and `M2`, because greedy agreement and raw max-logit drift were too coarse on short continuations.
+
+| Model | Prefix / Eval | Mode | DotCache Loss Delta | Perplexity Ratio | Token Agreement | Max Abs Logit Drift |
+|---|---:|---|---:|---:|---:|---:|
+| TinyLlama | `288 / 32` | `K=M0, V=M0` | `-0.00101` | `0.99899` | `1.00` | `8.15` |
+| TinyLlama | `288 / 32` | `K=M0, V=M1` | `-0.00014` | `0.99986` | `1.00` | `12.89` |
+| TinyLlama | `288 / 32` | `K=M2, V=M0` | `+0.00002` | `1.00002` | `1.00` | `12.12` |
+| SmolLM2 360M | `1024 / 16` | `K=M0, V=M0` | `-0.00198` | `0.99803` | `1.00` | `7.57` |
+| SmolLM2 360M | `1024 / 16` | `K=M0, V=M1` | `+0.01717` | `1.01732` | `1.00` | `14.54` |
+| SmolLM2 360M | `1024 / 16` | `K=M2, V=M0` | `+0.02865` | `1.02907` | `1.00` | `17.64` |
+
+This changes the quality read in an important way:
+
+- TinyLlama is relatively forgiving: `V`-only `M1` and adaptive `K`-only `M2` both keep teacher-forced loss almost flat on the tested continuation.
+- SmolLM2 is not: both approximate modes materially worsen teacher-forced loss at `1024` prefix tokens, even though token agreement still stays at `1.0`.
+- That makes teacher-forced loss/perplexity the local quality metric to trust first for `M1/M2`, not greedy agreement alone.
 
 ## Memory
 
@@ -178,6 +197,7 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - grouped static-page reuse helps, but only after the runtime has enough stable prefill pages to amortize setup
 - CUDA has not yet had the deeper optimization passes that the MPS path already received
 - the model-path benchmark still includes framework overhead outside the raw compressed-domain kernels
+- `M1` and `M2` quality is model-dependent in a way that raw max-logit drift overstates on TinyLlama and still understates on SmolLM2 unless we also track teacher-forced loss
 
 ### Next experiments
 
@@ -185,6 +205,7 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - optimize large-context prefill preparation and scheduling further, especially on CUDA
 - continue exact decode optimization in the midrange SmolLM2 `512-1536` region where memory wins exist but speed wins are mixed
 - run the new Phase 6 vLLM offline benchmark on the CUDA cloud instance and add the first dense-vs-shadow-vs-active records
+- use the teacher-forced loss harness as the default local quality gate for any future `M1/M2` codec changes before promoting them into the main model path
 
 ## Phase 6 Status
 

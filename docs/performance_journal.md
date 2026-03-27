@@ -10,6 +10,28 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 Current branch head: `main`
 
+### Teacher-forced quality snapshot
+
+The new [bench_llama_loss.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_loss.py) harness is now the best local quality check for `M1` and `M2`, because greedy agreement and raw max-logit drift were proving too coarse on short continuations.
+
+Latest teacher-forced loss checks on this M4:
+
+| Model | Prefix / Eval | Mode | DotCache Loss Delta | Perplexity Ratio | Token Agreement | Max Abs Logit Drift | DotCache Decode ms/step |
+|---|---:|---|---:|---:|---:|---:|---:|
+| TinyLlama | `288 / 32` | `K=M0, V=M0` | `-0.00101` | `0.99899` | `1.00` | `8.15` | `3966.95` |
+| TinyLlama | `288 / 32` | `K=M0, V=M1` | `-0.00014` | `0.99986` | `1.00` | `12.89` | `2384.70` |
+| TinyLlama | `288 / 32` | `K=M2, V=M0` | `+0.00002` | `1.00002` | `1.00` | `12.12` | `2593.00` |
+| SmolLM2 360M | `1024 / 16` | `K=M0, V=M0` | `-0.00198` | `0.99803` | `1.00` | `7.57` | `2309.06` |
+| SmolLM2 360M | `1024 / 16` | `K=M0, V=M1` | `+0.01717` | `1.01732` | `1.00` | `14.54` | `2601.01` |
+| SmolLM2 360M | `1024 / 16` | `K=M2, V=M0` | `+0.02865` | `1.02907` | `1.00` | `17.64` | `2512.91` |
+
+What that changed in our read:
+
+- TinyLlama is much more forgiving than the earlier max-logit drift numbers suggested. Both `V`-only `M1` and adaptive `K`-only `M2` kept teacher-forced loss essentially flat on the tested `32`-token continuation.
+- SmolLM2 is not nearly as forgiving. At `1024` prefix tokens, both approximate modes materially worsen teacher-forced loss even though teacher-forced token agreement still stays at `1.00`.
+- `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
+- Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
+
 ### Phase 6 vLLM adapter status
 
 The first correctness-first Phase 6 surface is now implemented in [dotcache/integrations/vllm_adapter](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/vllm_adapter).
