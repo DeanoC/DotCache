@@ -546,6 +546,21 @@ class LlamaDotCacheModelAdapter:
         self._current_token_index_override = None
         self.reset_runtime_metrics()
 
+    def reconfigure(self, dotcache_config: DotCacheConfig, *, backend: str | None = None) -> None:
+        self.dotcache_config = dotcache_config
+        if backend is not None:
+            self.backend = backend
+        self.model_kv_cache = ModelPagedKVCache(
+            config=dotcache_config,
+            num_hidden_layers=self.model.config.num_hidden_layers,
+            num_attention_heads=self.model.config.num_attention_heads,
+            num_key_value_heads=self.model.config.num_key_value_heads,
+            backend=self.backend,
+            cache=self.cache,
+        )
+        self.q_head_to_kv_head = self.model_kv_cache.default_q_head_to_kv_head.copy()
+        self.clear()
+
     def reset_runtime_metrics(self) -> None:
         self.append_runtime_ms_total = 0.0
         self.decode_runtime_ms_total = 0.0
@@ -842,6 +857,7 @@ def _run_dotcache_decode_inputs(
     attention_mask,
     prefill_layers: Sequence[tuple[Any, Any]],
     decode_inputs: Sequence[Any],
+    profile_backend: bool = False,
 ) -> dict[str, Any]:
     if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
         adapter.load_prefill_cache_tensors(prefill_layers)
@@ -853,11 +869,11 @@ def _run_dotcache_decode_inputs(
     current_attention_mask = attention_mask if use_attention_mask else None
     step_logits: list[np.ndarray] = []
     decode_ms_total = 0.0
-    trace_total = ExecutionTrace()
+    trace_total = ExecutionTrace(capture_timings=profile_backend)
 
     for offset, decode_input in enumerate(decode_inputs):
         cache_position = torch.tensor([input_ids.shape[1] + offset], dtype=torch.long, device=input_ids.device)
-        step_trace = ExecutionTrace()
+        step_trace = ExecutionTrace(capture_timings=profile_backend)
         adapter.active_trace = step_trace
         adapter.set_current_token_index(int(input_ids.shape[1] + offset))
         try:
@@ -939,6 +955,7 @@ def _run_dotcache_greedy_decode(
     prefill_layers: Sequence[tuple[Any, Any]],
     first_generated_token,
     max_new_tokens: int,
+    profile_backend: bool = False,
 ) -> dict[str, Any]:
     if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
         adapter.load_prefill_cache_tensors(prefill_layers)
@@ -954,7 +971,7 @@ def _run_dotcache_greedy_decode(
             "append_runtime_ms_total": 0.0,
             "decode_runtime_ms_total": 0.0,
             "step_count": 0,
-            "trace": ExecutionTrace(),
+            "trace": ExecutionTrace(capture_timings=profile_backend),
         }
 
     current_input_ids = first_generated_token
@@ -971,10 +988,10 @@ def _run_dotcache_greedy_decode(
     current_token_index = int(input_ids.shape[1])
     step_count = 0
     decode_ms_total = 0.0
-    trace_total = ExecutionTrace()
+    trace_total = ExecutionTrace(capture_timings=profile_backend)
 
     for _ in range(max_new_tokens - 1):
-        step_trace = ExecutionTrace()
+        step_trace = ExecutionTrace(capture_timings=profile_backend)
         adapter.active_trace = step_trace
         adapter.set_current_token_index(current_token_index)
         try:
@@ -1132,7 +1149,7 @@ def run_llama_generation_harness(
         capture=False,
     )
 
-    prefill_trace = ExecutionTrace()
+    prefill_trace = ExecutionTrace(capture_timings=profile)
     prefill_cuda_baseline = _begin_cuda_memory_region(input_ids.device) if profile else None
     _, prefill_ingest_ms = _timed_call(
         lambda: adapter.load_prefill_cache_tensors(dense_result["prefill_layers"], trace=prefill_trace)
@@ -1146,7 +1163,7 @@ def run_llama_generation_harness(
         generated_ids = dense_result["generated_ids"]
         decode_ms_per_step = 0.0
         append_ms_per_step = 0.0
-        decode_trace = ExecutionTrace()
+        decode_trace = ExecutionTrace(capture_timings=profile)
         step_count = 0
         append_runtime_ms_per_step = 0.0
         decode_runtime_ms_per_step = 0.0
@@ -1162,6 +1179,7 @@ def run_llama_generation_harness(
             prefill_layers=dense_result["prefill_layers"],
             first_generated_token=torch.as_tensor([[dense_result["generated_ids"][0]]], dtype=torch.long, device=input_ids.device),
             max_new_tokens=max_new_tokens,
+            profile_backend=profile,
         )
         step_count = int(dotcache_result["step_count"])
         decode_trace = dotcache_result["trace"]
@@ -1228,6 +1246,13 @@ def run_llama_generation_harness(
         if decode_ms_per_step > 0.0
         else 0.0,
         "decode_host_to_device_bytes_per_step": decode_trace.host_to_device_bytes / max(step_count, 1),
+        "prefill_prepare_ms": float(prefill_trace.prepare_ms_total),
+        "decode_prepare_ms_per_step": float(decode_trace.prepare_ms_total / max(step_count, 1)),
+        "decode_score_ms_per_step": float(decode_trace.score_ms_total / max(step_count, 1)),
+        "decode_softmax_ms_per_step": float(decode_trace.softmax_ms_total / max(step_count, 1)),
+        "decode_mix_ms_per_step": float(decode_trace.mix_ms_total / max(step_count, 1)),
+        "decode_unpack_ms_per_step": float(decode_trace.unpack_ms_total / max(step_count, 1)),
+        "decode_fwht_ms_per_step": float(decode_trace.fwht_ms_total / max(step_count, 1)),
         "teacher_forced_logit_max_abs_error": max_abs_logit_drift,
         "teacher_forced_logit_max_rel_error": max_rel_logit_drift,
     }
@@ -1241,6 +1266,7 @@ def run_llama_generation_harness(
             "prefill_cache_ingest": {
                 "ms_total": float(prefill_ingest_ms),
                 "host_to_device_bytes": int(prefill_trace.host_to_device_bytes),
+                "trace": prefill_trace.to_dict(),
                 **prefill_cuda_stats,
             },
             "dotcache_decode": {
@@ -1248,6 +1274,7 @@ def run_llama_generation_harness(
                 "step_count": int(step_count),
                 "host_to_device_bytes_total": int(decode_trace.host_to_device_bytes),
                 "host_to_device_bytes_per_step": float(decode_trace.host_to_device_bytes / max(step_count, 1)),
+                "trace": decode_trace.to_dict(),
                 **dotcache_cuda_stats,
             },
         }

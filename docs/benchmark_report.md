@@ -102,6 +102,32 @@ That is the right read for now:
 - In these current exact reruns, Turbo3 can look faster than the noisier `M0` and `V`-only `M1` baselines, but only by paying unacceptable quality loss.
 - So Turbo3 is still useful as a reference implementation and comparison point for future TurboQuant-style work, not a mode we should promote on the current MPS model path.
 
+### One-load local mode profiling
+
+The new [bench_llama_mode_profile.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_mode_profile.py) harness keeps one model loaded and reconfigures the local adapter across modes, which gives us a cleaner view of where time is going than the older compare runs.
+
+TinyLlama exact `289` prompt, one loaded model:
+
+| Mode | Decode ms/step | Score | Mix | Softmax | Unpack | FWHT | Prefill Ingest ms | Agreement | Max Abs Logit Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `M0` | `5203.45` | `1503.95` | `1409.28` | `100.06` | `2196.55` | `0.00` | `900.88` | `1.00` | `0.5781` |
+| `Turbo3` | `3917.59` | `882.65` | `687.37` | `105.42` | `802.08` | `30.89` | `8363.96` | `0.25` | `26.6152` |
+
+SmolLM2 `1024` prompt, one loaded model:
+
+| Mode | Decode ms/step | Score | Mix | Softmax | Unpack | FWHT | Prefill Ingest ms | Agreement | Max Abs Logit Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `M0` | `9695.87` | `2686.13` | `2961.70` | `165.62` | `0.00` | `0.00` | `2271.62` | `1.00` | `0.9769` |
+| `V-only M1` | `5409.58` | `1153.67` | `1163.36` | `153.08` | `648.66` | `0.00` | `10191.47` | `1.00` | `2.3926` |
+| `Turbo3` | `8156.85` | `2711.92` | `2897.00` | `113.40` | `968.75` | `42.12` | `60617.45` | `0.25` | `15.9824` |
+
+This profiling pass sharpened the local codec comparison:
+
+- Turbo3 is no longer obviously losing on raw decode arithmetic. On TinyLlama `289`, it is lighter than `M0` in grouped score, grouped mix, and sampled unpack.
+- That still does not make it a good local mode, because quality collapses and prefill ingest is far worse.
+- `V`-only `M1` is the more useful DotCache-side comparison at SmolLM2 `1024`: it reduces grouped decode work and resident bytes while staying greedy-stable, but it still loses badly on prefill ingest and teacher-forced quality versus exact `M0`.
+- On SmolLM2 `1024`, Turbo3 is also not a meaningful systems win: grouped score and mix stay close to `M0`, unpack remains heavy, and prefill ingest explodes.
+
 ## Memory
 
 ### Real-model KV-cache footprint
