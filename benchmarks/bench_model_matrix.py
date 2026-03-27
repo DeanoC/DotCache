@@ -49,30 +49,46 @@ def _default_compare_command(
     prompt_lengths: tuple[int, ...],
     continue_on_error: bool,
 ) -> list[str] | None:
-    if spec.benchmark_harness != "llama_compare" or not spec.dotcache_ready:
-        return None
     root = Path(__file__).resolve().parent.parent
-    command = [
-        str(root / ".venv" / "bin" / "python"),
-        str(root / "benchmarks" / "bench_llama_compare.py"),
-        "--model-id",
-        spec.model_id,
-        "--backend",
-        backend,
-        "--torch-dtype",
-        torch_dtype,
-        "--tokens-per-page",
-        str(tokens_per_page),
-        "--max-new-tokens",
-        str(max_new_tokens),
-        "--target-prompt-lengths",
-        *[str(length) for length in prompt_lengths],
-    ]
-    if continue_on_error:
-        command.append("--continue-on-error")
-    if device is not None:
-        command.extend(["--device", device])
-    return command
+    if spec.benchmark_harness == "llama_compare" and spec.dotcache_ready:
+        command = [
+            str(root / ".venv" / "bin" / "python"),
+            str(root / "benchmarks" / "bench_llama_compare.py"),
+            "--model-id",
+            spec.model_id,
+            "--backend",
+            backend,
+            "--torch-dtype",
+            torch_dtype,
+            "--tokens-per-page",
+            str(tokens_per_page),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            "--target-prompt-lengths",
+            *[str(length) for length in prompt_lengths],
+        ]
+        if continue_on_error:
+            command.append("--continue-on-error")
+        if device is not None:
+            command.extend(["--device", device])
+        return command
+    if spec.benchmark_harness == "gguf_external":
+        command = [
+            str(root / ".venv" / "bin" / "python"),
+            str(root / "benchmarks" / "bench_gguf_external.py"),
+            "--model-id",
+            spec.model_id,
+            "--tokenizer-model-id",
+            spec.tokenizer_model_id or spec.model_id,
+            "--max-new-tokens",
+            str(max_new_tokens),
+            "--target-prompt-lengths",
+            *[str(length) for length in prompt_lengths],
+        ]
+        if continue_on_error:
+            command.append("--continue-on-error")
+        return command
+    return None
 
 
 def _matrix_record(

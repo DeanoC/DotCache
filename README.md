@@ -98,6 +98,13 @@ bash scripts/run_turbo3_mps_suite.sh smollm2
 bash scripts/run_llama32_compare.sh
 ```
 
+9. External GGUF / llama.cpp reference lane:
+
+```bash
+bash scripts/run_llama32_gguf_reference.sh
+bash scripts/run_qwen25_gguf_reference.sh
+```
+
 ## Current package layout
 
 ```text
@@ -189,6 +196,26 @@ That wrapper targets `meta-llama/Llama-3.2-3B-Instruct` with exact prompt length
 ```bash
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
+```
+
+For the external GGUF / `llama.cpp` reference lane, use:
+
+```bash
+bash scripts/run_llama32_gguf_reference.sh
+bash scripts/run_qwen25_gguf_reference.sh
+```
+
+Those wrappers call [bench_gguf_external.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_gguf_external.py), which:
+
+- builds exact-length prompts with the matching Hugging Face tokenizer
+- runs `llama-cli -hf <repo>`
+- parses `llama.cpp` timing lines when they are available
+- emits a clean error record instead of crashing if `llama-cli` is not installed
+
+The same reference lanes are also exposed through the shared model matrix:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
 ```
 
 ## Phase 6 vLLM Integration

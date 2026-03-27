@@ -38,3 +38,23 @@ def test_matrix_record_can_disable_continue_on_error() -> None:
     assert isinstance(command, list)
     assert "--continue-on-error" not in command
     assert record["planned_prompt_lengths"] == (1024,)
+
+
+def test_matrix_record_for_llama32_gguf_emits_external_runner_command() -> None:
+    spec = get_model_spec("llama32_3b_gguf")
+    record = _matrix_record(
+        spec,
+        backend="auto",
+        device=None,
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_gguf_external.py" in " ".join(command)
+    assert "--tokenizer-model-id" in command
+    assert "meta-llama/Llama-3.2-3B-Instruct" in command
+    assert record["status"] == "runnable"
