@@ -8,7 +8,7 @@ The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Use
 
 ## Current Status
 
-Current branch head: `main`
+Current branch head: `codex/turbo3-local-optimization`
 
 ### Teacher-forced quality snapshot
 
@@ -35,24 +35,38 @@ What that changed in our read:
 - `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
 - Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
 
-### Turbo3 first local read
+### Turbo3 local lane on MPS
 
-Turbo3 is now implemented on the standalone exact runtime and the `torch_mps` path as a 3-bit FWHT-rotated codec with per-token/per-group norm correction.
+Turbo3 now has its own repeatable local runner on this Mac through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The current implementation also shares device-resident Turbo3 centroids across prepared pages, and it now has a correct vectorized `3`-bit spill-unpack path in [torch_mps.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/backends/torch_mps.py) that uses advanced indexing instead of repeated-index `torch.gather(...)`.
 
-First TinyLlama checks on this M4 were directionally clear and not yet good enough:
+That materially improved the raw Turbo3 baseline, but the overall model-path answer is still negative:
 
-- short prompt compare (`repeat_count=1`, about `10` prompt tokens):
-  - DotCache decode `4974.28 ms/step`
-  - dense decode `605.67 ms/step`
-  - greedy agreement `1.00`
-  - max abs logit drift `0.0234`
-- teacher-forced loss (`288 / 32`):
-  - loss delta `+3.1687`
-  - perplexity ratio `23.78`
-  - token agreement `0.3125`
-  - max abs logit drift `26.45`
+| Model | Prompt / Eval | Dense Decode ms/step | Turbo3 Decode ms/step | KV Ratio | Agreement | Loss Delta | Perplexity Ratio |
+|---|---|---:|---:|---:|---:|---:|---:|
+| TinyLlama | short compare (`10`) | `396.83` | `1757.78` | `9.85x` | `1.00` | n/a | n/a |
+| TinyLlama | exact compare (`289`) | `336.26` | `2631.47` | `0.55x` | `0.25` | n/a | n/a |
+| TinyLlama | loss (`288 / 32`) | `450.86` | `3351.38` | n/a | `0.3125` | `+3.16766` | `23.75` |
+| SmolLM2 360M | short compare (`7`) | `667.43` | `5711.28` | `12.80x` | `1.00` | n/a | n/a |
+| SmolLM2 360M | exact compare (`1024`) | `397.61` | `4306.74` | `0.27x` | `0.25` | n/a | n/a |
+| SmolLM2 360M | loss (`1024 / 16`) | `544.12` | `5496.32` | n/a | `0.50` | `+2.45040` | `11.59` |
 
-So Turbo3 is currently best understood as implemented reference infrastructure for future comparison with TurboQuant-style ideas, not as a usable local model-path winner.
+The most useful apples-to-apples local reference point is now this exact-prompt comparison:
+
+| Model | Prompt | Mode | Decode ms/step | Resident KV Bytes | Agreement | Max Abs Logit Error |
+|---|---:|---|---:|---:|---:|---:|
+| TinyLlama | `289` | `K=M0, V=M0` | `5730.80` | `7,929,856` | `1.00` | `0.5781` |
+| TinyLlama | `289` | `K=M0, V=M1` | `4132.39` | `7,580,672` | `1.00` | `3.2510` |
+| TinyLlama | `289` | `K=T3, V=T3` | `2631.47` | `7,208,960` | `0.25` | `26.6152` |
+| SmolLM2 360M | `1024` | `K=M0, V=M0` | `5521.76` | `29,360,128` | `1.00` | `0.9769` |
+| SmolLM2 360M | `1024` | `K=M0, V=M1` | `6224.08` | `26,820,608` | `1.00` | `3.8877` |
+| SmolLM2 360M | `1024` | `K=T3, V=T3` | `4306.74` | `23,068,672` | `0.25` | `15.9824` |
+
+What that means:
+
+- Turbo3 is materially better optimized on MPS than it was before the vectorized spill-unpack work.
+- It is still not realistically competitive on the real model path: it buys some KV-memory reduction and, on these noisy exact reruns, better raw decode time than the current-session `M0` / `V`-only `M1` baselines, but only by paying much worse model quality.
+- The most useful implementation lesson is concrete: on MPS, repeated-index `gather` is the wrong primitive for this style of low-bit unpack, while advanced indexing is both correct and faster.
+- Turbo3 therefore remains a useful reference baseline and implementation-study lane, not a mode we should promote on this Mac.
 
 ### Phase 6 vLLM adapter status
 
