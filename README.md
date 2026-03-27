@@ -176,16 +176,26 @@ The repo now also has a correctness-first Phase 6 adapter surface in [dotcache/i
 - offline-engine benchmarking only for the first milestone
 
 The real vLLM hook targets the pinned `0.18.x` line and is intentionally conservative about unknown versions.
+Because `vllm 0.18.x` defaults `vllm.LLM` to a detached engine-core process, DotCache's current adapter path requires the in-process engine. Use `configure_vllm_inprocess_runtime()` before constructing `vllm.LLM`, or set `VLLM_ENABLE_V1_MULTIPROCESSING=0` yourself.
+
+```python
+from dotcache.integrations.vllm_adapter import configure_vllm_inprocess_runtime
+
+configure_vllm_inprocess_runtime()
+
+from vllm import LLM
+```
 
 For the new offline benchmark harness on a CUDA box with vLLM installed, use:
 
 ```bash
-.venv/bin/python benchmarks/bench_vllm_offline.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --backend torch_cuda --block-size 16 --mode all --max-new-tokens 8
+.venv-vllm/bin/python benchmarks/bench_vllm_offline.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --backend torch_cuda --block-size 16 --mode all --prompt-repeat-counts 1 8 32 --max-new-tokens 16
 ```
 
 That benchmark prints dense, shadow, and active records with:
 
 - block size
+- prompt repeat count / tokenized prompt length
 - decode steps
 - wall-clock decode ms per step
 - DotCache block-encode / append / decode runtime totals

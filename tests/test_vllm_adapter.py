@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -7,11 +8,18 @@ import numpy as np
 import pytest
 
 from dotcache.attention_runtime import decode_step
+from dotcache.backends.torch_mps import (
+    PreparedPageTorch,
+    _get_grouped_prepared_chunk_mps,
+    clear_prepared_chunk_cache,
+)
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.integrations.vllm_adapter import (
+    VLLM_V1_MULTIPROCESSING_ENV,
     VllmAdapterConfig,
     VllmPagedKVCache,
+    configure_vllm_inprocess_runtime,
     install_dotcache_on_vllm_model,
 )
 from dotcache.integrations.vllm_adapter.compat import require_supported_vllm_version
@@ -62,6 +70,18 @@ def test_require_supported_vllm_version_rejects_unknown_minor(monkeypatch) -> No
     monkeypatch.setattr("dotcache.integrations.vllm_adapter.compat.get_vllm_version", lambda: "0.17.2")
     with pytest.raises(RuntimeError, match="Unsupported vLLM version"):
         require_supported_vllm_version(supported_minor="0.18")
+
+
+def test_configure_vllm_inprocess_runtime_sets_default(monkeypatch) -> None:
+    monkeypatch.delenv(VLLM_V1_MULTIPROCESSING_ENV, raising=False)
+    assert configure_vllm_inprocess_runtime() == "0"
+    assert os.environ[VLLM_V1_MULTIPROCESSING_ENV] == "0"
+
+
+def test_configure_vllm_inprocess_runtime_rejects_multiprocess_setting(monkeypatch) -> None:
+    monkeypatch.setenv(VLLM_V1_MULTIPROCESSING_ENV, "1")
+    with pytest.raises(RuntimeError, match="requires the in-process runtime"):
+        configure_vllm_inprocess_runtime()
 
 
 def test_vllm_block_table_mapping_tracks_stable_block_ownership() -> None:
@@ -166,6 +186,88 @@ def test_vllm_live_partial_block_stays_visible_without_finalization() -> None:
     np.testing.assert_allclose(outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)
 
 
+def test_vllm_append_tokens_torch_chunks_prefill_on_block_boundaries(monkeypatch) -> None:
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = VllmPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        block_size=4,
+        backend="cpu_ref",
+    )
+    key_rows = torch.zeros((10, 2, config.head_dim), dtype=torch.float32)
+    value_rows = torch.zeros((10, 2, config.head_dim), dtype=torch.float32)
+    positions = torch.arange(10, dtype=torch.long)
+    calls: list[tuple[int, tuple[int, ...], tuple[int, ...]]] = []
+
+    def _record_append(layer_id, key_step, value_step, token_index, *, trace=None):
+        del layer_id, trace
+        calls.append((int(token_index), tuple(key_step.shape), tuple(value_step.shape)))
+
+    monkeypatch.setattr(cache.model_kv_cache, "append_step_torch", _record_append)
+    cache.append_tokens_torch(0, key_rows, value_rows, positions)
+
+    assert calls == [
+        (0, (2, 4, config.head_dim), (2, 4, config.head_dim)),
+        (4, (2, 4, config.head_dim), (2, 4, config.head_dim)),
+        (8, (2, 2, config.head_dim), (2, 2, config.head_dim)),
+    ]
+
+
+def test_grouped_prepared_chunk_cache_reuses_stable_m0_page_batches() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    rng = np.random.default_rng(1206)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+                payload=torch.from_numpy(encoded.payload.astype(np.int32, copy=True)),
+            scales=torch.from_numpy(encoded.scales.copy()),
+            bias=torch.from_numpy(encoded.bias.copy()),
+            unpack_shifts=torch.arange(8, dtype=torch.int32) * encoded.header.bits,
+            unpack_mask=torch.tensor((1 << encoded.header.bits) - 1, dtype=torch.int32),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=11),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=12),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=13),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=14),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=21),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=22),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=23),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=24),
+        ],
+    ]
+
+    first = _get_grouped_prepared_chunk_mps(pages_by_group)
+    second = _get_grouped_prepared_chunk_mps(pages_by_group)
+
+    assert first is not None
+    assert second is first
+    assert first.payload_groups[0].shape[0] == len(pages_by_group)
+    assert first.payload_groups[0].shape[1] == len(pages_by_group[0])
+    assert first.codes_groups is not None
+    assert first.codes_groups[0].shape[-1] == config.group_size
+
+
 torch = pytest.importorskip("torch")
 
 
@@ -206,6 +308,8 @@ class _FakeVllmLlamaAttention(torch.nn.Module):
         self.qkv_proj = _FakeQKVProj(hidden_size, self.q_size, self.kv_size)
         self.o_proj = _FakeOProj(hidden_size)
         self.rotary_emb = _FakeRotary()
+        self.forward_call_count = 0
+        self.single_token_forward_call_count = 0
         self.register_buffer("_dense_keys", torch.zeros((self.num_kv_heads, 0, self.head_dim), dtype=torch.float32))
         self.register_buffer("_dense_values", torch.zeros((self.num_kv_heads, 0, self.head_dim), dtype=torch.float32))
         self._mapping = torch.from_numpy(default_q_head_to_kv_head(self.num_heads, self.num_kv_heads))
@@ -217,6 +321,9 @@ class _FakeVllmLlamaAttention(torch.nn.Module):
     def forward(self, positions, hidden_states):
         del positions
         token_count = int(hidden_states.shape[0])
+        self.forward_call_count += 1
+        if token_count == 1:
+            self.single_token_forward_call_count += 1
         qkv, _ = self.qkv_proj(hidden_states)
         query, key, value = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         query, key = self.rotary_emb(None, query, key)
@@ -322,4 +429,58 @@ def test_vllm_active_matches_shadow_dotcache_output_for_finalized_prefill_case()
         rtol=1e-5,
     )
     assert shadow_adapter.shadow_output_max_abs_error >= 0.0
+    assert active_adapter.resident_bytes >= 0
+
+
+def test_vllm_active_decode_skips_dense_attention_forward() -> None:
+    torch.manual_seed(1205)
+    config = DotCacheConfig(head_dim=8, group_size=8, bits_k=4, bits_v=4, tokens_per_page=4)
+    shadow_model = _FakeVllmExecutorModel(hidden_size=32, num_heads=4, num_kv_heads=2, num_hidden_layers=1)
+    active_model = deepcopy(shadow_model)
+
+    shadow_adapter = install_dotcache_on_vllm_model(
+        shadow_model,
+        config,
+        block_size=4,
+        backend="cpu_ref",
+        mode="dotcache_shadow",
+    )
+    active_adapter = install_dotcache_on_vllm_model(
+        active_model,
+        config,
+        block_size=4,
+        backend="cpu_ref",
+        mode="dotcache_active",
+    )
+
+    prefill_positions = torch.arange(4, dtype=torch.long)
+    prefill_hidden = torch.randn(4, 32, dtype=torch.float32)
+    decode_inputs = [
+        (torch.tensor([4], dtype=torch.long), torch.randn(1, 32, dtype=torch.float32)),
+        (torch.tensor([5], dtype=torch.long), torch.randn(1, 32, dtype=torch.float32)),
+    ]
+
+    shadow_layer = shadow_model.model.layers[0].self_attn
+    active_layer = active_model.model.layers[0].self_attn
+    shadow_base_attention = shadow_layer.base_attention
+    active_base_attention = active_layer.base_attention
+
+    shadow_layer(prefill_positions, prefill_hidden)
+    active_layer(prefill_positions, prefill_hidden)
+    assert shadow_base_attention.single_token_forward_call_count == 0
+    assert active_base_attention.single_token_forward_call_count == 0
+
+    for decode_positions, decode_hidden in decode_inputs:
+        shadow_output = shadow_layer(decode_positions, decode_hidden)
+        active_output = active_layer(decode_positions, decode_hidden)
+        np.testing.assert_allclose(
+            active_output.detach().cpu().numpy(),
+            shadow_adapter.last_dotcache_output(0).detach().cpu().numpy(),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        assert tuple(shadow_output.shape) == (1, 32)
+
+    assert shadow_base_attention.single_token_forward_call_count == len(decode_inputs)
+    assert active_base_attention.single_token_forward_call_count == 0
     assert active_adapter.resident_bytes >= 0

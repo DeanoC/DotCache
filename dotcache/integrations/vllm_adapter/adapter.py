@@ -9,7 +9,7 @@ import numpy as np
 from ...page_cache import PreparedPageCache
 from ...tracing import ExecutionTrace
 from .block_cache import VllmPagedKVCache
-from .compat import require_supported_vllm_version
+from .compat import VLLM_V1_MULTIPROCESSING_ENV, require_supported_vllm_version
 from .config import VllmAdapterConfig, VllmAdapterMode
 
 try:  # pragma: no cover - torch is optional for the base repo
@@ -121,7 +121,7 @@ class DotCacheVllmLlamaAttention(nn.Module):  # type: ignore[misc]
             self.adapter.prefill_block_encode_ms_total += (time.perf_counter() - encode_start) * 1000.0
             return dense_output
 
-        dense_output = self.base_attention(positions, hidden_states)
+        dense_output = self.base_attention(positions, hidden_states) if self.adapter.mode == "dotcache_shadow" else None
         append_start = time.perf_counter()
         if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type):
             self.adapter.block_cache.append_step_torch(
@@ -169,6 +169,8 @@ class DotCacheVllmLlamaAttention(nn.Module):  # type: ignore[misc]
 
         self.adapter.record_last_dotcache_output(self.layer_id, dotcache_output)
         if self.adapter.mode == "dotcache_shadow":
+            if dense_output is None:
+                raise RuntimeError("shadow mode requires the dense attention output for comparison")
             self.adapter.record_shadow_output(dense_output, dotcache_output)
             return dense_output
         return dotcache_output
@@ -331,8 +333,9 @@ def install_dotcache_on_vllm_runtime(
         if engine_core is not None and engine_core.__class__.__name__ != "InprocClient":
             raise RuntimeError(
                 "could not locate a supported vLLM Llama-family executor model inside the target runtime; "
-                "for vLLM 0.18.x use the in-process engine path by setting "
-                "VLLM_ENABLE_V1_MULTIPROCESSING=0 before constructing vllm.LLM"
+                f"for vLLM 0.18.x use the in-process engine path by setting "
+                f"{VLLM_V1_MULTIPROCESSING_ENV}=0 or calling "
+                "configure_vllm_inprocess_runtime() before constructing vllm.LLM"
             )
         raise RuntimeError("could not locate a supported vLLM Llama-family executor model inside the target runtime")
     resolved_block_size = int(block_size) if block_size is not None else _infer_block_size_from_target(target)

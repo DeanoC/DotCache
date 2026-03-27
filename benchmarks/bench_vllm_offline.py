@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import gc
 import json
-import os
 import time
 from typing import Any
 
@@ -16,6 +15,7 @@ from transformers import AutoConfig
 
 from dotcache.config import DotCacheConfig
 from dotcache.integrations.vllm_adapter import (
+    configure_vllm_inprocess_runtime,
     install_dotcache_on_vllm_runtime,
     require_supported_vllm_version,
     vllm_available,
@@ -33,7 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-model-len", type=int, default=None)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.8)
     parser.add_argument("--max-new-tokens", type=int, default=8)
+    parser.add_argument("--ignore-eos", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--prompt", default="Write one short sentence about cache locality.")
+    parser.add_argument("--prompt-repeat-counts", type=int, nargs="*", default=[1])
     parser.add_argument("--trust-remote-code", action="store_true")
     return parser.parse_args()
 
@@ -45,16 +47,13 @@ def _require_vllm_runtime() -> None:
 
 
 def _configure_vllm_runtime_env() -> None:
-    # The Phase 6 adapter wraps the in-process executor model. vLLM 0.18
-    # defaults the high-level LLM entrypoint to a detached engine-core process,
-    # which hides the model object from this prototype adapter.
-    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    configure_vllm_inprocess_runtime()
 
 
-def _sampling_params(max_new_tokens: int):
+def _sampling_params(max_new_tokens: int, *, ignore_eos: bool):
     from vllm import SamplingParams
 
-    return SamplingParams(temperature=0.0, max_tokens=max_new_tokens)
+    return SamplingParams(temperature=0.0, max_tokens=max_new_tokens, ignore_eos=bool(ignore_eos))
 
 
 def _build_llm(args: argparse.Namespace):
@@ -65,6 +64,9 @@ def _build_llm(args: argparse.Namespace):
         "dtype": args.dtype,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "block_size": args.block_size,
+        # Keep prompt cases independent in the offline harness so DotCache and
+        # dense runs see the same prefill work.
+        "enable_prefix_caching": False,
         "enforce_eager": True,
         "trust_remote_code": bool(args.trust_remote_code),
     }
@@ -118,14 +120,56 @@ def _build_dotcache_adapter(args: argparse.Namespace, llm: Any):
     )
 
 
-def _run_mode(args: argparse.Namespace, llm: Any, *, mode: str, adapter: Any | None) -> dict[str, Any]:
+def _tokenized_prompt_length(llm: Any, prompt: str) -> int | None:
+    tokenizer = llm.get_tokenizer() if hasattr(llm, "get_tokenizer") else None
+    if tokenizer is None:
+        return None
+    encoded = tokenizer(prompt, add_special_tokens=False)
+    if isinstance(encoded, dict):
+        token_ids = encoded.get("input_ids")
+    else:
+        token_ids = getattr(encoded, "input_ids", None)
+    if token_ids is None:
+        return None
+    return int(len(token_ids))
+
+
+def _prompt_cases(args: argparse.Namespace, llm: Any) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    seen_repeat_counts: set[int] = set()
+    for repeat_count in args.prompt_repeat_counts:
+        resolved_repeat_count = max(int(repeat_count), 1)
+        if resolved_repeat_count in seen_repeat_counts:
+            continue
+        seen_repeat_counts.add(resolved_repeat_count)
+        prompt = " ".join([args.prompt] * resolved_repeat_count)
+        cases.append(
+            {
+                "prompt": prompt,
+                "prompt_repeat_count": resolved_repeat_count,
+                "prompt_length": _tokenized_prompt_length(llm, prompt),
+            }
+        )
+    return cases
+
+
+def _run_mode(
+    args: argparse.Namespace,
+    llm: Any,
+    *,
+    mode: str,
+    adapter: Any | None,
+    prompt: str,
+    prompt_repeat_count: int,
+    prompt_length: int | None,
+) -> dict[str, Any]:
     if adapter is not None:
         adapter.set_mode(mode)
         adapter.clear()
         adapter.reset_runtime_metrics()
-    sampling_params = _sampling_params(args.max_new_tokens)
+    sampling_params = _sampling_params(args.max_new_tokens, ignore_eos=args.ignore_eos)
     start = time.perf_counter()
-    outputs = llm.generate([args.prompt], sampling_params=sampling_params)
+    outputs = llm.generate([prompt], sampling_params=sampling_params)
     wall_ms = (time.perf_counter() - start) * 1000.0
     if not outputs:
         raise RuntimeError("vLLM returned no outputs")
@@ -136,8 +180,9 @@ def _run_mode(args: argparse.Namespace, llm: Any, *, mode: str, adapter: Any | N
         "mode": mode,
         "backend": args.backend,
         "block_size": args.block_size,
-        "prompt": args.prompt,
-        "prompt_length": None,
+        "prompt": prompt,
+        "prompt_length": prompt_length,
+        "prompt_repeat_count": prompt_repeat_count,
         "decode_steps": len(token_ids),
         "generated_token_ids": token_ids,
         "wall_ms_total": wall_ms,
@@ -169,28 +214,42 @@ def main() -> None:
     llm = _build_llm(args)
     try:
         adapter = _build_dotcache_adapter(args, llm) if any(mode != "dense" for mode in modes) else None
-        records = [_run_mode(args, llm, mode=mode, adapter=adapter) for mode in modes]
+        records: list[dict[str, Any]] = []
+        for prompt_case in _prompt_cases(args, llm):
+            case_records = [
+                _run_mode(
+                    args,
+                    llm,
+                    mode=mode,
+                    adapter=adapter,
+                    prompt=prompt_case["prompt"],
+                    prompt_repeat_count=prompt_case["prompt_repeat_count"],
+                    prompt_length=prompt_case["prompt_length"],
+                )
+                for mode in modes
+            ]
+            dense_record = next((record for record in case_records if record["mode"] == "dense"), None)
+            if dense_record is not None:
+                dense_ids = dense_record["generated_token_ids"]
+                for record in case_records:
+                    if record["mode"] == "dense":
+                        continue
+                    compared = min(len(dense_ids), len(record["generated_token_ids"]))
+                    agreement = 1.0
+                    if compared > 0:
+                        agreement = sum(
+                            int(dense_ids[index] == record["generated_token_ids"][index]) for index in range(compared)
+                        ) / compared
+                    record["greedy_agreement_vs_dense"] = agreement
+                    record["dense_decode_ms_per_step"] = dense_record["decode_ms_per_step"]
+                    record["dotcache_vs_dense_decode_speedup"] = (
+                        dense_record["decode_ms_per_step"] / record["decode_ms_per_step"]
+                        if record["decode_ms_per_step"] > 0
+                        else None
+                    )
+            records.extend(case_records)
     finally:
         _shutdown_llm(llm)
-    dense_record = next((record for record in records if record["mode"] == "dense"), None)
-    if dense_record is not None:
-        dense_ids = dense_record["generated_token_ids"]
-        for record in records:
-            if record["mode"] == "dense":
-                continue
-            compared = min(len(dense_ids), len(record["generated_token_ids"]))
-            agreement = 1.0
-            if compared > 0:
-                agreement = sum(
-                    int(dense_ids[index] == record["generated_token_ids"][index]) for index in range(compared)
-                ) / compared
-            record["greedy_agreement_vs_dense"] = agreement
-            record["dense_decode_ms_per_step"] = dense_record["decode_ms_per_step"]
-            record["dotcache_vs_dense_decode_speedup"] = (
-                dense_record["decode_ms_per_step"] / record["decode_ms_per_step"]
-                if record["decode_ms_per_step"] > 0
-                else None
-            )
     print(json.dumps(records if len(records) > 1 else records[0], sort_keys=True))
 
 

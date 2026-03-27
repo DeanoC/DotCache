@@ -336,6 +336,81 @@ class VllmPagedKVCache:
         values = value_step.detach().to(dtype=value_step.dtype).cpu().numpy().astype(np.float32, copy=False)
         self._update_block_entries_from_steps(layer_id, keys, values, token_index)
 
+    def _store_block_entry(
+        self,
+        layer_id: int,
+        kv_head_id: int,
+        block_id: int,
+        kind: str,
+        rows: np.ndarray,
+        *,
+        token_start: int,
+    ) -> None:
+        token_count = int(rows.shape[0])
+        finalized = token_count == self.block_size
+        page = encode_page(
+            np.asarray(rows, dtype=np.float32),
+            self.config,
+            kind=kind,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            mode=None if finalized else "M3",
+            build_runtime_metadata=False,
+        )
+        self._blocks[VllmBlockKey(layer_id, kv_head_id, block_id, kind)] = VllmBlockEntry(
+            key=VllmBlockKey(layer_id, kv_head_id, block_id, kind),
+            page=page,
+            finalized=finalized,
+            token_count=token_count,
+            token_start=token_start,
+        )
+
+    def _update_block_entries_from_chunk(
+        self,
+        layer_id: int,
+        key_rows_by_head: np.ndarray,
+        value_rows_by_head: np.ndarray,
+        token_index: int,
+    ) -> None:
+        token_count = int(key_rows_by_head.shape[1])
+        if token_count == 0:
+            return
+        block_id = int(token_index) // self.block_size
+        block_offset = int(token_index) % self.block_size
+        token_start = block_id * self.block_size
+        if block_offset + token_count > self.block_size:
+            raise ValueError("chunk update cannot span multiple blocks")
+
+        for kv_head_id in range(self.num_key_value_heads):
+            state = self._live_states.setdefault((layer_id, kv_head_id), _LiveBlockState())
+            if block_offset == 0 or state.block_id != block_id:
+                state.clear()
+                state.block_id = block_id
+                state.token_start = token_start
+            state.key_rows.extend(np.asarray(row, dtype=np.float32) for row in key_rows_by_head[kv_head_id])
+            state.value_rows.extend(np.asarray(row, dtype=np.float32) for row in value_rows_by_head[kv_head_id])
+            key_rows = np.stack(state.key_rows, axis=0).astype(np.float32, copy=False)
+            value_rows = np.stack(state.value_rows, axis=0).astype(np.float32, copy=False)
+            self._store_block_entry(
+                layer_id,
+                kv_head_id,
+                block_id,
+                "K",
+                key_rows,
+                token_start=token_start,
+            )
+            self._store_block_entry(
+                layer_id,
+                kv_head_id,
+                block_id,
+                "V",
+                value_rows,
+                token_start=token_start,
+            )
+            if key_rows.shape[0] == self.block_size:
+                state.clear()
+
     def append_tokens_torch(
         self,
         layer_id: int,
@@ -351,7 +426,26 @@ class VllmPagedKVCache:
         expected = np.arange(int(positions[0]), int(positions[0]) + positions.size, dtype=np.int64)
         if not np.array_equal(positions, expected):
             raise ValueError("Phase 6 vLLM adapter requires contiguous batch=1 token positions")
-        self.append_step_torch(layer_id, key_rows.transpose(0, 1), value_rows.transpose(0, 1), int(positions[0]), trace=trace)
+        keys_by_head = key_rows.transpose(0, 1)
+        values_by_head = value_rows.transpose(0, 1)
+        offset = 0
+        while offset < positions.size:
+            token_index = int(positions[offset])
+            block_offset = token_index % self.block_size
+            chunk_size = min(self.block_size - block_offset, positions.size - offset)
+            key_chunk = keys_by_head[:, offset : offset + chunk_size]
+            value_chunk = values_by_head[:, offset : offset + chunk_size]
+            self.model_kv_cache.append_step_torch(
+                layer_id,
+                key_chunk,
+                value_chunk,
+                token_index,
+                trace=trace,
+            )
+            key_chunk_cpu = key_chunk.detach().cpu().numpy().astype(np.float32, copy=False)
+            value_chunk_cpu = value_chunk.detach().cpu().numpy().astype(np.float32, copy=False)
+            self._update_block_entries_from_chunk(layer_id, key_chunk_cpu, value_chunk_cpu, token_index)
+            offset += chunk_size
 
     def _update_block_entries_from_steps(
         self,
