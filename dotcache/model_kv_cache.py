@@ -807,22 +807,48 @@ class ModelPagedKVCache:
             "requested_m1_pages": 0,
             "m1_fallback_pages": 0,
             "active_tail_pages": 0,
+            "k_total_static_pages": 0,
+            "v_total_static_pages": 0,
+            "k_m0_pages": 0,
+            "k_m1_pages": 0,
+            "k_m3_pages": 0,
+            "v_m0_pages": 0,
+            "v_m1_pages": 0,
+            "v_m3_pages": 0,
+            "k_requested_m1_pages": 0,
+            "v_requested_m1_pages": 0,
+            "k_m1_fallback_pages": 0,
+            "v_m1_fallback_pages": 0,
         }
         m1_trial_errors: list[float] = []
+        k_m1_trial_errors: list[float] = []
+        v_m1_trial_errors: list[float] = []
 
         def visit_page(page: PageLike) -> None:
             source = page.source_page if isinstance(page, PreparedPageTorch) else page
             counts["total_static_pages"] += 1
+            kind_prefix = str(source.header.kind).lower()
+            counts[f"{kind_prefix}_total_static_pages"] += 1
             mode_name = str(source.header.mode_default)
             key = f"{mode_name.lower()}_pages"
             if key in counts:
                 counts[key] += 1
+            kind_key = f"{kind_prefix}_{mode_name.lower()}_pages"
+            if kind_key in counts:
+                counts[kind_key] += 1
             if source.requested_mode == "M1":
                 counts["requested_m1_pages"] += 1
+                counts[f"{kind_prefix}_requested_m1_pages"] += 1
                 if source.header.mode_default != "M1":
                     counts["m1_fallback_pages"] += 1
+                    counts[f"{kind_prefix}_m1_fallback_pages"] += 1
                 if source.trial_quant_error is not None:
-                    m1_trial_errors.append(float(source.trial_quant_error))
+                    error_value = float(source.trial_quant_error)
+                    m1_trial_errors.append(error_value)
+                    if kind_prefix == "k":
+                        k_m1_trial_errors.append(error_value)
+                    else:
+                        v_m1_trial_errors.append(error_value)
 
         for state in self._states.values():
             for page in state.session.key_pages:
@@ -842,6 +868,16 @@ class ModelPagedKVCache:
             summary["m1_trial_error_mean"] = 0.0
             summary["m1_trial_error_max"] = 0.0
             summary["m1_trial_error_p95"] = 0.0
+        for prefix, error_values in (("k", k_m1_trial_errors), ("v", v_m1_trial_errors)):
+            if error_values:
+                errors = np.asarray(error_values, dtype=np.float32)
+                summary[f"{prefix}_m1_trial_error_mean"] = float(np.mean(errors))
+                summary[f"{prefix}_m1_trial_error_max"] = float(np.max(errors))
+                summary[f"{prefix}_m1_trial_error_p95"] = float(np.percentile(errors, 95))
+            else:
+                summary[f"{prefix}_m1_trial_error_mean"] = 0.0
+                summary[f"{prefix}_m1_trial_error_max"] = 0.0
+                summary[f"{prefix}_m1_trial_error_p95"] = 0.0
         return summary
 
     def _batch_upload_persistent_tail_rows(

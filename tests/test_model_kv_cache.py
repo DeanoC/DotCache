@@ -195,7 +195,13 @@ def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
     assert int(summary["requested_m1_pages"]) == int(summary["total_static_pages"])
     assert int(summary["m1_fallback_pages"]) == int(summary["total_static_pages"])
     assert int(summary["m0_pages"]) == int(summary["total_static_pages"])
+    assert int(summary["k_requested_m1_pages"]) == int(summary["k_total_static_pages"])
+    assert int(summary["v_requested_m1_pages"]) == int(summary["v_total_static_pages"])
+    assert int(summary["k_m1_fallback_pages"]) == int(summary["k_total_static_pages"])
+    assert int(summary["v_m1_fallback_pages"]) == int(summary["v_total_static_pages"])
     assert float(summary["m1_trial_error_max"]) > 0.0
+    assert float(summary["k_m1_trial_error_max"]) > 0.0
+    assert float(summary["v_m1_trial_error_max"]) > 0.0
 
 
 def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> None:
