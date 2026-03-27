@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import time
-from pathlib import Path
 
 from transformers import AutoTokenizer
 
@@ -117,6 +116,41 @@ def _llama_cli_command(
     return command
 
 
+def _probe_llama_cli(executable: str) -> dict[str, object]:
+    probe: dict[str, object] = {
+        "llama_cli": executable,
+        "llama_cli_found": True,
+    }
+
+    version_completed = subprocess.run(
+        [executable, "--version"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    version_text = "\n".join(
+        part.strip() for part in (version_completed.stdout, version_completed.stderr) if part.strip()
+    )
+    probe["llama_cli_version_rc"] = version_completed.returncode
+    probe["llama_cli_version_text"] = version_text[:500]
+
+    help_completed = subprocess.run(
+        [executable, "-h"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    help_text = "\n".join(
+        part.strip() for part in (help_completed.stdout, help_completed.stderr) if part.strip()
+    )
+    probe["llama_cli_help_rc"] = help_completed.returncode
+    probe["llama_cli_supports_hf"] = "-hf" in help_text
+    probe["llama_cli_help_excerpt"] = help_text[:1000]
+    return probe
+
+
 def _emit_error_record(
     *,
     args: argparse.Namespace,
@@ -125,23 +159,24 @@ def _emit_error_record(
     repeat_count: int | None,
     error_type: str,
     error_message: str,
+    probe: dict[str, object] | None = None,
 ) -> None:
+    record = {
+        "benchmark": "gguf_external",
+        "status": "error",
+        "model_id": args.model_id,
+        "tokenizer_model_id": args.tokenizer_model_id,
+        "runtime": "llama_cpp",
+        "prompt_mode": prompt_mode,
+        "requested_prompt_length": requested_prompt_length,
+        "repeat_count": repeat_count,
+        "error_type": error_type,
+        "error_message": error_message,
+    }
+    if probe is not None:
+        record.update(probe)
     print(
-        json.dumps(
-            {
-                "benchmark": "gguf_external",
-                "status": "error",
-                "model_id": args.model_id,
-                "tokenizer_model_id": args.tokenizer_model_id,
-                "runtime": "llama_cpp",
-                "prompt_mode": prompt_mode,
-                "requested_prompt_length": requested_prompt_length,
-                "repeat_count": repeat_count,
-                "error_type": error_type,
-                "error_message": error_message,
-            },
-            sort_keys=True,
-        ),
+        json.dumps(record, sort_keys=True),
         flush=True,
     )
 
@@ -166,10 +201,12 @@ def _run_case(
                 repeat_count=repeat_count,
                 error_type="MissingExecutable",
                 error_message=message,
+                probe={"llama_cli": args.llama_cli, "llama_cli_found": False},
             )
             return
         raise SystemExit(message)
 
+    probe = _probe_llama_cli(executable)
     command = _llama_cli_command(args, prompt_text=prompt_text)
     started_at = time.perf_counter()
     completed = subprocess.run(
@@ -188,7 +225,6 @@ def _run_case(
         "runtime": "llama_cpp",
         "model_id": args.model_id,
         "tokenizer_model_id": args.tokenizer_model_id,
-        "llama_cli": executable,
         "command": command,
         "prompt_mode": prompt_mode,
         "requested_prompt_length": requested_prompt_length,
@@ -200,6 +236,7 @@ def _run_case(
         "stdout_tail": completed.stdout[-1000:],
         "stderr_tail": completed.stderr[-1000:],
     }
+    record.update(probe)
     record.update(_parse_timings(combined_output))
     print(json.dumps(record, sort_keys=True), flush=True)
     if completed.returncode != 0 and not args.continue_on_error:
