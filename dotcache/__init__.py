@@ -13,11 +13,13 @@ from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 from .model_kv_cache import ModelPagedKVCache
+from .model_registry import ModelSpec, get_model_spec, list_model_specs
 
 __all__ = [
     "DotCacheConfig",
     "EncodedPage",
     "ExecutionTrace",
+    "ModelSpec",
     "ModelPagedKVCache",
     "PageHeader",
     "PagedDecodeSession",
@@ -26,6 +28,8 @@ __all__ = [
     "decode_step",
     "encode_page",
     "explicit_dequantized_attention",
+    "get_model_spec",
+    "list_model_specs",
     "mix_page",
     "mix_page_ref",
     "prepare_page",
@@ -40,6 +44,8 @@ try:  # pragma: no cover - optional HF path
         LlamaDotCacheHarness,
         LlamaDotCacheModelAdapter,
         LlamaReplayRecord,
+        Qwen2DotCacheHarness,
+        Qwen2DotCacheModelAdapter,
         VllmAdapterConfig,
         VllmDotCacheModelAdapter,
         VllmPagedKVCache,
@@ -51,6 +57,9 @@ try:  # pragma: no cover - optional HF path
         require_supported_vllm_version,
         run_llama_generation_harness,
         run_llama_replay_harness,
+        run_qwen2_generation_harness,
+        run_qwen2_loss_harness,
+        run_qwen2_replay_harness,
         transformers_available,
         vllm_available,
     )
@@ -62,6 +71,8 @@ else:
             "LlamaDotCacheHarness",
             "LlamaDotCacheModelAdapter",
             "LlamaReplayRecord",
+            "Qwen2DotCacheHarness",
+            "Qwen2DotCacheModelAdapter",
             "VllmAdapterConfig",
             "VllmDotCacheModelAdapter",
             "VllmPagedKVCache",
@@ -73,6 +84,9 @@ else:
             "require_supported_vllm_version",
             "run_llama_generation_harness",
             "run_llama_replay_harness",
+            "run_qwen2_generation_harness",
+            "run_qwen2_loss_harness",
+            "run_qwen2_replay_harness",
             "transformers_available",
             "vllm_available",
         ]

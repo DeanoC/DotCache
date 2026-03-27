@@ -61,6 +61,30 @@ def test_llama_generation_harness_runs_on_tiny_random_model() -> None:
     assert np.isfinite(result["decode_ms_per_step"])
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
 
+
+def test_llama_adapter_can_reconfigure_dotcache_mode() -> None:
+    model, adapter = _tiny_llama_model()
+    assert adapter.dotcache_config.default_mode_k == "M0"
+    assert adapter.dotcache_config.default_mode_v == "M0"
+
+    reconfigured = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="T3",
+        default_mode_v="T3",
+        quant_scheme_k="turbo3",
+        quant_scheme_v="turbo3",
+    )
+    adapter.reconfigure(reconfigured)
+
+    assert adapter.dotcache_config.default_mode_k == "T3"
+    assert adapter.dotcache_config.default_mode_v == "T3"
+    assert adapter.model_kv_cache.config.default_mode_k == "T3"
+    assert adapter.model_kv_cache.config.default_mode_v == "T3"
+
 def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     model, adapter = _tiny_llama_model()
     input_ids = torch.tensor([[7, 8, 9, 10, 11, 12]], dtype=torch.long)
@@ -74,8 +98,13 @@ def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     assert result["prepared_chunk_resident_bytes"] <= result["prepared_chunk_cache_budget_bytes"]
     assert profile["device_type"] == "cpu"
     assert profile["prefill_cache_ingest"]["host_to_device_bytes"] >= 0
+    assert profile["prefill_cache_ingest"]["trace"]["prepare_calls"] >= 0
     assert profile["dotcache_decode"]["model_forward_ms_total"] >= 0.0
+    assert profile["dotcache_decode"]["trace"]["score_calls"] >= 0
+    assert profile["dotcache_decode"]["trace"]["mix_calls"] >= 0
     assert len(profile["dotcache_decode"]["per_layer"]) == model.config.num_hidden_layers
+    assert result["decode_score_ms_per_step"] >= 0.0
+    assert result["decode_mix_ms_per_step"] >= 0.0
 
 
 def test_llama_loss_harness_runs_on_tiny_random_model() -> None:

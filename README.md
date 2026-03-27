@@ -19,6 +19,7 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [dotcache_nvidia_llama_bootstrap.md](./dotcache_nvidia_llama_bootstrap.md)
 - [docs/benchmark_report.md](./docs/benchmark_report.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
+- [docs/model_roadmap.md](./docs/model_roadmap.md)
 - [docs/turboquant_comparison_plan.md](./docs/turboquant_comparison_plan.md)
 
 ## Quick start on NVIDIA Linux for non-MPS Llama work
@@ -82,6 +83,27 @@ python3.11 -m venv .venv
 
 ```bash
 .venv/bin/pip install -e ".[dev,hf,vllm]"
+```
+
+7. Dedicated local Turbo3 smoke lane on MPS:
+
+```bash
+bash scripts/run_turbo3_mps_suite.sh tinyllama
+bash scripts/run_turbo3_mps_suite.sh smollm2
+```
+
+8. Stretch-model local HF lane on MPS:
+
+```bash
+bash scripts/run_llama32_compare.sh
+bash scripts/run_qwen25_compare.sh
+```
+
+9. External GGUF / llama.cpp reference lane:
+
+```bash
+bash scripts/run_llama32_gguf_reference.sh
+bash scripts/run_qwen25_gguf_reference.sh
 ```
 
 ## Current package layout
@@ -163,6 +185,47 @@ bash scripts/run_smollm2_frontier_compare.sh
 ```
 
 That runner sweeps exact prompt lengths `256 512 1024 1536 2048` from one model load. On the current M4 checkpoint, DotCache is still slower than dense through `1536` tokens in the one-load sweep, but it already uses much less KV memory, and a fresh standalone `2048` rerun shows DotCache ahead on decode while keeping the same KV-memory win.
+
+For the next "proper model" target on the same HF path, use Llama 3.2 3B:
+
+```bash
+bash scripts/run_llama32_compare.sh
+```
+
+That wrapper targets `meta-llama/Llama-3.2-3B-Instruct` with exact prompt lengths `1024 2048` and `--continue-on-error`, so it behaves like a real stretch-model lane on this Mac instead of assuming every longer prompt will fit. The same target is also exposed through the shared model matrix:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
+```
+
+For the first non-Llama native-weight target on the same HF path, use Qwen2.5 3B:
+
+```bash
+bash scripts/run_qwen25_compare.sh
+```
+
+That wrapper targets `Qwen/Qwen2.5-3B-Instruct` through the new Qwen2-specific attention adapter in [qwen2.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen2.py), but reuses the same replay/generation/loss harness shape as the existing Llama path. It is treated as a stretch-model lane on this Mac and defaults to exact prompt lengths `1024 2048` with `--continue-on-error`.
+
+For the external GGUF / `llama.cpp` reference lane, use:
+
+```bash
+bash scripts/run_llama32_gguf_reference.sh
+bash scripts/run_qwen25_gguf_reference.sh
+```
+
+Those wrappers call [bench_gguf_external.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_gguf_external.py), which:
+
+- builds exact-length prompts with the matching Hugging Face tokenizer
+- runs `llama-cli -hf <repo>`
+- parses `llama.cpp` timing lines when they are available
+- emits a clean error record instead of crashing if `llama-cli` is not installed
+
+The same reference lanes are also exposed through the shared model matrix:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
+```
 
 ## Phase 6 vLLM Integration
 

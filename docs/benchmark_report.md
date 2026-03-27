@@ -71,12 +71,62 @@ This changes the quality read in an important way:
 - Adaptive segmented `M2` is now stable after decode bucketing, but it still regresses both quality and speed on SmolLM2 versus the fixed segmented variant, so it should remain experimental.
 - That makes teacher-forced loss/perplexity the local quality metric to trust first for `M1/M2`, not greedy agreement alone.
 
-Turbo3 now also exists as a local exact-mode reference on CPU and MPS, but the first TinyLlama read was clearly losing:
+Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The most important recent improvement there was a correct vectorized `3`-bit spill-unpack path on MPS using advanced indexing rather than repeated-index `torch.gather(...)`.
 
-- short prompt compare (`repeat_count=1`): DotCache decode `4974.28 ms/step` vs dense `605.67 ms/step`, with greedy agreement `1.0`
-- teacher-forced loss (`288 / 32`): loss delta `+3.1687`, perplexity ratio `23.78`, token agreement `0.3125`
+Latest local Turbo3 results:
 
-That makes Turbo3 a useful comparison point for future TurboQuant-style work, but not a mode we should promote on the current model path.
+| Model | Case | Dense Decode ms/step | Turbo3 Decode ms/step | KV Ratio | Agreement | Loss Delta |
+|---|---|---:|---:|---:|---:|---:|
+| TinyLlama | compare `10` | `396.83` | `1757.78` | `9.85x` | `1.00` | n/a |
+| TinyLlama | compare `289` | `336.26` | `2631.47` | `0.55x` | `0.25` | n/a |
+| TinyLlama | loss `288 / 32` | `450.86` | `3351.38` | n/a | `0.3125` | `+3.16766` |
+| SmolLM2 360M | compare `7` | `667.43` | `5711.28` | `12.80x` | `1.00` | n/a |
+| SmolLM2 360M | compare `1024` | `397.61` | `4306.74` | `0.27x` | `0.25` | n/a |
+| SmolLM2 360M | loss `1024 / 16` | `544.12` | `5496.32` | n/a | `0.50` | `+2.45040` |
+
+The most useful exact-prompt local comparison against existing DotCache modes is:
+
+| Model | Prompt | Mode | Decode ms/step | Resident KV Bytes | Agreement | Max Abs Logit Error |
+|---|---:|---|---:|---:|---:|---:|
+| TinyLlama | `289` | `K=M0, V=M0` | `5730.80` | `7,929,856` | `1.00` | `0.5781` |
+| TinyLlama | `289` | `K=M0, V=M1` | `4132.39` | `7,580,672` | `1.00` | `3.2510` |
+| TinyLlama | `289` | `K=T3, V=T3` | `2631.47` | `7,208,960` | `0.25` | `26.6152` |
+| SmolLM2 360M | `1024` | `K=M0, V=M0` | `5521.76` | `29,360,128` | `1.00` | `0.9769` |
+| SmolLM2 360M | `1024` | `K=M0, V=M1` | `6224.08` | `26,820,608` | `1.00` | `3.8877` |
+| SmolLM2 360M | `1024` | `K=T3, V=T3` | `4306.74` | `23,068,672` | `0.25` | `15.9824` |
+
+That is the right read for now:
+
+- Turbo3 is better optimized on MPS than it was before the vectorized spill-unpack work.
+- It is still much worse on quality than `M0` or `V`-only `M1`.
+- In these current exact reruns, Turbo3 can look faster than the noisier `M0` and `V`-only `M1` baselines, but only by paying unacceptable quality loss.
+- So Turbo3 is still useful as a reference implementation and comparison point for future TurboQuant-style work, not a mode we should promote on the current MPS model path.
+
+### One-load local mode profiling
+
+The new [bench_llama_mode_profile.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_mode_profile.py) harness keeps one model loaded and reconfigures the local adapter across modes, which gives us a cleaner view of where time is going than the older compare runs.
+
+TinyLlama exact `289` prompt, one loaded model:
+
+| Mode | Decode ms/step | Score | Mix | Softmax | Unpack | FWHT | Prefill Ingest ms | Agreement | Max Abs Logit Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `M0` | `5203.45` | `1503.95` | `1409.28` | `100.06` | `2196.55` | `0.00` | `900.88` | `1.00` | `0.5781` |
+| `Turbo3` | `3917.59` | `882.65` | `687.37` | `105.42` | `802.08` | `30.89` | `8363.96` | `0.25` | `26.6152` |
+
+SmolLM2 `1024` prompt, one loaded model:
+
+| Mode | Decode ms/step | Score | Mix | Softmax | Unpack | FWHT | Prefill Ingest ms | Agreement | Max Abs Logit Error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `M0` | `9695.87` | `2686.13` | `2961.70` | `165.62` | `0.00` | `0.00` | `2271.62` | `1.00` | `0.9769` |
+| `V-only M1` | `5409.58` | `1153.67` | `1163.36` | `153.08` | `648.66` | `0.00` | `10191.47` | `1.00` | `2.3926` |
+| `Turbo3` | `8156.85` | `2711.92` | `2897.00` | `113.40` | `968.75` | `42.12` | `60617.45` | `0.25` | `15.9824` |
+
+This profiling pass sharpened the local codec comparison:
+
+- Turbo3 is no longer obviously losing on raw decode arithmetic. On TinyLlama `289`, it is lighter than `M0` in grouped score, grouped mix, and sampled unpack.
+- That still does not make it a good local mode, because quality collapses and prefill ingest is far worse.
+- `V`-only `M1` is the more useful DotCache-side comparison at SmolLM2 `1024`: it reduces grouped decode work and resident bytes while staying greedy-stable, but it still loses badly on prefill ingest and teacher-forced quality versus exact `M0`.
+- On SmolLM2 `1024`, Turbo3 is also not a meaningful systems win: grouped score and mix stay close to `M0`, unpack remains heavy, and prefill ingest explodes.
 
 ## Memory
 
