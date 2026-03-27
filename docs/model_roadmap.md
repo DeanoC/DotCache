@@ -80,6 +80,26 @@ Or through the shared matrix:
 
 The matrix now passes `--continue-on-error` through to runnable compare harnesses by default so stretch-model lanes can be exercised without treating a single OOM or gated-model failure as a framework bug.
 
+## First Non-Llama Native-Weight Lane
+
+Qwen2.5 3B is now the first non-Llama native-weight DotCache target on the HF path:
+
+- wrapper: [scripts/run_qwen25_compare.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen25_compare.sh)
+- harness: [benchmarks/bench_qwen2_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen2_compare.py)
+- adapter: [dotcache/integrations/qwen2.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen2.py)
+
+This is intentionally a narrow architecture expansion:
+
+- Qwen2-family only
+- reuses the existing replay/generation/loss harness functions
+- adds a Qwen2-specific attention wrapper instead of pretending the Llama wrapper is universal
+
+Run it directly with:
+
+```bash
+bash scripts/run_qwen25_compare.sh
+```
+
 ## GGUF Reference Lane
 
 The GGUF / `llama.cpp` side now has a minimal external benchmark scaffold:

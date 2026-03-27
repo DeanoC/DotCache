@@ -50,10 +50,11 @@ def _default_compare_command(
     continue_on_error: bool,
 ) -> list[str] | None:
     root = Path(__file__).resolve().parent.parent
-    if spec.benchmark_harness == "llama_compare" and spec.dotcache_ready:
+    if spec.benchmark_harness in {"llama_compare", "qwen2_compare"} and spec.dotcache_ready:
+        benchmark_script = "bench_llama_compare.py" if spec.benchmark_harness == "llama_compare" else "bench_qwen2_compare.py"
         command = [
             str(root / ".venv" / "bin" / "python"),
-            str(root / "benchmarks" / "bench_llama_compare.py"),
+            str(root / "benchmarks" / benchmark_script),
             "--model-id",
             spec.model_id,
             "--backend",

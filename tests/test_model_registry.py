@@ -17,6 +17,11 @@ def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> Non
     assert spec.runtime == "dotcache_hf"
     assert spec.tokenizer_model_id == spec.model_id
 
+    qwen_spec = get_model_spec("qwen25_3b_hf")
+    assert qwen_spec.dotcache_ready is True
+    assert qwen_spec.benchmark_harness == "qwen2_compare"
+    assert qwen_spec.runtime == "dotcache_hf"
+
 
 def test_model_registry_marks_qwen35_as_reference_only() -> None:
     spec = get_model_spec("qwen35_4b_hf")

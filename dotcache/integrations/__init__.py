@@ -6,6 +6,13 @@ from .llama import (
     run_llama_replay_harness,
     transformers_available,
 )
+from .qwen2 import (
+    Qwen2DotCacheHarness,
+    Qwen2DotCacheModelAdapter,
+    run_qwen2_generation_harness,
+    run_qwen2_loss_harness,
+    run_qwen2_replay_harness,
+)
 from .vllm_adapter import (
     VllmAdapterConfig,
     VllmDotCacheModelAdapter,
@@ -23,6 +30,8 @@ __all__ = [
     "LlamaDotCacheHarness",
     "LlamaDotCacheModelAdapter",
     "LlamaReplayRecord",
+    "Qwen2DotCacheHarness",
+    "Qwen2DotCacheModelAdapter",
     "VllmAdapterConfig",
     "VllmDotCacheModelAdapter",
     "VllmPagedKVCache",
@@ -34,6 +43,9 @@ __all__ = [
     "require_supported_vllm_version",
     "run_llama_generation_harness",
     "run_llama_replay_harness",
+    "run_qwen2_generation_harness",
+    "run_qwen2_loss_harness",
+    "run_qwen2_replay_harness",
     "transformers_available",
     "vllm_available",
 ]
