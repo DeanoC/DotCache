@@ -45,6 +45,7 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
             dense[:, start:end] = reconstruct_group_m2(
                 source_page.m2_sketch[:, group_index, :],
                 basis=source_page.m2_basis[group_index],
+                mean=None if source_page.m2_mean is None else source_page.m2_mean[group_index],
             )
         return dense[:, : header.head_dim]
 

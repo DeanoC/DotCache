@@ -64,6 +64,7 @@ class PreparedPageTorch:
     codebooks: Any | None = None
     m2_sketch: Any | None = None
     m2_basis: Any | None = None
+    m2_mean: Any | None = None
     escape_payload: Any | None = None
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
@@ -137,6 +138,7 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
     source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
     header = source_page.header
     sketch_dim = int(source_page.m2_sketch.shape[-1]) if source_page.m2_sketch is not None else 0
+    centered = int(source_page.m2_mean is not None)
     return (
         header.kind,
         header.mode_default,
@@ -151,12 +153,14 @@ def _prepare_signature(page: EncodedPage | PreparedPageTorch) -> tuple[int | str
         header.quant_scheme,
         header.escape_dtype,
         sketch_dim,
+        centered,
     )
 
 
 def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
     header = page.header
     sketch_dim = int(page.m2_sketch.shape[-1]) if page.m2_sketch is not None else 0
+    centered = int(page.m2_mean is not None)
     return (
         page.device_type,
         header.kind,
@@ -171,6 +175,7 @@ def _batched_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
         header.layout,
         header.quant_scheme,
         sketch_dim,
+        centered,
     )
 
 
@@ -299,6 +304,7 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and header.quant_scheme == "sketch"
             and source_page.m2_sketch is not None
             and source_page.m2_basis is not None
+            and source_page.m2_mean is not None
         )
     return (
         header.mode_default in ("M0", "M1")
@@ -352,6 +358,8 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
         total += int(page.m2_sketch.nbytes)
     if page.m2_basis is not None:
         total += int(page.m2_basis.nbytes)
+    if page.m2_mean is not None:
+        total += int(page.m2_mean.nbytes)
     if page.escape_payload is not None:
         total += int(page.escape_payload.nbytes)
     return total
@@ -361,18 +369,23 @@ def _optional_m2_sidecar_batches(
     pages: Sequence[EncodedPage],
     *,
     device_type: TorchDevice,
-) -> tuple[Any | None, Any | None, int, int]:
-    if not pages or not all(page.m2_sketch is not None and page.m2_basis is not None for page in pages):
-        return None, None, 0, 0
+) -> tuple[Any | None, Any | None, Any | None, int, int]:
+    if not pages or not all(page.m2_sketch is not None and page.m2_basis is not None and page.m2_mean is not None for page in pages):
+        return None, None, None, 0, 0
     sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
     basis_array = np.stack([np.asarray(page.m2_basis) for page in pages], axis=0)
+    mean_array = np.stack([np.asarray(page.m2_mean) for page in pages], axis=0)
     sketch_batch = _device_tensor(sketch_array, device=device_type)
     basis_batch = _device_tensor(basis_array, device=device_type)
+    mean_batch = _device_tensor(mean_array, device=device_type)
     if device_type == "mps":
         sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
         basis_batch = basis_batch.to(dtype=_load_torch().float32)
-    return sketch_batch, basis_batch, int(sketch_array.nbytes + basis_array.nbytes), int(
-        sketch_batch.numel() * sketch_batch.element_size() + basis_batch.numel() * basis_batch.element_size()
+        mean_batch = mean_batch.to(dtype=_load_torch().float32)
+    return sketch_batch, basis_batch, mean_batch, int(sketch_array.nbytes + basis_array.nbytes + mean_array.nbytes), int(
+        sketch_batch.numel() * sketch_batch.element_size()
+        + basis_batch.numel() * basis_batch.element_size()
+        + mean_batch.numel() * mean_batch.element_size()
     )
 
 
@@ -409,13 +422,17 @@ def _prepare_page_chunk_torch(
     if header.mode_default == "M2":
         sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
         basis_array = np.stack([np.asarray(page.m2_basis) for page in pages], axis=0)
+        mean_array = np.stack([np.asarray(page.m2_mean) for page in pages], axis=0)
         sketch_batch = _device_tensor(sketch_array, device=device_type)
         basis_batch = _device_tensor(basis_array, device=device_type)
+        mean_batch = _device_tensor(mean_array, device=device_type)
         total_host_to_device_nbytes += int(sketch_array.nbytes)
         total_host_to_device_nbytes += int(basis_array.nbytes)
+        total_host_to_device_nbytes += int(mean_array.nbytes)
         if device_type == "mps":
             sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
             basis_batch = basis_batch.to(dtype=_load_torch().float32)
+            mean_batch = mean_batch.to(dtype=_load_torch().float32)
         prepared_pages = [
             PreparedPageTorch(
                 device_type=device_type,
@@ -423,10 +440,12 @@ def _prepare_page_chunk_torch(
                 header=page.header,
                 m2_sketch=sketch_batch[index],
                 m2_basis=basis_batch[index],
+                m2_mean=mean_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
                 resident_nbytes=(
                     int(sketch_batch[index].numel() * sketch_batch[index].element_size())
                     + int(basis_batch[index].numel() * basis_batch[index].element_size())
+                    + int(mean_batch[index].numel() * mean_batch[index].element_size())
                 ),
                 cache_uid=_next_prepared_page_uid(),
             )
@@ -441,7 +460,7 @@ def _prepare_page_chunk_torch(
         codebooks_array = np.stack([np.asarray(page.codebooks) for page in pages], axis=0)
         payload_batch = _device_tensor(payload_array, device=device_type)
         codebooks_batch = _device_tensor(codebooks_array, device=device_type)
-        sidecar_sketch_batch, sidecar_basis_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
+        sidecar_sketch_batch, sidecar_basis_batch, sidecar_mean_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
             pages,
             device_type=device_type,
         )
@@ -460,6 +479,7 @@ def _prepare_page_chunk_torch(
                 codebooks=codebooks_batch[index],
                 m2_sketch=None if sidecar_sketch_batch is None else sidecar_sketch_batch[index],
                 m2_basis=None if sidecar_basis_batch is None else sidecar_basis_batch[index],
+                m2_mean=None if sidecar_mean_batch is None else sidecar_mean_batch[index],
                 unpack_shifts=unpack_shifts,
                 unpack_mask=unpack_mask,
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
@@ -468,9 +488,10 @@ def _prepare_page_chunk_torch(
                     + int(codebooks_batch[index].numel() * codebooks_batch[index].element_size())
                     + (
                         0
-                        if sidecar_sketch_batch is None or sidecar_basis_batch is None
+                        if sidecar_sketch_batch is None or sidecar_basis_batch is None or sidecar_mean_batch is None
                         else int(sidecar_sketch_batch[index].numel() * sidecar_sketch_batch[index].element_size())
                         + int(sidecar_basis_batch[index].numel() * sidecar_basis_batch[index].element_size())
+                        + int(sidecar_mean_batch[index].numel() * sidecar_mean_batch[index].element_size())
                     )
                 ),
                 cache_uid=_next_prepared_page_uid(),
@@ -487,7 +508,7 @@ def _prepare_page_chunk_torch(
     payload_batch = _device_tensor(payload_array, device=device_type)
     scales_batch = _device_tensor(scales_array, device=device_type)
     bias_batch = _device_tensor(bias_array, device=device_type)
-    sidecar_sketch_batch, sidecar_basis_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
+    sidecar_sketch_batch, sidecar_basis_batch, sidecar_mean_batch, sidecar_h2d_nbytes, _ = _optional_m2_sidecar_batches(
         pages,
         device_type=device_type,
     )
@@ -510,6 +531,7 @@ def _prepare_page_chunk_torch(
             bias=bias_batch[index],
             m2_sketch=None if sidecar_sketch_batch is None else sidecar_sketch_batch[index],
             m2_basis=None if sidecar_basis_batch is None else sidecar_basis_batch[index],
+            m2_mean=None if sidecar_mean_batch is None else sidecar_mean_batch[index],
             unpack_shifts=unpack_shifts,
             unpack_mask=unpack_mask,
             host_to_device_nbytes=_prepared_page_host_nbytes(page),
@@ -519,9 +541,10 @@ def _prepare_page_chunk_torch(
                 + int(bias_batch[index].numel() * bias_batch[index].element_size())
                 + (
                     0
-                    if sidecar_sketch_batch is None or sidecar_basis_batch is None
+                    if sidecar_sketch_batch is None or sidecar_basis_batch is None or sidecar_mean_batch is None
                     else int(sidecar_sketch_batch[index].numel() * sidecar_sketch_batch[index].element_size())
                     + int(sidecar_basis_batch[index].numel() * sidecar_basis_batch[index].element_size())
+                    + int(sidecar_mean_batch[index].numel() * sidecar_mean_batch[index].element_size())
                 )
             ),
             cache_uid=_next_prepared_page_uid(),
@@ -705,8 +728,10 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         for group_index in range(header.num_groups):
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
             q_proj = torch.einsum("prg,g->pr", group_basis, query_groups[group_index])
             logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
+            logits += torch.einsum("pg,g->p", group_mean, query_groups[group_index])[:, None]
         return logits.reshape(-1)
 
     if header.mode_default == "M1":
@@ -1021,8 +1046,10 @@ def _score_page_chunk_multiquery_torch(
         for group_index in range(header.num_groups):
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
             q_proj = torch.einsum("prg,qg->qpr", group_basis, query_groups[:, group_index, :])
             logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
+            logits += torch.einsum("pg,qg->qp", group_mean, query_groups[:, group_index, :])[:, :, None]
         return logits.reshape(query_count, -1)
 
     if header.mode_default == "M1":
@@ -1253,8 +1280,13 @@ def _score_page_chunk_grouped_multiquery_torch(
                 [torch.stack([page.m2_basis[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
                 dim=0,
             )
+            group_mean = torch.stack(
+                [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                dim=0,
+            )
             q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, query_groups_tensor[:, :, group_index, :])
             logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
+            logits += torch.einsum("bpg,bqg->bqp", group_mean, query_groups_tensor[:, :, group_index, :])[:, :, :, None]
         return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":

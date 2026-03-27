@@ -43,8 +43,11 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
         query_groups = query.reshape(header.num_groups, header.group_size)
         logits = np.zeros(header.token_count, dtype=np.float32)
         for group_index in range(header.num_groups):
+            group_mean = None if page.m2_mean is None else page.m2_mean[group_index].astype(np.float32)
             q_proj = page.m2_basis[group_index].astype(np.float32) @ query_groups[group_index]
             logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
+            if group_mean is not None:
+                logits += np.dot(group_mean, query_groups[group_index]).astype(np.float32)
         return logits
 
     if page.payload is None:

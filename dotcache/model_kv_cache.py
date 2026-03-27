@@ -50,19 +50,22 @@ def _group_query_heads(mapping: np.ndarray, *, num_key_value_heads: int) -> tupl
 
 def _page_has_m2_sidecar(page: PageLike) -> bool:
     if isinstance(page, PreparedPageTorch):
-        return page.m2_sketch is not None and page.m2_basis is not None
-    return page.m2_sketch is not None and page.m2_basis is not None
+        return page.m2_sketch is not None and page.m2_basis is not None and page.m2_mean is not None
+    return page.m2_sketch is not None and page.m2_basis is not None and page.m2_mean is not None
 
 
 def _page_m2_prefilter_score_numpy(queries: np.ndarray, page: PageLike) -> float:
     source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
-    if source_page.m2_sketch is None or source_page.m2_basis is None:
+    if source_page.m2_sketch is None or source_page.m2_basis is None or source_page.m2_mean is None:
         raise ValueError("page is missing M2 sidecar payload")
     query_groups = queries.reshape(queries.shape[0], source_page.header.num_groups, source_page.header.group_size)
     logits = np.zeros((queries.shape[0], source_page.header.token_count), dtype=np.float32)
     for group_index in range(source_page.header.num_groups):
         q_proj = query_groups[:, group_index, :] @ source_page.m2_basis[group_index].astype(np.float32).T
         logits += np.einsum("tr,qr->qt", source_page.m2_sketch[:, group_index, :].astype(np.float32), q_proj)
+        logits += np.einsum("g,qg->q", source_page.m2_mean[group_index].astype(np.float32), query_groups[:, group_index, :])[
+            :, None
+        ]
     return float(np.max(logits))
 
 
@@ -74,13 +77,14 @@ def _page_m2_prefilter_score_torch(queries, page: PageLike) -> float:
     if not torch.is_tensor(queries):
         raise TypeError("queries must be a torch.Tensor")
     prepared = page if isinstance(page, PreparedPageTorch) else None
-    if prepared is None or prepared.m2_sketch is None or prepared.m2_basis is None:
+    if prepared is None or prepared.m2_sketch is None or prepared.m2_basis is None or prepared.m2_mean is None:
         return _page_m2_prefilter_score_numpy(queries.detach().cpu().numpy().astype(np.float32, copy=False), page)
     query_groups = queries.reshape(int(queries.shape[0]), prepared.header.num_groups, prepared.header.group_size)
     logits = torch.zeros((int(queries.shape[0]), prepared.header.token_count), dtype=torch.float32, device=queries.device)
     for group_index in range(prepared.header.num_groups):
         q_proj = torch.einsum("qg,rg->qr", query_groups[:, group_index, :], prepared.m2_basis[group_index])
         logits += torch.einsum("tr,qr->qt", prepared.m2_sketch[:, group_index, :], q_proj)
+        logits += torch.einsum("g,qg->q", prepared.m2_mean[group_index], query_groups[:, group_index, :])[:, None]
     return float(torch.max(logits).item())
 
 
@@ -89,7 +93,7 @@ def _pages_can_batch_m2_prefilter(pages: Sequence[PageLike]) -> bool:
         return False
     first = pages[0]
     first_source = first.source_page if isinstance(first, PreparedPageTorch) else first
-    if first_source.m2_sketch is None or first_source.m2_basis is None:
+    if first_source.m2_sketch is None or first_source.m2_basis is None or first_source.m2_mean is None:
         return False
     token_count = int(first_source.header.token_count)
     num_groups = int(first_source.header.num_groups)
@@ -98,7 +102,7 @@ def _pages_can_batch_m2_prefilter(pages: Sequence[PageLike]) -> bool:
     prepared_device = first.device_type if isinstance(first, PreparedPageTorch) else None
     for page in pages[1:]:
         source = page.source_page if isinstance(page, PreparedPageTorch) else page
-        if source.m2_sketch is None or source.m2_basis is None:
+        if source.m2_sketch is None or source.m2_basis is None or source.m2_mean is None:
             return False
         if int(source.header.token_count) != token_count:
             return False
@@ -118,8 +122,10 @@ def _page_m2_prefilter_scores_numpy(queries: np.ndarray, pages: Sequence[PageLik
     query_groups = queries.reshape(queries.shape[0], first.header.num_groups, first.header.group_size)
     sketch = np.stack([page.m2_sketch for page in source_pages], axis=0).astype(np.float32, copy=False)
     basis = np.stack([page.m2_basis for page in source_pages], axis=0).astype(np.float32, copy=False)
+    mean = np.stack([page.m2_mean for page in source_pages], axis=0).astype(np.float32, copy=False)
     q_proj = np.einsum("pgrd,qgd->qpgr", basis, query_groups)
     logits = np.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+    logits += np.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
     return np.max(logits, axis=(0, 2)).astype(np.float32, copy=False)
 
 
@@ -136,8 +142,10 @@ def _page_m2_prefilter_scores_torch(queries, pages: Sequence[PageLike]) -> np.nd
     query_groups = queries.reshape(int(queries.shape[0]), first.header.num_groups, first.header.group_size)
     sketch = torch.stack([page.m2_sketch for page in pages], dim=0)
     basis = torch.stack([page.m2_basis for page in pages], dim=0)
+    mean = torch.stack([page.m2_mean for page in pages], dim=0)
     q_proj = torch.einsum("pgrd,qgd->qpgr", basis, query_groups)
     logits = torch.einsum("ptgr,qpgr->qpt", sketch, q_proj)
+    logits += torch.einsum("pgd,qgd->qp", mean, query_groups)[:, :, None]
     return torch.amax(logits, dim=(0, 2)).detach().cpu().numpy().astype(np.float32, copy=False)
 
 

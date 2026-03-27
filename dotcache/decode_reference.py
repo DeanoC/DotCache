@@ -25,7 +25,11 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
     if header.mode_default == "M2":
         if page.m2_sketch is None or page.m2_basis is None:
             raise ValueError("M2 page is missing sketch payload")
-        return reconstruct_group_m2(page.m2_sketch[:, group_index, :], basis=page.m2_basis[group_index])
+        return reconstruct_group_m2(
+            page.m2_sketch[:, group_index, :],
+            basis=page.m2_basis[group_index],
+            mean=None if page.m2_mean is None else page.m2_mean[group_index],
+        )
 
     words = load_group_words(page, group_index)
     codes = unpack_bits(words, header.bits, header.group_size)

@@ -30,13 +30,17 @@ def _reconstruct_lut_page(codes: np.ndarray, codebooks: np.ndarray) -> np.ndarra
     return dense
 
 
-def _reconstruct_m2_page(coeffs: np.ndarray, basis: np.ndarray, *, group_size: int) -> np.ndarray:
+def _reconstruct_m2_page(coeffs: np.ndarray, basis: np.ndarray, mean: np.ndarray | None, *, group_size: int) -> np.ndarray:
     token_count, num_groups, _ = coeffs.shape
     dense = np.zeros((token_count, num_groups * group_size), dtype=np.float32)
     for group_index in range(num_groups):
         start = group_index * group_size
         end = start + group_size
-        dense[:, start:end] = reconstruct_group_m2(coeffs[:, group_index, :], basis=basis[group_index])
+        dense[:, start:end] = reconstruct_group_m2(
+            coeffs[:, group_index, :],
+            basis=basis[group_index],
+            mean=None if mean is None else mean[group_index],
+        )
     return dense
 
 
@@ -90,16 +94,21 @@ def encode_page(
         runtime_page_mean, runtime_page_sketch = _build_runtime_page_sketch(values)
         runtime_page_min, runtime_page_max = _build_runtime_page_envelope(values)
 
-    def _build_m2_sidecar() -> tuple[np.ndarray | None, np.ndarray | None]:
+    def _build_m2_sidecar() -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         sidecar_enabled = config.m2_prefilter_top_k > 0 if build_m2_sidecar is None else bool(build_m2_sidecar)
         if kind != "K" or not sidecar_enabled:
-            return None, None
-        coeffs, basis, _ = quantize_tensor_m2(
+            return None, None, None
+        coeffs, basis, mean, _ = quantize_tensor_m2(
             values,
             group_size=config.group_size,
             sketch_dim=config.m2_sketch_dim_k,
+            center=config.m2_center_k,
         )
-        return coeffs.astype(np.float16, copy=False), basis.astype(np.float16, copy=False)
+        return (
+            coeffs.astype(np.float16, copy=False),
+            basis.astype(np.float16, copy=False),
+            mean.astype(np.float16, copy=False),
+        )
 
     if page_mode == "M3":
         header = PageHeader(
@@ -135,10 +144,11 @@ def encode_page(
     if page_mode == "M2":
         if kind != "K":
             raise ValueError("M2 is only supported for K pages in this phase")
-        coeffs, basis, padded_head_dim = quantize_tensor_m2(
+        coeffs, basis, mean, padded_head_dim = quantize_tensor_m2(
             values,
             group_size=config.group_size,
             sketch_dim=config.m2_sketch_dim_k,
+            center=config.m2_center_k,
         )
         header = PageHeader(
             layer_id=layer_id,
@@ -161,6 +171,7 @@ def encode_page(
             header=header,
             m2_sketch=coeffs.astype(np.float16, copy=False),
             m2_basis=basis.astype(np.float16, copy=False),
+            m2_mean=mean.astype(np.float16, copy=False),
             requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,
@@ -192,7 +203,7 @@ def encode_page(
                 page_mode = "M0"
                 scheme = "affine"
         if page_mode == "M1":
-            sidecar_sketch, sidecar_basis = _build_m2_sidecar()
+            sidecar_sketch, sidecar_basis, sidecar_mean = _build_m2_sidecar()
             payload = build_payload(codes, bits, page_layout)
             header = PageHeader(
                 layer_id=layer_id,
@@ -217,6 +228,7 @@ def encode_page(
                 codebooks=codebooks.astype(np.float16),
                 m2_sketch=sidecar_sketch,
                 m2_basis=sidecar_basis,
+                m2_mean=sidecar_mean,
                 lut_segment_count=int(codebooks.shape[1]) if codebooks.ndim == 3 else 1,
                 requested_mode=requested_mode,
                 trial_quant_error=trial_quant_error,
@@ -256,7 +268,7 @@ def encode_page(
     )
     stored_scales = scales.astype(np.float16)
     stored_bias = None if bias is None else bias.astype(np.float16)
-    sidecar_sketch, sidecar_basis = _build_m2_sidecar()
+    sidecar_sketch, sidecar_basis, sidecar_mean = _build_m2_sidecar()
     return EncodedPage(
         header=header,
         payload=payload,
@@ -264,6 +276,7 @@ def encode_page(
         bias=stored_bias,
         m2_sketch=sidecar_sketch,
         m2_basis=sidecar_basis,
+        m2_mean=sidecar_mean,
         requested_mode=requested_mode,
         trial_quant_error=trial_quant_error,
         trial_token_p95_error=trial_token_p95_error if "trial_token_p95_error" in locals() else None,
