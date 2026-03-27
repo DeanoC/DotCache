@@ -385,6 +385,33 @@ def test_model_paged_kv_cache_ingest_prefill_cache_torch_defers_full_page_prepar
     assert decode_trace.host_to_device_bytes > 0
 
 
+def test_model_paged_kv_cache_direct_prefill_pages_count_toward_resident_bytes() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(3091)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    clear_prepared_chunk_cache()
+    try:
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+
+        assert cache.cache.resident_bytes == 0
+        assert cache.resident_bytes == 8 * (64 + 8 + 8)
+    finally:
+        clear_prepared_chunk_cache()
+
+
 def test_model_paged_kv_cache_static_chunk_cache_is_reused_across_decodes() -> None:
     if not mps_available():
         return

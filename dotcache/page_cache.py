@@ -26,6 +26,7 @@ class PreparedPageCache:
     policy: CachePolicy = "fifo"
     pinned_recent_pages: int = 0
     _prepared_pages: dict[tuple[str, int], PreparedPageTorch] = field(default_factory=dict)
+    _prepared_page_ids: set[int] = field(default_factory=set)
     _resident_bytes: int = 0
     _order: OrderedDict[tuple[str, int], None] = field(default_factory=OrderedDict)
 
@@ -39,8 +40,12 @@ class PreparedPageCache:
 
     def clear(self) -> None:
         self._prepared_pages.clear()
+        self._prepared_page_ids.clear()
         self._resident_bytes = 0
         self._order.clear()
+
+    def owns_prepared_page(self, page: PreparedPageTorch) -> bool:
+        return id(page) in self._prepared_page_ids
 
     def _page_nbytes(self, page: PreparedPageTorch) -> int:
         resident_nbytes = int(page.resident_nbytes)
@@ -76,6 +81,7 @@ class PreparedPageCache:
             cached_page = self._prepared_pages.pop(cache_key, None)
             if cached_page is None:
                 continue
+            self._prepared_page_ids.discard(id(cached_page))
             evicted_bytes = self._page_nbytes(cached_page)
             self._resident_bytes = max(0, self._resident_bytes - evicted_bytes)
             if trace is not None:
@@ -87,6 +93,7 @@ class PreparedPageCache:
             cached_page = self._prepared_pages.pop(fallback_key, None)
             if cached_page is None:
                 return False
+            self._prepared_page_ids.discard(id(cached_page))
             evicted_bytes = self._page_nbytes(cached_page)
             self._resident_bytes = max(0, self._resident_bytes - evicted_bytes)
             if trace is not None:
@@ -157,6 +164,7 @@ class PreparedPageCache:
         prepared_page = prepare_page_cuda(page, trace=trace) if resolved_backend == "torch_cuda" else prepare_page_mps(page, trace=trace)
         self._ensure_capacity(self._page_nbytes(prepared_page), trace=trace)
         self._prepared_pages[cache_key] = prepared_page
+        self._prepared_page_ids.add(id(prepared_page))
         self._order[cache_key] = None
         self._resident_bytes += self._page_nbytes(prepared_page)
         if trace is not None:
@@ -206,6 +214,7 @@ class PreparedPageCache:
                 self._ensure_capacity(self._page_nbytes(prepared_page), trace=trace)
                 cache_key = (prepared_page.device_type, id(source_page))
                 self._prepared_pages[cache_key] = prepared_page
+                self._prepared_page_ids.add(id(prepared_page))
                 self._order[cache_key] = None
                 self._resident_bytes += self._page_nbytes(prepared_page)
                 prepared_pages[index] = prepared_page

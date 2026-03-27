@@ -123,6 +123,32 @@ def _timed_call(fn, *, device: Any) -> tuple[Any, float]:
     return result, (time.perf_counter() - start) * 1000.0
 
 
+def _prewarm_torch_decode_layers(adapter: "LlamaDotCacheModelAdapter", *, device: Any) -> None:
+    device_type = _device_type(device)
+    if device_type != "cuda" or not _torch_backend_matches_device(adapter.backend, device_type):
+        return
+    if adapter.model_kv_cache._torch_device_type is None:
+        return
+
+    zero_query = torch.zeros(
+        (adapter.model.config.num_attention_heads, adapter.dotcache_config.head_dim),
+        dtype=torch.float32,
+        device=device,
+    )
+    with torch.no_grad():
+        for layer_id in range(adapter.model.config.num_hidden_layers):
+            if adapter.model_kv_cache.layer_sequence_length(layer_id) <= 0:
+                continue
+            adapter.model_kv_cache.decode_layer_torch(
+                layer_id,
+                zero_query,
+                adapter.q_head_to_kv_head,
+                query_scale=1.0,
+                trace=None,
+            )
+    _synchronize_device(device)
+
+
 def _begin_cuda_memory_region(device: Any) -> dict[str, int] | None:
     if _device_type(device) != "cuda" or not torch.cuda.is_available():
         return None
@@ -847,6 +873,7 @@ def _run_dotcache_decode_inputs(
         adapter.load_prefill_cache_tensors(prefill_layers)
     else:
         adapter.load_prefill_cache_arrays(prefill_layers)
+    _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     use_attention_mask = not _can_skip_decode_attention_mask(attention_mask)
@@ -944,6 +971,7 @@ def _run_dotcache_greedy_decode(
         adapter.load_prefill_cache_tensors(prefill_layers)
     else:
         adapter.load_prefill_cache_arrays(prefill_layers)
+    _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
     generated_ids = [int(first_generated_token.item())]

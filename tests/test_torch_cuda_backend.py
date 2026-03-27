@@ -5,7 +5,7 @@ transformers = pytest.importorskip("transformers")
 torch = pytest.importorskip("torch")
 
 from dotcache.attention_runtime import decode_step, prepare_page
-from dotcache.backends import cuda_available
+from dotcache.backends import PreparedPageTorch, clear_prepared_chunk_cache, cuda_available
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.integrations.llama import LlamaDotCacheModelAdapter, run_llama_generation_harness
@@ -118,6 +118,38 @@ def test_model_paged_kv_cache_append_step_torch_avoids_host_uploads_on_cuda() ->
     assert tuple(outputs.shape) == (2, config.head_dim)
     assert append_trace.host_to_device_bytes == 0
     assert decode_trace.host_to_device_bytes == 0
+
+
+@requires_cuda
+def test_model_paged_kv_cache_ingest_prefill_cache_torch_prepares_aligned_m0_pages_on_device() -> None:
+    rng = np.random.default_rng(905)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)).to(device="cuda")
+    layer_values = torch.from_numpy(rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)).to(device="cuda")
+
+    clear_prepared_chunk_cache()
+    try:
+        trace = ExecutionTrace()
+        cache.ingest_prefill_cache_torch(0, layer_keys, layer_values, trace=trace)
+        cache.prepare_static_pages(trace=trace)
+
+        for kv_head_id in range(cache.num_key_value_heads):
+            state = cache._state(0, kv_head_id)
+            assert state.sequence_length == 8
+            assert all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages)
+            assert all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages)
+        assert cache.cache.resident_bytes == 0
+        assert cache.resident_bytes == 8 * (64 + 8 + 8)
+        assert trace.host_to_device_bytes == 0
+    finally:
+        clear_prepared_chunk_cache()
 
 
 @requires_cuda

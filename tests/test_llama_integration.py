@@ -6,8 +6,10 @@ torch = pytest.importorskip("torch")
 
 from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
+from dotcache.integrations import llama as llama_integration
 from dotcache.integrations.llama import (
     LlamaDotCacheModelAdapter,
+    _prewarm_torch_decode_layers,
     run_llama_loss_harness,
     run_llama_generation_harness,
     run_llama_replay_harness,
@@ -85,6 +87,49 @@ def test_llama_loss_harness_runs_on_tiny_random_model() -> None:
     assert np.isfinite(result["dotcache_teacher_forced_loss"])
     assert np.isfinite(result["teacher_forced_loss_delta"])
     assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
+
+
+def test_prewarm_torch_decode_layers_warms_each_populated_cuda_layer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeKVCache:
+        def __init__(self) -> None:
+            self._torch_device_type = "cuda"
+            self.calls: list[int] = []
+
+        def layer_sequence_length(self, layer_id: int) -> int:
+            return 4 if layer_id != 1 else 0
+
+        def decode_layer_torch(self, layer_id, query_step, q_head_to_kv_head, *, query_scale, trace):
+            self.calls.append(layer_id)
+            assert query_step.shape == (4, 32)
+            assert query_step.device.type == "cpu"
+            assert query_scale == 1.0
+            assert trace is None
+            return query_step
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.backend = "torch_cuda"
+            self.model = type(
+                "FakeModel",
+                (),
+                {"config": type("FakeConfig", (), {"num_attention_heads": 4, "num_hidden_layers": 3})()},
+            )()
+            self.dotcache_config = type("FakeDotCacheConfig", (), {"head_dim": 32})()
+            self.q_head_to_kv_head = np.array([0, 0, 1, 1], dtype=np.int64)
+            self.model_kv_cache = _FakeKVCache()
+
+    adapter = _FakeAdapter()
+    _prewarm_torch_decode_layers(adapter, device=torch.device("cpu"))
+    assert adapter.model_kv_cache.calls == []
+
+    original_zeros = torch.zeros
+    monkeypatch.setattr(
+        llama_integration.torch,
+        "zeros",
+        lambda shape, dtype, device: original_zeros(shape, dtype=dtype),
+    )
+    _prewarm_torch_decode_layers(adapter, device=torch.device("cuda"))
+    assert adapter.model_kv_cache.calls == [0, 2]
 
 
 @requires_mps
