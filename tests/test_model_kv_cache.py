@@ -24,6 +24,7 @@ def _encode_pages_for_head(
     pages = []
     for token_start in range(0, values.shape[0], config.tokens_per_page):
         token_end = min(token_start + config.tokens_per_page, values.shape[0])
+        mode = None if token_end - token_start == config.tokens_per_page else "M3"
         pages.append(
             encode_page(
                 values[token_start:token_end],
@@ -32,6 +33,8 @@ def _encode_pages_for_head(
                 layer_id=layer_id,
                 kv_head_id=kv_head_id,
                 token_start=token_start,
+                mode=mode,
+                build_runtime_metadata=False,
             )
         )
     return pages

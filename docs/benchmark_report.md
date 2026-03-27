@@ -8,6 +8,7 @@ The prototype state reflected here is:
 - compressed-domain `score_page` and `mix_page`
 - standalone decode harnesses
 - Phase 5 Llama-family model integration
+- Phase 6 vLLM offline-adapter implementation
 - `torch_mps` and `torch_cuda` accelerator backends
 
 ## Configuration
@@ -183,7 +184,25 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - add a stable explicit-dequant end-to-end comparison column to the report
 - optimize large-context prefill preparation and scheduling further, especially on CUDA
 - continue exact decode optimization in the midrange SmolLM2 `512-1536` region where memory wins exist but speed wins are mixed
-- start the optional vLLM-style integration phase from the original guide once the benchmark report is accepted as the current baseline
+- run the new Phase 6 vLLM offline benchmark on the CUDA cloud instance and add the first dense-vs-shadow-vs-active records
+
+## Phase 6 Status
+
+The repo now contains a first vLLM adapter and offline benchmark harness in [bench_vllm_offline.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_vllm_offline.py) backed by [dotcache/integrations/vllm_adapter](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/vllm_adapter).
+
+What is implemented:
+
+- block-table-aligned page mirroring with `tokens_per_page == block_size`
+- `dense`, `dotcache_shadow`, and `dotcache_active` mode wiring
+- finalized-block persistence plus one live partial block
+- a version guard for the pinned `vLLM 0.18.x` line
+- local unit coverage for block ownership, finalized/live parity, and shadow-vs-active consistency
+
+What is still missing from this report:
+
+- real CUDA/vLLM benchmark numbers from the cloud instance
+- active-mode latency comparison against stock vLLM dense attention
+- shadow-mode logit-drift numbers from real vLLM runs
 
 ## Bottom Line
 

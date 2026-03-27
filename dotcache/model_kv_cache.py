@@ -327,6 +327,8 @@ class _TailPageBuilder:
                 layer_id=self.layer_id,
                 kv_head_id=self.kv_head_id,
                 token_start=self.token_start,
+                mode="M3",
+                build_runtime_metadata=False,
             ),
             encode_page(
                 dense_values,
@@ -335,6 +337,8 @@ class _TailPageBuilder:
                 layer_id=self.layer_id,
                 kv_head_id=self.kv_head_id,
                 token_start=self.token_start,
+                mode="M3",
+                build_runtime_metadata=False,
             ),
         )
 
@@ -612,6 +616,16 @@ class ModelPagedKVCache:
     def clear(self) -> None:
         for state in self._states.values():
             state.clear(clear_prepared_cache=False)
+        self.cache.clear()
+        clear_prepared_chunk_cache()
+
+    def clear_layer(self, layer_id: int) -> None:
+        self._validate_layer_id(layer_id)
+        layer_keys = [key for key in self._states if key[0] == layer_id]
+        if not layer_keys:
+            return
+        for key in layer_keys:
+            self._states[key].clear(clear_prepared_cache=False)
         self.cache.clear()
         clear_prepared_chunk_cache()
 
@@ -1205,8 +1219,10 @@ class ModelPagedKVCache:
         if temp_pages is None:
             return state.session.key_pages, state.session.value_pages
         temp_key_page, temp_value_page = temp_pages
-        prepared_temp_key_page = prepare_pages([temp_key_page], backend=self.backend, cache=self.cache, trace=trace)[0]
-        prepared_temp_value_page = prepare_pages([temp_value_page], backend=self.backend, cache=self.cache, trace=trace)[0]
+        # Temporary live-tail pages are rebuilt on demand and should not go
+        # through the shared prepared-page cache keyed by object id.
+        prepared_temp_key_page = prepare_pages([temp_key_page], backend=self.backend, cache=None, trace=trace)[0]
+        prepared_temp_value_page = prepare_pages([temp_value_page], backend=self.backend, cache=None, trace=trace)[0]
         key_pages = list(state.session.key_pages)
         value_pages = list(state.session.value_pages)
         key_pages.append(prepared_temp_key_page)

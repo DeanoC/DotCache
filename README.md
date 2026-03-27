@@ -77,6 +77,12 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev,mps,hf]"
 ```
 
+6. Optional vLLM dependency for the Phase 6 CUDA runtime-integration path:
+
+```bash
+.venv/bin/pip install -e ".[dev,hf,vllm]"
+```
+
 ## Current package layout
 
 ```text
@@ -156,6 +162,37 @@ bash scripts/run_smollm2_frontier_compare.sh
 ```
 
 That runner sweeps exact prompt lengths `256 512 1024 1536 2048` from one model load. On the current M4 checkpoint, DotCache is still slower than dense through `1536` tokens in the one-load sweep, but it already uses much less KV memory, and a fresh standalone `2048` rerun shows DotCache ahead on decode while keeping the same KV-memory win.
+
+## Phase 6 vLLM Integration
+
+The repo now also has a correctness-first Phase 6 adapter surface in [dotcache/integrations/vllm_adapter](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/vllm_adapter):
+
+- Llama-family only
+- CUDA-only in the intended runtime path
+- exact full-context decode only
+- `dense`, `dotcache_shadow`, and `dotcache_active` modes
+- `tokens_per_page == block_size` enforced as a hard invariant
+- offline-engine benchmarking only for the first milestone
+
+The real vLLM hook targets the pinned `0.18.x` line and is intentionally conservative about unknown versions.
+
+For the new offline benchmark harness on a CUDA box with vLLM installed, use:
+
+```bash
+.venv/bin/python benchmarks/bench_vllm_offline.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --backend torch_cuda --block-size 16 --mode all --max-new-tokens 8
+```
+
+That benchmark prints dense, shadow, and active records with:
+
+- block size
+- decode steps
+- wall-clock decode ms per step
+- DotCache block-encode / append / decode runtime totals
+- resident KV bytes
+- host-to-device bytes
+- greedy agreement versus dense when both paths are run
+
+The adapter and benchmark surface are implemented and unit-tested locally, but the real vLLM CUDA numbers still need to be collected on the cloud instance.
 
 ## MPS Tuning Notes
 
