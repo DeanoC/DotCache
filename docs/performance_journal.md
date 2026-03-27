@@ -297,6 +297,24 @@ So the honest current read is:
 - `M1` on values is the only promising local `M1` variant so far
 - the page-level fallback hook works, but it is not rescuing quality on these workloads because almost no pages trip it under the current reconstruction-error metric
 - the next meaningful `M1` step should be a stronger value-side codec or a better fallback signal, not more threshold guessing
+
+We then tried both of those next steps together as an explicit experiment, not a new default:
+
+- stronger value-side codec: segmented `M1` LUTs for values (`m1_segment_count_v=2`)
+- stronger fallback signal: token-wise relative error `p95` in addition to the page-average reconstruction metric
+
+That experiment finally made fallback fire on real prompts:
+
+| Model | Prompt Len | V `M1` Pages | V Fallback Pages | Decode ms/step | Resident Bytes | Max Abs Logit Drift | Result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `TinyLlama 1.1B` | `289` | `83` | `5` | `374.57` | `7,611,136` | `2.7070` | Drift improved, latency worsened |
+| `SmolLM2 360M` | `1024` | `620` | `20` | `378.57` | `25,930,752` | `6.6113` | Both latency and drift worsened |
+
+So the honest read is:
+
+- the improved fallback metric is doing real work now
+- but the segmented value-side codec is not a win on these current MPS model-path checks
+- the repo keeps both features as explicit tuning knobs, while the safer single-segment `M1` path remains the default
 - matching resident DotCache KV bytes landed at:
   `28.31 MB` at `1024`
   `37.22 MB` at `1536`

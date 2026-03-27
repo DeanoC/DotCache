@@ -25,8 +25,11 @@ class DotCacheConfig:
     lut_refine_steps: int = 6
     preconditioner: str = "none"
     precondition_strength: float = 2.0
+    m1_segment_count_k: int = 1
+    m1_segment_count_v: int = 1
     m1_fallback_to_m0: bool = True
     m1_error_threshold: float = 0.35
+    m1_token_p95_error_threshold: float = 1000000.0
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -57,8 +60,14 @@ class DotCacheConfig:
             raise ValueError("preconditioner must be none or tanh")
         if self.precondition_strength <= 0:
             raise ValueError("precondition_strength must be positive")
+        if self.m1_segment_count_k <= 0:
+            raise ValueError("m1_segment_count_k must be positive")
+        if self.m1_segment_count_v <= 0:
+            raise ValueError("m1_segment_count_v must be positive")
         if self.m1_error_threshold <= 0:
             raise ValueError("m1_error_threshold must be positive")
+        if self.m1_token_p95_error_threshold <= 0:
+            raise ValueError("m1_token_p95_error_threshold must be positive")
 
     @property
     def num_groups(self) -> int:

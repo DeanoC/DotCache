@@ -26,8 +26,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lut-refine-steps", type=int, default=0)
     parser.add_argument("--preconditioner", choices=["none", "tanh"], default="none")
     parser.add_argument("--precondition-strength", type=float, default=1.0)
+    parser.add_argument("--m1-segment-count-k", type=int, default=1)
+    parser.add_argument("--m1-segment-count-v", type=int, default=1)
     parser.add_argument("--m1-fallback-to-m0", action="store_true")
     parser.add_argument("--m1-error-threshold", type=float, default=0.2)
+    parser.add_argument("--m1-token-p95-error-threshold", type=float, default=0.55)
     parser.add_argument("--tokens-per-page", type=int, default=256)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32, 64])
@@ -124,8 +127,11 @@ def main() -> None:
         lut_refine_steps=args.lut_refine_steps,
         preconditioner=args.preconditioner,
         precondition_strength=args.precondition_strength,
+        m1_segment_count_k=args.m1_segment_count_k,
+        m1_segment_count_v=args.m1_segment_count_v,
         m1_fallback_to_m0=args.m1_fallback_to_m0,
         m1_error_threshold=args.m1_error_threshold,
+        m1_token_p95_error_threshold=args.m1_token_p95_error_threshold,
         tokens_per_page=args.tokens_per_page,
     )
     harness = LlamaDotCacheHarness.from_pretrained(
@@ -165,8 +171,11 @@ def main() -> None:
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,
+                "m1_segment_count_k": args.m1_segment_count_k,
+                "m1_segment_count_v": args.m1_segment_count_v,
                 "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
                 "m1_error_threshold": args.m1_error_threshold,
+                "m1_token_p95_error_threshold": args.m1_token_p95_error_threshold,
                 "prompt_mode": "repeat_count",
                 "repeat_count": repeat_count,
                 "prompt_unit": args.prompt_unit,
@@ -201,8 +210,11 @@ def main() -> None:
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,
+                "m1_segment_count_k": args.m1_segment_count_k,
+                "m1_segment_count_v": args.m1_segment_count_v,
                 "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
                 "m1_error_threshold": args.m1_error_threshold,
+                "m1_token_p95_error_threshold": args.m1_token_p95_error_threshold,
                 "prompt_mode": "exact_length",
                 "requested_prompt_length": prompt_length,
                 "prompt_unit": args.prompt_unit,

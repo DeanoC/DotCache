@@ -552,16 +552,37 @@ def _lookup_lut_group_torch(codebooks, codes):
     code_indices = codes.to(dtype=torch.int64)
     if lut.ndim == 1 and code_indices.ndim == 1:
         return lut[code_indices]
+    if lut.ndim == 2 and code_indices.ndim == 1 and lut.shape[0] == code_indices.shape[0]:
+        page_index = torch.arange(lut.shape[0], device=lut.device)
+        return lut[page_index, code_indices]
     if lut.ndim == 2 and code_indices.ndim == 2:
-        page_index = _load_torch().arange(lut.shape[0], device=lut.device)[:, None]
-        return lut[page_index, code_indices]
-    if lut.ndim == 2 and code_indices.ndim == 3:
-        page_index = _load_torch().arange(lut.shape[0], device=lut.device)[:, None, None]
-        return lut[page_index, code_indices]
-    if lut.ndim == 3 and code_indices.ndim == 4:
-        batch_index = torch.arange(lut.shape[0], device=lut.device)[:, None, None, None]
-        page_index = torch.arange(lut.shape[1], device=lut.device)[None, :, None, None]
-        return lut[batch_index, page_index, code_indices]
+        token_count = int(code_indices.shape[0])
+        segment_count = int(lut.shape[0])
+        if segment_count == 1:
+            return lut[0][code_indices]
+        segment_ids = (torch.arange(token_count, device=lut.device, dtype=torch.int64) * segment_count) // max(token_count, 1)
+        return lut[segment_ids[:, None], code_indices]
+    if lut.ndim == 3 and code_indices.ndim == 3:
+        page_count = int(code_indices.shape[0])
+        token_count = int(code_indices.shape[1])
+        segment_count = int(lut.shape[1])
+        if segment_count == 1:
+            page_index = torch.arange(page_count, device=lut.device)[:, None, None]
+            return lut[page_index, torch.zeros(1, device=lut.device, dtype=torch.int64), code_indices]
+        page_index = torch.arange(page_count, device=lut.device)[:, None, None]
+        segment_ids = (torch.arange(token_count, device=lut.device, dtype=torch.int64) * segment_count) // max(token_count, 1)
+        return lut[page_index, segment_ids[None, :, None], code_indices]
+    if lut.ndim == 4 and code_indices.ndim == 4:
+        batch_size = int(code_indices.shape[0])
+        page_count = int(code_indices.shape[1])
+        token_count = int(code_indices.shape[2])
+        segment_count = int(lut.shape[2])
+        batch_index = torch.arange(batch_size, device=lut.device)[:, None, None, None]
+        page_index = torch.arange(page_count, device=lut.device)[None, :, None, None]
+        if segment_count == 1:
+            return lut[batch_index, page_index, torch.zeros(1, device=lut.device, dtype=torch.int64), code_indices]
+        segment_ids = (torch.arange(token_count, device=lut.device, dtype=torch.int64) * segment_count) // max(token_count, 1)
+        return lut[batch_index, page_index, segment_ids[None, None, :, None], code_indices]
     raise ValueError("unsupported LUT rank")
 
 

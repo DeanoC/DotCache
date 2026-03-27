@@ -202,6 +202,9 @@ def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
     assert float(summary["m1_trial_error_max"]) > 0.0
     assert float(summary["k_m1_trial_error_max"]) > 0.0
     assert float(summary["v_m1_trial_error_max"]) > 0.0
+    assert float(summary["m1_trial_token_p95_error_max"]) > 0.0
+    assert float(summary["k_m1_trial_token_p95_error_max"]) > 0.0
+    assert float(summary["v_m1_trial_token_p95_error_max"]) > 0.0
 
 
 def test_model_paged_kv_cache_persistent_mps_tail_avoids_decode_reupload() -> None:

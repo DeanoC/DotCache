@@ -10,16 +10,17 @@ from dotcache.modes.m1_lut import quantize_tensor_lut
 def test_lut_quantization_shapes_and_error() -> None:
     rng = np.random.default_rng(7)
     values = rng.normal(size=(4, 48)).astype(np.float32)
-    codes, codebooks, padded_head_dim = quantize_tensor_lut(values, group_size=32, bits=4)
+    codes, codebooks, padded_head_dim = quantize_tensor_lut(values, group_size=32, bits=4, segment_count=2)
     decoded = np.zeros((4, padded_head_dim), dtype=np.float32)
+    segment_ids = (np.arange(codes.shape[0], dtype=np.int64) * codebooks.shape[1]) // codes.shape[0]
     for token_index in range(codes.shape[0]):
         for group_index in range(codes.shape[1]):
             start = group_index * 32
             end = start + 32
-            decoded[token_index, start:end] = codebooks[group_index][codes[token_index, group_index]]
+            decoded[token_index, start:end] = codebooks[group_index, segment_ids[token_index]][codes[token_index, group_index]]
 
     assert codes.shape == (4, 2, 32)
-    assert codebooks.shape == (2, 16)
+    assert codebooks.shape == (2, 2, 16)
     assert padded_head_dim == 64
     assert np.max(np.abs(values - decoded[:, :48])) < 0.9
 
@@ -62,6 +63,7 @@ def test_tanh_preconditioning_preserves_valid_lut_decode() -> None:
         quant_scheme_k="lut",
         preconditioner="tanh",
         precondition_strength=2.0,
+        m1_fallback_to_m0=False,
     )
 
     conditioned_page = encode_page(values, conditioned_config, kind="K", mode="M1")
@@ -116,3 +118,27 @@ def test_m1_can_stay_enabled_for_reasonable_pages() -> None:
 
     assert page.header.mode_default == "M1"
     assert page.codebooks is not None
+
+
+def test_m1_can_fallback_on_token_error_signal() -> None:
+    rng = np.random.default_rng(12)
+    values = rng.normal(scale=0.2, size=(32, 48)).astype(np.float32)
+    values[::2, :24] += np.float32(6.0)
+    values[1::2, 24:] -= np.float32(6.0)
+    config = DotCacheConfig(
+        head_dim=48,
+        group_size=32,
+        bits_k=4,
+        default_mode_k="M1",
+        quant_scheme_k="lut",
+        m1_segment_count_k=1,
+        m1_fallback_to_m0=True,
+        m1_error_threshold=10.0,
+        m1_token_p95_error_threshold=1e-6,
+    )
+
+    page = encode_page(values, config, kind="K", mode="M1")
+
+    assert page.header.mode_default == "M0"
+    assert page.trial_token_p95_error is not None
+    assert page.trial_token_p95_error > 1e-6

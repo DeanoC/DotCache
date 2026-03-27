@@ -26,7 +26,7 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
     if header.mode_default == "M1":
         if page.codebooks is None:
             raise ValueError("M1 page is missing codebooks")
-        codebook = page.codebooks[group_index].astype(np.float32)
+        codebook = np.asarray(page.codebooks[group_index], dtype=np.float32)
         return dequantize_group_lut(codes, codebook=codebook)
     if page.payload is None or page.scales is None:
         raise ValueError("M0 page is missing payload or scales")

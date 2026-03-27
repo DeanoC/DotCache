@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .decode_reference import decode_page
+from .modes.m1_lut import dequantize_group_lut
 from .page_format import load_group_words
 from .packing import unpack_bits
 from .types import EncodedPage
@@ -50,7 +51,7 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
         if header.mode_default == "M1":
             if page.codebooks is None:
                 raise ValueError("M1 page is missing codebooks")
-            group = page.codebooks[group_index].astype(np.float32)[codes_u8.astype(np.int64)]
+            group = dequantize_group_lut(codes_u8, codebook=np.asarray(page.codebooks[group_index], dtype=np.float32))
             logits += group @ qg
             continue
 
@@ -99,7 +100,7 @@ def mix_page_ref(attn_weights: np.ndarray, page: EncodedPage, out_acc: np.ndarra
         if header.mode_default == "M1":
             if page.codebooks is None:
                 raise ValueError("M1 page is missing codebooks")
-            group = page.codebooks[group_index].astype(np.float32)[codes_u8.astype(np.int64)]
+            group = dequantize_group_lut(codes_u8, codebook=np.asarray(page.codebooks[group_index], dtype=np.float32))
         else:
             if page.scales is None:
                 raise ValueError("M0 page is missing scales")

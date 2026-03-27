@@ -821,8 +821,11 @@ class ModelPagedKVCache:
             "v_m1_fallback_pages": 0,
         }
         m1_trial_errors: list[float] = []
+        m1_trial_token_p95_errors: list[float] = []
         k_m1_trial_errors: list[float] = []
+        k_m1_trial_token_p95_errors: list[float] = []
         v_m1_trial_errors: list[float] = []
+        v_m1_trial_token_p95_errors: list[float] = []
 
         def visit_page(page: PageLike) -> None:
             source = page.source_page if isinstance(page, PreparedPageTorch) else page
@@ -849,6 +852,13 @@ class ModelPagedKVCache:
                         k_m1_trial_errors.append(error_value)
                     else:
                         v_m1_trial_errors.append(error_value)
+                if source.trial_token_p95_error is not None:
+                    token_error_value = float(source.trial_token_p95_error)
+                    m1_trial_token_p95_errors.append(token_error_value)
+                    if kind_prefix == "k":
+                        k_m1_trial_token_p95_errors.append(token_error_value)
+                    else:
+                        v_m1_trial_token_p95_errors.append(token_error_value)
 
         for state in self._states.values():
             for page in state.session.key_pages:
@@ -868,6 +878,15 @@ class ModelPagedKVCache:
             summary["m1_trial_error_mean"] = 0.0
             summary["m1_trial_error_max"] = 0.0
             summary["m1_trial_error_p95"] = 0.0
+        if m1_trial_token_p95_errors:
+            errors = np.asarray(m1_trial_token_p95_errors, dtype=np.float32)
+            summary["m1_trial_token_p95_error_mean"] = float(np.mean(errors))
+            summary["m1_trial_token_p95_error_max"] = float(np.max(errors))
+            summary["m1_trial_token_p95_error_p95"] = float(np.percentile(errors, 95))
+        else:
+            summary["m1_trial_token_p95_error_mean"] = 0.0
+            summary["m1_trial_token_p95_error_max"] = 0.0
+            summary["m1_trial_token_p95_error_p95"] = 0.0
         for prefix, error_values in (("k", k_m1_trial_errors), ("v", v_m1_trial_errors)):
             if error_values:
                 errors = np.asarray(error_values, dtype=np.float32)
@@ -878,6 +897,16 @@ class ModelPagedKVCache:
                 summary[f"{prefix}_m1_trial_error_mean"] = 0.0
                 summary[f"{prefix}_m1_trial_error_max"] = 0.0
                 summary[f"{prefix}_m1_trial_error_p95"] = 0.0
+        for prefix, error_values in (("k", k_m1_trial_token_p95_errors), ("v", v_m1_trial_token_p95_errors)):
+            if error_values:
+                errors = np.asarray(error_values, dtype=np.float32)
+                summary[f"{prefix}_m1_trial_token_p95_error_mean"] = float(np.mean(errors))
+                summary[f"{prefix}_m1_trial_token_p95_error_max"] = float(np.max(errors))
+                summary[f"{prefix}_m1_trial_token_p95_error_p95"] = float(np.percentile(errors, 95))
+            else:
+                summary[f"{prefix}_m1_trial_token_p95_error_mean"] = 0.0
+                summary[f"{prefix}_m1_trial_token_p95_error_max"] = 0.0
+                summary[f"{prefix}_m1_trial_token_p95_error_p95"] = 0.0
         return summary
 
     def _batch_upload_persistent_tail_rows(

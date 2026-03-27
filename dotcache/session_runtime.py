@@ -46,7 +46,7 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
                 raise ValueError("M1 page is missing codebooks")
             group_values = dequantize_group_lut(
                 codes,
-                codebook=source_page.codebooks[group_index].astype(np.float32),
+                codebook=np.asarray(source_page.codebooks[group_index], dtype=np.float32),
             )
         else:
             if source_page.scales is None:

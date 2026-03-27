@@ -19,7 +19,13 @@ def _reconstruct_lut_page(codes: np.ndarray, codebooks: np.ndarray) -> np.ndarra
     for group_index in range(num_groups):
         start = group_index * group_size
         end = start + group_size
-        dense[:, start:end] = codebooks[group_index][codes[:, group_index].astype(np.int64)]
+        group_codebook = codebooks[group_index].astype(np.float32)
+        if group_codebook.ndim == 1:
+            dense[:, start:end] = group_codebook[codes[:, group_index].astype(np.int64)]
+        else:
+            segment_count = group_codebook.shape[0]
+            segment_ids = (np.arange(token_count, dtype=np.int64) * segment_count) // max(token_count, 1)
+            dense[:, start:end] = group_codebook[segment_ids[:, None], codes[:, group_index].astype(np.int64)]
     return dense
 
 
@@ -106,6 +112,7 @@ def encode_page(
             values,
             group_size=config.group_size,
             bits=bits,
+            segment_count=config.m1_segment_count_k if kind == "K" else config.m1_segment_count_v,
             refine_steps=config.lut_refine_steps,
             preconditioner=config.preconditioner,
             precondition_strength=config.precondition_strength,
@@ -114,9 +121,17 @@ def encode_page(
             reconstructed = _reconstruct_lut_page(codes, codebooks)[:, : config.head_dim]
             rms = float(np.sqrt(np.mean(np.square(values), dtype=np.float64)))
             trial_quant_error = float(np.mean(np.abs(values - reconstructed), dtype=np.float64) / max(rms, 1e-6))
-            if trial_quant_error > config.m1_error_threshold:
+            token_norms = np.linalg.norm(values, axis=1)
+            token_rel_error = np.linalg.norm(values - reconstructed, axis=1) / np.maximum(token_norms, 1e-6)
+            trial_token_p95_error = float(np.percentile(token_rel_error, 95))
+            if (
+                trial_quant_error > config.m1_error_threshold
+                or trial_token_p95_error > config.m1_token_p95_error_threshold
+            ):
                 page_mode = "M0"
                 scheme = "affine"
+        else:
+            trial_token_p95_error = None
         if page_mode == "M1":
             payload = build_payload(codes, bits, page_layout)
             header = PageHeader(
@@ -140,8 +155,10 @@ def encode_page(
                 header=header,
                 payload=payload,
                 codebooks=codebooks.astype(np.float16),
+                lut_segment_count=int(codebooks.shape[1]) if codebooks.ndim == 3 else 1,
                 requested_mode=requested_mode,
                 trial_quant_error=trial_quant_error,
+                trial_token_p95_error=trial_token_p95_error,
                 runtime_page_mean=runtime_page_mean,
                 runtime_page_sketch=runtime_page_sketch,
                 runtime_page_min=runtime_page_min,
@@ -184,6 +201,7 @@ def encode_page(
         bias=stored_bias,
         requested_mode=requested_mode,
         trial_quant_error=trial_quant_error,
+        trial_token_p95_error=trial_token_p95_error if "trial_token_p95_error" in locals() else None,
         runtime_page_mean=runtime_page_mean,
         runtime_page_sketch=runtime_page_sketch,
         runtime_page_min=runtime_page_min,
