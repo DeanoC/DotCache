@@ -132,6 +132,14 @@ It emits two compact views:
 - a per-model classification table (`tolerates all-M0`, `benefits from selective exact K`, or `needs global exact K`)
 - the underlying policy rows with `% K exact`, agreement, KV memory versus exact-K, KV memory versus dense, and decode throughput
 
+For a fresh validated map across the current public CUDA model set, use:
+
+```bash
+.venv/bin/python scripts/build_compressibility_map.py --backend torch_cuda --device cuda
+```
+
+That runner executes the policy suggester per model, validates `all M0`, validates the top selective candidates, validates exact-K for the KV-memory baseline, and emits one compact table you can reuse as the public compressibility-map artifact.
+
 Turbo3 now also has its own dedicated local MPS lane through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The most important recent improvement there was a correct vectorized `3`-bit spill-unpack path on MPS using advanced indexing rather than repeated-index `torch.gather(...)`.
 
 Latest local Turbo3 results:

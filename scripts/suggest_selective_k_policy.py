@@ -274,6 +274,11 @@ def _validate_candidate_policy(
                 "status": "error",
                 "agreement": None,
                 "decode_ms_per_step": None,
+                "kv_vs_dense": None,
+                "kv_resident_bytes": None,
+                "k_total_static_pages": None,
+                "k_m3_pages": None,
+                "k_exact_fraction": None,
                 "error_type": "MissingRecord",
                 "error_message": "benchmark output did not contain an exact-length prompt record",
             }
@@ -285,10 +290,27 @@ def _validate_candidate_policy(
             "status": status,
             "agreement": None if status == "error" else float(record.get("greedy_token_agreement_rate") or 0.0),
             "decode_ms_per_step": None if status == "error" else float(record.get("decode_ms_per_step") or 0.0),
+            "kv_vs_dense": None
+            if status == "error" or record.get("dotcache_vs_dense_kv_bytes_ratio") is None
+            else float(record.get("dotcache_vs_dense_kv_bytes_ratio") or 0.0),
+            "kv_resident_bytes": None
+            if status == "error" or record.get("kv_resident_bytes") is None
+            else int(record.get("kv_resident_bytes") or 0),
+            "k_total_static_pages": None
+            if status == "error" or record.get("k_total_static_pages") is None
+            else int(record.get("k_total_static_pages") or 0),
+            "k_m3_pages": None
+            if status == "error" or record.get("k_m3_pages") is None
+            else int(record.get("k_m3_pages") or 0),
+            "k_exact_fraction": None,
             "error_type": record.get("error_type"),
             "error_message": record.get("error_message"),
         }
     )
+    total_pages = validation.get("k_total_static_pages")
+    exact_pages = validation.get("k_m3_pages")
+    if status != "error" and isinstance(total_pages, int) and total_pages > 0 and isinstance(exact_pages, int):
+        validation["k_exact_fraction"] = float(exact_pages / total_pages)
     return validation
 
 
