@@ -20,6 +20,8 @@ _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT = 4
 _PREPARED_CHUNK_CACHE_KINDS = frozenset({"K", "V"})
 _PREPARED_CHUNK_CACHE: "OrderedDict[tuple[tuple[int, int], ...], PreparedChunkMPS]" = OrderedDict()
 _PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 0
+_PREPARED_GROUPED_CHUNK_CACHE: "OrderedDict[tuple[tuple[tuple[int, int], ...], ...], PreparedGroupedChunkMPS]" = OrderedDict()
+_PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES = 0
 _PREPARED_PAGE_UID = 1
 
 
@@ -89,13 +91,24 @@ PreparedPageMPS = PreparedPageTorch
 class PreparedChunkMPS:
     header: PageHeader
     payload_groups: tuple[Any, ...]
+    codes_groups: tuple[Any, ...] | None
+    scales_groups: tuple[Any, ...] | None
+    bias_groups: tuple[Any, ...] | None
+    resident_nbytes: int
+
+
+@dataclass(slots=True)
+class PreparedGroupedChunkMPS:
+    header: PageHeader
+    payload_groups: tuple[Any, ...]
+    codes_groups: tuple[Any, ...] | None
     scales_groups: tuple[Any, ...] | None
     bias_groups: tuple[Any, ...] | None
     resident_nbytes: int
 
 
 def prepared_chunk_cache_resident_bytes() -> int:
-    return int(_PREPARED_CHUNK_CACHE_RESIDENT_BYTES)
+    return int(_PREPARED_CHUNK_CACHE_RESIDENT_BYTES + _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES)
 
 
 def configure_prepared_chunk_cache(
@@ -124,8 +137,11 @@ def configure_prepared_chunk_cache(
 
 def clear_prepared_chunk_cache() -> None:
     global _PREPARED_CHUNK_CACHE_RESIDENT_BYTES
+    global _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES
     _PREPARED_CHUNK_CACHE.clear()
     _PREPARED_CHUNK_CACHE_RESIDENT_BYTES = 0
+    _PREPARED_GROUPED_CHUNK_CACHE.clear()
+    _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES = 0
 
 
 def _next_prepared_page_uid() -> int:
@@ -242,6 +258,15 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
     if header.mode_default != "M0":
         raise ValueError("prepared chunk cache currently supports only M0 pages")
     payload_groups = tuple(torch.stack([page.payload[group_index] for page in pages], dim=0) for group_index in range(header.num_groups))
+    codes_groups = tuple(
+        _unpack_bits_torch(
+            payload_groups[group_index].reshape(-1, header.words_per_group),
+            pages[0].unpack_shifts,
+            pages[0].unpack_mask,
+            header.group_size,
+        ).reshape(len(pages), header.token_count, header.group_size)
+        for group_index in range(header.num_groups)
+    )
     scales_groups = tuple(
         torch.stack([page.scales[:, group_index].to(torch.float32) for page in pages], dim=0)
         for group_index in range(header.num_groups)
@@ -251,11 +276,13 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         for group_index in range(header.num_groups)
     )
     resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in scales_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
     return PreparedChunkMPS(
         header=header,
         payload_groups=payload_groups,
+        codes_groups=codes_groups,
         scales_groups=scales_groups,
         bias_groups=bias_groups,
         resident_nbytes=resident_nbytes,
@@ -292,6 +319,102 @@ def _get_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChunk
         _PREPARED_CHUNK_CACHE_RESIDENT_BYTES = max(
             0,
             _PREPARED_CHUNK_CACHE_RESIDENT_BYTES - evicted_chunk.resident_nbytes,
+        )
+    return prepared_chunk
+
+
+def _grouped_prepared_chunk_cache_key(
+    pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+) -> tuple[tuple[tuple[int, int], ...], ...] | None:
+    if not pages_by_group or not pages_by_group[0]:
+        return None
+    if pages_by_group[0][0].header.mode_default != "M0":
+        return None
+    page_count = len(pages_by_group[0])
+    cache_key: list[tuple[tuple[int, int], ...]] = []
+    for group_pages in pages_by_group:
+        if len(group_pages) != page_count:
+            return None
+        group_key = _prepared_chunk_cache_key(group_pages)
+        if group_key is None:
+            return None
+        cache_key.append(group_key)
+    return tuple(cache_key)
+
+
+def _build_grouped_prepared_chunk_mps(
+    pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+) -> PreparedGroupedChunkMPS | None:
+    if not pages_by_group or not pages_by_group[0]:
+        return None
+    prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    if any(chunk is None for chunk in prepared_chunks):
+        return None
+    header = pages_by_group[0][0].header
+    payload_groups = tuple(
+        _load_torch().stack([chunk.payload_groups[group_index] for chunk in prepared_chunks], dim=0)
+        for group_index in range(header.num_groups)
+    )
+    codes_groups = tuple(
+        _load_torch().stack([chunk.codes_groups[group_index] for chunk in prepared_chunks], dim=0)
+        for group_index in range(header.num_groups)
+    )
+    scales_groups = tuple(
+        _load_torch().stack([chunk.scales_groups[group_index] for chunk in prepared_chunks], dim=0)
+        for group_index in range(header.num_groups)
+    )
+    bias_groups = tuple(
+        _load_torch().stack([chunk.bias_groups[group_index] for chunk in prepared_chunks], dim=0)
+        for group_index in range(header.num_groups)
+    )
+    resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in scales_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
+    return PreparedGroupedChunkMPS(
+        header=header,
+        payload_groups=payload_groups,
+        codes_groups=codes_groups,
+        scales_groups=scales_groups,
+        bias_groups=bias_groups,
+        resident_nbytes=resident_nbytes,
+    )
+
+
+def _get_grouped_prepared_chunk_mps(
+    pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+) -> PreparedGroupedChunkMPS | None:
+    global _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES
+    cache_key = _grouped_prepared_chunk_cache_key(pages_by_group)
+    if cache_key is None:
+        return None
+    if pages_by_group[0][0].header.kind not in _PREPARED_CHUNK_CACHE_KINDS:
+        return None
+    if len(pages_by_group[0]) < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
+        return None
+    cached_chunk = _PREPARED_GROUPED_CHUNK_CACHE.get(cache_key)
+    if cached_chunk is not None:
+        _PREPARED_GROUPED_CHUNK_CACHE.move_to_end(cache_key)
+        return cached_chunk
+    prepared_chunk = _build_grouped_prepared_chunk_mps(pages_by_group)
+    if prepared_chunk is None:
+        return None
+    if (
+        _MAX_PREPARED_CHUNK_CACHE_ENTRIES <= 0
+        or _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES <= 0
+        or prepared_chunk.resident_nbytes > _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES
+    ):
+        return prepared_chunk
+    _PREPARED_GROUPED_CHUNK_CACHE[cache_key] = prepared_chunk
+    _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES += prepared_chunk.resident_nbytes
+    while (
+        len(_PREPARED_GROUPED_CHUNK_CACHE) > _MAX_PREPARED_CHUNK_CACHE_ENTRIES
+        or _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES > _MAX_PREPARED_CHUNK_CACHE_RESIDENT_BYTES
+    ):
+        _, evicted_chunk = _PREPARED_GROUPED_CHUNK_CACHE.popitem(last=False)
+        _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES = max(
+            0,
+            _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES - evicted_chunk.resident_nbytes,
         )
     return prepared_chunk
 
@@ -775,18 +898,17 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
     for group_index in range(header.num_groups):
-        group_words = (
-            prepared_chunk.payload_groups[group_index]
-            if prepared_chunk is not None
-            else torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = (
+            prepared_chunk.codes_groups[group_index]
+            if prepared_chunk is not None and prepared_chunk.codes_groups is not None
+            else _unpack_bits_torch(
+                torch.stack([page.payload[group_index] for page in pages], dim=0).reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages[0].unpack_shifts,
-            pages[0].unpack_mask,
-            header.group_size,
-        ).reshape(page_count, header.token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (prepared_chunk is not None and prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[group_index]
         int_dot = torch.matmul(codes, qg)
@@ -868,18 +990,17 @@ def _mix_page_chunk_torch(
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
     for group_index in range(header.num_groups):
-        group_words = (
-            prepared_chunk.payload_groups[group_index]
-            if prepared_chunk is not None
-            else torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = (
+            prepared_chunk.codes_groups[group_index]
+            if prepared_chunk is not None and prepared_chunk.codes_groups is not None
+            else _unpack_bits_torch(
+                torch.stack([page.payload[group_index] for page in pages], dim=0).reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages[0].unpack_shifts,
-            pages[0].unpack_mask,
-            header.group_size,
-        ).reshape(page_count, token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (prepared_chunk is not None and prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         scales = (
             prepared_chunk.scales_groups[group_index]
@@ -1099,18 +1220,17 @@ def _score_page_chunk_multiquery_torch(
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
     for group_index in range(header.num_groups):
-        group_words = (
-            prepared_chunk.payload_groups[group_index]
-            if prepared_chunk is not None
-            else torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = (
+            prepared_chunk.codes_groups[group_index]
+            if prepared_chunk is not None and prepared_chunk.codes_groups is not None
+            else _unpack_bits_torch(
+                torch.stack([page.payload[group_index] for page in pages], dim=0).reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, header.token_count, header.group_size)
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages[0].unpack_shifts,
-            pages[0].unpack_mask,
-            header.group_size,
-        ).reshape(page_count, header.token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (prepared_chunk is not None and prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups[:, group_index, :]
         int_dot = torch.einsum("ptg,qg->qpt", codes, qg)
@@ -1196,18 +1316,17 @@ def _mix_page_chunk_multiquery_torch(
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
     for group_index in range(header.num_groups):
-        group_words = (
-            prepared_chunk.payload_groups[group_index]
-            if prepared_chunk is not None
-            else torch.stack([page.payload[group_index] for page in pages], dim=0)
+        codes = (
+            prepared_chunk.codes_groups[group_index]
+            if prepared_chunk is not None and prepared_chunk.codes_groups is not None
+            else _unpack_bits_torch(
+                torch.stack([page.payload[group_index] for page in pages], dim=0).reshape(-1, header.words_per_group),
+                pages[0].unpack_shifts,
+                pages[0].unpack_mask,
+                header.group_size,
+            ).reshape(page_count, token_count, header.group_size)
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages[0].unpack_shifts,
-            pages[0].unpack_mask,
-            header.group_size,
-        ).reshape(page_count, token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (prepared_chunk is not None and prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         scales = (
             prepared_chunk.scales_groups[group_index]
@@ -1355,44 +1474,56 @@ def _score_page_chunk_grouped_multiquery_torch(
     query_group_sums = query_groups_tensor.sum(dim=-1)
     logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
 
-    prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
     for group_index in range(header.num_groups):
-        group_words = torch.stack(
-            [
-                prepared_chunks[group_id].payload_groups[group_index]
-                if prepared_chunks[group_id] is not None
-                else torch.stack([page.payload[group_index] for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        codes = (
+            grouped_prepared_chunk.codes_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].codes_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].codes_groups is not None
+                    else _unpack_bits_torch(
+                        torch.stack([page.payload[group_index] for page in group_pages], dim=0).reshape(-1, header.words_per_group),
+                        pages_by_group[0][0].unpack_shifts,
+                        pages_by_group[0][0].unpack_mask,
+                        header.group_size,
+                    ).reshape(page_count, header.token_count, header.group_size)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages_by_group[0][0].unpack_shifts,
-            pages_by_group[0][0].unpack_mask,
-            header.group_size,
-        ).reshape(batch_size, page_count, header.token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
         qg = query_groups_tensor[:, :, group_index, :]
         int_dot = torch.einsum("bptg,bqg->bqpt", codes, qg)
-        scales = torch.stack(
-            [
-                prepared_chunks[group_id].scales_groups[group_index]
-                if prepared_chunks[group_id] is not None and prepared_chunks[group_id].scales_groups is not None
-                else torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        scales = (
+            grouped_prepared_chunk.scales_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.scales_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].scales_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].scales_groups is not None
+                    else torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
-        bias = torch.stack(
-            [
-                prepared_chunks[group_id].bias_groups[group_index]
-                if prepared_chunks[group_id] is not None and prepared_chunks[group_id].bias_groups is not None
-                else torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        bias = (
+            grouped_prepared_chunk.bias_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.bias_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].bias_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].bias_groups is not None
+                    else torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
         logits += scales[:, None] * int_dot + bias[:, None] * query_group_sums[:, :, group_index].reshape(
             batch_size,
@@ -1479,42 +1610,54 @@ def _mix_page_chunk_grouped_multiquery_torch(
             output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)
         return output
 
-    prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
     for group_index in range(header.num_groups):
-        group_words = torch.stack(
-            [
-                prepared_chunks[group_id].payload_groups[group_index]
-                if prepared_chunks[group_id] is not None
-                else torch.stack([page.payload[group_index] for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        codes = (
+            grouped_prepared_chunk.codes_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].codes_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].codes_groups is not None
+                    else _unpack_bits_torch(
+                        torch.stack([page.payload[group_index] for page in group_pages], dim=0).reshape(-1, header.words_per_group),
+                        pages_by_group[0][0].unpack_shifts,
+                        pages_by_group[0][0].unpack_mask,
+                        header.group_size,
+                    ).reshape(page_count, token_count, header.group_size)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
-        codes = _unpack_bits_torch(
-            group_words.reshape(-1, header.words_per_group),
-            pages_by_group[0][0].unpack_shifts,
-            pages_by_group[0][0].unpack_mask,
-            header.group_size,
-        ).reshape(batch_size, page_count, token_count, header.group_size)
-        if trace is not None:
+        if trace is not None and not (grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None):
             trace.record_temporary(int(codes.numel() * codes.element_size()))
-        scales = torch.stack(
-            [
-                prepared_chunks[group_id].scales_groups[group_index]
-                if prepared_chunks[group_id] is not None and prepared_chunks[group_id].scales_groups is not None
-                else torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        scales = (
+            grouped_prepared_chunk.scales_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.scales_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].scales_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].scales_groups is not None
+                    else torch.stack([page.scales[:, group_index].to(torch.float32) for page in group_pages], dim=0)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
-        bias = torch.stack(
-            [
-                prepared_chunks[group_id].bias_groups[group_index]
-                if prepared_chunks[group_id] is not None and prepared_chunks[group_id].bias_groups is not None
-                else torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0)
-                for group_id, group_pages in enumerate(pages_by_group)
-            ],
-            dim=0,
+        bias = (
+            grouped_prepared_chunk.bias_groups[group_index]
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.bias_groups is not None
+            else torch.stack(
+                [
+                    prepared_chunks[group_id].bias_groups[group_index]
+                    if prepared_chunks is not None and prepared_chunks[group_id] is not None and prepared_chunks[group_id].bias_groups is not None
+                    else torch.stack([page.bias[:, group_index].to(torch.float32) for page in group_pages], dim=0)
+                    for group_id, group_pages in enumerate(pages_by_group)
+                ],
+                dim=0,
+            )
         )
         weighted_scales = weights * scales[:, None]
         contribution = torch.einsum("bqpt,bptg->bqg", weighted_scales, codes)
