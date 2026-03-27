@@ -15,6 +15,7 @@ def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> Non
     assert spec.dotcache_ready is True
     assert spec.benchmark_harness == "llama_compare"
     assert spec.runtime == "dotcache_hf"
+    assert spec.tokenizer_model_id == spec.model_id
 
 
 def test_model_registry_marks_qwen35_as_reference_only() -> None:
@@ -22,3 +23,10 @@ def test_model_registry_marks_qwen35_as_reference_only() -> None:
     assert spec.dotcache_ready is False
     assert spec.local_tier == "reference_only"
     assert spec.family == "qwen3_5_hybrid"
+
+
+def test_model_registry_marks_gguf_lanes_as_external_runnable() -> None:
+    spec = get_model_spec("llama32_3b_gguf")
+    assert spec.runtime == "llama_cpp"
+    assert spec.benchmark_harness == "gguf_external"
+    assert spec.tokenizer_model_id == "meta-llama/Llama-3.2-3B-Instruct"

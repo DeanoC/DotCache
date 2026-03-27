@@ -14,6 +14,7 @@ class ModelSpec:
     key: str
     display_name: str
     model_id: str
+    tokenizer_model_id: str | None
     family: ModelFamily
     source_format: SourceFormat
     runtime: RuntimeName
@@ -33,6 +34,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="tinyllama_hf",
         display_name="TinyLlama 1.1B Chat",
         model_id="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        tokenizer_model_id="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         family="llama",
         source_format="hf",
         runtime="dotcache_hf",
@@ -47,6 +49,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="smollm2_360m_hf",
         display_name="SmolLM2 360M Instruct",
         model_id="HuggingFaceTB/SmolLM2-360M-Instruct",
+        tokenizer_model_id="HuggingFaceTB/SmolLM2-360M-Instruct",
         family="llama",
         source_format="hf",
         runtime="dotcache_hf",
@@ -61,6 +64,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="llama32_3b_hf",
         display_name="Llama 3.2 3B Instruct",
         model_id="meta-llama/Llama-3.2-3B-Instruct",
+        tokenizer_model_id="meta-llama/Llama-3.2-3B-Instruct",
         family="llama",
         source_format="hf",
         runtime="dotcache_hf",
@@ -75,6 +79,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="qwen25_3b_hf",
         display_name="Qwen2.5 3B Instruct",
         model_id="Qwen/Qwen2.5-3B-Instruct",
+        tokenizer_model_id="Qwen/Qwen2.5-3B-Instruct",
         family="qwen2",
         source_format="hf",
         runtime="transformers",
@@ -89,6 +94,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="qwen35_4b_hf",
         display_name="Qwen3.5 4B",
         model_id="Qwen/Qwen3.5-4B",
+        tokenizer_model_id="Qwen/Qwen3.5-4B",
         family="qwen3_5_hybrid",
         source_format="hf",
         runtime="transformers",
@@ -103,13 +109,14 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="llama32_3b_gguf",
         display_name="Llama 3.2 3B Instruct GGUF",
         model_id="ggml-org/Llama-3.2-3B-Instruct-GGUF",
+        tokenizer_model_id="meta-llama/Llama-3.2-3B-Instruct",
         family="llama",
         source_format="gguf",
         runtime="llama_cpp",
         context_window=131072,
         local_tier="reference_only",
         dotcache_ready=False,
-        benchmark_harness=None,
+        benchmark_harness="gguf_external",
         prompt_lengths=(1024, 2048, 4096),
         notes="External reference baseline for llama.cpp / GGUF comparisons.",
     ),
@@ -117,13 +124,14 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="qwen25_3b_gguf",
         display_name="Qwen2.5 3B Instruct GGUF",
         model_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
+        tokenizer_model_id="Qwen/Qwen2.5-3B-Instruct",
         family="qwen2",
         source_format="gguf",
         runtime="llama_cpp",
         context_window=32768,
         local_tier="reference_only",
         dotcache_ready=False,
-        benchmark_harness=None,
+        benchmark_harness="gguf_external",
         prompt_lengths=(1024, 2048, 4096),
         notes="External GGUF reference lane for future TurboQuant / llama.cpp comparisons.",
     ),
@@ -139,4 +147,3 @@ def get_model_spec(key: str) -> ModelSpec:
         return _MODEL_REGISTRY[key]
     except KeyError as exc:
         raise KeyError(f"unknown model registry key: {key}") from exc
-

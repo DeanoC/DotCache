@@ -41,6 +41,12 @@ Example:
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys tinyllama_hf smollm2_360m_hf --run-supported --backend torch_mps --device mps
 ```
 
+The matrix now also emits runnable external GGUF reference commands for `llama.cpp` lanes:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
+```
+
 ## Current Local Read
 
 - This Mac already has working local lanes for:
@@ -73,3 +79,25 @@ Or through the shared matrix:
 ```
 
 The matrix now passes `--continue-on-error` through to runnable compare harnesses by default so stretch-model lanes can be exercised without treating a single OOM or gated-model failure as a framework bug.
+
+## GGUF Reference Lane
+
+The GGUF / `llama.cpp` side now has a minimal external benchmark scaffold:
+
+- runner: [benchmarks/bench_gguf_external.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_gguf_external.py)
+- wrappers:
+  - [scripts/run_llama32_gguf_reference.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_llama32_gguf_reference.sh)
+  - [scripts/run_qwen25_gguf_reference.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen25_gguf_reference.sh)
+
+It is intentionally an external reference lane, not a DotCache integration:
+
+- it builds exact-length prompts with the matching Hugging Face tokenizer
+- it calls `llama-cli -hf ...`
+- it parses `llama.cpp` timing lines when present
+- it degrades cleanly with an error record when `llama-cli` is unavailable
+
+This gives the shared matrix one consistent way to emit or run:
+
+- HF dense / DotCache lanes
+- GGUF / `llama.cpp` reference lanes
+- future TurboQuant-style external baselines
