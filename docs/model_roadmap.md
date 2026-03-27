@@ -50,3 +50,26 @@ Example:
   - Llama 3.2 3B HF first
   - Qwen2.5 3B HF second
 - GGUF should be treated as an external baseline lane, not as a replacement for the native-weight DotCache path.
+
+## First Proper-Model Lane
+
+Llama 3.2 3B is now the first-class stretch-model target on the existing HF Llama path:
+
+- wrapper: [scripts/run_llama32_compare.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_llama32_compare.sh)
+- registry entry: [dotcache/model_registry.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_registry.py)
+- harness: [benchmarks/bench_llama_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_compare.py)
+
+Use it directly on this Mac with:
+
+```bash
+bash scripts/run_llama32_compare.sh
+```
+
+Or through the shared matrix:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
+```
+
+The matrix now passes `--continue-on-error` through to runnable compare harnesses by default so stretch-model lanes can be exercised without treating a single OOM or gated-model failure as a framework bug.

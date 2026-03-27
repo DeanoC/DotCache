@@ -92,6 +92,12 @@ bash scripts/run_turbo3_mps_suite.sh tinyllama
 bash scripts/run_turbo3_mps_suite.sh smollm2
 ```
 
+8. Stretch-model local HF lane on MPS:
+
+```bash
+bash scripts/run_llama32_compare.sh
+```
+
 ## Current package layout
 
 ```text
@@ -171,6 +177,19 @@ bash scripts/run_smollm2_frontier_compare.sh
 ```
 
 That runner sweeps exact prompt lengths `256 512 1024 1536 2048` from one model load. On the current M4 checkpoint, DotCache is still slower than dense through `1536` tokens in the one-load sweep, but it already uses much less KV memory, and a fresh standalone `2048` rerun shows DotCache ahead on decode while keeping the same KV-memory win.
+
+For the next "proper model" target on the same HF path, use Llama 3.2 3B:
+
+```bash
+bash scripts/run_llama32_compare.sh
+```
+
+That wrapper targets `meta-llama/Llama-3.2-3B-Instruct` with exact prompt lengths `1024 2048` and `--continue-on-error`, so it behaves like a real stretch-model lane on this Mac instead of assuming every longer prompt will fit. The same target is also exposed through the shared model matrix:
+
+```bash
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
+```
 
 ## Phase 6 vLLM Integration
 
