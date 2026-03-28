@@ -2283,6 +2283,110 @@ The useful conclusion is clear:
 - `readout_only_m0` is the safest first compression target
 - `post_update` and full-path replay are materially more fragile than readout-only
 
+## 2026-03-28 23:35 UTC - Combined conv and recurrent sweep points to `8b` first, with more renorm pressure on conv state
+
+I extended the real-state sweep to run both DeltaNet state families on the same Qwen3.5 slice:
+
+- prompt length `32`
+- decode steps `4`
+- layers `0`, `12`, `22`
+- state kinds `recurrent` and `conv`
+
+The combined recommendation output was simple and consistent:
+
+- recurrent layers `0`, `12`, `22`
+  - all three recommend `M0 8b`
+  - renorm intervals: `0`, `2`, `0`
+- conv layers `0`, `12`, `22`
+  - all three also recommend `M0 8b`
+  - renorm intervals: `2`, `2`, `2`
+
+The important detail is that conv state is clearly noisier than recurrent state at the same bitwidths on this captured slice. Representative readout errors:
+
+- recurrent, `8b`
+  - layer `0`: `0.0435`
+  - layer `12`: `0.0746`
+  - layer `22`: `0.1128`
+- conv, `8b`
+  - layer `0`: `0.1314`
+  - layer `12`: `0.0796`
+  - layer `22`: `0.0878`
+
+And the lower-bit picture stayed negative for both families:
+
+- recurrent `4b`
+  - readout drift ranged from `0.7565` to `1.1857`
+- conv `4b`
+  - readout drift ranged from `0.8630` to `1.2947`
+- `3b` was materially worse still for both
+
+So the current local StateCache handoff gets a little sharper:
+
+- start with `8b` for both recurrent and conv state
+- treat renorm as more important for conv state than for recurrent state
+- do not start the CUDA path from `4b` or `3b` on either state family
+
+## 2026-03-29 00:40 UTC - Short local selective `4b` recurrent overrides do not destabilize the `8b` resident lane
+
+After merging the first CUDA StateCache win path, I added per-layer recurrent-state bit overrides to the resident Qwen3.5 StateCache readout/loss harnesses and probed a few small local override pockets on this Mac.
+
+Exact `64`, `2` generated tokens, `post_update_m0`, default `8b`, no renorm:
+
+- baseline `8b` everywhere
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,898,240`
+  - recurrent compression ratio `3.20x`
+- layer `12 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,767,168`
+  - recurrent compression ratio `3.27x`
+- layer `22 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,767,168`
+  - recurrent compression ratio `3.27x`
+- layers `12,22 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,636,096`
+  - recurrent compression ratio `3.35x`
+
+So the honest local read is:
+
+- small selective `4b` recurrent pockets are compatible with the current `8b` resident path on this short exact slice
+- the local exact `64` probe is not yet long or hard enough to expose a failure boundary
+- the next useful selective probe should move to a longer exact or teacher-forced slice rather than adding more short `64 / 2` cases
+
+## 2026-03-29 01:10 UTC - Longer local teacher-forced probe shows selective `4b` is plausible but no longer free
+
+I followed the short exact-`64` probe with a longer teacher-forced check on the merged StateCache lane:
+
+- `sequence_length = 160`
+- `prefix_length = 128`
+- `eval_steps = 16`
+- `state_stage = post_update_m0`
+- baseline `8b` everywhere vs selective recurrent override `12:4 22:4`
+
+Baseline `8b` result:
+
+- `teacher_forced_loss_delta = -0.00088`
+- `teacher_forced_perplexity_ratio = 0.99912`
+- recurrent resident bytes `5,898,240`
+
+Selective `12:4 22:4` result:
+
+- `teacher_forced_loss_delta = +0.00327`
+- `teacher_forced_perplexity_ratio = 1.00327`
+- recurrent resident bytes `5,636,096`
+
+So the current local read tightens up:
+
+- a small two-layer `4b` recurrent pocket still looks plausible on top of the `8b` resident lane
+- but at a longer prefix it is no longer perfectly free
+- the cost is small enough to keep exploring, yet real enough that the next step should be layer-by-layer on CUDA rather than assuming every short local success transfers unchanged
+
 Live CUDA check:
 
 ```bash

@@ -14,6 +14,16 @@ from dotcache.integrations.qwen35 import (
 )
 
 
+def _parse_layer_bit_overrides(values: list[str]) -> dict[int, int]:
+    overrides: dict[int, int] = {}
+    for value in values:
+        layer_text, sep, bits_text = str(value).partition(":")
+        if sep != ":":
+            raise argparse.ArgumentTypeError(f"layer override must look like <layer>:<bits>, got {value!r}")
+        overrides[int(layer_text)] = int(bits_text)
+    return overrides
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prototype 8-bit readout-only StateCache benchmark for Qwen3.5 DeltaNet layers.")
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
@@ -23,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits", type=int, default=8)
+    parser.add_argument("--layer-bit-overrides", nargs="*", default=[])
     parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="readout_only_m0")
     parser.add_argument("--renorm-interval", type=int, default=0)
     parser.add_argument("--recurrent-mode-override", action="append", default=[])
@@ -67,6 +78,7 @@ def _run_case(
     max_new_tokens: int,
     group_size: int,
     bits: int,
+    layer_bits_overrides: dict[int, int],
     state_stage: str,
     renorm_interval: int,
     base_record: dict[str, object],
@@ -79,6 +91,7 @@ def _run_case(
             decode_steps=max_new_tokens,
             group_size=group_size,
             bits=bits,
+            layer_bits_overrides=layer_bits_overrides,
             state_stage=state_stage,
             renorm_interval=renorm_interval,
         )
@@ -106,6 +119,7 @@ def main() -> None:
     if not transformers_available():
         raise SystemExit("bench_qwen35_deltanet_statecache_readout.py requires the optional transformers dependencies")
 
+    layer_bit_overrides = _parse_layer_bit_overrides(args.layer_bit_overrides)
     model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
     text_config = getattr(model_config, "text_config", model_config)
     max_position_embeddings = int(getattr(text_config, "max_position_embeddings", 0) or 0)
@@ -129,6 +143,7 @@ def main() -> None:
         "hybrid_family": "qwen3_5",
         "deltanet_statecache_group_size": args.group_size,
         "deltanet_statecache_bits": args.bits,
+        "deltanet_statecache_layer_bits": {str(layer_id): bits for layer_id, bits in sorted(layer_bit_overrides.items())},
         "deltanet_statecache_stage_name": args.state_stage,
         "deltanet_statecache_renorm_interval": args.renorm_interval,
     }
@@ -148,6 +163,7 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             group_size=args.group_size,
             bits=args.bits,
+            layer_bits_overrides=layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
             recurrent_mode_overrides=recurrent_mode_overrides,
@@ -168,6 +184,7 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             group_size=args.group_size,
             bits=args.bits,
+            layer_bits_overrides=layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
             recurrent_mode_overrides=recurrent_mode_overrides,
