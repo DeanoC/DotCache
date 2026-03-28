@@ -224,6 +224,26 @@ def test_dotcache_config_resolves_specific_mode_overrides() -> None:
     assert config.resolve_page_mode(kind="V", layer_id=1, kv_head_id=0) == "M0"
 
 
+def test_dotcache_config_resolves_layer_policy_tiers_and_explicit_candidates() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        key_policy_tier="balanced",
+        value_policy_tier="strict",
+        key_layer_sensitivity=("layer:1=aggressive",),
+        value_policy_overrides=("layer:0=M1/lut/4,M0/affine/4",),
+    )
+
+    key_policy_l0 = config.resolve_layer_policy(kind="K", layer_id=0, kv_head_id=0)
+    key_policy_l1 = config.resolve_layer_policy(kind="K", layer_id=1, kv_head_id=0)
+    value_policy_l0 = config.resolve_layer_policy(kind="V", layer_id=0, kv_head_id=0)
+
+    assert key_policy_l0.sensitivity_tier == "balanced"
+    assert key_policy_l1.sensitivity_tier == "aggressive"
+    assert len(value_policy_l0.candidates) == 2
+    assert value_policy_l0.candidates[0].mode == "M1"
+    assert value_policy_l0.candidates[1].mode == "M0"
+
+
 def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head() -> None:
     rng = np.random.default_rng(30415)
     config = DotCacheConfig(
@@ -254,6 +274,45 @@ def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head()
     kv1_page = cache._states[(0, 1)].session.key_pages[0]
     assert kv0_page.header.mode_default == "M1"
     assert kv1_page.header.mode_default == "M3"
+
+
+def test_model_paged_kv_cache_records_policy_metadata_and_fragmentation() -> None:
+    rng = np.random.default_rng(30416)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        key_policy_tier="balanced",
+        value_policy_tier="strict",
+        key_layer_sensitivity=("layer:0=aggressive",),
+        value_policy_overrides=("layer:0=M1/lut/4,M0/affine/4",),
+        recent_window=0,
+        m1_fallback_to_m0=False,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(loc=0.05, scale=0.01, size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(loc=0.05, scale=0.01, size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+    first_key_page = cache._states[(0, 0)].session.key_pages[0]
+    first_value_page = cache._states[(0, 0)].session.value_pages[0]
+
+    assert first_key_page.header.policy_id.startswith("k_")
+    assert first_value_page.header.policy_id.startswith("v_")
+    assert first_key_page.header.sensitivity_tier == "aggressive"
+    assert first_value_page.header.sensitivity_tier in {"strict", "balanced"}
+    assert int(summary["fragmentation_total_buckets"]) >= 1
+    assert "policy_tier_counts" in summary
+    assert "mode_signature_counts" in summary
 
 
 def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:

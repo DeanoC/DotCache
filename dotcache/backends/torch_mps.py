@@ -358,6 +358,8 @@ def _chunk_compatible_pages(pages: Sequence[PreparedPageTorch]) -> list[list[Pre
 def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple[int, int], ...] | None:
     if not pages:
         return None
+    if len(_chunk_compatible_pages(pages)) != 1:
+        return None
     if pages[0].header.mode_default not in ("M0", "T3"):
         return None
     return tuple((int(page.cache_uid), int(page.header.token_count)) for page in pages)
@@ -481,7 +483,17 @@ def _build_grouped_prepared_chunk_mps(
     if not pages_by_group or not pages_by_group[0]:
         return None
     torch = _load_torch()
-    prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+
+    def _get_or_build_group_chunk(group_pages: Sequence[PreparedPageTorch]) -> PreparedChunkMPS | None:
+        prepared_chunk = _get_prepared_chunk_mps(group_pages)
+        if prepared_chunk is not None:
+            return prepared_chunk
+        cache_key = _prepared_chunk_cache_key(group_pages)
+        if cache_key is None:
+            return None
+        return _build_prepared_chunk_mps(group_pages)
+
+    prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
     if any(chunk is None for chunk in prepared_chunks):
         return None
     header = pages_by_group[0][0].header
@@ -489,9 +501,13 @@ def _build_grouped_prepared_chunk_mps(
         # Avoid caching a second grouped fused copy. The per-group prepared chunks
         # already hold the fused tensors, and grouped decode can stack them on demand.
         return None
-    # Grouped decode uses unpacked codes/scales/bias directly, so duplicating stacked
-    # payload tensors here only burns memory without helping the hot path.
-    payload_groups: tuple[Any, ...] = ()
+    payload_groups = tuple(
+        torch.stack(
+            [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+            dim=0,
+        )
+        for group_index in range(header.num_groups)
+    )
     codes_groups = tuple(
         torch.stack([chunk.codes_groups[group_index] for chunk in prepared_chunks], dim=0)
         for group_index in range(header.num_groups)
@@ -507,7 +523,8 @@ def _build_grouped_prepared_chunk_mps(
     fused_scaled_codes = None
     if all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks):
         fused_scaled_codes = torch.stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0)
-    resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
+    resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in scales_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
     if fused_scaled_codes is not None:
@@ -559,7 +576,8 @@ def _get_grouped_prepared_chunk_mps(
         return None
     if pages_by_group[0][0].header.kind not in _PREPARED_CHUNK_CACHE_KINDS:
         return None
-    if len(pages_by_group[0]) < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
+    total_page_count = sum(len(group_pages) for group_pages in pages_by_group)
+    if total_page_count < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
         return None
     cached_chunk = _PREPARED_GROUPED_CHUNK_CACHE.get(cache_key)
     if cached_chunk is not None:
@@ -2329,7 +2347,12 @@ def _score_page_chunk_grouped_multiquery_torch(
     query_group_sums_tensor = query_group_sums if query_group_sums is not None else query_groups_tensor.sum(dim=-1)
     logits = torch.zeros((batch_size, query_count, page_count * header.token_count), dtype=torch.float32, device=device_type)
     grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
-    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    prepared_chunks = None if grouped_prepared_chunk is not None else [
+        _get_prepared_chunk_mps(group_pages) or (
+            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        )
+        for group_pages in pages_by_group
+    ]
     if (
         grouped_prepared_chunk is not None
         and grouped_prepared_chunk.fused_scaled_codes is not None
@@ -2556,7 +2579,12 @@ def _mix_page_chunk_grouped_multiquery_torch(
         return output
 
     grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
-    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    prepared_chunks = None if grouped_prepared_chunk is not None else [
+        _get_prepared_chunk_mps(group_pages) or (
+            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        )
+        for group_pages in pages_by_group
+    ]
     if (
         grouped_prepared_chunk is not None
         and grouped_prepared_chunk.fused_scaled_codes is not None

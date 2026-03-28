@@ -21,6 +21,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3", "T3"], default="M0")
     parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3", "T3"], default="M0")
+    parser.add_argument("--key-policy-tier", choices=["exact", "strict", "balanced", "aggressive"], default="exact")
+    parser.add_argument("--value-policy-tier", choices=["exact", "strict", "balanced", "aggressive"], default="exact")
+    parser.add_argument("--key-mode-override", action="append", default=[])
+    parser.add_argument("--value-mode-override", action="append", default=[])
+    parser.add_argument("--key-layer-sensitivity", action="append", default=[])
+    parser.add_argument("--value-layer-sensitivity", action="append", default=[])
+    parser.add_argument("--key-policy-override", action="append", default=[])
+    parser.add_argument("--value-policy-override", action="append", default=[])
     parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "turbo3"], default="affine")
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut", "turbo3"], default="affine")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -93,6 +101,14 @@ def main() -> None:
         bits_v=args.bits_v,
         default_mode_k=args.default_mode_k,
         default_mode_v=args.default_mode_v,
+        key_policy_tier=args.key_policy_tier,
+        value_policy_tier=args.value_policy_tier,
+        key_mode_overrides=tuple(args.key_mode_override),
+        value_mode_overrides=tuple(args.value_mode_override),
+        key_layer_sensitivity=tuple(args.key_layer_sensitivity),
+        value_layer_sensitivity=tuple(args.value_layer_sensitivity),
+        key_policy_overrides=tuple(args.key_policy_override),
+        value_policy_overrides=tuple(args.value_policy_override),
         quant_scheme_k=args.quant_scheme_k,
         quant_scheme_v=args.quant_scheme_v,
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -140,6 +156,14 @@ def main() -> None:
             "tokens_per_page": args.tokens_per_page,
             "default_mode_k": args.default_mode_k,
             "default_mode_v": args.default_mode_v,
+            "key_policy_tier": args.key_policy_tier,
+            "value_policy_tier": args.value_policy_tier,
+            "key_mode_overrides": list(args.key_mode_override),
+            "value_mode_overrides": list(args.value_mode_override),
+            "key_layer_sensitivity": list(args.key_layer_sensitivity),
+            "value_layer_sensitivity": list(args.value_layer_sensitivity),
+            "key_policy_overrides": list(args.key_policy_override),
+            "value_policy_overrides": list(args.value_policy_override),
             "quant_scheme_k": args.quant_scheme_k,
             "quant_scheme_v": args.quant_scheme_v,
             "m2_sketch_dim_k": args.m2_sketch_dim_k,

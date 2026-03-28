@@ -19,6 +19,7 @@ from .backends import (
 )
 from .config import DotCacheConfig
 from .encode import encode_page
+from .planner import choose_page_mode, observe_page
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
 from .session_runtime import PagedDecodeSession
@@ -411,6 +412,7 @@ class _TailPageBuilder:
         value_rows: np.ndarray,
         *,
         token_start: int,
+        sequence_length: int | None = None,
     ) -> tuple[list[EncodedPage], list[EncodedPage]]:
         if key_rows.shape != value_rows.shape:
             raise ValueError("step key/value rows must align")
@@ -437,6 +439,31 @@ class _TailPageBuilder:
                 raise RuntimeError("tail-page token_start is missing while finalizing a page")
             dense_keys = np.stack(self.key_rows, axis=0).astype(np.float32, copy=False)
             dense_values = np.stack(self.value_rows, axis=0).astype(np.float32, copy=False)
+            current_sequence_length = int(sequence_length if sequence_length is not None else (token_start + key_rows.shape[0]))
+            if self.config.has_policy_overrides(kind="K") or self.config.has_mode_overrides(kind="K"):
+                key_page_mode = choose_page_mode(
+                    self.layer_id,
+                    "K",
+                    max(0, current_sequence_length - int(self.token_start) - 1),
+                    observe_page(dense_keys),
+                    layer_policy=self.config.resolve_layer_policy(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
+                )
+                key_mode = None
+            else:
+                key_page_mode = None
+                key_mode = self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
+            if self.config.has_policy_overrides(kind="V") or self.config.has_mode_overrides(kind="V"):
+                value_page_mode = choose_page_mode(
+                    self.layer_id,
+                    "V",
+                    max(0, current_sequence_length - int(self.token_start) - 1),
+                    observe_page(dense_values),
+                    layer_policy=self.config.resolve_layer_policy(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
+                )
+                value_mode = None
+            else:
+                value_page_mode = None
+                value_mode = self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
             finalized_key_pages.append(
                 encode_page(
                     dense_keys,
@@ -445,7 +472,8 @@ class _TailPageBuilder:
                     layer_id=self.layer_id,
                     kv_head_id=self.kv_head_id,
                     token_start=self.token_start,
-                    mode=self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
+                    mode=key_mode,
+                    page_mode=key_page_mode,
                 )
             )
             finalized_value_pages.append(
@@ -456,7 +484,8 @@ class _TailPageBuilder:
                     layer_id=self.layer_id,
                     kv_head_id=self.kv_head_id,
                     token_start=self.token_start,
-                    mode=self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
+                    mode=value_mode,
+                    page_mode=value_page_mode,
                 )
             )
             self.key_rows.clear()
@@ -876,6 +905,7 @@ class ModelPagedKVCache:
         keys: np.ndarray,
         values: np.ndarray,
         *,
+        sequence_length: int,
         full_tokens: int,
     ) -> tuple[list[list[EncodedPage]], list[list[EncodedPage]]]:
         key_pages_by_head: list[list[EncodedPage]] = [[] for _ in range(self.num_key_value_heads)]
@@ -903,7 +933,14 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
-                        mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
+                        page_mode=self._select_page_mode(
+                            full_keys[kv_head_id, page_start:page_end],
+                            kind="K",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=page_start,
+                            sequence_length=sequence_length,
+                        ),
                         build_runtime_metadata=False,
                         build_m2_sidecar=build_key_sidecar,
                     )
@@ -916,7 +953,14 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
-                        mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
+                        page_mode=self._select_page_mode(
+                            full_values[kv_head_id, page_start:page_end],
+                            kind="V",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=page_start,
+                            sequence_length=sequence_length,
+                        ),
                         build_runtime_metadata=False,
                     )
                 )
@@ -927,7 +971,7 @@ class ModelPagedKVCache:
             return False
         if int(self.config.m2_prefilter_top_k) > 0:
             return False
-        if self.config.has_mode_overrides():
+        if self.config.has_mode_overrides() or self.config.has_policy_overrides():
             return False
         if self.config.default_mode_k != "M0" or self.config.default_mode_v != "M0":
             return False
@@ -938,6 +982,29 @@ class ModelPagedKVCache:
         if 32 % int(self.config.bits_k) != 0 or 32 % int(self.config.bits_v) != 0:
             return False
         return True
+
+    def _select_page_mode(
+        self,
+        values: np.ndarray,
+        *,
+        kind: str,
+        layer_id: int,
+        kv_head_id: int,
+        token_start: int,
+        sequence_length: int,
+    ):
+        if not self.config.has_policy_overrides(kind=kind) and not self.config.has_mode_overrides(kind=kind):
+            return None
+        layer_policy = self.config.resolve_layer_policy(kind=kind, layer_id=layer_id, kv_head_id=kv_head_id)
+        page_stats = observe_page(values)
+        token_age = max(0, int(sequence_length) - int(token_start) - 1)
+        return choose_page_mode(
+            int(layer_id),
+            kind,
+            token_age,
+            page_stats,
+            layer_policy=layer_policy,
+        )
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
         if self._torch_device_type is None:
@@ -1132,7 +1199,7 @@ class ModelPagedKVCache:
         self._m2_prefilter_selected_pages += len(selected_indices)
         return [key_pages[index] for index in selected_indices], [value_pages[index] for index in selected_indices]
 
-    def page_mode_summary(self) -> dict[str, float | int]:
+    def page_mode_summary(self) -> dict[str, object]:
         counts: dict[str, int] = {
             "total_static_pages": 0,
             "m0_pages": 0,
@@ -1166,6 +1233,10 @@ class ModelPagedKVCache:
         k_m1_trial_token_p95_errors: list[float] = []
         v_m1_trial_errors: list[float] = []
         v_m1_trial_token_p95_errors: list[float] = []
+        policy_tier_counts: dict[str, int] = {}
+        fallback_reason_counts: dict[str, int] = {}
+        signature_counts: dict[str, int] = {}
+        layer_kind_mode_counts: dict[str, int] = {}
 
         def visit_page(page: PageLike) -> None:
             source = page.source_page if isinstance(page, PreparedPageTorch) else page
@@ -1179,6 +1250,13 @@ class ModelPagedKVCache:
             kind_key = f"{kind_prefix}_{mode_name.lower()}_pages"
             if kind_key in counts:
                 counts[kind_key] += 1
+            policy_tier_counts[source.header.sensitivity_tier] = policy_tier_counts.get(source.header.sensitivity_tier, 0) + 1
+            fallback_key = source.header.fallback_reason or "none"
+            fallback_reason_counts[fallback_key] = fallback_reason_counts.get(fallback_key, 0) + 1
+            signature = f"{source.header.kind}:{source.header.mode_default}:{source.header.quant_scheme}:{source.header.bits}"
+            signature_counts[signature] = signature_counts.get(signature, 0) + 1
+            layer_mode_key = f"layer:{source.header.layer_id}:{source.header.kind}:{source.header.mode_default}:{source.header.bits}"
+            layer_kind_mode_counts[layer_mode_key] = layer_kind_mode_counts.get(layer_mode_key, 0) + 1
             if source.m2_sketch is not None and source.m2_basis is not None and source.header.mode_default != "M2":
                 counts["m2_sidecar_pages"] += 1
                 counts[f"{kind_prefix}_m2_sidecar_pages"] += 1
@@ -1212,6 +1290,21 @@ class ModelPagedKVCache:
                 counts["active_tail_pages"] += 2
 
         summary: dict[str, float | int] = dict(counts)
+        summary["policy_tier_counts"] = dict(sorted(policy_tier_counts.items()))
+        summary["fallback_reason_counts"] = dict(sorted(fallback_reason_counts.items()))
+        summary["mode_signature_counts"] = dict(sorted(signature_counts.items()))
+        summary["layer_kind_mode_counts"] = dict(sorted(layer_kind_mode_counts.items()))
+        total_buckets = len(signature_counts)
+        single_page_buckets = sum(1 for count in signature_counts.values() if count == 1)
+        total_pages = int(counts["total_static_pages"])
+        summary["fragmentation_total_buckets"] = total_buckets
+        summary["fragmentation_single_page_buckets"] = single_page_buckets
+        summary["fragmentation_avg_pages_per_bucket"] = (
+            float(total_pages / total_buckets) if total_buckets > 0 else 0.0
+        )
+        summary["fragmentation_single_page_bucket_fraction"] = (
+            float(single_page_buckets / total_buckets) if total_buckets > 0 else 0.0
+        )
         if m1_trial_errors:
             errors = np.asarray(m1_trial_errors, dtype=np.float32)
             summary["m1_trial_error_mean"] = float(np.mean(errors))
@@ -1342,6 +1435,7 @@ class ModelPagedKVCache:
             layer_id,
             keys,
             values,
+            sequence_length=seq_len,
             full_tokens=full_tokens,
         )
         for kv_head_id in range(self.num_key_value_heads):
@@ -1416,7 +1510,11 @@ class ModelPagedKVCache:
         seq_len = int(keys.shape[1])
         full_page_count = seq_len // self.config.tokens_per_page
         full_tokens = full_page_count * self.config.tokens_per_page
-        direct_prepare_full_pages = self._can_direct_prepare_full_prefill_pages_torch() and full_tokens > 0
+        direct_prepare_full_pages = (
+            self._can_direct_prepare_full_prefill_pages_torch()
+            and full_tokens > 0
+            and full_tokens == seq_len
+        )
         if direct_prepare_full_pages:
             page_size = int(self.config.tokens_per_page)
             full_key_pages_by_head = [
@@ -1450,6 +1548,7 @@ class ModelPagedKVCache:
                 layer_id,
                 full_keys_cpu,
                 full_values_cpu,
+                sequence_length=seq_len,
                 full_tokens=full_tokens,
             )
         else:
@@ -1556,6 +1655,7 @@ class ModelPagedKVCache:
                 keys[kv_head_id],
                 values[kv_head_id],
                 token_start=token_index,
+                sequence_length=token_index + token_count,
             )
             if finalized_key_pages:
                 state.session.append(finalized_key_pages, finalized_value_pages, trace=trace)

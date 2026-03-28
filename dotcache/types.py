@@ -28,6 +28,10 @@ class PageHeader:
     mode_default: Mode
     layout: Layout
     quant_scheme: QuantScheme
+    policy_id: str = "exact_baseline"
+    sensitivity_tier: str = "exact"
+    fallback_reason: str = ""
+    age_bucket: str = "aged"
     escape_dtype: str = "float16"
 
     def to_dict(self) -> dict[str, int | str]:

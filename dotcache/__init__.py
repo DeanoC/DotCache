@@ -13,23 +13,32 @@ from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 from .model_kv_cache import ModelPagedKVCache
+from .kv_quant_registry import KvQuantBaselineSpec, get_kv_quant_baseline, list_kv_quant_baselines
 from .model_registry import ModelSpec, get_model_spec, list_model_specs
+from .planner import LayerPolicy, PageModeSpec, PageStats, choose_page_mode, observe_page
 
 __all__ = [
     "DotCacheConfig",
     "EncodedPage",
     "ExecutionTrace",
+    "KvQuantBaselineSpec",
+    "LayerPolicy",
     "ModelSpec",
     "ModelPagedKVCache",
+    "PageModeSpec",
+    "PageStats",
     "PageHeader",
     "PagedDecodeSession",
     "PreparedPageCache",
     "choose_mode",
+    "choose_page_mode",
     "decode_step",
     "encode_page",
     "explicit_dequantized_attention",
+    "get_kv_quant_baseline",
     "get_model_spec",
     "list_model_specs",
+    "list_kv_quant_baselines",
     "mix_page",
     "mix_page_ref",
     "prepare_page",
@@ -37,6 +46,7 @@ __all__ = [
     "run_attention_reference",
     "score_page",
     "score_page_ref",
+    "observe_page",
 ]
 
 try:  # pragma: no cover - optional HF path

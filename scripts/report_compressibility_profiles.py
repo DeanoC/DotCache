@@ -190,7 +190,9 @@ def build_report(
             best_kv_resident = _metric(best_record, "kv_resident_bytes")
             best_kv_ratio = _metric(best_record, "dotcache_vs_dense_kv_bytes_ratio")
             best_vs_exact = None
-            if best_kv_resident is not None and exact_kv_resident not in (None, 0.0):
+            if best_record is exact_record:
+                best_vs_exact = None
+            elif best_kv_resident is not None and exact_kv_resident not in (None, 0.0):
                 best_vs_exact = best_kv_resident / exact_kv_resident
             elif best_kv_ratio is not None and exact_kv_ratio not in (None, 0.0):
                 best_vs_exact = best_kv_ratio / exact_kv_ratio
@@ -215,7 +217,9 @@ def build_report(
             kv_resident = _metric(record, "kv_resident_bytes")
             kv_ratio = _metric(record, "dotcache_vs_dense_kv_bytes_ratio")
             kv_vs_exact = None
-            if kv_resident is not None and exact_kv_resident not in (None, 0.0):
+            if record is exact_record:
+                kv_vs_exact = None
+            elif kv_resident is not None and exact_kv_resident not in (None, 0.0):
                 kv_vs_exact = kv_resident / exact_kv_resident
             elif kv_ratio is not None and exact_kv_ratio not in (None, 0.0):
                 kv_vs_exact = kv_ratio / exact_kv_ratio
