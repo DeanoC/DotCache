@@ -12,6 +12,7 @@ from ..decode_reference import decode_page
 from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
 from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
+from ..tracing import ExecutionTrace
 from .llama import (
     _default_model_device,
     _ensure_attention_mask,
@@ -1477,12 +1478,19 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         )
         self.adapter.append_runtime_ms_total += append_ms
 
+        decode_trace = ExecutionTrace(capture_timings=self.adapter.profile_backend) if self.adapter.profile_backend else None
         context_states, decode_ms = _timed_call(
             lambda: self.adapter.model_kv_cache.decode_layer_torch(
                 self.layer_idx,
                 query_step,
                 self.adapter.q_head_to_kv_head,
                 query_scale=float(self.base_attention.scaling),
+                # Qwen3.5 full-attention layers are a small fixed shape on CUDA:
+                # 8 query heads, 2 KV heads, 4 pages per KV head at exact-64 with
+                # the current profile. The grouped batched decode path is slower
+                # than the per-KV-head fallback for this workload.
+                prefer_grouped_batching=hidden_states.device.type != "cuda",
+                trace=decode_trace,
             )
             if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type)
             else self.adapter.model_kv_cache.decode_layer(
@@ -1494,6 +1502,8 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             device=hidden_states.device,
         )
         self.adapter.decode_runtime_ms_total += decode_ms
+        if decode_trace is not None:
+            self.adapter.decode_backend_trace.merge(decode_trace)
 
         if torch.is_tensor(context_states):
             context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
@@ -1598,6 +1608,8 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     qkv_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
+    profile_backend: bool = field(default=False, init=False, repr=False)
+    decode_backend_trace: ExecutionTrace = field(default_factory=ExecutionTrace, init=False, repr=False)
     native_hybrid_runtime_state: Qwen35NativeHybridRuntimeState | None = field(default=None, init=False, repr=False)
     hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
 
@@ -1632,8 +1644,13 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total = 0.0
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
+        self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
+
+    def set_backend_profiling(self, enabled: bool) -> None:
+        self.profile_backend = bool(enabled)
+        self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
 
     def token_growing_layer_ids(self) -> list[int]:
         if self.native_hybrid_runtime_state is not None:
@@ -1647,6 +1664,13 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             layer_id
             for layer_id, layer_type in enumerate(_hybrid_layer_types(self.model))
             if layer_type != "full_attention"
+        ]
+
+    def deltanet_layer_ids(self) -> list[int]:
+        return [
+            record["layer_id"]
+            for record in self.hybrid_layer_summary()
+            if record["layer_type"] == "linear_attention"
         ]
 
     def load_attention_subset_prefill_cache(self, past_key_values: Any) -> None:
@@ -2084,6 +2108,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         input_ids=None,
         attention_mask=None,
         decode_steps: int = 4,
+        profile_backend: bool = False,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_harness(
@@ -2094,6 +2119,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             attention_mask=attention_mask,
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
+            profile_backend=profile_backend,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -2103,7 +2129,9 @@ class Qwen35AttentionSubsetDotCacheHarness:
         prompt: str | None = None,
         input_ids=None,
         attention_mask=None,
-        decode_steps: int = 4,
+        prefix_length: int,
+        eval_steps: int,
+        profile_backend: bool = False,
         statecache_group_size: int = 32,
         statecache_bits: int = 8,
         statecache_layer_bits_overrides: dict[int, int] | None = None,
@@ -2123,7 +2151,9 @@ class Qwen35AttentionSubsetDotCacheHarness:
             input_ids=input_ids,
             attention_mask=attention_mask,
             tokenizer=self.tokenizer,
-            decode_steps=decode_steps,
+            prefix_length=prefix_length,
+            eval_steps=eval_steps,
+            profile_backend=profile_backend,
             statecache_group_size=statecache_group_size,
             statecache_bits=statecache_bits,
             statecache_layer_bits_overrides=statecache_layer_bits_overrides,
@@ -2134,6 +2164,38 @@ class Qwen35AttentionSubsetDotCacheHarness:
             statecache_renorm_interval=statecache_renorm_interval,
             statecache_recurrent_mode_overrides=statecache_recurrent_mode_overrides,
             statecache_conv_mode_overrides=statecache_conv_mode_overrides,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_attention_subset_dotcache_statecache(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        group_size: int = 32,
+        bits: int = 8,
+        state_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
+        renorm_interval: int = 0,
+        recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_statecache_dotcache_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            group_size=group_size,
+            bits=bits,
+            state_stage=state_stage,
+            renorm_interval=renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -4008,6 +4070,7 @@ def run_qwen35_hybrid_combined_localization_harness(
     tokenizer=None,
     prefix_length: int,
     eval_steps: int,
+    profile_backend: bool = False,
     statecache_group_size: int = 32,
     statecache_bits: int = 8,
     statecache_layer_bits_overrides: dict[int, int] | None = None,
@@ -4021,6 +4084,7 @@ def run_qwen35_hybrid_combined_localization_harness(
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
+    adapter.set_backend_profiling(profile_backend)
     adapter.clear()
     adapter.set_mode("dense")
     input_ids, attention_mask = _normalize_text_inputs(
@@ -4320,6 +4384,11 @@ def run_qwen35_hybrid_combined_localization_harness(
         "combined_deltanet_combined_result": deltanet_combined_result.to_dict(),
     }
     result.update(byte_summary)
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(byte_summary)
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -4707,9 +4776,11 @@ def run_qwen35_attention_subset_dotcache_harness(
     attention_mask=None,
     tokenizer=None,
     decode_steps: int = 4,
+    profile_backend: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
+    adapter.set_backend_profiling(profile_backend)
     adapter.clear()
     adapter.set_mode("dense")
     input_ids, attention_mask = _normalize_text_inputs(
@@ -4849,7 +4920,266 @@ def run_qwen35_attention_subset_dotcache_harness(
             "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
         }
     )
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(runtime_state.summary())
+    return result
+
+
+def run_qwen35_attention_subset_statecache_dotcache_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    group_size: int = 32,
+    bits: int = 8,
+    state_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
+    renorm_interval: int = 0,
+    recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_backend_profiling(profile_backend)
+    adapter.clear()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+
+    hybrid_prefill_outputs, hybrid_prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+        device=input_ids.device,
+    )
+    adapter.clear()
+    adapter.load_attention_subset_prefill_cache(hybrid_prefill_outputs.past_key_values)
+    adapter.set_mode("dotcache_attention_subset")
+
+    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
+    deltanet_layer_ids = adapter.deltanet_layer_ids()
+    resolved_recurrent_mode_overrides = {
+        int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
+            default_mode="M0",
+            mode_overrides=recurrent_mode_overrides,
+        )
+        for layer_id in deltanet_layer_ids
+    }
+    prefill_partition = runtime_state.native_state.prefill_partition
+    recurrent_dense_bytes = 0
+    recurrent_statecache_bytes = 0
+    per_layer_dense_recurrent_bytes: dict[str, int] = {}
+    per_layer_statecache_recurrent_bytes: dict[str, int] = {}
+    per_layer_statecache_modes: dict[str, str] = {}
+    for layer in prefill_partition.fixed_resident_layers:
+        if layer.recurrent_state is None:
+            continue
+        layer_id = str(int(layer.layer_id))
+        recurrent_mode = resolved_recurrent_mode_overrides.get(int(layer.layer_id), "M0")
+        dense_bytes = int(layer.recurrent_state_bytes)
+        compressed_bytes = _compressed_state_nbytes(
+            layer.recurrent_state,
+            bits=int(bits),
+            group_size=int(group_size),
+            mode=recurrent_mode,
+        )
+        recurrent_dense_bytes += dense_bytes
+        recurrent_statecache_bytes += compressed_bytes
+        per_layer_dense_recurrent_bytes[layer_id] = dense_bytes
+        per_layer_statecache_recurrent_bytes[layer_id] = compressed_bytes
+        per_layer_statecache_modes[layer_id] = recurrent_mode
+    conv_state_bytes = int(sum(layer.conv_state_bytes for layer in prefill_partition.fixed_resident_layers))
+    dense_fixed_resident_bytes = int(sum(layer.fixed_resident_state_bytes for layer in prefill_partition.fixed_resident_layers))
+    statecache_fixed_resident_bytes = int(conv_state_bytes + recurrent_statecache_bytes)
+
+    if state_stage == "post_update_m0":
+        _prepare_qwen35_deltanet_recurrent_statecache(
+            runtime_state.model_past_key_values,
+            layer_ids=deltanet_layer_ids,
+            bits=int(bits),
+            group_size=int(group_size),
+            renorm=False,
+            mode_overrides=recurrent_mode_overrides,
+        )
+
+    hybrid_step_logits: list[np.ndarray] = []
+    hybrid_records: list[list[LlamaReplayRecord]] = []
+    hybrid_decode_ms_total = 0.0
+    current_attention_mask = torch.cat(
+        [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
+        dim=1,
+    )
+    cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+        adapter.begin_capture_step(step_index)
+        adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+        try:
+            def _run_hybrid_decode():
+                if state_stage == "readout_only_m0":
+                    _prepare_qwen35_deltanet_recurrent_statecache(
+                        runtime_state.model_past_key_values,
+                        layer_ids=deltanet_layer_ids,
+                        bits=int(bits),
+                        group_size=int(group_size),
+                        renorm=False,
+                        mode_overrides=recurrent_mode_overrides,
+                    )
+                return _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                )
+
+            outputs, step_ms = _timed_call(
+                _run_hybrid_decode,
+                device=input_ids.device,
+            )
+        finally:
+            adapter.set_current_token_index(None)
+        hybrid_decode_ms_total += step_ms
+        hybrid_records.append(adapter.end_capture_step())
+        hybrid_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        next_past_key_values = outputs.past_key_values
+        if state_stage == "post_update_m0":
+            _prepare_qwen35_deltanet_recurrent_statecache(
+                next_past_key_values,
+                layer_ids=deltanet_layer_ids,
+                bits=int(bits),
+                group_size=int(group_size),
+                renorm=bool(renorm_interval > 0 and (step_index + 1) % int(renorm_interval) == 0),
+                mode_overrides=recurrent_mode_overrides,
+            )
+        runtime_state.advance(next_past_key_values)
+        current_attention_mask = torch.cat(
+            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+            dim=1,
+        )
+        cache_position = cache_position + 1
+
+    dense_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in dense_capture["capture_records"]
+        for record in step_records
+    }
+    hybrid_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in hybrid_records
+        for record in step_records
+    }
+    replay_context_max_abs = 0.0
+    replay_context_max_rel = 0.0
+    replay_output_max_abs = 0.0
+    replay_output_max_rel = 0.0
+    per_layer_context_max_abs: dict[str, float] = {}
+    per_layer_output_max_abs: dict[str, float] = {}
+    for replay_key, dense_record in dense_record_map.items():
+        hybrid_record = hybrid_record_map.get(replay_key)
+        if hybrid_record is None:
+            raise ValueError(f"missing combined replay record for step/layer {replay_key}")
+        context_delta = np.abs(hybrid_record.context_states - dense_record.context_states)
+        context_denom = np.maximum(np.abs(dense_record.context_states), 1e-8)
+        replay_context_max_abs = max(replay_context_max_abs, float(np.max(context_delta)))
+        replay_context_max_rel = max(replay_context_max_rel, float(np.max(context_delta / context_denom)))
+        layer_key = str(dense_record.layer_id)
+        per_layer_context_max_abs[layer_key] = max(
+            per_layer_context_max_abs.get(layer_key, 0.0),
+            float(np.max(context_delta)),
+        )
+        output_delta = np.abs(hybrid_record.output_states - dense_record.output_states)
+        output_denom = np.maximum(np.abs(dense_record.output_states), 1e-8)
+        replay_output_max_abs = max(replay_output_max_abs, float(np.max(output_delta)))
+        replay_output_max_rel = max(replay_output_max_rel, float(np.max(output_delta / output_denom)))
+        per_layer_output_max_abs[layer_key] = max(
+            per_layer_output_max_abs.get(layer_key, 0.0),
+            float(np.max(output_delta)),
+        )
+
+    dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
+    hybrid_logits = np.stack(hybrid_step_logits, axis=0) if hybrid_step_logits else np.zeros((0, 1))
+    if dense_logits.size == 0:
+        teacher_forced_max_abs = 0.0
+        teacher_forced_max_rel = 0.0
+    else:
+        logit_delta = np.abs(hybrid_logits - dense_logits)
+        logit_denom = np.maximum(np.abs(dense_logits), 1e-8)
+        teacher_forced_max_abs = float(np.max(logit_delta))
+        teacher_forced_max_rel = float(np.max(logit_delta / logit_denom))
+
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        {
+            "dotcache_attention_subset_ready": True,
+            "deltanet_statecache_ready": True,
+            "hybrid_dotcache_statecache_ready": True,
+            "dotcache_ready": False,
+            "runtime_mode": "dotcache_attention_subset_deltanet_statecache",
+            "dotcache_prefill_ms": float(hybrid_prefill_ms),
+            "dotcache_decode_ms_per_step": float(hybrid_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "replay_context_max_abs_error": replay_context_max_abs,
+            "replay_context_max_rel_error": replay_context_max_rel,
+            "replay_output_max_abs_error": replay_output_max_abs,
+            "replay_output_max_rel_error": replay_output_max_rel,
+            "replay_context_max_abs_error_by_layer": dict(sorted(per_layer_context_max_abs.items())),
+            "replay_output_max_abs_error_by_layer": dict(sorted(per_layer_output_max_abs.items())),
+            "teacher_forced_logit_max_abs_error": teacher_forced_max_abs,
+            "teacher_forced_logit_max_rel_error": teacher_forced_max_rel,
+            "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+            "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+            "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+            "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+            "deltanet_statecache_stage_name": str(state_stage),
+            "deltanet_statecache_group_size": int(group_size),
+            "deltanet_statecache_bits": int(bits),
+            "deltanet_statecache_mode": "M0",
+            "deltanet_statecache_renorm_interval": int(renorm_interval),
+            "deltanet_statecache_recurrent_mode_overrides": {
+                str(layer_id): mode for layer_id, mode in sorted(resolved_recurrent_mode_overrides.items()) if mode != "M0"
+            },
+            "deltanet_conv_state_bytes": conv_state_bytes,
+            "deltanet_recurrent_state_bytes": recurrent_dense_bytes,
+            "deltanet_statecache_recurrent_state_bytes": int(recurrent_statecache_bytes),
+            "deltanet_dense_fixed_resident_bytes": dense_fixed_resident_bytes,
+            "deltanet_statecache_fixed_resident_bytes": statecache_fixed_resident_bytes,
+            "deltanet_statecache_effective_recurrent_compression_ratio": (
+                float(recurrent_dense_bytes / max(recurrent_statecache_bytes, 1)) if recurrent_dense_bytes > 0 else 1.0
+            ),
+            "deltanet_statecache_effective_fixed_resident_compression_ratio": (
+                float(dense_fixed_resident_bytes / max(statecache_fixed_resident_bytes, 1)) if dense_fixed_resident_bytes > 0 else 1.0
+            ),
+            "deltanet_statecache_per_layer_dense_recurrent_bytes": per_layer_dense_recurrent_bytes,
+            "deltanet_statecache_per_layer_recurrent_bytes": per_layer_statecache_recurrent_bytes,
+            "deltanet_statecache_per_layer_recurrent_mode": per_layer_statecache_modes,
+        }
+    )
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(runtime_state.summary())
+    result["hybrid_runtime_state_kind"] = "qwen35_attention_subset_statecache"
     return result
 
 
@@ -4871,6 +5201,7 @@ __all__ = [
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
+    "run_qwen35_attention_subset_statecache_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",
     "run_qwen35_deltanet_statecache_localization_harness",

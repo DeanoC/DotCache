@@ -25,6 +25,7 @@ from dotcache.integrations.qwen35 import (
     load_qwen35_text_only_from_pretrained,
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_hybrid_combined_localization_harness,
+    run_qwen35_attention_subset_statecache_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
     run_qwen35_deltanet_state_ablation_harness,
     run_qwen35_deltanet_statecache_localization_harness,
@@ -787,6 +788,63 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     assert result["native_hybrid_fixed_resident_preserved"] is True
     assert harness.adapter.native_hybrid_runtime_state is not None
     assert harness.adapter.hybrid_dotcache_runtime_state is not None
+
+
+def test_qwen35_attention_subset_statecache_dotcache_harness_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache statecache", return_tensors="pt")
+    result = run_qwen35_attention_subset_statecache_dotcache_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["deltanet_statecache_ready"] is True
+    assert result["hybrid_dotcache_statecache_ready"] is True
+    assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset_statecache"
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_per_layer_recurrent_mode"]["0"] == "M3"
+    assert result["native_hybrid_fixed_resident_preserved"] is True
+    assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+    assert np.isfinite(result["replay_context_max_abs_error"])
+
+
+def test_qwen35_attention_subset_statecache_dotcache_harness_class_runs() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetDotCacheHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetDotCacheModelAdapter(
+            model=model,
+            dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+            backend="cpu_ref",
+        ),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello")
+    result = harness.run_attention_subset_dotcache_statecache(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+    )
+    assert result["hybrid_dotcache_statecache_ready"] is True
+    assert result["dotcache_attention_subset_ready"] is True
 
 
 def test_qwen35_attention_subset_dotcache_harness_accepts_policy_aware_config() -> None:

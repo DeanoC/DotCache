@@ -2230,6 +2230,182 @@ So the current Qwen3.5 CUDA read is:
 - attention-subset DotCache is still the exploratory KV-compression lane and remains fidelity-limited
 - DeltaNet StateCache `post_update_m0` is now the first productizable compressed native lane because it stays very close to dense while cutting resident recurrent state materially
 
+## 2026-03-29 01:25 UTC - CUDA matrix refresh confirms the Qwen3.5 StateCache lanes
+
+I reran the shared matrix surface only for the two Qwen3.5 CUDA entries that now route through DeltaNet StateCache:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --output-format jsonl`
+
+That refresh keeps the current StateCache defaults intact:
+
+- `qwen35_0p8b_hf`
+  - `post_update_m0`
+  - `8-bit`
+  - `renorm_interval = 0`
+  - no recurrent escapes
+- `qwen35_4b_hf`
+  - `post_update_m0`
+  - `8-bit`
+  - `renorm_interval = 0`
+  - recurrent `M3` escapes on layers `0`, `1`, and `2`
+
+Exact-length CUDA results from the matrix rerun:
+
+- `Qwen3.5 0.8B`
+  - `512`: dense `42.49 ms/step`, StateCache `16.47 ms/step`, agreement `1.0`
+  - `1024`: dense `41.12 ms/step`, StateCache `16.22 ms/step`, agreement `1.0`
+  - fixed-resident bytes: `19,759,104 -> 6,782,976` (`2.91x` compression)
+  - recurrent compression: `3.2x`
+- `Qwen3.5 4B`
+  - `512`: dense `80.22 ms/step`, StateCache `22.81 ms/step`, agreement `1.0`
+  - `1024`: dense `84.05 ms/step`, StateCache `26.71 ms/step`, agreement `1.0`
+  - fixed-resident bytes: `51,904,512 -> 21,626,880` (`2.4x` compression)
+  - recurrent compression: `2.51x`
+
+The repo-level conclusion is straightforward:
+
+- both Qwen3.5 CUDA StateCache lanes are stable on the shared matrix surface
+- `0.8B` remains the cleaner and more aggressive lane
+- `4B` is viable as long as the early recurrent `M3` escapes stay in place
+- the next Qwen3.5 product work should stay on StateCache or broader model-scale validation, not on productizing the combined hybrid-compression lane
+
+## 2026-03-28 23:59 UTC - First combined Qwen3.5 0.8B CUDA hybrid lane is runnable, but still exploratory
+
+I added a new combined bench surface in [bench_qwen35_attention_subset_statecache_dotcache.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py) and a matching integration path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py) that does both:
+
+- DotCache on the six `full_attention` layers `[3, 7, 11, 15, 19, 23]`
+- DeltaNet StateCache on the eighteen `linear_attention` layers
+
+The combined runtime uses the existing native hybrid carrier:
+
+- full-attention KV is loaded into the attention-subset DotCache runtime
+- linear-attention recurrent state is quantized with the same `post_update_m0`, `8-bit`, `renorm=0` StateCache path
+
+Validation:
+
+- `python -m py_compile benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'statecache_dotcache or attention_subset_statecache_dotcache or attention_subset_dotcache_harness'`
+  - result: `5 passed`
+
+Live CUDA smoke on `Qwen/Qwen3.5-0.8B`, exact `64`, `2` generated tokens:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --torch-dtype float16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml --state-stage post_update_m0 --state-bits 8 --state-renorm-interval 0 --target-prompt-lengths 64 --max-new-tokens 2 --repeat-counts 1 --continue-on-error`
+- result:
+  - `dense_decode_ms_per_step = 32.80`
+  - `dotcache_decode_ms_per_step = 47.88`
+  - `teacher_forced_logit_max_abs_error = 0.6875`
+  - `replay_context_max_abs_error = 0.2079`
+  - `replay_output_max_abs_error = 0.0306`
+  - `deltanet_statecache_effective_recurrent_compression_ratio = 3.2`
+  - `deltanet_statecache_effective_fixed_resident_compression_ratio = 2.91`
+  - `dotcache_decode_runtime_ms_total = 54.96`
+  - `dotcache_append_runtime_ms_total = 1.40`
+  - `dotcache_qkv_projection_ms_total = 4.30`
+  - `dotcache_output_projection_ms_total = 0.53`
+
+So the first true hybrid-compressed Qwen3.5 lane now exists and runs end to end on CUDA. The engineering read is:
+
+- the DeltaNet StateCache half remains solid
+- the combined lane is numerically promising enough to keep as an experimental surface
+- it is not productizable yet because the full-attention DotCache decode half still dominates latency and leaves the hybrid path slower than dense at exact `64`
+
+That changes the next optimization target again:
+
+- do not tune the StateCache half first
+- attack the full-attention DotCache decode cost inside the combined Qwen3.5 lane
+
+I also tested the most obvious structural shortcut on that full-attention side: route the grouped prepared decode through the existing `output_only` backend path so it does not materialize logits and weights.
+
+- code path:
+  - temporary local change in [model_kv_cache.py](/workspace/DotCache/dotcache/model_kv_cache.py) and [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py)
+- validation:
+  - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_torch_cuda_backend.py -k 'grouped_prepared_cuda_output_only_matches_full_decode'`
+  - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'statecache_dotcache or attention_subset_statecache_dotcache or attention_subset_dotcache_harness'`
+
+That path was correctness-clean but not a speed win on the real combined exact-`64` lane:
+
+- kept full grouped decode:
+  - `dense_decode_ms_per_step = 32.80`
+  - `dotcache_decode_ms_per_step = 47.88`
+  - `dotcache_decode_runtime_ms_total = 54.96`
+  - `teacher_forced_logit_max_abs_error = 0.6875`
+- temporary grouped `output_only` route:
+  - `dense_decode_ms_per_step = 35.47`
+  - `dotcache_decode_ms_per_step = 48.59`
+  - `dotcache_decode_runtime_ms_total = 57.16`
+  - `teacher_forced_logit_max_abs_error = 0.6836`
+
+So I backed that change out. The current conclusion is narrower:
+
+- grouped `output_only` is not the next win for the Qwen3.5 combined lane
+- the remaining latency problem is deeper inside the full-attention DotCache decode path than just logits/weights materialization
+
+The next direct check was whether the grouped batched decode itself was the wrong shape for this workload. Qwen3.5 `0.8B` full-attention layers on this lane are a very small fixed CUDA case:
+
+- `8` query heads
+- `2` KV heads
+- `head_dim = 256`
+- `tokens_per_page = 16`
+- exact `64` means only `4` pages per KV head
+
+I forced the ungrouped per-KV-head fallback in a one-off run and it beat the grouped path on the real combined exact-`64` lane. I then kept that as a narrow adapter-level CUDA specialization in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py), using a new `prefer_grouped_batching` switch in [model_kv_cache.py](/workspace/DotCache/dotcache/model_kv_cache.py).
+
+Validation:
+
+- `python -m py_compile dotcache/model_kv_cache.py dotcache/integrations/qwen35.py benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'statecache_dotcache or attention_subset_statecache_dotcache or attention_subset_dotcache_harness'`
+  - result: `5 passed`
+
+Updated exact `64`, `2` generated tokens, CUDA combined-lane checkpoint:
+
+- previous grouped path:
+  - `dense_decode_ms_per_step = 32.80`
+  - `dotcache_decode_ms_per_step = 47.88`
+  - `dotcache_decode_runtime_ms_total = 54.96`
+  - `prepared_chunk_resident_bytes = 1,013,760`
+  - `resident_bytes = 1,688,576`
+  - `teacher_forced_logit_max_abs_error = 0.6875`
+- kept ungrouped CUDA specialization:
+  - `dense_decode_ms_per_step = 35.07`
+  - `dotcache_decode_ms_per_step = 43.80`
+  - `dotcache_decode_runtime_ms_total = 48.03`
+  - `prepared_chunk_resident_bytes = 831,488`
+  - `resident_bytes = 1,506,304`
+  - `teacher_forced_logit_max_abs_error = 0.6797`
+
+So the current Qwen3.5 combined-lane read is tighter now:
+
+- the first keepable full-attention decode win on this hybrid lane is not a new kernel
+- it is a workload-shaped dispatch choice: ungrouped per-KV-head decode is better than grouped batching for this small CUDA case
+- the lane is still slower than dense at exact `64`, but the gap is smaller and the resident bytes also improved
+
+The same dispatch choice also helps the standalone attention-subset-only Qwen3.5 lane, which confirms this is a full-attention workload-shape issue rather than something specific to the combined StateCache runtime.
+
+Validation:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'attention_subset_dotcache_harness and not statecache'`
+  - result: `3 passed`
+
+Standalone attention-subset CUDA rerun on `Qwen/Qwen3.5-0.8B`, exact `64`, `2` generated tokens:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml --target-prompt-lengths 64 --max-new-tokens 2 --repeat-counts 1 --continue-on-error`
+- result:
+  - `dense_decode_ms_per_step = 38.33`
+  - `dotcache_decode_ms_per_step = 42.12`
+  - `dotcache_decode_runtime_ms_total = 43.91`
+  - `prepared_chunk_resident_bytes = 831,488`
+  - `resident_bytes = 1,506,304`
+  - `teacher_forced_logit_max_abs_error = 0.7188`
+
+That makes the current CUDA read clearer:
+
+- Qwen3.5 full-attention layers want the per-KV-head fallback, not grouped batching, on this small `8q / 2kv / 4 pages-per-kv-head` shape
+- this helps both the standalone attention-subset lane and the combined hybrid-compressed lane
+- the next optimization target remains inside the full-attention DotCache decode math itself, but the dispatch policy is now better matched to the actual workload
+
 ## 2026-03-28 19:10 UTC - Qwen3.5 DeltaNet probes now run on CUDA and point at an 8-bit StateCache path
 
 I fixed two real integration issues in the DeltaNet state-capture path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py):
