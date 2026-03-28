@@ -1380,6 +1380,8 @@ def run_qwen35_attention_subset_dotcache_harness(
     replay_context_max_rel = 0.0
     replay_output_max_abs = 0.0
     replay_output_max_rel = 0.0
+    per_layer_context_max_abs: dict[str, float] = {}
+    per_layer_output_max_abs: dict[str, float] = {}
     for replay_key, dense_record in dense_record_map.items():
         dotcache_record = dotcache_record_map.get(replay_key)
         if dotcache_record is None:
@@ -1388,10 +1390,19 @@ def run_qwen35_attention_subset_dotcache_harness(
         context_denom = np.maximum(np.abs(dense_record.context_states), 1e-8)
         replay_context_max_abs = max(replay_context_max_abs, float(np.max(context_delta)))
         replay_context_max_rel = max(replay_context_max_rel, float(np.max(context_delta / context_denom)))
+        layer_key = str(dense_record.layer_id)
+        per_layer_context_max_abs[layer_key] = max(
+            per_layer_context_max_abs.get(layer_key, 0.0),
+            float(np.max(context_delta)),
+        )
         output_delta = np.abs(dotcache_record.output_states - dense_record.output_states)
         output_denom = np.maximum(np.abs(dense_record.output_states), 1e-8)
         replay_output_max_abs = max(replay_output_max_abs, float(np.max(output_delta)))
         replay_output_max_rel = max(replay_output_max_rel, float(np.max(output_delta / output_denom)))
+        per_layer_output_max_abs[layer_key] = max(
+            per_layer_output_max_abs.get(layer_key, 0.0),
+            float(np.max(output_delta)),
+        )
 
     dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
     dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
@@ -1423,6 +1434,8 @@ def run_qwen35_attention_subset_dotcache_harness(
             "replay_context_max_rel_error": replay_context_max_rel,
             "replay_output_max_abs_error": replay_output_max_abs,
             "replay_output_max_rel_error": replay_output_max_rel,
+            "replay_context_max_abs_error_by_layer": dict(sorted(per_layer_context_max_abs.items())),
+            "replay_output_max_abs_error_by_layer": dict(sorted(per_layer_output_max_abs.items())),
             "teacher_forced_logit_max_abs_error": teacher_forced_max_abs,
             "teacher_forced_logit_max_rel_error": teacher_forced_max_rel,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
@@ -1431,6 +1444,8 @@ def run_qwen35_attention_subset_dotcache_harness(
             "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
         }
     )
+    result.update(adapter.model_kv_cache.resident_byte_summary())
+    result.update(adapter.model_kv_cache.page_mode_summary())
     return result
 
 
