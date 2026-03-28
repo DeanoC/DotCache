@@ -1898,6 +1898,38 @@ class Qwen35AttentionSubsetDotCacheHarness:
             multimodal_inputs=multimodal_inputs,
         )
 
+    def run_hybrid_combined_localization(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        statecache_group_size: int = 32,
+        statecache_bits: int = 8,
+        statecache_layer_bits_overrides: dict[int, int] | None = None,
+        statecache_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
+        statecache_renorm_interval: int = 0,
+        statecache_recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_hybrid_combined_localization_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            statecache_group_size=statecache_group_size,
+            statecache_bits=statecache_bits,
+            statecache_layer_bits_overrides=statecache_layer_bits_overrides,
+            statecache_stage=statecache_stage,
+            statecache_renorm_interval=statecache_renorm_interval,
+            statecache_recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+            multimodal_inputs=multimodal_inputs,
+        )
+
 
 def _normalize_text_inputs(
     adapter: Qwen35TextModelAdapter,
@@ -2188,6 +2220,87 @@ def _run_qwen35_deltanet_dense_capture(
         "step_logits": step_logits,
         "decode_ms_total": float(dense_decode_ms_total),
     }
+
+
+def _run_qwen35_deltanet_dense_teacher_forced_capture(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    prefix_input_ids,
+    prefix_attention_mask,
+    continuation_ids,
+) -> dict[str, Any]:
+    prefill_outputs, prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=prefix_input_ids, attention_mask=prefix_attention_mask),
+        device=prefix_input_ids.device,
+    )
+    per_step_records: list[list[Qwen35DeltaNetStateRecord]] = []
+    logits_list = [prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()]
+    past_key_values = prefill_outputs.past_key_values
+    current_attention_mask = torch.cat(
+        [prefix_attention_mask, torch.ones((1, 1), dtype=prefix_attention_mask.dtype, device=prefix_attention_mask.device)],
+        dim=1,
+    )
+    cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=prefix_input_ids.device)
+    dense_decode_ms_total = 0.0
+
+    for step_index in range(max(int(continuation_ids.shape[1]) - 1, 0)):
+        decode_input_ids = continuation_ids[:, step_index : step_index + 1]
+        adapter.begin_capture_step(step_index)
+        adapter.set_current_token_index(int(prefix_input_ids.shape[1] + step_index))
+        try:
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=prefix_input_ids.device,
+            )
+        finally:
+            adapter.set_current_token_index(None)
+        dense_decode_ms_total += step_ms
+        per_step_records.append(adapter.end_capture_step())
+        logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        past_key_values = outputs.past_key_values
+        current_attention_mask = torch.cat(
+            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+            dim=1,
+        )
+        cache_position = cache_position + 1
+
+    return {
+        "prefill_outputs": prefill_outputs,
+        "prefill_ms": float(prefill_ms),
+        "capture_records": per_step_records,
+        "step_logits": logits_list,
+        "decode_ms_total": float(dense_decode_ms_total),
+    }
+
+
+def _first_drift_step(
+    dense_logits: list[np.ndarray],
+    approx_logits: list[np.ndarray],
+) -> int | None:
+    for step_index, (dense_step, approx_step) in enumerate(zip(dense_logits, approx_logits)):
+        dense_argmax = np.argmax(dense_step, axis=-1)
+        approx_argmax = np.argmax(approx_step, axis=-1)
+        if not np.array_equal(dense_argmax, approx_argmax):
+            return int(step_index)
+    return None
+
+
+def _first_layer_over_threshold(
+    per_layer_error: dict[str, float],
+    *,
+    threshold: float = 1e-6,
+) -> int | None:
+    for layer_key in sorted(per_layer_error, key=lambda value: int(value)):
+        if float(per_layer_error[layer_key]) > threshold:
+            return int(layer_key)
+    return None
 
 
 def _summarize_deltanet_state_capture(
@@ -3267,6 +3380,365 @@ def run_qwen35_deltanet_statecache_loss_harness(
     return result
 
 
+def run_qwen35_deltanet_statecache_localization_harness(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    prefix_length: int,
+    eval_steps: int,
+    group_size: int = 32,
+    bits: int = 8,
+    layer_bits_overrides: dict[int, int] | None = None,
+    state_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
+    renorm_interval: int = 0,
+    recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    if prefix_length <= 0 or prefix_length >= int(input_ids.shape[1]):
+        raise ValueError("prefix_length must be in [1, sequence_length)")
+    available_eval_steps = int(input_ids.shape[1]) - prefix_length
+    if eval_steps <= 0 or eval_steps > available_eval_steps:
+        raise ValueError("eval_steps must be positive and fit inside the provided sequence after prefix_length")
+
+    prefix_input_ids = input_ids[:, :prefix_length]
+    prefix_attention_mask = attention_mask[:, :prefix_length]
+    continuation_ids = input_ids[:, prefix_length : prefix_length + eval_steps]
+
+    dense_capture = _run_qwen35_deltanet_dense_teacher_forced_capture(
+        model,
+        adapter,
+        prefix_input_ids=prefix_input_ids,
+        prefix_attention_mask=prefix_attention_mask,
+        continuation_ids=continuation_ids,
+    )
+    linear_records = [
+        record
+        for step_records in dense_capture["capture_records"]
+        for record in step_records
+    ]
+    records_by_layer: dict[int, list[Qwen35DeltaNetStateRecord]] = {}
+    for record in linear_records:
+        records_by_layer.setdefault(int(record.layer_id), []).append(record)
+
+    prefill_outputs, prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=prefix_input_ids, attention_mask=prefix_attention_mask),
+        device=input_ids.device,
+    )
+    statecache_past_key_values = _clone_qwen35_past_key_values(prefill_outputs.past_key_values)
+    logits_list = [prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()]
+    current_attention_mask = torch.cat(
+        [prefix_attention_mask, torch.ones((1, 1), dtype=prefix_attention_mask.dtype, device=prefix_attention_mask.device)],
+        dim=1,
+    )
+    cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    statecache_decode_ms_total = 0.0
+    deltanet_layer_ids = adapter.deltanet_layer_ids()
+    if state_stage == "post_update_m0":
+        _prepare_qwen35_deltanet_recurrent_statecache(
+            statecache_past_key_values,
+            layer_ids=deltanet_layer_ids,
+            bits=int(bits),
+            group_size=int(group_size),
+            renorm=False,
+            layer_bits_overrides=layer_bits_overrides,
+            default_mode="M0",
+            mode_overrides=recurrent_mode_overrides,
+        )
+
+    for step_index in range(max(eval_steps - 1, 0)):
+        decode_input_ids = continuation_ids[:, step_index : step_index + 1]
+
+        def _run_statecache_decode():
+            if state_stage == "readout_only_m0":
+                _prepare_qwen35_deltanet_recurrent_statecache(
+                    statecache_past_key_values,
+                    layer_ids=deltanet_layer_ids,
+                    bits=int(bits),
+                    group_size=int(group_size),
+                    renorm=False,
+                    layer_bits_overrides=layer_bits_overrides,
+                    default_mode="M0",
+                    mode_overrides=recurrent_mode_overrides,
+                )
+            return _run_dense_decode_step(
+                model,
+                decode_input_ids=decode_input_ids,
+                attention_mask=current_attention_mask,
+                past_key_values=statecache_past_key_values,
+                cache_position=cache_position,
+            )
+
+        outputs, step_ms = _timed_call(_run_statecache_decode, device=input_ids.device)
+        statecache_decode_ms_total += step_ms
+        statecache_past_key_values = outputs.past_key_values
+        if state_stage == "post_update_m0":
+            _prepare_qwen35_deltanet_recurrent_statecache(
+                statecache_past_key_values,
+                layer_ids=deltanet_layer_ids,
+                bits=int(bits),
+                group_size=int(group_size),
+                renorm=bool(renorm_interval > 0 and (step_index + 1) % int(renorm_interval) == 0),
+                layer_bits_overrides=layer_bits_overrides,
+                default_mode="M0",
+                mode_overrides=recurrent_mode_overrides,
+            )
+        logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        current_attention_mask = torch.cat(
+            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+            dim=1,
+        )
+        cache_position = cache_position + 1
+
+    statecache_result = _run_deltanet_ablation_stage(
+        adapter,
+        records_by_layer=records_by_layer,
+        stage_name=str(state_stage),
+        bits=int(bits),
+        group_size=int(group_size),
+        recurrent_mode_overrides=recurrent_mode_overrides,
+    )
+    per_step_logit_max_abs_error: list[float] = []
+    for dense_step, approx_step in zip(dense_capture["step_logits"], logits_list):
+        per_step_logit_max_abs_error.append(float(np.max(np.abs(approx_step - dense_step))))
+
+    result = {
+        "sequence_length": int(input_ids.shape[1]),
+        "prefix_length": int(prefix_length),
+        "eval_steps": int(eval_steps),
+        "prefill_ms": float(prefill_ms),
+        "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
+        "deltanet_statecache_decode_ms_per_step": float(statecache_decode_ms_total / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
+        "deltanet_statecache_ready": True,
+        "deltanet_state_ready": True,
+        "runtime_mode": "dense_deltanet_statecache_localization",
+        "deltanet_statecache_stage_name": str(state_stage),
+        "deltanet_statecache_bits": int(bits),
+        "deltanet_statecache_group_size": int(group_size),
+        "deltanet_statecache_layer_bits": {
+            str(layer_id): _resolve_deltanet_statecache_bits(
+                int(layer_id),
+                default_bits=int(bits),
+                layer_bits_overrides=layer_bits_overrides,
+            )
+            for layer_id in deltanet_layer_ids
+        },
+        "deltanet_statecache_recurrent_mode_overrides": {
+            str(layer_id): mode
+            for layer_id, mode in sorted((recurrent_mode_overrides or {}).items())
+        },
+        "deltanet_statecache_per_step_logit_max_abs_error": per_step_logit_max_abs_error,
+        "deltanet_statecache_first_divergence_step": _first_drift_step(dense_capture["step_logits"], logits_list),
+        "deltanet_statecache_first_failure_layer": _first_layer_over_threshold(
+            statecache_result.per_layer_output_max_abs_error
+        ),
+        "deltanet_statecache_result": statecache_result.to_dict(),
+    }
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_hybrid_combined_localization_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    prefix_length: int,
+    eval_steps: int,
+    statecache_group_size: int = 32,
+    statecache_bits: int = 8,
+    statecache_layer_bits_overrides: dict[int, int] | None = None,
+    statecache_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
+    statecache_renorm_interval: int = 0,
+    statecache_recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.clear()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    if prefix_length <= 0 or prefix_length >= int(input_ids.shape[1]):
+        raise ValueError("prefix_length must be in [1, sequence_length)")
+    available_eval_steps = int(input_ids.shape[1]) - prefix_length
+    if eval_steps <= 0 or eval_steps > available_eval_steps:
+        raise ValueError("eval_steps must be positive and fit inside the provided sequence after prefix_length")
+
+    prefix_input_ids = input_ids[:, :prefix_length]
+    prefix_attention_mask = attention_mask[:, :prefix_length]
+    continuation_ids = input_ids[:, prefix_length : prefix_length + eval_steps]
+
+    dense_capture = _run_qwen35_attention_subset_dense_teacher_forced_capture(
+        model,
+        adapter,
+        prefix_input_ids=prefix_input_ids,
+        prefix_attention_mask=prefix_attention_mask,
+        continuation_ids=continuation_ids,
+    )
+
+    combined_prefill_outputs, combined_prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=prefix_input_ids, attention_mask=prefix_attention_mask),
+        device=input_ids.device,
+    )
+    adapter.clear()
+    adapter.load_attention_subset_prefill_cache(combined_prefill_outputs.past_key_values)
+    adapter.set_mode("dotcache_attention_subset")
+    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
+    deltanet_layer_ids = [
+        layer_id
+        for layer_id, layer_type in enumerate(_hybrid_layer_types(model))
+        if layer_type == "linear_attention"
+    ]
+
+    if statecache_stage == "post_update_m0":
+        _prepare_qwen35_deltanet_recurrent_statecache(
+            runtime_state.model_past_key_values,
+            layer_ids=deltanet_layer_ids,
+            bits=int(statecache_bits),
+            group_size=int(statecache_group_size),
+            renorm=False,
+            layer_bits_overrides=statecache_layer_bits_overrides,
+            default_mode="M0",
+            mode_overrides=statecache_recurrent_mode_overrides,
+        )
+
+    current_attention_mask = torch.cat(
+        [prefix_attention_mask, torch.ones((1, 1), dtype=prefix_attention_mask.dtype, device=prefix_attention_mask.device)],
+        dim=1,
+    )
+    cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    combined_step_logits: list[np.ndarray] = [combined_prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()]
+    combined_records: list[list[LlamaReplayRecord]] = []
+    combined_decode_ms_total = 0.0
+
+    for step_index in range(max(eval_steps - 1, 0)):
+        decode_input_ids = continuation_ids[:, step_index : step_index + 1]
+
+        def _run_combined_decode():
+            if statecache_stage == "readout_only_m0":
+                _prepare_qwen35_deltanet_recurrent_statecache(
+                    runtime_state.model_past_key_values,
+                    layer_ids=deltanet_layer_ids,
+                    bits=int(statecache_bits),
+                    group_size=int(statecache_group_size),
+                    renorm=False,
+                    layer_bits_overrides=statecache_layer_bits_overrides,
+                    default_mode="M0",
+                    mode_overrides=statecache_recurrent_mode_overrides,
+                )
+            return _run_dense_decode_step(
+                model,
+                decode_input_ids=decode_input_ids,
+                attention_mask=current_attention_mask,
+                past_key_values=runtime_state.model_past_key_values,
+                cache_position=cache_position,
+            )
+
+        adapter.begin_capture_step(step_index)
+        adapter.set_current_token_index(int(prefix_input_ids.shape[1] + step_index))
+        try:
+            outputs, step_ms = _timed_call(_run_combined_decode, device=input_ids.device)
+        finally:
+            adapter.set_current_token_index(None)
+        combined_decode_ms_total += step_ms
+        combined_records.append(adapter.end_capture_step())
+        combined_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        runtime_state.advance(outputs.past_key_values)
+        if statecache_stage == "post_update_m0":
+            _prepare_qwen35_deltanet_recurrent_statecache(
+                runtime_state.model_past_key_values,
+                layer_ids=deltanet_layer_ids,
+                bits=int(statecache_bits),
+                group_size=int(statecache_group_size),
+                renorm=bool(statecache_renorm_interval > 0 and (step_index + 1) % int(statecache_renorm_interval) == 0),
+                layer_bits_overrides=statecache_layer_bits_overrides,
+                default_mode="M0",
+                mode_overrides=statecache_recurrent_mode_overrides,
+            )
+        current_attention_mask = torch.cat(
+            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+            dim=1,
+        )
+        cache_position = cache_position + 1
+
+    dense_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in dense_capture["capture_records"]
+        for record in step_records
+    }
+    combined_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in combined_records
+        for record in step_records
+    }
+    per_layer_attention_output_max_abs: dict[str, float] = {}
+    for replay_key, dense_record in dense_record_map.items():
+        combined_record = combined_record_map.get(replay_key)
+        if combined_record is None:
+            continue
+        output_delta = np.abs(combined_record.output_states - dense_record.output_states)
+        layer_key = str(dense_record.layer_id)
+        per_layer_attention_output_max_abs[layer_key] = max(
+            per_layer_attention_output_max_abs.get(layer_key, 0.0),
+            float(np.max(output_delta)),
+        )
+
+    per_step_logit_max_abs_error: list[float] = []
+    for dense_step, combined_step in zip(dense_capture["step_logits"], combined_step_logits):
+        per_step_logit_max_abs_error.append(float(np.max(np.abs(combined_step - dense_step))))
+
+    result = {
+        "sequence_length": int(input_ids.shape[1]),
+        "prefix_length": int(prefix_length),
+        "eval_steps": int(eval_steps),
+        "combined_prefill_ms": float(combined_prefill_ms),
+        "combined_decode_ms_per_step": float(combined_decode_ms_total / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
+        "hybrid_combined_ready": True,
+        "runtime_mode": "qwen35_hybrid_combined_localization",
+        "statecache_bits": int(statecache_bits),
+        "statecache_group_size": int(statecache_group_size),
+        "statecache_stage_name": str(statecache_stage),
+        "statecache_renorm_interval": int(statecache_renorm_interval),
+        "statecache_layer_bits_overrides": {
+            str(layer_id): bits for layer_id, bits in sorted((statecache_layer_bits_overrides or {}).items())
+        },
+        "statecache_recurrent_mode_overrides": {
+            str(layer_id): mode for layer_id, mode in sorted((statecache_recurrent_mode_overrides or {}).items())
+        },
+        "combined_per_step_logit_max_abs_error": per_step_logit_max_abs_error,
+        "combined_first_divergence_step": _first_drift_step(dense_capture["step_logits"], combined_step_logits),
+        "combined_attention_output_max_abs_error_by_layer": dict(sorted(per_layer_attention_output_max_abs.items())),
+        "combined_first_attention_failure_layer": _first_layer_over_threshold(per_layer_attention_output_max_abs),
+    }
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
 def _run_qwen35_attention_subset_dense_capture(
     model,
     adapter: Qwen35AttentionSubsetModelAdapter,
@@ -3326,6 +3798,64 @@ def _run_qwen35_attention_subset_dense_capture(
         "decode_ms_total": float(dense_decode_ms_total),
         "decode_inputs": decode_inputs,
         "step_logits": step_logits,
+        "capture_records": per_step_records,
+    }
+
+
+def _run_qwen35_attention_subset_dense_teacher_forced_capture(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    prefix_input_ids,
+    prefix_attention_mask,
+    continuation_ids,
+) -> dict[str, Any]:
+    prefill_outputs, prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=prefix_input_ids, attention_mask=prefix_attention_mask),
+        device=prefix_input_ids.device,
+    )
+    logits_list = [prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()]
+    per_step_records: list[list[LlamaReplayRecord]] = []
+    past_key_values = prefill_outputs.past_key_values
+    current_attention_mask = torch.cat(
+        [prefix_attention_mask, torch.ones((1, 1), dtype=prefix_attention_mask.dtype, device=prefix_attention_mask.device)],
+        dim=1,
+    )
+    cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=prefix_input_ids.device)
+    dense_decode_ms_total = 0.0
+
+    for step_index in range(max(int(continuation_ids.shape[1]) - 1, 0)):
+        decode_input_ids = continuation_ids[:, step_index : step_index + 1]
+        adapter.begin_capture_step(step_index)
+        adapter.set_current_token_index(int(prefix_input_ids.shape[1] + step_index))
+        try:
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=prefix_input_ids.device,
+            )
+        finally:
+            adapter.set_current_token_index(None)
+        dense_decode_ms_total += step_ms
+        per_step_records.append(adapter.end_capture_step())
+        logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+        past_key_values = outputs.past_key_values
+        current_attention_mask = torch.cat(
+            [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+            dim=1,
+        )
+        cache_position = cache_position + 1
+
+    return {
+        "prefill_outputs": prefill_outputs,
+        "prefill_ms": float(prefill_ms),
+        "decode_ms_total": float(dense_decode_ms_total),
+        "step_logits": logits_list,
         "capture_records": per_step_records,
     }
 
@@ -3752,10 +4282,13 @@ __all__ = [
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "run_qwen35_attention_subset_prefill_ablation_harness",
+    "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",
+    "run_qwen35_deltanet_statecache_localization_harness",
     "run_qwen35_deltanet_statecache_readout_harness",
+    "run_qwen35_deltanet_statecache_loss_harness",
     "run_qwen35_text_generation_harness",
     "run_qwen35_text_loss_harness",
     "save_qwen35_deltanet_state_sample",
