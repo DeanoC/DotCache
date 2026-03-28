@@ -974,16 +974,17 @@ That does not make `M0 3b` a real end-to-end model-path win yet, but it is a muc
 The next local follow-up tightened the grouped cached-decode shape too. On a synthetic grouped multi-query MPS microbench (`2` KV groups, `2` queries/group, `4` pages, `16` tokens/page, `head_dim=64`):
 
 - `M0 3b`
-  - grouped decode `8.43 ms`
+  - grouped decode `10.99 ms`
   - prepared chunk cache resident bytes `135,168`
 - `M0 4b`
-  - grouped decode `13.09 ms`
-  - prepared chunk cache resident bytes `67,584`
+  - grouped decode `9.91 ms`
+  - prepared chunk cache resident bytes `135,168`
 
 So the current local read is nuanced:
 
-- in this grouped cached synthetic shape, `3b` is actually faster than `4b`
-- but it currently pays more chunk-cache memory because `3b` now keeps an explicit grouped fused cache while grouped `4b` on MPS still follows the memory-first on-demand assembly path
+- the earlier “`3b` is faster than `4b`” read turned out to be mostly cache-policy shaped
+- once grouped `4b` is allowed to use the same fused-only grouped cache on MPS, it recovers most of the gap and slightly edges out `3b` on this rerun
+- both now pay the same grouped chunk-cache memory in this synthetic shape
 
 That is a useful CUDA hint rather than a direct product claim: low-bit grouped fused caches can be worth it for decode, but the cache policy itself matters almost as much as the codec.
 

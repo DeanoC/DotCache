@@ -490,6 +490,30 @@ def test_grouped_prepared_chunk_uses_fused_only_cache_for_m0_3bit_pages() -> Non
 
 
 @requires_mps
+def test_grouped_prepared_chunk_uses_fused_only_cache_for_m0_4bit_grouped64_pages() -> None:
+    rng = np.random.default_rng(2128)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16)
+    context_length = 64
+
+    key_group0 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+
+    grouped_chunk = _build_grouped_prepared_chunk_mps([key_group0, key_group1])
+
+    assert grouped_chunk is not None
+    assert grouped_chunk.fused_scaled_codes is not None
+    assert grouped_chunk.codes_groups is None
+    assert grouped_chunk.scales_groups is None
+    assert grouped_chunk.bias_groups is not None
+
+
+@requires_mps
 @pytest.mark.parametrize("escape_dtype", ["float16", "int8"])
 def test_m3_pages_work_on_mps(escape_dtype: str) -> None:
     rng = np.random.default_rng(26)

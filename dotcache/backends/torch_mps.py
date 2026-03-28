@@ -183,7 +183,7 @@ def _supports_fused_m0_3bit(header: PageHeader, *, device_type: TorchDevice) -> 
 def _supports_grouped_fused_only_cache(header: PageHeader, *, device_type: TorchDevice) -> bool:
     if _supports_fused_m0_3bit(header, device_type=device_type):
         return True
-    return _supports_fused_two_group64(header) and device_type == "cuda"
+    return _supports_fused_two_group64(header) and device_type in {"cuda", "mps"}
 
 
 def _supports_packed_four_group128_cuda(header: PageHeader, *, device_type: TorchDevice) -> bool:
@@ -655,16 +655,9 @@ def _build_grouped_prepared_chunk_mps(
             fused_scaled_codes=fused_scaled_codes,
             resident_nbytes=resident_nbytes,
         )
-    if (
-        device_type != "cuda"
-        and _supports_fused_two_group64(header)
-        and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks)
-    ):
-        # On MPS, keep the grouped-64 path memory-first. The per-group chunks already
-        # hold the fused tensors and grouped decode can stack them on demand.
-        return None
-    # Grouped decode uses unpacked codes/scales/bias directly, so duplicating stacked
-    # payload tensors here only burns memory without helping the hot path.
+    # Grouped decode uses unpacked codes/scales/bias directly when no fused-only cache
+    # is available, so duplicating stacked payload tensors here only burns memory
+    # without helping the hot path.
     payload_groups: tuple[Any, ...] = ()
     codes_groups = tuple(
         torch.stack([chunk.codes_groups[group_index] for chunk in prepared_chunks], dim=0)
