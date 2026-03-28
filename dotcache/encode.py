@@ -7,6 +7,7 @@ from .planner import PageModeSpec
 from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
 from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
+from .modes.m4_key_project import quantize_tensor_m4, reconstruct_group_m4
 from .modes.m3_escape import encode_escape_storage
 from .modes.turbo3 import quantize_tensor_turbo3
 from .page_format import build_payload
@@ -42,6 +43,20 @@ def _reconstruct_m2_page(coeffs: np.ndarray, basis: np.ndarray, mean: np.ndarray
             coeffs[:, group_index, :],
             basis=basis[group_index],
             mean=None if mean is None else mean[group_index],
+        )
+    return dense
+
+
+def _reconstruct_m4_page(coeffs: np.ndarray, mean: np.ndarray, *, group_size: int) -> np.ndarray:
+    token_count, num_groups, _ = coeffs.shape
+    dense = np.zeros((token_count, num_groups * group_size), dtype=np.float32)
+    for group_index in range(num_groups):
+        start = group_index * group_size
+        end = start + group_size
+        dense[:, start:end] = reconstruct_group_m4(
+            coeffs[:, group_index, :],
+            mean=mean[group_index],
+            group_size=group_size,
         )
     return dense
 
@@ -238,6 +253,43 @@ def encode_page(
             runtime_page_max=runtime_page_max,
         )
 
+    if page_mode_name == "M4":
+        if kind != "K":
+            raise ValueError("M4 is only supported for K pages in this phase")
+        coeffs, mean, padded_head_dim = quantize_tensor_m4(
+            values,
+            group_size=config.group_size,
+            project_dim=config.m2_sketch_dim_k,
+        )
+        header = PageHeader(
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            kind=kind,
+            token_start=token_start,
+            token_count=token_count,
+            head_dim=config.head_dim,
+            padded_head_dim=padded_head_dim,
+            group_size=config.group_size,
+            num_groups=config.num_groups,
+            bits=bits,
+            words_per_group=0,
+            mode_default="M4",
+            layout=page_layout,
+            quant_scheme="project",
+            **header_kwargs,
+            escape_dtype=config.escape_dtype,
+        )
+        return EncodedPage(
+            header=header,
+            m2_sketch=coeffs.astype(np.float16, copy=False),
+            m2_mean=mean.astype(np.float16, copy=False),
+            requested_mode=page_mode,
+            runtime_page_mean=runtime_page_mean,
+            runtime_page_sketch=runtime_page_sketch,
+            runtime_page_min=runtime_page_min,
+            runtime_page_max=runtime_page_max,
+        )
+
     if page_mode_name == "M1":
         codes, codebooks, padded_head_dim = quantize_tensor_lut(
             values,
@@ -340,7 +392,7 @@ def encode_page(
         )
 
     if page_mode_name != "M0":
-        raise ValueError("only M0, M1, M2, M3, and T3 are supported in this bootstrap")
+        raise ValueError("only M0, M1, M2, M3, M4, and T3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
         values,

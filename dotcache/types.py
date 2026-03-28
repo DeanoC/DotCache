@@ -8,8 +8,8 @@ import numpy as np
 
 Kind = Literal["K", "V"]
 Layout = Literal["group_major", "token_major"]
-Mode = Literal["M0", "M1", "M2", "M3", "T3"]
-QuantScheme = Literal["affine", "symmetric", "lut", "sketch", "turbo3"]
+Mode = Literal["M0", "M1", "M2", "M3", "M4", "T3"]
+QuantScheme = Literal["affine", "symmetric", "lut", "sketch", "project", "turbo3"]
 
 
 @dataclass(slots=True)

@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
-    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3", "T3"], default="M0")
+    parser.add_argument("--default-mode-k", choices=["M0", "M1", "M2", "M3", "M4", "T3"], default="M0")
     parser.add_argument("--default-mode-v", choices=["M0", "M1", "M3", "T3"], default="M0")
     parser.add_argument("--key-policy-tier", choices=["exact", "strict", "balanced", "aggressive"], default="exact")
     parser.add_argument("--value-policy-tier", choices=["exact", "strict", "balanced", "aggressive"], default="exact")
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--key-policy-override", action="append", default=[])
     parser.add_argument("--value-policy-override", action="append", default=[])
     parser.add_argument("--layer-profile", default=None)
-    parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "turbo3"], default="affine")
+    parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "project", "turbo3"], default="affine")
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut", "turbo3"], default="affine")
     parser.add_argument("--escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-page-escape-dtype", choices=["float16", "float32", "int8"], default="float16")
@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m2-adaptive-min-improvement-k", type=float, default=0.1)
     parser.add_argument("--m2-prefilter-top-k", type=int, default=0)
     parser.add_argument("--m2-prefilter-min-pages", type=int, default=8)
+    parser.add_argument("--prefer-m4-project-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--lut-refine-steps", type=int, default=0)
     parser.add_argument("--preconditioner", choices=["none", "tanh"], default="none")
     parser.add_argument("--precondition-strength", type=float, default=1.0)
@@ -174,6 +175,7 @@ def main() -> None:
         m2_adaptive_min_improvement_k=args.m2_adaptive_min_improvement_k,
         m2_prefilter_top_k=args.m2_prefilter_top_k,
         m2_prefilter_min_pages=args.m2_prefilter_min_pages,
+        prefer_m4_project_k=args.prefer_m4_project_k,
         lut_refine_steps=args.lut_refine_steps,
         preconditioner=args.preconditioner,
         precondition_strength=args.precondition_strength,
@@ -227,6 +229,8 @@ def main() -> None:
                 "layer_profile": args.layer_profile,
                 "quant_scheme_k": args.quant_scheme_k,
                 "quant_scheme_v": args.quant_scheme_v,
+                "bits_k": args.bits_k,
+                "bits_v": args.bits_v,
                 "escape_dtype": args.escape_dtype,
                 "recent_page_escape_dtype": args.recent_page_escape_dtype,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
@@ -236,6 +240,7 @@ def main() -> None:
                 "m2_adaptive_min_improvement_k": args.m2_adaptive_min_improvement_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
                 "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
+                "prefer_m4_project_k": args.prefer_m4_project_k,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,
@@ -284,6 +289,8 @@ def main() -> None:
                 "layer_profile": args.layer_profile,
                 "quant_scheme_k": args.quant_scheme_k,
                 "quant_scheme_v": args.quant_scheme_v,
+                "bits_k": args.bits_k,
+                "bits_v": args.bits_v,
                 "escape_dtype": args.escape_dtype,
                 "recent_page_escape_dtype": args.recent_page_escape_dtype,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
@@ -293,6 +300,7 @@ def main() -> None:
                 "m2_adaptive_min_improvement_k": args.m2_adaptive_min_improvement_k,
                 "m2_prefilter_top_k": args.m2_prefilter_top_k,
                 "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
+                "prefer_m4_project_k": args.prefer_m4_project_k,
                 "lut_refine_steps": args.lut_refine_steps,
                 "preconditioner": args.preconditioner,
                 "precondition_strength": args.precondition_strength,

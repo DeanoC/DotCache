@@ -5,8 +5,8 @@ from typing import Literal, Sequence
 
 import numpy as np
 
-ModeName = Literal["M0", "M1", "M2", "M3", "T3"]
-QuantSchemeName = Literal["affine", "symmetric", "lut", "sketch", "turbo3"]
+ModeName = Literal["M0", "M1", "M2", "M3", "M4", "T3"]
+QuantSchemeName = Literal["affine", "symmetric", "lut", "sketch", "project", "turbo3"]
 SensitivityTier = Literal["exact", "strict", "balanced", "aggressive"]
 
 
@@ -181,10 +181,10 @@ def parse_page_mode_token(token: str) -> PageModeSpec:
         raise ValueError("page mode tokens must use MODE/SCHEME/BITS[/ESCAPE_DTYPE], for example M0/affine/4 or M3/affine/4/int8")
     mode_text, scheme_text, bits_text = parts[:3]
     mode = mode_text.upper()
-    if mode not in {"M0", "M1", "M2", "M3", "T3"}:
+    if mode not in {"M0", "M1", "M2", "M3", "M4", "T3"}:
         raise ValueError(f"unsupported page mode: {mode_text}")
     quant_scheme = scheme_text.lower()
-    if quant_scheme not in {"affine", "symmetric", "lut", "sketch", "turbo3"}:
+    if quant_scheme not in {"affine", "symmetric", "lut", "sketch", "project", "turbo3"}:
         raise ValueError(f"unsupported quant scheme: {scheme_text}")
     bits = int(bits_text)
     escape_dtype = None
@@ -206,11 +206,16 @@ def make_tier_candidates(
     default_mode: str,
     recent_window: int,
     recent_escape_dtype: str = "float16",
+    prefer_project_key_mode: bool = False,
 ) -> LayerPolicy:
     def candidate(mode: ModeName, scheme: QuantSchemeName, bits: int) -> PageModeSpec:
         return PageModeSpec(mode=mode, quant_scheme=scheme, bits=bits, sensitivity_tier=sensitivity_tier)
 
-    exact_mode = candidate(default_mode if default_mode in {"M0", "M1", "M2", "M3", "T3"} else "M0", default_quant_scheme if default_quant_scheme in {"affine", "symmetric", "lut", "sketch", "turbo3"} else "affine", default_bits)
+    exact_mode = candidate(
+        default_mode if default_mode in {"M0", "M1", "M2", "M3", "M4", "T3"} else "M0",
+        default_quant_scheme if default_quant_scheme in {"affine", "symmetric", "lut", "sketch", "project", "turbo3"} else "affine",
+        default_bits,
+    )
     if sensitivity_tier == "exact":
         candidates = (exact_mode,)
         thresholds = (0.0, float("inf"), float("inf"))
@@ -221,14 +226,14 @@ def make_tier_candidates(
         elif sensitivity_tier == "aggressive":
             candidates = (
                 candidate("M0", "affine", 2),
-                candidate("M2", "sketch", 4),
+                candidate("M4", "project", 4) if prefer_project_key_mode else candidate("M2", "sketch", 4),
                 candidate("M0", "affine", 4),
             )
             thresholds = (0.10, 8.0, 5.5)
         else:
             candidates = (
                 candidate("M0", "affine", 2),
-                candidate("M2", "sketch", 4),
+                candidate("M4", "project", 4) if prefer_project_key_mode else candidate("M2", "sketch", 4),
                 candidate("M0", "affine", 4),
             )
             thresholds = (0.05, 6.0, 4.0)
@@ -315,6 +320,13 @@ def _candidate_is_allowed(
     if candidate.mode == "M3":
         return True
     if candidate.mode == "M2":
+        if kind != "K":
+            return False
+        return (
+            stats.outlier_fraction <= policy.outlier_fraction_threshold
+            and stats.channel_range_mean <= policy.channel_range_threshold
+        )
+    if candidate.mode == "M4":
         if kind != "K":
             return False
         return (
