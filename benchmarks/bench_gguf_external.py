@@ -22,24 +22,37 @@ _TIMING_PATTERN = re.compile(
     r"(?P<tps>[0-9]+(?:\.[0-9]+)?)\s*tokens per second\s*\))?"
 )
 
+_DEFAULT_GGUF_MODELS_DIR = os.environ.get("GGUF_MODELS_DIR", "/workspace/models/gguf")
+_DEFAULT_LLAMA_CPP_N_GPU_LAYERS = os.environ.get("LLAMA_CPP_N_GPU_LAYERS")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run an external llama.cpp / GGUF reference benchmark."
     )
-    parser.add_argument("--model-id", required=True, help="Hugging Face GGUF repository for llama.cpp -hf.")
+    parser.add_argument("--model-id", required=True, help="Hugging Face GGUF repository or local .gguf file path.")
     parser.add_argument(
         "--tokenizer-model-id",
         required=True,
         help="Hugging Face tokenizer repo used to construct exact-length prompts.",
     )
     parser.add_argument("--llama-cli", default=os.environ.get("LLAMA_CPP_CLI", "llama-cli"))
+    parser.add_argument("--hf-file", default=None, help="Optional exact GGUF file within a Hugging Face repo.")
+    parser.add_argument(
+        "--gguf-models-dir",
+        default=_DEFAULT_GGUF_MODELS_DIR,
+        help="Persistent local GGUF directory to prefer before Hub fetches.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[1024, 2048])
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[])
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--threads", type=int, default=None)
-    parser.add_argument("--n-gpu-layers", type=int, default=None)
+    parser.add_argument(
+        "--n-gpu-layers",
+        type=int,
+        default=int(_DEFAULT_LLAMA_CPP_N_GPU_LAYERS) if _DEFAULT_LLAMA_CPP_N_GPU_LAYERS else None,
+    )
     parser.add_argument("--context-size", type=int, default=None)
     parser.add_argument("--continue-on-error", action="store_true")
     return parser.parse_args()
@@ -90,25 +103,70 @@ def _parse_timings(text: str) -> dict[str, float | int]:
     return metrics
 
 
+def _resolve_local_gguf_path(
+    model_id: str,
+    *,
+    hf_file: str | None,
+    gguf_models_dir: str,
+) -> str | None:
+    if os.path.isfile(model_id):
+        return model_id
+    if hf_file is None or not os.path.isdir(gguf_models_dir):
+        return None
+
+    repo_leaf = model_id.rsplit("/", 1)[-1]
+    repo_stem = repo_leaf[:-5] if repo_leaf.endswith("-GGUF") else repo_leaf
+    preferred_candidates = (
+        os.path.join(gguf_models_dir, model_id.replace("/", "--"), hf_file),
+        os.path.join(gguf_models_dir, repo_leaf, hf_file),
+        os.path.join(gguf_models_dir, repo_stem, hf_file),
+        os.path.join(gguf_models_dir, repo_stem.lower(), hf_file),
+    )
+    for candidate in preferred_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    matches: list[str] = []
+    for dirpath, _, filenames in os.walk(gguf_models_dir):
+        if hf_file in filenames:
+            matches.append(os.path.join(dirpath, hf_file))
+    if not matches:
+        return None
+    return sorted(matches)[0]
+
+
 def _llama_cli_command(
     args: argparse.Namespace,
     *,
     prompt_text: str,
 ) -> list[str]:
-    command = [
-        args.llama_cli,
-        "-hf",
+    command = [args.llama_cli]
+    local_model_path = _resolve_local_gguf_path(
         args.model_id,
-        "-n",
-        str(args.max_new_tokens),
-        "-p",
-        prompt_text,
-        "--temp",
-        "0",
-        "--seed",
-        "0",
-        "--no-display-prompt",
-    ]
+        hf_file=args.hf_file,
+        gguf_models_dir=getattr(args, "gguf_models_dir", _DEFAULT_GGUF_MODELS_DIR),
+    )
+    if local_model_path is not None:
+        command.extend(["-m", local_model_path])
+    else:
+        command.extend(["-hf", args.model_id])
+        if args.hf_file is not None:
+            command.extend(["-hff", args.hf_file])
+    command.extend(
+        [
+            "-n",
+            str(args.max_new_tokens),
+            "-p",
+            prompt_text,
+            "--no-conversation",
+            "--simple-io",
+            "--temp",
+            "0",
+            "--seed",
+            "0",
+            "--no-display-prompt",
+        ]
+    )
     if args.threads is not None:
         command.extend(["-t", str(args.threads)])
     if args.n_gpu_layers is not None:
@@ -177,10 +235,7 @@ def _emit_error_record(
     }
     if probe is not None:
         record.update(probe)
-    print(
-        json.dumps(record, sort_keys=True),
-        flush=True,
-    )
+    print(json.dumps(record, sort_keys=True), flush=True)
 
 
 def _run_case(

@@ -72,12 +72,30 @@ fi
 
 export HF_HOME="${DOTCACHE_HF_HOME:-/workspace/.cache/huggingface}"
 export TRANSFORMERS_CACHE="${DOTCACHE_TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
+export GGUF_MODELS_DIR="${DOTCACHE_GGUF_MODELS_DIR:-/workspace/models/gguf}"
+export LLAMA_CPP_N_GPU_LAYERS="${DOTCACHE_LLAMA_CPP_N_GPU_LAYERS:-999}"
 
-mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}"
+mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}" "${GGUF_MODELS_DIR}"
+
+_dotcache_llama_cpp_root="${DOTCACHE_LLAMA_CPP_ROOT:-/workspace/llama.cpp}"
+_dotcache_llama_cpp_bin="${_dotcache_llama_cpp_root}/build/bin"
+
+if [[ -d "${_dotcache_llama_cpp_bin}" ]]; then
+  case ":$PATH:" in
+    *":${_dotcache_llama_cpp_bin}:"*) ;;
+    *) export PATH="${_dotcache_llama_cpp_bin}:${PATH}" ;;
+  esac
+fi
+
+if [[ -z "${LLAMA_CPP_CLI:-}" && -x "${_dotcache_llama_cpp_bin}/llama-cli" ]]; then
+  export LLAMA_CPP_CLI="${_dotcache_llama_cpp_bin}/llama-cli"
+fi
 
 unset _dotcache_root_dir
 unset _dotcache_hf_env_file
 unset _dotcache_hf_env_candidate
 unset _dotcache_hf_env_candidates
+unset _dotcache_llama_cpp_root
+unset _dotcache_llama_cpp_bin
 unset _dotcache_candidate
 unset _dotcache_cuda_candidates
