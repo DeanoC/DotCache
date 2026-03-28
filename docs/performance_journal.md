@@ -783,3 +783,49 @@ Qwen2.5 3B is now confirmed runnable on this M4 through the native HF path, but 
   - DotCache KV ratio `1.71x`
 
 The `1024` dense point is clearly noisy and should not be treated as a clean crossover claim. The trustworthy takeaway is simpler: this Mac can host and run Qwen2.5 3B for smoke tests and frontier checks up to at least exact `1024` prompt tokens, but it is near the limit of what is useful for sustained 3B-class optimization work.
+
+## Local M0 3-bit Probe
+
+`M0 3b` now works on the local MPS path through the general encode/prepare/decode path. It is not yet part of the direct full-prefill torch fast path, so these numbers are best read as planning hints rather than a polished systems result.
+
+- TinyLlama exact `577`, `K=3b, V=3b`
+  - dense decode `1438.08 ms/step`
+  - DotCache decode `14415.48 ms/step`
+  - KV ratio `0.360x`
+  - greedy agreement `1.0`
+- TinyLlama exact `577`, `K=3b, V=4b`
+  - dense decode `653.61 ms/step`
+  - DotCache decode `9554.66 ms/step`
+  - KV ratio `0.374x`
+  - greedy agreement `1.0`
+- TinyLlama exact `577`, `K=4b, V=3b`
+  - dense decode `731.19 ms/step`
+  - DotCache decode `8488.08 ms/step`
+  - KV ratio `0.374x`
+  - greedy agreement `1.0`
+
+Short teacher-forced TinyLlama checks (`304 / 288 / 4`) also stayed clean:
+
+- `K=3b, V=4b`
+  - loss delta `-0.00317`
+  - token agreement `1.0`
+- `K=4b, V=3b`
+  - loss delta `-0.00250`
+  - token agreement `1.0`
+
+The local hint is that `3b` looks more plausible as a value-side tier than a key-side one. `K=4b, V=3b` was the best asymmetric TinyLlama run on both runtime and logit drift, while `K=3b, V=4b` was still viable but slightly worse.
+
+One SmolLM2 360M exact `1024` probe on the more promising asymmetric split showed the same direction:
+
+- `K=4b, V=3b`
+  - dense decode `878.59 ms/step`
+  - DotCache decode `12189.15 ms/step`
+  - KV ratio `0.297x`
+  - greedy agreement `1.0`
+
+So the honest local conclusion is:
+
+- `M0 3b` is a real new planning tier now
+- it appears quality-viable on TinyLlama and plausible on SmolLM2
+- the current MPS implementation is still much too slow to promote it as a runtime win
+- if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
