@@ -219,9 +219,74 @@ def test_qwen35_hybrid_state_inspection_reports_split_state_bytes() -> None:
     assert result["hybrid_state_total_bytes"] > 0
     assert result["hybrid_linear_recurrent_state_bytes"] > 0
     assert result["hybrid_attention_kv_bytes"] > 0
+    assert result["hybrid_fixed_resident_bytes"] == (
+        result["hybrid_linear_conv_state_bytes"] + result["hybrid_linear_recurrent_state_bytes"]
+    )
+    assert result["hybrid_token_growing_bytes"] == result["hybrid_attention_kv_bytes"]
     assert len(result["hybrid_state_layers"]) == 4
     assert result["hybrid_state_layers"][0]["layer_type"] == "linear_attention"
     assert result["hybrid_state_layers"][3]["layer_type"] == "full_attention"
+    assert result["hybrid_state_layers"][0]["state_growth_family"] == "fixed_resident"
+    assert result["hybrid_state_layers"][3]["state_growth_family"] == "token_growing"
+    assert result["hybrid_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["hybrid_token_growing_layer_ids"] == [3]
+    assert result["hybrid_state_partition_ready"] is True
+
+
+def test_qwen35_hybrid_state_inspection_reports_decode_growth() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35TextModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello hybrid growth", return_tensors="pt")
+    result = inspect_qwen35_hybrid_state(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["decode_steps"] == 2
+    assert result["dense_decode_ms_per_step"] >= 0.0
+    assert result["hybrid_prefill_state_total_bytes"] > 0
+    assert result["hybrid_final_state_total_bytes"] >= result["hybrid_prefill_state_total_bytes"]
+    assert result["hybrid_state_growth_bytes"] >= 0
+    assert result["hybrid_attention_kv_growth_bytes"] >= 0
+    assert result["hybrid_fixed_resident_growth_bytes"] == 0
+    assert result["hybrid_token_growing_growth_bytes"] == result["hybrid_attention_kv_growth_bytes"]
+    assert len(result["hybrid_state_growth_layers"]) == 4
+    assert any(layer["layer_type"] == "linear_attention" for layer in result["hybrid_state_growth_layers"])
+    assert any(layer["layer_type"] == "full_attention" for layer in result["hybrid_state_growth_layers"])
+    assert any(layer["state_growth_family"] == "fixed_resident" for layer in result["hybrid_state_growth_layers"])
+    assert any(layer["state_growth_family"] == "token_growing" for layer in result["hybrid_state_growth_layers"])
+
+
+def test_qwen35_adapter_partitions_native_hybrid_state() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35TextModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello hybrid partition", return_tensors="pt")
+    outputs = model(
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        use_cache=True,
+    )
+    partition = adapter.partition_hybrid_state(outputs.past_key_values)
+    assert partition.fixed_resident_layer_ids == [0, 1, 2]
+    assert partition.token_growing_layer_ids == [3]
+    assert len(partition.fixed_resident_layers) == 3
+    assert len(partition.token_growing_layers) == 1
+    assert all(layer.state_growth_family == "fixed_resident" for layer in partition.fixed_resident_layers)
+    assert all(layer.state_growth_family == "token_growing" for layer in partition.token_growing_layers)
+    assert any(layer.conv_state is not None for layer in partition.fixed_resident_layers)
+    assert any(layer.recurrent_state is not None for layer in partition.fixed_resident_layers)
+    assert partition.token_growing_layers[0].key_cache is not None
+    assert partition.token_growing_layers[0].value_cache is not None
+    summary = partition.to_summary(model_or_config=model)
+    assert summary["hybrid_fixed_resident_layer_count"] == 3
+    assert summary["hybrid_token_growing_layer_count"] == 1
+    assert summary["hybrid_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert summary["hybrid_token_growing_layer_ids"] == [3]
 
 
 def test_qwen35_deltanet_state_adapter_wraps_only_linear_layers() -> None:
@@ -369,9 +434,23 @@ def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() ->
     assert result["attention_subset_layer_ids"] == [3]
     assert result["dotcache_attention_subset_ready"] is True
     assert result["dotcache_ready"] is False
+    assert result["native_hybrid_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["native_hybrid_token_growing_layer_ids"] == [3]
+    assert result["native_hybrid_fixed_resident_preserved"] is True
+    assert result["native_hybrid_fixed_resident_growth_bytes"] == 0
+    assert result["native_hybrid_token_growing_growth_bytes"] >= 0
     assert result["attention_subset_capture_record_count"] == 2
     assert np.isfinite(result["replay_context_max_abs_error"])
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+    assert adapter.native_hybrid_runtime_state is not None
+    assert adapter.hybrid_dotcache_runtime_state is not None
+    assert adapter.native_hybrid_runtime_state.fixed_resident_layer_ids == [0, 1, 2]
+    assert adapter.native_hybrid_runtime_state.token_growing_layer_ids == [3]
+    assert adapter.hybrid_dotcache_runtime_state.model_past_key_values is adapter.native_hybrid_runtime_state.past_key_values
+    assert result["hybrid_dotcache_runtime_ready"] is True
+    assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset"
+    assert result["hybrid_runtime_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["hybrid_runtime_token_growing_layer_ids"] == [3]
 
 
 def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> None:
@@ -394,6 +473,9 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     )
     assert result["attention_subset_capture_layer_count"] == 1
     assert result["dotcache_attention_subset_ready"] is True
+    assert result["native_hybrid_fixed_resident_preserved"] is True
+    assert harness.adapter.native_hybrid_runtime_state is not None
+    assert harness.adapter.hybrid_dotcache_runtime_state is not None
 
 
 def test_qwen35_attention_subset_dotcache_harness_accepts_policy_aware_config() -> None:

@@ -1,0 +1,29 @@
+model_id: Qwen/Qwen3.5-0.8B
+source:
+  benchmark: >
+    CUDA Qwen3.5 attention-subset DotCache replay follow-up after enabling the
+    native flash-linear-attention and causal-conv1d fast path.
+  backend: torch_cuda
+  prompt_lengths: exact 64 and repeat 32
+  tokens_per_page: 16
+  notes: >
+    The Mac second pass stayed directionally useful on CUDA, but the best CUDA
+    profile was narrower. Layer 7 key strictness did not help once the native
+    Qwen3.5 fast path was active. The biggest fidelity win came from making
+    values exact at layers 19 and 23 while keeping only layers 11 and 19 on
+    the stricter key tier.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+recent_window: 0
+
+key_layer_sensitivity:
+  - layer:11=strict
+  - layer:19=strict
+
+value_policy_overrides:
+  - layer:15=M0/affine/4,M0/affine/3,M1/lut/4
+
+value_mode_overrides:
+  - layer:19=M3
+  - layer:23=M3

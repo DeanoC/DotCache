@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None)
     parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
     parser.add_argument("--torch-dtype", default="float16")
+    parser.add_argument("--max-new-tokens", type=int, default=1)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
@@ -56,6 +57,7 @@ def _run_case(
     *,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
+    max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
 ) -> None:
@@ -63,6 +65,7 @@ def _run_case(
         record = harness.inspect_hybrid_state(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            decode_steps=max_new_tokens,
         )
     except Exception as exc:  # pragma: no cover - benchmark failure path
         if not continue_on_error:
@@ -106,6 +109,7 @@ def main() -> None:
             harness,
             input_ids=input_ids,
             attention_mask=attention_mask,
+            max_new_tokens=args.max_new_tokens,
             base_record={
                 "benchmark": "qwen35_hybrid_inspect",
                 "model_id": args.model_id,
@@ -133,6 +137,7 @@ def main() -> None:
             harness,
             input_ids=input_ids,
             attention_mask=attention_mask,
+            max_new_tokens=args.max_new_tokens,
             base_record={
                 "benchmark": "qwen35_hybrid_inspect",
                 "model_id": args.model_id,
