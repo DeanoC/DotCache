@@ -67,8 +67,12 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
             raise ValueError("M4 page is missing projected payload")
         query_groups = query.reshape(header.num_groups, header.group_size)
         logits = np.zeros(header.token_count, dtype=np.float32)
-        basis = fixed_project_basis(header.group_size, int(page.m2_sketch.shape[-1]))
         for group_index in range(header.num_groups):
+            basis = (
+                np.asarray(page.m2_basis[group_index], dtype=np.float32)
+                if page.m2_basis is not None
+                else fixed_project_basis(header.group_size, int(page.m2_sketch.shape[-1]), header.project_basis)
+            )
             q_proj = basis @ query_groups[group_index]
             logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
             logits += np.dot(page.m2_mean[group_index].astype(np.float32), query_groups[group_index]).astype(np.float32)

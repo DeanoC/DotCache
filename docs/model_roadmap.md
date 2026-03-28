@@ -103,6 +103,7 @@ The first pod-oriented HF scale-up lane should use the existing compare harnesse
 - public 7B wrapper: [scripts/run_qwen25_7b_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda.sh)
 - selective 7B wrapper: [scripts/run_qwen25_7b_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_selective.sh)
 - planner-aggressive 7B wrapper: [scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh)
+  - this is now the experimental low-memory `svd_shared` `M4/V4` lane
 - Qwen key-exact research wrappers:
   - [scripts/run_qwen25_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_k_exact.sh)
   - [scripts/run_qwen25_7b_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_k_exact.sh)
@@ -249,7 +250,7 @@ The same lightweight policy already transfers to Qwen2.5 7B at `1024/2048`:
 - `layer:27:kv:1=M3`
 - greedy agreement returns to `1.0`
 
-That is no longer the most useful low-memory 7B lane on this pod. The current better adaptive wrapper is the true per-page planner path:
+That fixed selective wrapper is no longer the most useful low-memory 7B lane on this pod. The current better adaptive wrapper is the true per-page planner path on top of learned shared-basis `M4`:
 
 ```bash
 bash scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh
@@ -258,9 +259,9 @@ bash scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh
 At exact `4096` on CUDA this planner-aggressive lane currently:
 
 - keeps greedy agreement at `1.0`
-- reduces KV resident bytes below the fixed selective wrapper
+- reduces KV resident bytes below `M2/V4` while recovering the fixed-basis `M4` quality loss
 - stays slower than exact-K, so it should be treated as the memory-first 7B lane rather than the default runtime lane
-- KV ratio stays near the all-`M0` lane rather than the full exact-K lane
+- currently uses planner-aggressive keys with `--prefer-m4-project-k --m4-project-basis-k svd_shared`
 
 ## GGUF Reference Lane
 

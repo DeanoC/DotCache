@@ -26,6 +26,7 @@ from .session_runtime import PagedDecodeSession
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 from .modes.m2_key_sketch import segment_ids_for_token_count
+from .modes.m4_key_project import fit_shared_project_basis
 
 PageLike = EncodedPage | PreparedPageTorch
 
@@ -1189,10 +1190,44 @@ class ModelPagedKVCache:
         )
         full_keys = np.ascontiguousarray(keys[:, :full_tokens], dtype=np.float32)
         full_values = np.ascontiguousarray(values[:, :full_tokens], dtype=np.float32)
+        shared_m4_basis_by_head: list[np.ndarray | None] = [None] * self.num_key_value_heads
+        for kv_head_id in range(self.num_key_value_heads):
+            resolved_basis = self.config.resolve_m4_project_basis_k(layer_id=layer_id)
+            if resolved_basis != "svd_shared":
+                continue
+            key_page_mode = self._select_page_mode(
+                full_keys[kv_head_id, :page_size],
+                kind="K",
+                layer_id=layer_id,
+                kv_head_id=kv_head_id,
+                token_start=0,
+                sequence_length=sequence_length,
+            )
+            key_mode_name = (
+                key_page_mode.mode
+                if key_page_mode is not None
+                else self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id)
+            )
+            if key_mode_name != "M4":
+                continue
+            shared_m4_basis_by_head[kv_head_id] = fit_shared_project_basis(
+                full_keys[kv_head_id, :full_tokens],
+                group_size=self.config.group_size,
+                project_dim=self.config.resolve_m4_project_dim_k(layer_id=layer_id),
+                page_size=page_size,
+            ).astype(np.float16, copy=False)
 
         for page_start in range(0, full_tokens, page_size):
             page_end = page_start + page_size
             for kv_head_id in range(self.num_key_value_heads):
+                key_page_mode = self._select_page_mode(
+                    full_keys[kv_head_id, page_start:page_end],
+                    kind="K",
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=page_start,
+                    sequence_length=sequence_length,
+                )
                 key_pages_by_head[kv_head_id].append(
                     encode_page(
                         full_keys[kv_head_id, page_start:page_end],
@@ -1201,16 +1236,22 @@ class ModelPagedKVCache:
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
-                        page_mode=self._select_page_mode(
-                            full_keys[kv_head_id, page_start:page_end],
-                            kind="K",
-                            layer_id=layer_id,
-                            kv_head_id=kv_head_id,
-                            token_start=page_start,
-                            sequence_length=sequence_length,
-                        ),
+                        page_mode=key_page_mode,
                         build_runtime_metadata=False,
                         build_m2_sidecar=build_key_sidecar,
+                        m4_basis_override=(
+                            shared_m4_basis_by_head[kv_head_id]
+                            if (
+                                (
+                                    key_page_mode.mode
+                                    if key_page_mode is not None
+                                    else self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id)
+                                )
+                                == "M4"
+                                and shared_m4_basis_by_head[kv_head_id] is not None
+                            )
+                            else None
+                        ),
                     )
                 )
                 value_pages_by_head[kv_head_id].append(

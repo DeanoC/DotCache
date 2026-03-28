@@ -1132,35 +1132,34 @@ source scripts/env_cuda.sh
   --output-format jsonl
 ```
 
-Raw artifacts:
+Raw artifact:
 
-- `benchmarks/results/cuda_supported_baseline_20260328_inference_mode.jsonl`
-- `benchmarks/results/cuda_supported_baseline_20260328_inference_mode.log`
+- `benchmarks/results/cuda_supported_baseline_20260328_svd_shared.jsonl`
 
 All successful exact-length HF runs kept greedy token agreement at `1.0`.
 
-This refreshed checkpoint also includes the shared harness change to run inference forwards under `torch.inference_mode()`, which removed the stale CUDA OOM boundaries on `SmolLM2 1.7B` and `Qwen2.5 7B @ 4096`.
+This refreshed checkpoint includes the later `Qwen2.5 7B` low-memory lane change too: the matrix now exercises planner-aggressive keys with `M4/project` on the `svd_shared` basis for that model, instead of the older `M2` planner lane.
 
 | Model | Exact prompt | Decode ms/step | KV resident bytes | Total resident bytes | Status |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `TinyLlama 1.1B Chat` | `289` | `94.89` | `7,557,120` | `11,206,656` | pass |
-| `TinyLlama 1.1B Chat` | `577` | `102.68` | `9,340,032` | `13,935,744` | pass |
-| `TinyLlama 1.1B Chat` | `1536` | `125.34` | `16,479,872` | `24,589,952` | pass |
-| `SmolLM2 360M Instruct` | `1024` | `281.82` | `23,044,288` | `32,776,384` | pass |
-| `SmolLM2 360M Instruct` | `2048` | `322.09` | `35,377,984` | `53,017,408` | pass |
-| `SmolLM2 1.7B Instruct` | `1024` | `720.93` | `125,829,120` | `142,860,288` | pass |
-| `SmolLM2 1.7B Instruct` | `2048` | `897.94` | `201,326,592` | `235,388,928` | pass |
-| `Llama 3.2 3B Instruct` | `1024` | `212.36` | `73,400,320` | `109,576,192` | pass |
-| `Llama 3.2 3B Instruct` | `2048` | `283.52` | `117,440,512` | `175,636,480` | pass |
-| `Llama 3.2 3B Instruct` | `4096` | `488.79` | `205,520,896` | `271,581,184` | pass |
-| `Qwen2.5 1.5B Instruct` | `1024` | `99.54` | `18,677,760` | `27,918,336` | pass |
-| `Qwen2.5 1.5B Instruct` | `2048` | `112.51` | `30,015,488` | `44,957,696` | pass |
-| `Qwen2.5 3B Instruct` | `1024` | `128.15` | `24,084,480` | `35,979,264` | pass |
-| `Qwen2.5 3B Instruct` | `2048` | `145.21` | `38,731,776` | `57,802,752` | pass |
-| `Qwen2.5 3B Instruct` | `4096` | `192.83` | `68,026,368` | `101,449,728` | pass |
-| `Qwen2.5 7B Instruct` | `1024` | `143.55` | `37,519,360` | `56,033,280` | pass |
-| `Qwen2.5 7B Instruct` | `2048` | `187.39` | `60,358,656` | `90,308,608` | pass |
-| `Qwen2.5 7B Instruct` | `4096` | `264.85` | `106,037,248` | `158,072,832` | pass |
+| `TinyLlama 1.1B Chat` | `289` | `91.56` | `7,557,120` | `11,206,656` | pass |
+| `TinyLlama 1.1B Chat` | `577` | `100.35` | `9,340,032` | `13,935,744` | pass |
+| `TinyLlama 1.1B Chat` | `1536` | `122.55` | `16,479,872` | `24,589,952` | pass |
+| `SmolLM2 360M Instruct` | `1024` | `289.11` | `24,231,552` | `35,044,992` | pass |
+| `SmolLM2 360M Instruct` | `2048` | `355.57` | `37,768,960` | `55,915,264` | pass |
+| `SmolLM2 1.7B Instruct` | `1024` | `766.13` | `125,829,120` | `142,860,288` | pass |
+| `SmolLM2 1.7B Instruct` | `2048` | `933.75` | `201,326,592` | `235,388,928` | pass |
+| `Llama 3.2 3B Instruct` | `1024` | `216.89` | `73,400,320` | `109,576,192` | pass |
+| `Llama 3.2 3B Instruct` | `2048` | `329.72` | `117,440,512` | `175,636,480` | pass |
+| `Llama 3.2 3B Instruct` | `4096` | `452.94` | `205,520,896` | `271,581,184` | pass |
+| `Qwen2.5 1.5B Instruct` | `1024` | `96.61` | `18,677,760` | `27,918,336` | pass |
+| `Qwen2.5 1.5B Instruct` | `2048` | `110.78` | `30,015,488` | `44,957,696` | pass |
+| `Qwen2.5 3B Instruct` | `1024` | `133.91` | `24,084,480` | `35,979,264` | pass |
+| `Qwen2.5 3B Instruct` | `2048` | `146.61` | `38,731,776` | `57,802,752` | pass |
+| `Qwen2.5 3B Instruct` | `4096` | `194.09` | `68,026,368` | `101,449,728` | pass |
+| `Qwen2.5 7B Instruct` | `1024` | `164.48` | `33,154,816` | `48,113,408` | pass |
+| `Qwen2.5 7B Instruct` | `2048` | `197.90` | `51,612,672` | `77,298,688` | pass |
+| `Qwen2.5 7B Instruct` | `4096` | `267.79` | `88,529,920` | `132,117,504` | pass |
 
 Current limits from the same matrix:
 
@@ -1169,7 +1168,8 @@ Current limits from the same matrix:
 The practical read is:
 
 - the full current HF CUDA matrix now clears through `Qwen2.5 7B @ 4096`
-- the strongest current larger-model CUDA lane is `Qwen2.5 7B` on the recommended `K=M3 / V=M0` path
+- the recommended low-memory `Qwen2.5 7B` CUDA lane is now the planner-aggressive `svd_shared` `M4/V4` path
+- that 7B lane holds agreement `1.0` while cutting the `4096` KV footprint to `88,529,920` bytes
 - `TinyLlama` still works as the smallest exact regression lane, but it is no longer the most representative performance target
 - the next frontier issue is no longer basic CUDA viability; it is performance work on the heaviest exact lanes, especially `SmolLM2 1.7B` and the larger-context `Llama 3.2 3B` / `Qwen2.5 7B` paths
 
@@ -1379,3 +1379,188 @@ That sweep gives the next working split:
 - current baseline to beat: `M2/sketch` with `V=M0` 4-bit
 
 The practical conclusion is that the new 3-bit value support is useful here as a memory tier, but not as the default adaptive CUDA lane. It trims about `7.34 MiB` of KV memory at exact `4096`, while giving back most of the decode-time win from `M4/project`.
+
+I then tested whether that `M4/project` win was strong enough to replace the existing shared `Qwen2.5 7B` adaptive CUDA surfaces, using the same natural-text prompt unit the shared model matrix uses:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen2_compare.py \
+  --model-id Qwen/Qwen2.5-7B-Instruct \
+  --backend torch_cuda \
+  --device cuda \
+  --default-mode-k M0 \
+  --default-mode-v M0 \
+  --key-policy-tier aggressive \
+  --value-policy-tier exact \
+  --target-prompt-lengths 2048 4096 \
+  --max-new-tokens 2 \
+  --prompt-unit 'Cache locality matters for fast decoding.'
+```
+
+That surfaced a real blocker:
+
+| Prompt | Lane | Decode ms/step | KV resident bytes | Agreement |
+| --- | --- | ---: | ---: | ---: |
+| `2048` | planner-aggressive `M2/V4` | `211.69` | `53,341,184` | `1.00` |
+| `2048` | planner-aggressive `M4/V4` | `189.69` | `51,612,672` | `0.50` |
+| `4096` | planner-aggressive `M2/V4` | `276.18` | `91,995,136` | `1.00` |
+| `4096` | planner-aggressive `M4/V4` | `252.82` | `88,529,920` | `0.50` |
+
+So `M4/project` is faster on this prompt shape too, but it is not robust enough to replace the shared adaptive lane. The current repo-wide recommendation stays:
+
+- shared adaptive `Qwen2.5 7B` CUDA lane: planner-aggressive `M2/sketch` with `V=M0` 4-bit
+- experimental faster adaptive lane: planner-aggressive `M4/project` with `V=M0` 4-bit
+- experimental minimum-memory lane: planner-aggressive `M4/project` with `V=M0` 3-bit
+
+That means `M4` stays an explicit research wrapper for now rather than becoming the default matrix or wrapper path.
+
+I then localized that prompt-shape failure one step further on the same natural-text `2048` prompt. The high-level compare harness already showed that the generated text diverges immediately after the first shared continuation token:
+
+- passing shared adaptive lane (`M2/V4`): `" fast decoding"`
+- failing experimental lane (`M4/V4`): `" fast,"`
+
+To separate “first generated token” from “first replay decode step”, I ran a focused replay-style probe on the exact same `2048` prompt. In this probe, `step 0` corresponds to the first decode step *after* the first generated token has already been appended to the cache. That makes the result line up cleanly with the harness output above:
+
+- the first generated token still matches
+- the divergence begins on the next decode step
+- the largest replay-context drift is concentrated in the final decoder layers rather than being spread evenly across the stack
+
+At `2048`, the passing `M2/V4` lane still has the same top-error layers, but the errors stay bounded enough to keep token agreement:
+
+| Lane | Replay step | Top layers by max abs context error |
+| --- | ---: | --- |
+| `M2/V4` | `0` | `27: 9.13`, `21: 6.58`, `26: 5.56`, `11: 5.43`, `24: 4.54` |
+| `M2/V4` | `1` | `26: 8.90`, `24: 5.48`, `21: 5.48`, `27: 5.33`, `11: 4.66` |
+
+On the failing `M4/V4` lane, those same late layers blow up more sharply, especially `26` and `27`:
+
+| Lane | Replay step | Top layers by max abs context error |
+| --- | ---: | --- |
+| `M4/V4` | `0` | `26: 17.73`, `27: 13.35`, `23: 8.90`, `25: 7.26`, `24: 6.57` |
+| `M4/V4` | `1` | `26: 16.78`, `27: 11.41`, `25: 7.92`, `23: 7.32`, `24: 5.85` |
+
+That gives the next debugging target a much tighter shape:
+
+- the problem is not “early-layer global drift”
+- it is not a value-side issue; values were unchanged
+- the failure is most visible in the late attention stack, especially layers `26` and `27`
+- the first bad token on the natural-text prompt appears immediately after the first shared generated token
+
+So the next real `M4` task is to understand why the fixed-project key representation is underestimating or mis-ranking late-layer attention on the continuation step, not to keep changing repo-wide defaults.
+
+I then checked that directly at the page-score level on the same failing `2048` natural-text prompt, focusing on the late layers that dominated the replay drift (`23`-`27`) and keeping values exact so this stayed a key-side comparison. The result is clear: `M4` is not merely adding larger-but-rank-stable score noise. It is actually reordering attention across pages in the late layers.
+
+For the passing `M2` lane, late-layer page-score quality is imperfect but still mostly aligned:
+
+| Layer | Step | `M2` top-1 match | `M2` top-k overlap | `M2` KL |
+| --- | ---: | ---: | ---: | ---: |
+| `23` | `0` | `0.86` | `0.72` | `0.09` |
+| `24` | `0` | `1.00` | `0.69` | `0.13` |
+| `25` | `0` | `0.75` | `0.75` | `0.29` |
+| `26` | `0` | `0.89` | `0.79` | `0.10` |
+| `27` | `0` | `0.86` | `0.74` | `0.11` |
+
+On the failing `M4` lane, those same layers lose page-order fidelity sharply:
+
+| Layer | Step | `M4` top-1 match | `M4` top-k overlap | `M4` KL |
+| --- | ---: | ---: | ---: | ---: |
+| `23` | `0` | `0.29` | `0.41` | `3.29` |
+| `24` | `0` | `0.36` | `0.30` | `3.17` |
+| `25` | `0` | `0.36` | `0.54` | `2.87` |
+| `26` | `0` | `0.29` | `0.33` | `3.61` |
+| `27` | `0` | `0.64` | `0.38` | `2.12` |
+
+That confirms the failure mode:
+
+- `M4` is mis-ranking key-page attention in the late layers
+- the worst layers are still `26` and `27`, but the degradation starts earlier in the same late block
+- narrow layer rescues (`26`-`27`, then `23`-`27`) are not enough to restore token agreement
+
+So the next `M4` debugging step should target the representation itself, especially how the fixed-project key pages preserve score ordering in late Qwen2.5 7B layers, not just another wrapper policy tweak.
+
+I then added explicit `M4` basis-family support so the encoded page carries its own project basis (`hadamard` or `dct`), with optional per-layer overrides, and reran the same failing natural-text `Qwen2.5 7B` CUDA prompt to test whether the instability was specific to the current Hadamard-style basis.
+
+Validation for the basis-family plumbing passed:
+
+- `python -m py_compile dotcache/types.py dotcache/modes/m4_key_project.py dotcache/config.py dotcache/encode.py dotcache/decode_reference.py dotcache/session_runtime.py dotcache/attention_reference.py dotcache/backends/torch_mps.py benchmarks/bench_qwen2_compare.py tests/test_m4_key_project.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_m4_key_project.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_torch_cuda_backend.py -k 'project_m4_keys_decode_on_cuda or segmented_m2_keys_decode_on_cuda'`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_vllm_adapter.py -k 'grouped_prepared_chunk_cache_builds_m4_cuda_view or grouped_prepared_chunk_cache_builds_m2_cuda_view'`
+
+The real benchmark result is negative. Swapping late layers `23`-`27` to a DCT basis did not recover agreement, and a global DCT basis was slightly worse:
+
+| Prompt | Lane | Decode ms/step | KV resident bytes | Agreement |
+| --- | --- | ---: | ---: | ---: |
+| `2048` | `M4/V4` Hadamard baseline | `189.69` | `51,612,672` | `0.50` |
+| `2048` | `M4/V4` DCT on layers `23`-`27` | `194.03` | `51,612,672` | `0.50` |
+| `2048` | `M4/V4` DCT global | `208.84` | `51,612,672` | `0.50` |
+| `4096` | `M4/V4` Hadamard baseline | `252.82` | `88,529,920` | `0.50` |
+| `4096` | `M4/V4` DCT on layers `23`-`27` | `256.55` | `88,529,920` | `0.50` |
+| `4096` | `M4/V4` DCT global | `272.42` | `88,529,920` | `0.50` |
+
+That narrows the diagnosis again:
+
+- the `M4` failure is not specific to the Hadamard basis family
+- simply swapping to another fixed orthogonal basis does not restore page-score fidelity
+- the problem is more structural than "pick a better fixed basis"
+
+So the next plausible `M4` move is no longer "try another fixed basis." It should be a richer representation, such as a learned/data-driven basis per layer or a representation that stores page-local basis information instead of assuming one global fixed family.
+
+I then implemented the smallest richer variant directly in `M4`: a page-local learned basis (`project_basis=svd`) stored alongside the coefficients, keeping the same `M4` mode surface but letting each page carry its own low-rank basis instead of assuming a fixed global one.
+
+The focused implementation validation passed:
+
+- `python -m py_compile dotcache/modes/m4_key_project.py dotcache/encode.py dotcache/attention_reference.py dotcache/decode_reference.py dotcache/session_runtime.py dotcache/backends/torch_mps.py benchmarks/bench_qwen2_compare.py tests/test_m4_key_project.py tests/test_torch_cuda_backend.py tests/test_vllm_adapter.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_m4_key_project.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_torch_cuda_backend.py -k 'project_m4_keys_decode_on_cuda or segmented_m2_keys_decode_on_cuda'`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_vllm_adapter.py -k 'grouped_prepared_chunk_cache_builds_m4_cuda_view or grouped_prepared_chunk_cache_builds_m2_cuda_view or grouped_prepared_chunk_cache_builds_m4_svd_cuda_view'`
+
+On the same natural-text `Qwen/Qwen2.5-7B-Instruct` CUDA prompt that fixed-basis `M4` kept failing on, the learned-basis `M4` path restores agreement:
+
+| Prompt | Lane | Decode ms/step | KV resident bytes | Agreement |
+| --- | --- | ---: | ---: | ---: |
+| `2048` | `M2/V4` | `211.69` | `53,341,184` | `1.00` |
+| `2048` | fixed-basis `M4/V4` | `189.69` | `51,612,672` | `0.50` |
+| `2048` | learned-basis `M4/V4` (`svd`) | `202.16` | `53,341,184` | `1.00` |
+| `4096` | `M2/V4` | `276.18` | `91,995,136` | `1.00` |
+| `4096` | fixed-basis `M4/V4` | `252.82` | `88,529,920` | `0.50` |
+| `4096` | learned-basis `M4/V4` (`svd`) | `272.47` | `91,995,136` | `1.00` |
+
+That changes the diagnosis:
+
+- the failure is specific to fixed-basis `M4`, not to the broader "projected coefficients + mean" structure
+- a page-local learned basis is enough to recover the late-layer score ordering on the failing natural-text prompt
+- but the learned-basis `M4` lane gives back essentially all of the fixed-basis memory win, landing on the same KV footprint as `M2`
+
+So the next meaningful representation goal is now clearer: not "another fixed basis" and not "plain learned basis." To beat `M2`, the likely target is a compressed learned basis, a layer-shared learned basis, or another low-overhead representation that preserves page-score ordering without storing a full page-local basis tensor.
+
+I then implemented that next step as `M4` with a learned shared basis (`project_basis=svd_shared`): one learned basis per layer and KV head, shared across pages, while keeping page-local coefficients and means. The first pass exposed two CUDA-side issues rather than a representation failure:
+
+- grouped CUDA decode incorrectly collapsed the per-head shared-basis axis inside the grouped prepared-chunk cache
+- the single-head CUDA fallback path dropped from the learned shared basis back to the fixed-basis `M4` path whenever `PreparedPageTorch.m2_basis` was intentionally left `None`
+
+After fixing both of those, the focused CUDA validation passed:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_torch_cuda_backend.py -k 'project_m4_svd_shared_keys_decode_on_cuda or project_m4_keys_decode_on_cuda or segmented_m2_keys_decode_on_cuda'`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_vllm_adapter.py -k 'grouped_prepared_chunk_cache_builds_m4_svd_shared_cuda_view or grouped_prepared_chunk_cache_builds_m4_svd_cuda_view or grouped_prepared_chunk_cache_builds_m4_cuda_view'`
+
+On the same natural-text `Qwen/Qwen2.5-7B-Instruct` CUDA prompt shape that fixed-basis `M4` failed on, `svd_shared` now recovers agreement while also keeping the low-memory `M4` footprint:
+
+| Prompt | Lane | Decode ms/step | KV resident bytes | Agreement |
+| --- | --- | ---: | ---: | ---: |
+| `2048` | `M2/V4` | `211.69` | `53,341,184` | `1.00` |
+| `2048` | fixed-basis `M4/V4` | `189.69` | `51,612,672` | `0.50` |
+| `2048` | learned page-local `M4/V4` (`svd`) | `202.16` | `53,341,184` | `1.00` |
+| `2048` | learned shared-basis `M4/V4` (`svd_shared`) | `198.27` | `51,612,672` | `1.00` |
+| `4096` | `M2/V4` | `276.18` | `91,995,136` | `1.00` |
+| `4096` | fixed-basis `M4/V4` | `252.82` | `88,529,920` | `0.50` |
+| `4096` | learned page-local `M4/V4` (`svd`) | `272.47` | `91,995,136` | `1.00` |
+| `4096` | learned shared-basis `M4/V4` (`svd_shared`) | `267.79` | `88,529,920` | `1.00` |
+
+That is the first `M4` variant that actually clears the target tradeoff:
+
+- it keeps the fixed-basis `M4` memory advantage
+- it restores the natural-text agreement failure that fixed-basis `M4` had at `2048` and `4096`
+- it stays faster than `M2/V4`, though not as fast as the unstable fixed-basis `M4`
+
+So the next repo-level move is no longer representation discovery. It is productization: promote `svd_shared` as the experimental low-memory adaptive `Qwen2.5 7B` CUDA lane, and then rerun the broader matrix or wrapper surface on top of that corrected basis-sharing path.

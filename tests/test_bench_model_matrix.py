@@ -134,9 +134,11 @@ def test_matrix_record_for_qwen25_7b_emits_qwen2_runner_command() -> None:
     assert "M0" in command
     assert "--default-mode-v" in command
     assert "M0" in command
-    assert command.count("--key-mode-override") == 2
-    assert "layer:0=M3" in command
-    assert "layer:27:kv:1=M3" in command
+    assert "--key-policy-tier" in command
+    assert "aggressive" in command
+    assert "--prefer-m4-project-k" in command
+    assert "--m4-project-basis-k" in command
+    assert "svd_shared" in command
     assert "--device" in command
     assert "cuda" in command
     assert record["planned_prompt_lengths"] == (1024, 2048, 4096)

@@ -66,7 +66,7 @@ def _recommended_mode_flags(spec: ModelSpec, *, backend: str) -> list[str]:
             "--key-mode-override",
             "layer:0=M3",
         ]
-    if spec.key in {"qwen25_3b_hf", "qwen25_7b_hf"}:
+    if spec.key == "qwen25_3b_hf":
         return [
             "--default-mode-k",
             "M0",
@@ -76,6 +76,18 @@ def _recommended_mode_flags(spec: ModelSpec, *, backend: str) -> list[str]:
             "layer:0=M3",
             "--key-mode-override",
             "layer:27:kv:1=M3",
+        ]
+    if spec.key == "qwen25_7b_hf":
+        return [
+            "--default-mode-k",
+            "M0",
+            "--default-mode-v",
+            "M0",
+            "--key-policy-tier",
+            "aggressive",
+            "--prefer-m4-project-k",
+            "--m4-project-basis-k",
+            "svd_shared",
         ]
     if spec.family == "qwen2":
         return ["--default-mode-k", "M3", "--default-mode-v", "M0"]

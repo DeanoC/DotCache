@@ -133,6 +133,7 @@ def encode_page(
     quant_scheme: str | None = None,
     build_runtime_metadata: bool = True,
     build_m2_sidecar: bool | None = None,
+    m4_basis_override: np.ndarray | None = None,
 ) -> EncodedPage:
     values = np.asarray(tensor_slice, dtype=np.float32)
     if values.ndim != 2:
@@ -256,10 +257,12 @@ def encode_page(
     if page_mode_name == "M4":
         if kind != "K":
             raise ValueError("M4 is only supported for K pages in this phase")
-        coeffs, mean, padded_head_dim = quantize_tensor_m4(
+        coeffs, basis, mean, padded_head_dim = quantize_tensor_m4(
             values,
             group_size=config.group_size,
-            project_dim=config.m2_sketch_dim_k,
+            project_dim=config.resolve_m4_project_dim_k(layer_id=layer_id),
+            basis_family=config.resolve_m4_project_basis_k(layer_id=layer_id),
+            basis_override=m4_basis_override,
         )
         header = PageHeader(
             layer_id=layer_id,
@@ -276,12 +279,14 @@ def encode_page(
             mode_default="M4",
             layout=page_layout,
             quant_scheme="project",
+            project_basis=config.resolve_m4_project_basis_k(layer_id=layer_id),
             **header_kwargs,
             escape_dtype=config.escape_dtype,
         )
         return EncodedPage(
             header=header,
             m2_sketch=coeffs.astype(np.float16, copy=False),
+            m2_basis=None if basis is None else basis.astype(np.float16, copy=False),
             m2_mean=mean.astype(np.float16, copy=False),
             requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
