@@ -1743,6 +1743,38 @@ Validation:
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
 
+## 2026-03-28 20:05 UTC - Captured DeltaNet StateCache sweeps now bridge real Qwen3.5 state into the simulator
+
+I added a small bridge from the dense Qwen3.5 DeltaNet inspection lane into the StateCache simulator:
+
+- the inspect runner can now save a real recurrent or conv state sample as `.npz`
+- the simulator can consume that captured sample directly
+- the new `bench_qwen35_statecache_real_sweep.py` wrapper can capture and summarize early/mid/late layer sweeps
+
+Useful first real-state read from this Mac:
+
+- captured recurrent state
+- layer `0`
+- prompt length `7`
+- decode steps `1`
+
+Results:
+
+- `M0 8b`
+  - compression ratio: `3.2x`
+  - final update error: `0.0047`
+  - final readout error: `0.0255`
+- `M0 4b`
+  - compression ratio: `5.33x`
+  - final update error: `0.0592`
+  - final readout error: `0.4508`
+- `M0 3b`
+  - compression ratio: `6.4x`
+  - final update error: `0.1214`
+  - final readout error: `0.7355`
+
+Renorm did not change that first sample because it only contained one decode step. That is still useful: the bridge is working, and the next informative local sweep is multi-step captured recurrent state on early/mid/late layers.
+
 Live CUDA check:
 
 ```bash

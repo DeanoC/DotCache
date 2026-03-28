@@ -399,6 +399,12 @@ For the parallel DeltaNet-side probe lane, use the new StateCache inspection and
 .venv/bin/python benchmarks/bench_state_cache_sim.py --state-rows 128 --state-cols 128 --steps 16 --bits 8 4 3 --modes M0 M3
 ```
 
+To bridge real Qwen3.5 state into the simulator and sweep early/mid/late layers in one pass, use:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_statecache_real_sweep.py --backend torch_mps --device mps --prompt-length 32 --max-new-tokens 4 --layers 0 12 22
+```
+
 Those lanes are intentionally probe-only:
 
 - they inspect and perturb DeltaNet recurrent state
