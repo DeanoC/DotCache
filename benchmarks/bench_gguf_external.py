@@ -10,6 +10,8 @@ import time
 
 from transformers import AutoTokenizer
 
+from dotcache.integrations.llama import resolve_hf_auth_kwargs
+
 
 _TIMING_PATTERN = re.compile(
     r"(?P<label>prompt eval time|eval time|total time)\s*=\s*"
@@ -245,7 +247,7 @@ def _run_case(
 
 def main() -> None:
     args = parse_args()
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_model_id)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_model_id, **resolve_hf_auth_kwargs())
 
     for repeat_count in args.repeat_counts:
         prompt_text = _build_repeat_prompt(args.prompt_unit, repeat_count)

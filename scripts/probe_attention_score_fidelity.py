@@ -20,6 +20,7 @@ from dotcache.integrations.llama import (
     _ensure_attention_mask,
     _normalize_input_ids,
     _run_dense_greedy_decode,
+    resolve_hf_auth_kwargs,
 )
 from dotcache.integrations.qwen2 import Qwen2DotCacheHarness
 from dotcache.page_cache import PreparedPageCache
@@ -103,7 +104,7 @@ def _build_exact_length_inputs(harness, *, prompt_unit: str, prompt_length: int)
 
 
 def _build_harness(args: argparse.Namespace):
-    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False)
+    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
     head_dim = model_config.hidden_size // model_config.num_attention_heads
     dotcache_config = DotCacheConfig(
         head_dim=head_dim,

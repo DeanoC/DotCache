@@ -341,6 +341,101 @@ def _grouped_pages_can_batch(
     return True
 
 
+@dataclass(slots=True)
+class _PreparedDecodeViewLayout:
+    grouped_batch_signature: tuple[tuple[tuple[Any, ...], tuple[Any, ...]], ...]
+    key_chunk_lengths: tuple[int, ...]
+    value_chunk_lengths: tuple[int, ...]
+
+
+def _prepared_page_group_signature(page: PreparedPageTorch) -> tuple[Any, ...]:
+    basis = getattr(page, "m2_basis", None)
+    if basis is None:
+        segment_count = 0
+    else:
+        ndim = int(basis.ndim) if hasattr(basis, "ndim") else int(basis.dim())
+        segment_count = int(basis.shape[1]) if ndim == 4 else 1
+    return (
+        page.device_type,
+        page.header.mode_default,
+        page.header.token_count,
+        page.header.head_dim,
+        page.header.padded_head_dim,
+        page.header.group_size,
+        page.header.num_groups,
+        page.header.bits,
+        page.header.words_per_group,
+        page.header.layout,
+        page.header.quant_scheme,
+        int(page.m2_sketch.shape[-1]) if page.m2_sketch is not None else 0,
+        segment_count,
+    )
+
+
+def _prepared_page_chunk_lengths(pages: Sequence[PreparedPageTorch]) -> tuple[int, ...]:
+    if not pages:
+        return ()
+    lengths: list[int] = []
+    current_signature: tuple[Any, ...] | None = None
+    current_length = 0
+    for page in pages:
+        signature = _prepared_page_group_signature(page)
+        if current_signature is None or signature == current_signature:
+            current_signature = signature
+            current_length += 1
+            continue
+        lengths.append(current_length)
+        current_signature = signature
+        current_length = 1
+    if current_length > 0:
+        lengths.append(current_length)
+    return tuple(lengths)
+
+
+def _build_prepared_decode_view_layout(
+    key_pages: Sequence[PageLike],
+    value_pages: Sequence[PageLike],
+) -> _PreparedDecodeViewLayout | None:
+    if len(key_pages) != len(value_pages) or not key_pages:
+        return None
+    if not all(isinstance(page, PreparedPageTorch) for page in key_pages):
+        return None
+    if not all(isinstance(page, PreparedPageTorch) for page in value_pages):
+        return None
+    prepared_key_pages = tuple(key_pages)
+    prepared_value_pages = tuple(value_pages)
+    return _PreparedDecodeViewLayout(
+        grouped_batch_signature=tuple(
+            (_prepared_page_group_signature(key_page), _prepared_page_group_signature(value_page))
+            for key_page, value_page in zip(prepared_key_pages, prepared_value_pages, strict=True)
+        ),
+        key_chunk_lengths=_prepared_page_chunk_lengths(prepared_key_pages),
+        value_chunk_lengths=_prepared_page_chunk_lengths(prepared_value_pages),
+    )
+
+
+def _grouped_layouts_can_batch(
+    layouts: Sequence[_PreparedDecodeViewLayout | None],
+    query_groups: Sequence[Any],
+) -> bool:
+    if not layouts or any(layout is None for layout in layouts):
+        return False
+    try:
+        query_count = int(query_groups[0].shape[0])
+    except Exception:
+        return False
+    first_layout = layouts[0]
+    assert first_layout is not None
+    for group_index in range(1, len(layouts)):
+        layout = layouts[group_index]
+        assert layout is not None
+        if layout.grouped_batch_signature != first_layout.grouped_batch_signature:
+            return False
+        if int(query_groups[group_index].shape[0]) != query_count:
+            return False
+    return True
+
+
 def _normalize_prefill_tensor(
     values: np.ndarray,
     *,
@@ -859,11 +954,13 @@ class _HeadSessionState:
     persistent_value_tail: _PersistentTailPage | None = None
     decode_key_pages_with_tail: list[PageLike] | None = None
     decode_value_pages_with_tail: list[PageLike] | None = None
+    decode_view_layout: _PreparedDecodeViewLayout | None = None
     sequence_length: int = 0
 
     def invalidate_decode_views(self) -> None:
         self.decode_key_pages_with_tail = None
         self.decode_value_pages_with_tail = None
+        self.decode_view_layout = None
 
     def clear(self, *, clear_prepared_cache: bool) -> None:
         self.session.key_pages.clear()
@@ -1906,7 +2003,7 @@ class ModelPagedKVCache:
         kv_head_id: int,
         *,
         trace: ExecutionTrace | None = None,
-    ) -> tuple[list[PageLike], list[PageLike]]:
+    ) -> tuple[list[PageLike], list[PageLike], _PreparedDecodeViewLayout | None]:
         state = self._state(layer_id, kv_head_id)
         self._ensure_prepared_static_pages(state, trace=trace)
         if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
@@ -1925,19 +2022,22 @@ class ModelPagedKVCache:
                     and len(cached_key_pages) == len(state.session.key_pages) + 1
                     and len(cached_value_pages) == len(state.session.value_pages) + 1
                 ):
-                    return cached_key_pages, cached_value_pages
+                    return cached_key_pages, cached_value_pages, state.decode_view_layout
                 key_pages = list(state.session.key_pages)
                 value_pages = list(state.session.value_pages)
                 key_pages.append(prepared_key_tail)
                 value_pages.append(prepared_value_tail)
                 state.decode_key_pages_with_tail = key_pages
                 state.decode_value_pages_with_tail = value_pages
-                return key_pages, value_pages
+                state.decode_view_layout = _build_prepared_decode_view_layout(key_pages, value_pages)
+                return key_pages, value_pages, state.decode_view_layout
             state.invalidate_decode_views()
-            return state.session.key_pages, state.session.value_pages
+            state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_pages = state.tail.build_temp_pages()
         if temp_pages is None:
-            return state.session.key_pages, state.session.value_pages
+            state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_key_page, temp_value_page = temp_pages
         # Temporary live-tail pages are rebuilt on demand and should not go
         # through the shared prepared-page cache keyed by object id.
@@ -1947,7 +2047,7 @@ class ModelPagedKVCache:
         value_pages = list(state.session.value_pages)
         key_pages.append(prepared_temp_key_page)
         value_pages.append(prepared_temp_value_page)
-        return key_pages, value_pages
+        return key_pages, value_pages, _build_prepared_decode_view_layout(key_pages, value_pages)
 
     def decode_layer(
         self,
@@ -1970,7 +2070,7 @@ class ModelPagedKVCache:
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
-            key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            key_pages, value_pages, _ = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
             kv_queries = scaled_queries[list(q_head_ids)]
@@ -2028,10 +2128,11 @@ class ModelPagedKVCache:
         active_queries: list[Any] = []
         active_key_pages: list[Sequence[PageLike]] = []
         active_value_pages: list[Sequence[PageLike]] = []
+        active_layouts: list[_PreparedDecodeViewLayout | None] = []
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
-            key_pages, value_pages = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            key_pages, value_pages, decode_layout = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
             kv_queries = scaled_queries[list(q_head_ids)]
@@ -2040,14 +2141,20 @@ class ModelPagedKVCache:
             active_queries.append(kv_queries)
             active_key_pages.append(key_pages)
             active_value_pages.append(value_pages)
+            active_layouts.append(decode_layout)
 
         self._sync_prepared_chunk_cache_budget()
 
-        if _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
+        cached_group_layout = _grouped_layouts_can_batch(active_layouts, active_queries)
+        if cached_group_layout or _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
+            key_chunk_lengths = active_layouts[0].key_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
+            value_chunk_lengths = active_layouts[0].value_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
             _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_torch_tensor(
                 active_queries,
                 active_key_pages,
                 active_value_pages,
+                key_chunk_lengths=key_chunk_lengths,
+                value_chunk_lengths=value_chunk_lengths,
                 trace=trace,
             )
             for q_head_ids, kv_outputs in zip(active_q_head_ids, grouped_outputs, strict=True):

@@ -262,10 +262,125 @@ def test_grouped_prepared_chunk_cache_reuses_stable_m0_page_batches() -> None:
 
     assert first is not None
     assert second is first
-    assert first.payload_groups[0].shape[0] == len(pages_by_group)
-    assert first.payload_groups[0].shape[1] == len(pages_by_group[0])
+    assert first.payload_groups == ()
     assert first.codes_groups is not None
+    assert first.codes_groups[0].shape[0] == len(pages_by_group)
+    assert first.codes_groups[0].shape[1] == len(pages_by_group[0])
     assert first.codes_groups[0].shape[-1] == config.group_size
+
+
+def test_grouped_prepared_chunk_cache_builds_fused_cuda_view_for_two_group64() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    rng = np.random.default_rng(1207)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            payload=torch.from_numpy(encoded.payload.astype(np.int32, copy=True)),
+            scales=torch.from_numpy(encoded.scales.copy()),
+            bias=torch.from_numpy(encoded.bias.copy()),
+            unpack_shifts=torch.arange(8, dtype=torch.int32) * encoded.header.bits,
+            unpack_mask=torch.tensor((1 << encoded.header.bits) - 1, dtype=torch.int32),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=111),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=112),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=113),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=114),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=121),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=122),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=123),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=124),
+        ],
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.fused_scaled_codes is not None
+    assert first.codes_groups is None
+    assert first.scales_groups is None
+    assert first.bias_groups is not None
+    assert tuple(first.fused_scaled_codes.shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert first.fused_scaled_codes.dtype == torch.float16
+    assert first.bias_groups[0].dtype == torch.float16
+
+
+def test_grouped_prepared_chunk_cache_builds_packed_cuda_view_for_four_group128() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(head_dim=128, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    rng = np.random.default_rng(1208)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            payload=torch.from_numpy(encoded.payload.astype(np.int32, copy=True)),
+            scales=torch.from_numpy(encoded.scales.copy()),
+            bias=torch.from_numpy(encoded.bias.copy()),
+            unpack_shifts=torch.arange(8, dtype=torch.int32) * encoded.header.bits,
+            unpack_mask=torch.tensor((1 << encoded.header.bits) - 1, dtype=torch.int32),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=group_id, token_start=0, cache_uid=200 + group_id * 10 + 1),
+            _prepared_page(kv_head_id=group_id, token_start=4, cache_uid=200 + group_id * 10 + 2),
+            _prepared_page(kv_head_id=group_id, token_start=8, cache_uid=200 + group_id * 10 + 3),
+            _prepared_page(kv_head_id=group_id, token_start=12, cache_uid=200 + group_id * 10 + 4),
+        ]
+        for group_id in range(4)
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.payload_groups != ()
+    assert first.codes_groups is None
+    assert first.scales_groups is not None
+    assert first.bias_groups is not None
+    assert first.fused_scaled_codes is None
+    assert tuple(first.payload_groups[0].shape) == (len(pages_by_group), len(pages_by_group[0]), config.tokens_per_page, 4)
+    assert first.scales_groups[0].dtype == torch.float32
+    assert first.bias_groups[0].dtype == torch.float32
 
 
 torch = pytest.importorskip("torch")

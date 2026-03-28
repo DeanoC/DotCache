@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
 from transformers import AutoConfig
 
 from dotcache.config import DotCacheConfig
+from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.integrations.vllm_adapter import (
     configure_vllm_inprocess_runtime,
     install_dotcache_on_vllm_runtime,
@@ -102,7 +103,11 @@ def _extract_generated_token_ids(output: Any) -> list[int]:
 
 
 def _build_dotcache_adapter(args: argparse.Namespace, llm: Any):
-    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=bool(args.trust_remote_code))
+    model_config = AutoConfig.from_pretrained(
+        args.model_id,
+        trust_remote_code=bool(args.trust_remote_code),
+        **resolve_hf_auth_kwargs(),
+    )
     head_dim = int(model_config.hidden_size // model_config.num_attention_heads)
     dotcache_config = DotCacheConfig(
         head_dim=head_dim,

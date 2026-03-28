@@ -23,10 +23,18 @@ Use this machine setup when you want to work on:
 From the repo root:
 
 ```bash
+source scripts/env_cuda.sh
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
-That script:
+The env script standardizes:
+
+- `CUDA_HOME` / `CUDA_PATH`
+- `PATH` and `LD_LIBRARY_PATH` for the detected CUDA toolkit
+- `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN` mirroring when either one is already exported
+- `HF_HOME` and `TRANSFORMERS_CACHE` under `/workspace/.cache/huggingface`
+
+The bootstrap script then:
 
 - creates `.venv`
 - upgrades `pip`, `setuptools`, and `wheel`
@@ -38,7 +46,15 @@ That script:
 If you want to override the fallback install target explicitly:
 
 ```bash
+source scripts/env_cuda.sh
 TORCH_SPEC='torch>=2.8' bash scripts/bootstrap_nvidia_llama_dev.sh
+```
+
+For gated Hugging Face repos on this path, export the token first:
+
+```bash
+export HF_TOKEN=...
+source scripts/env_cuda.sh
 ```
 
 ## Verification

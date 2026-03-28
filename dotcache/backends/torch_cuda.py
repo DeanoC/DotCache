@@ -9,6 +9,7 @@ from ..types import EncodedPage
 from .torch_mps import (
     PreparedPageTorch,
     decode_grouped_multiquery_step_prepared_torch_tensor,
+    decode_grouped_multiquery_step_prepared_torch_tensor_output_only,
     decode_grouped_multiquery_step_torch_tensor,
     decode_multi_query_step_torch,
     decode_multi_query_step_torch_tensor,
@@ -135,6 +136,21 @@ def decode_grouped_multiquery_step_prepared_cuda_tensor(
     trace: ExecutionTrace | None = None,
 ):
     return decode_grouped_multiquery_step_prepared_torch_tensor(
+        query_groups,
+        key_pages_by_group,
+        value_pages_by_group,
+        trace=trace,
+    )
+
+
+def decode_grouped_multiquery_step_prepared_cuda_tensor_output_only(
+    query_groups,
+    key_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+    value_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+    *,
+    trace: ExecutionTrace | None = None,
+):
+    return decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
         query_groups,
         key_pages_by_group,
         value_pages_by_group,

@@ -8,6 +8,7 @@ from transformers import AutoConfig
 
 from dotcache.config import DotCacheConfig
 from dotcache.config_io import load_layer_profile
+from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.integrations.qwen2 import Qwen2DotCacheHarness, transformers_available
 
 
@@ -132,7 +133,7 @@ def main() -> None:
     if not transformers_available():
         raise SystemExit("bench_qwen2_compare.py requires the optional transformers dependencies")
 
-    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False)
+    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
     head_dim = model_config.hidden_size // model_config.num_attention_heads
     if args.layer_profile is not None:
         profile = load_layer_profile(args.layer_profile)
