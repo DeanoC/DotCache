@@ -460,6 +460,97 @@ class Qwen35HybridStatePartition:
         }
 
 
+@dataclass(slots=True)
+class Qwen35NativeHybridRuntimeState:
+    model_or_config: Any
+    past_key_values: Any
+    prefill_partition: Qwen35HybridStatePartition
+    current_partition: Qwen35HybridStatePartition
+
+    @classmethod
+    def from_post_handoff_cache(cls, past_key_values: Any, model_or_config: Any) -> "Qwen35NativeHybridRuntimeState":
+        partition = partition_qwen35_hybrid_state(past_key_values, model_or_config)
+        return cls(
+            model_or_config=model_or_config,
+            past_key_values=past_key_values,
+            prefill_partition=partition,
+            current_partition=partition,
+        )
+
+    @property
+    def fixed_resident_layer_ids(self) -> list[int]:
+        return self.current_partition.fixed_resident_layer_ids
+
+    @property
+    def token_growing_layer_ids(self) -> list[int]:
+        return self.current_partition.token_growing_layer_ids
+
+    def refresh(self, past_key_values: Any) -> None:
+        self.past_key_values = past_key_values
+        self.current_partition = partition_qwen35_hybrid_state(past_key_values, self.model_or_config)
+
+    def prefill_summary(self) -> dict[str, Any]:
+        return self.prefill_partition.to_summary(model_or_config=self.model_or_config)
+
+    def current_summary(self) -> dict[str, Any]:
+        return self.current_partition.to_summary(model_or_config=self.model_or_config)
+
+    def summary(self) -> dict[str, Any]:
+        prefill_summary = self.prefill_summary()
+        final_summary = self.current_summary()
+        result = {
+            "hybrid_state_partition_ready": True,
+            "native_hybrid_fixed_resident_layer_ids": self.fixed_resident_layer_ids,
+            "native_hybrid_token_growing_layer_ids": self.token_growing_layer_ids,
+            "native_hybrid_prefill_fixed_resident_bytes": int(prefill_summary["hybrid_fixed_resident_bytes"]),
+            "native_hybrid_prefill_token_growing_bytes": int(prefill_summary["hybrid_token_growing_bytes"]),
+            "native_hybrid_final_fixed_resident_bytes": int(final_summary["hybrid_fixed_resident_bytes"]),
+            "native_hybrid_final_token_growing_bytes": int(final_summary["hybrid_token_growing_bytes"]),
+            "native_hybrid_fixed_resident_growth_bytes": int(
+                final_summary["hybrid_fixed_resident_bytes"] - prefill_summary["hybrid_fixed_resident_bytes"]
+            ),
+            "native_hybrid_token_growing_growth_bytes": int(
+                final_summary["hybrid_token_growing_bytes"] - prefill_summary["hybrid_token_growing_bytes"]
+            ),
+            "native_hybrid_prefill_state_layers": prefill_summary["hybrid_state_layers"],
+            "native_hybrid_final_state_layers": final_summary["hybrid_state_layers"],
+        }
+        result["native_hybrid_fixed_resident_preserved"] = (
+            result["native_hybrid_fixed_resident_growth_bytes"] == 0
+        )
+        return result
+
+
+@dataclass(slots=True)
+class Qwen35HybridDotCacheRuntimeState:
+    native_state: Qwen35NativeHybridRuntimeState
+    model_kv_cache: ModelPagedKVCache
+
+    @property
+    def model_past_key_values(self) -> Any:
+        return self.native_state.past_key_values
+
+    def refresh_native(self, past_key_values: Any) -> None:
+        self.native_state.refresh(past_key_values)
+
+    def advance(self, past_key_values: Any) -> None:
+        self.refresh_native(past_key_values)
+
+    def summary(self) -> dict[str, Any]:
+        result = self.native_state.summary()
+        result.update(
+            {
+                "hybrid_dotcache_runtime_ready": True,
+                "hybrid_runtime_state_kind": "qwen35_attention_subset",
+                "hybrid_runtime_token_growing_layer_ids": self.native_state.token_growing_layer_ids,
+                "hybrid_runtime_fixed_resident_layer_ids": self.native_state.fixed_resident_layer_ids,
+            }
+        )
+        result.update(self.model_kv_cache.resident_byte_summary())
+        result.update(self.model_kv_cache.page_mode_summary())
+        return result
+
+
 def partition_qwen35_hybrid_state(cache: Any, model_or_config: Any) -> Qwen35HybridStatePartition:
     fixed_resident_layers: list[Qwen35HybridLayerStateSlice] = []
     token_growing_layers: list[Qwen35HybridLayerStateSlice] = []
@@ -908,8 +999,8 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     qkv_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
-    hybrid_prefill_partition: Qwen35HybridStatePartition | None = field(default=None, init=False, repr=False)
-    hybrid_prefill_state_summary: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    native_hybrid_runtime_state: Qwen35NativeHybridRuntimeState | None = field(default=None, init=False, repr=False)
+    hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35AttentionSubsetModelAdapter.__post_init__(self)
@@ -942,17 +1033,17 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total = 0.0
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
-        self.hybrid_prefill_partition = None
-        self.hybrid_prefill_state_summary = None
+        self.native_hybrid_runtime_state = None
+        self.hybrid_dotcache_runtime_state = None
 
     def token_growing_layer_ids(self) -> list[int]:
-        if self.hybrid_prefill_partition is not None:
-            return list(self.hybrid_prefill_partition.token_growing_layer_ids)
+        if self.native_hybrid_runtime_state is not None:
+            return list(self.native_hybrid_runtime_state.token_growing_layer_ids)
         return self.attention_subset_layer_ids()
 
     def fixed_resident_layer_ids(self) -> list[int]:
-        if self.hybrid_prefill_partition is not None:
-            return list(self.hybrid_prefill_partition.fixed_resident_layer_ids)
+        if self.native_hybrid_runtime_state is not None:
+            return list(self.native_hybrid_runtime_state.fixed_resident_layer_ids)
         return [
             layer_id
             for layer_id, layer_type in enumerate(_hybrid_layer_types(self.model))
@@ -977,35 +1068,43 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
                 )
         self.model_kv_cache.prepare_static_pages()
         _replace_attention_subset_cache_with_placeholders(past_key_values, attention_layer_ids)
-        runtime_prefill_partition = self.partition_hybrid_state(past_key_values)
-        self.hybrid_prefill_partition = runtime_prefill_partition
-        self.hybrid_prefill_state_summary = runtime_prefill_partition.to_summary(model_or_config=self.model)
+        self.native_hybrid_runtime_state = Qwen35NativeHybridRuntimeState.from_post_handoff_cache(
+            past_key_values,
+            self.model,
+        )
+        self.hybrid_dotcache_runtime_state = Qwen35HybridDotCacheRuntimeState(
+            native_state=self.native_hybrid_runtime_state,
+            model_kv_cache=self.model_kv_cache,
+        )
+
+    def refresh_native_hybrid_runtime_state(self, past_key_values: Any) -> None:
+        if self.hybrid_dotcache_runtime_state is not None:
+            self.hybrid_dotcache_runtime_state.refresh_native(past_key_values)
+            self.native_hybrid_runtime_state = self.hybrid_dotcache_runtime_state.native_state
+            return
+        self.native_hybrid_runtime_state = Qwen35NativeHybridRuntimeState.from_post_handoff_cache(
+            past_key_values,
+            self.model,
+        )
+        self.hybrid_dotcache_runtime_state = Qwen35HybridDotCacheRuntimeState(
+            native_state=self.native_hybrid_runtime_state,
+            model_kv_cache=self.model_kv_cache,
+        )
 
     def summarize_dotcache_native_hybrid_state(self, past_key_values: Any) -> dict[str, Any]:
-        final_partition = self.partition_hybrid_state(past_key_values)
-        final_summary = final_partition.to_summary(model_or_config=self.model)
-        prefill_summary = self.hybrid_prefill_state_summary or final_summary
-        result = {
-            "hybrid_state_partition_ready": True,
-            "native_hybrid_fixed_resident_layer_ids": final_partition.fixed_resident_layer_ids,
-            "native_hybrid_token_growing_layer_ids": final_partition.token_growing_layer_ids,
-            "native_hybrid_prefill_fixed_resident_bytes": int(prefill_summary["hybrid_fixed_resident_bytes"]),
-            "native_hybrid_prefill_token_growing_bytes": int(prefill_summary["hybrid_token_growing_bytes"]),
-            "native_hybrid_final_fixed_resident_bytes": int(final_summary["hybrid_fixed_resident_bytes"]),
-            "native_hybrid_final_token_growing_bytes": int(final_summary["hybrid_token_growing_bytes"]),
-            "native_hybrid_fixed_resident_growth_bytes": int(
-                final_summary["hybrid_fixed_resident_bytes"] - prefill_summary["hybrid_fixed_resident_bytes"]
-            ),
-            "native_hybrid_token_growing_growth_bytes": int(
-                final_summary["hybrid_token_growing_bytes"] - prefill_summary["hybrid_token_growing_bytes"]
-            ),
-            "native_hybrid_prefill_state_layers": prefill_summary["hybrid_state_layers"],
-            "native_hybrid_final_state_layers": final_summary["hybrid_state_layers"],
-        }
-        result["native_hybrid_fixed_resident_preserved"] = (
-            result["native_hybrid_fixed_resident_growth_bytes"] == 0
-        )
+        self.refresh_native_hybrid_runtime_state(past_key_values)
+        if self.hybrid_dotcache_runtime_state is not None:
+            return self.hybrid_dotcache_runtime_state.summary()
+        if self.native_hybrid_runtime_state is None:  # pragma: no cover - defensive only
+            return {"hybrid_state_partition_ready": False, "hybrid_dotcache_runtime_ready": False}
+        result = self.native_hybrid_runtime_state.summary()
+        result["hybrid_dotcache_runtime_ready"] = False
         return result
+
+    def require_hybrid_dotcache_runtime_state(self) -> Qwen35HybridDotCacheRuntimeState:
+        if self.hybrid_dotcache_runtime_state is None:
+            raise ValueError("Qwen3.5 attention-subset DotCache runtime state is not initialized")
+        return self.hybrid_dotcache_runtime_state
 
 
 @dataclass(slots=True)
@@ -1915,10 +2014,10 @@ def run_qwen35_attention_subset_dotcache_harness(
     adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
     adapter.set_mode("dotcache_attention_subset")
 
+    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
     dotcache_step_logits: list[np.ndarray] = []
     dotcache_records: list[list[LlamaReplayRecord]] = []
     dotcache_decode_ms_total = 0.0
-    past_key_values = dotcache_prefill_outputs.past_key_values
     current_attention_mask = torch.cat(
         [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
         dim=1,
@@ -1933,7 +2032,7 @@ def run_qwen35_attention_subset_dotcache_harness(
                     model,
                     decode_input_ids=decode_input_ids,
                     attention_mask=current_attention_mask,
-                    past_key_values=past_key_values,
+                    past_key_values=runtime_state.model_past_key_values,
                     cache_position=cache_position,
                 ),
                 device=input_ids.device,
@@ -1943,7 +2042,7 @@ def run_qwen35_attention_subset_dotcache_harness(
         dotcache_decode_ms_total += step_ms
         dotcache_records.append(adapter.end_capture_step())
         dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
-        past_key_values = outputs.past_key_values
+        runtime_state.advance(outputs.past_key_values)
         current_attention_mask = torch.cat(
             [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
             dim=1,
@@ -2028,9 +2127,7 @@ def run_qwen35_attention_subset_dotcache_harness(
             "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
         }
     )
-    result.update(adapter.summarize_dotcache_native_hybrid_state(past_key_values))
-    result.update(adapter.model_kv_cache.resident_byte_summary())
-    result.update(adapter.model_kv_cache.page_mode_summary())
+    result.update(runtime_state.summary())
     return result
 
 

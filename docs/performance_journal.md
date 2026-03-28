@@ -1780,3 +1780,56 @@ The fidelity result stayed on the same CUDA third-pass checkpoint:
 - teacher-forced logit max abs error: `0.7148`
 
 So the next implementation step is no longer “discover the split.” It is to exploit it: build any later Qwen3.5 hybrid caching around a resident linear-attention state object plus the existing attention-subset DotCache KV path.
+
+## 2026-03-28 17:50 UTC - Qwen3.5 DotCache runtime now owns a native hybrid state object
+
+I turned the earlier split reporting into a real runtime object carried by the Qwen3.5 attention-subset adapter.
+
+The adapter now owns a `Qwen35NativeHybridRuntimeState` that:
+
+- captures the post-handoff native `past_key_values` state after attention-subset KV has been replaced by placeholders
+- preserves the fixed resident linear-attention partition
+- refreshes the current native hybrid partition after each decode step
+- emits the final runtime summary from that state object instead of recomputing an isolated one-shot partition at the end
+
+That is the first keepable piece of actual hybrid-state machinery, not just instrumentation.
+
+Validation:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
+  - result: `6 passed`
+
+Live CUDA rerun on the third-pass profile stayed on the same fidelity checkpoint:
+
+- replay context max abs error: `0.2076`
+- replay output max abs error: `0.0314`
+- teacher-forced logit max abs error: `0.7148`
+
+And the runtime-owned native state object reported the expected invariant:
+
+- `native_hybrid_fixed_resident_preserved = true`
+- `native_hybrid_fixed_resident_growth_bytes = 0`
+
+So the next Qwen3.5 step is narrower again:
+
+- stop just carrying the native resident state object
+- start using it to define a true hybrid cache interface for generation and benchmarking
+
+## 2026-03-28 18:05 UTC - Qwen3.5 attention-subset runtime now has a single hybrid runtime object
+
+I wrapped the native resident state and DotCache KV state into one runtime-owned object:
+
+- `Qwen35NativeHybridRuntimeState`
+- `Qwen35HybridDotCacheRuntimeState`
+
+The adapter now carries that combined runtime object across decode, refreshes the native side after each step, and emits both the native hybrid summary and the DotCache resident/page summaries from one place.
+
+This is still not the final generic hybrid cache API, but it is the first coherent runtime surface for Qwen3.5 that spans:
+
+- fixed resident linear-attention state
+- token-growing full-attention DotCache KV state
+
+Validation:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
+  - result: `6 passed`

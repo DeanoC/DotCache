@@ -338,6 +338,15 @@ def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() ->
     assert result["attention_subset_capture_record_count"] == 2
     assert np.isfinite(result["replay_context_max_abs_error"])
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+    assert adapter.native_hybrid_runtime_state is not None
+    assert adapter.hybrid_dotcache_runtime_state is not None
+    assert adapter.native_hybrid_runtime_state.fixed_resident_layer_ids == [0, 1, 2]
+    assert adapter.native_hybrid_runtime_state.token_growing_layer_ids == [3]
+    assert adapter.hybrid_dotcache_runtime_state.model_past_key_values is adapter.native_hybrid_runtime_state.past_key_values
+    assert result["hybrid_dotcache_runtime_ready"] is True
+    assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset"
+    assert result["hybrid_runtime_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["hybrid_runtime_token_growing_layer_ids"] == [3]
 
 
 def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> None:
@@ -361,6 +370,8 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     assert result["attention_subset_capture_layer_count"] == 1
     assert result["dotcache_attention_subset_ready"] is True
     assert result["native_hybrid_fixed_resident_preserved"] is True
+    assert harness.adapter.native_hybrid_runtime_state is not None
+    assert harness.adapter.hybrid_dotcache_runtime_state is not None
 
 
 def test_qwen35_attention_subset_dotcache_harness_accepts_policy_aware_config() -> None:
