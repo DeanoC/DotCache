@@ -1,0 +1,23 @@
+model_id: HuggingFaceTB/SmolLM2-360M-Instruct
+source:
+  benchmark: >
+    inspect_policy_prefill plus local exact-prompt and teacher-forced follow-up on the M4 Mac.
+  backend: torch_mps
+  prompt_length: 1024
+  tokens_per_page: 256
+  notes: >
+    Second local handwritten profile after the first pass proved too aggressive.
+    The first pass used aggressive late-key overrides and strict late-value overrides,
+    which drove too many K:M2 and especially V:M1 pages and caused a large loss spike.
+    This safer pass keeps only the clearly useful early key strict pocket and lets the
+    default balanced policy choose the rest.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+
+key_layer_sensitivity:
+  - layer:3=strict
+  - layer:4=strict
+  - layer:5=strict
+
+value_layer_sensitivity: []

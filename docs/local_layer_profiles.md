@@ -11,6 +11,7 @@ The current profile artifacts live in:
 
 - [tinyllama_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_first_pass.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
+- [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
 
 ## TinyLlama
 
@@ -72,16 +73,39 @@ Cheap one-token teacher-forced checks at `513` tokens were also reassuring:
 
 Again, these are not enough to prove the profile is good. They are enough to justify carrying the profile forward into CUDA validation rather than starting from scratch.
 
+### SmolLM2 Second Pass
+
+The first-pass SmolLM2 profile was useful as a failure case:
+
+- it improved KV memory
+- but it made late keys too `M2`-heavy
+- and, more importantly, it made late values far too `M1`-heavy
+
+The key implementation detail is that local `strict` values are **not** “more exact” in the current planner. For values, `strict` prefers:
+
+- `V:M1 4b`
+- then `V:M0 4b`
+
+That means the first-pass late-value `strict` overrides actually increased `M1` usage and blew up teacher-forced loss on SmolLM2.
+
+The second-pass SmolLM2 profile therefore pulls back to a much safer shape:
+
+- keep only the early key strict pocket at layers `3-5`
+- remove all late key aggressive overrides
+- remove all value-layer overrides
+- use default `balanced` policy for the rest
+
+That second pass is the more realistic CUDA hint:
+
+- the early key pocket still looks meaningfully strict
+- the default balanced policy already finds approximate opportunities without forcing them
+- values should be allowed to stay mostly `M0 2b` unless we have stronger evidence that `M1` is safe on that layer
+
 ## How To Use
 
-These files are not yet wired into the benchmark CLIs directly. For now, use them as the source of:
+These files are now wired into the benchmark CLIs directly through `--layer-profile`.
 
-- `--key-policy-tier`
-- `--value-policy-tier`
-- repeated `--key-layer-sensitivity layer:N=tier`
-- repeated `--value-layer-sensitivity layer:N=tier`
-
-The next natural step is to make the CUDA box consume these profile files directly and compare:
+The next natural step is to make the CUDA box compare:
 
 - exact baseline
 - first-pass profile

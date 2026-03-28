@@ -1,6 +1,6 @@
 import numpy as np
 
-from dotcache.attention_runtime import decode_step
+from dotcache.attention_runtime import decode_step, prepare_pages
 from dotcache.backends import (
     clear_prepared_chunk_cache,
     configure_prepared_chunk_cache,
@@ -9,7 +9,7 @@ from dotcache.backends import (
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
-from dotcache.model_kv_cache import ModelPagedKVCache, default_q_head_to_kv_head
+from dotcache.model_kv_cache import ModelPagedKVCache, _grouped_pages_can_batch, default_q_head_to_kv_head
 from dotcache.tracing import ExecutionTrace
 
 
@@ -722,3 +722,54 @@ def test_model_paged_kv_cache_static_chunk_cache_can_disable_value_chunks() -> N
     )
     assert resident_after_first_decode > 0
     assert resident_after_second_decode == resident_after_first_decode
+
+
+def test_grouped_pages_can_batch_rejects_misaligned_key_value_chunks_on_mps() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(313)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    head_dim = 32
+    group_size = 32
+    token_count = 4
+
+    key_group0 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=4, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=8, mode="M2", quant_scheme="sketch"),
+        ],
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=4, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=8, mode="M2", quant_scheme="sketch"),
+        ],
+        backend="torch_mps",
+    )
+    value_group0 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=4, mode="M1", quant_scheme="lut"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=8, mode="M1", quant_scheme="lut"),
+        ],
+        backend="torch_mps",
+    )
+    value_group1 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=4, mode="M1", quant_scheme="lut"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=8, mode="M1", quant_scheme="lut"),
+        ],
+        backend="torch_mps",
+    )
+    queries = [
+        torch.from_numpy(rng.normal(size=(2, head_dim)).astype(np.float32)).to(device="mps"),
+        torch.from_numpy(rng.normal(size=(2, head_dim)).astype(np.float32)).to(device="mps"),
+    ]
+
+    assert not _grouped_pages_can_batch([key_group0, key_group1], [value_group0, value_group1], queries)

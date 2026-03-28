@@ -197,6 +197,46 @@ def _grouped_pages_can_batch(
     value_pages_by_group: Sequence[Sequence[PageLike]],
     query_groups: Sequence[Any],
 ) -> bool:
+    def _page_batch_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
+        sketch = page.m2_sketch
+        basis = page.m2_basis
+        sketch_dim = int(sketch.shape[-1]) if sketch is not None else 0
+        segment_count = int(basis.shape[1]) if basis is not None and int(basis.dim()) == 4 else 1
+        centered = int(page.m2_mean is not None)
+        header = page.header
+        return (
+            page.device_type,
+            header.kind,
+            header.mode_default,
+            header.token_count,
+            header.head_dim,
+            header.padded_head_dim,
+            header.group_size,
+            header.num_groups,
+            header.bits,
+            header.words_per_group,
+            header.layout,
+            header.quant_scheme,
+            sketch_dim,
+            segment_count,
+            centered,
+        )
+
+    def _chunk_length_signature(pages: Sequence[PreparedPageTorch]) -> tuple[int, ...]:
+        chunk_lengths: list[int] = []
+        current_signature: tuple[int | str, ...] | None = None
+        current_length = 0
+        for page in pages:
+            signature = _page_batch_signature(page)
+            if current_signature is not None and signature != current_signature:
+                chunk_lengths.append(current_length)
+                current_length = 0
+            current_signature = signature
+            current_length += 1
+        if current_length > 0:
+            chunk_lengths.append(current_length)
+        return tuple(chunk_lengths)
+
     def _m2_segment_count(page: PageLike) -> int:
         basis = getattr(page, "m2_basis", None)
         if basis is None:
@@ -228,6 +268,8 @@ def _grouped_pages_can_batch(
         if any(page.device_type != key_pages_by_group[0][0].device_type for page in key_pages_by_group[group_index]):
             return False
         if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
+            return False
+        if _chunk_length_signature(key_pages_by_group[group_index]) != _chunk_length_signature(value_pages_by_group[group_index]):
             return False
     for page_index in range(page_count):
         key_signature = (
