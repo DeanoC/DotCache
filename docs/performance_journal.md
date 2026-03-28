@@ -2359,6 +2359,34 @@ So the honest local read is:
 - the local exact `64` probe is not yet long or hard enough to expose a failure boundary
 - the next useful selective probe should move to a longer exact or teacher-forced slice rather than adding more short `64 / 2` cases
 
+## 2026-03-29 01:10 UTC - Longer local teacher-forced probe shows selective `4b` is plausible but no longer free
+
+I followed the short exact-`64` probe with a longer teacher-forced check on the merged StateCache lane:
+
+- `sequence_length = 160`
+- `prefix_length = 128`
+- `eval_steps = 16`
+- `state_stage = post_update_m0`
+- baseline `8b` everywhere vs selective recurrent override `12:4 22:4`
+
+Baseline `8b` result:
+
+- `teacher_forced_loss_delta = -0.00088`
+- `teacher_forced_perplexity_ratio = 0.99912`
+- recurrent resident bytes `5,898,240`
+
+Selective `12:4 22:4` result:
+
+- `teacher_forced_loss_delta = +0.00327`
+- `teacher_forced_perplexity_ratio = 1.00327`
+- recurrent resident bytes `5,636,096`
+
+So the current local read tightens up:
+
+- a small two-layer `4b` recurrent pocket still looks plausible on top of the `8b` resident lane
+- but at a longer prefix it is no longer perfectly free
+- the cost is small enough to keep exploring, yet real enough that the next step should be layer-by-layer on CUDA rather than assuming every short local success transfers unchanged
+
 Live CUDA check:
 
 ```bash
