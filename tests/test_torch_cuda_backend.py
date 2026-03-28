@@ -178,6 +178,33 @@ def test_model_paged_kv_cache_decode_layer_torch_matches_numpy_path_on_cuda() ->
     np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-4, rtol=1e-4)
 
 
+def test_model_paged_kv_cache_decode_layer_torch_ungrouped_head_dim256_matches_numpy_path_on_cuda() -> None:
+    rng = np.random.default_rng(90302)
+    config = DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = rng.normal(size=(2, 64, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 64, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(8, config.head_dim)).astype(np.float32)
+    mapping = default_q_head_to_kv_head(8, 2)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    numpy_outputs = cache.decode_layer(0, queries, mapping)
+    torch_outputs = cache.decode_layer_torch(
+        0,
+        torch.from_numpy(queries).to(device="cuda"),
+        mapping,
+        prefer_grouped_batching=False,
+    )
+
+    np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-4, rtol=1e-4)
+
+
 @requires_cuda
 def test_model_paged_kv_cache_recent_policy_can_decode_m3_int8_pages_on_cuda() -> None:
     rng = np.random.default_rng(9031)

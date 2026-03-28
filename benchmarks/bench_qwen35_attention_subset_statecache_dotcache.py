@@ -11,56 +11,17 @@ from dotcache.config_io import load_layer_profile
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,
-    Qwen35DeltaNetStateHarness,
-    Qwen35TextHarness,
     parse_qwen35_deltanet_statecache_mode_overrides,
-    run_qwen35_deltanet_statecache_localization_harness,
     transformers_available,
 )
 
 
-def _parse_layer_bit_overrides(values: list[str]) -> dict[int, int]:
-    overrides: dict[int, int] = {}
-    for value in values:
-        layer_text, sep, bits_text = str(value).partition(":")
-        if sep != ":":
-            raise argparse.ArgumentTypeError(f"layer override must look like <layer>:<bits>, got {value!r}")
-        overrides[int(layer_text)] = int(bits_text)
-    return overrides
-
-
-def _build_exact_length_inputs(harness: Qwen35TextHarness | Qwen35AttentionSubsetDotCacheHarness | Qwen35DeltaNetStateHarness, *, prompt_unit: str, prompt_length: int) -> tuple[torch.Tensor, torch.Tensor]:
-    if harness.tokenizer is None:
-        raise ValueError("tokenizer is unavailable for exact-length prompt construction")
-    if prompt_length <= 0:
-        raise ValueError("prompt_length must be positive")
-    tokenizer = harness.tokenizer
-    unit_ids = tokenizer(prompt_unit, add_special_tokens=False)["input_ids"]
-    if not unit_ids:
-        raise ValueError("prompt_unit tokenized to an empty sequence")
-    token_ids: list[int] = []
-    if tokenizer.bos_token_id is not None:
-        token_ids.append(int(tokenizer.bos_token_id))
-    while len(token_ids) < prompt_length:
-        token_ids.extend(int(token_id) for token_id in unit_ids)
-    token_ids = token_ids[:prompt_length]
-    device = harness.adapter.device
-    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
-    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
-    return input_ids, attention_mask
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Localize Qwen3.5 hybrid drift across dense, DotCache-only, StateCache-only, and combined modes.")
+    parser = argparse.ArgumentParser(description="Combined DotCache + StateCache replay benchmark for Qwen3.5.")
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--device", default=None)
     parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
     parser.add_argument("--torch-dtype", default="float16")
-    parser.add_argument("--sequence-length", type=int, default=160)
-    parser.add_argument("--prefix-length", type=int, default=128)
-    parser.add_argument("--eval-steps", type=int, default=16)
-    parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
-    parser.add_argument("--tokens-per-page", type=int, default=16)
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
@@ -96,35 +57,98 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m1-fallback-to-m0", action="store_true")
     parser.add_argument("--m1-error-threshold", type=float, default=0.2)
     parser.add_argument("--m1-token-p95-error-threshold", type=float, default=0.55)
-    parser.add_argument("--statecache-bits", type=int, default=8)
-    parser.add_argument("--statecache-layer-bit-overrides", nargs="*", default=[])
-    parser.add_argument("--statecache-stage", choices=["readout_only_m0", "post_update_m0"], default="post_update_m0")
-    parser.add_argument("--statecache-renorm-interval", type=int, default=0)
-    parser.add_argument("--statecache-recurrent-mode-override", action="append", default=[])
-    parser.add_argument("--profile-backend", action="store_true")
+    parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="post_update_m0")
+    parser.add_argument("--state-bits", type=int, default=8)
+    parser.add_argument("--state-renorm-interval", type=int, default=0)
+    parser.add_argument("--recurrent-mode-override", action="append", default=[])
+    parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
+    parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
+    parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
+    parser.add_argument("--tokens-per-page", type=int, default=16)
     return parser.parse_args()
 
 
-def _first_layer_from_map(value: object) -> int | None:
-    if not isinstance(value, dict):
-        return None
-    for layer_key in sorted(value, key=lambda item: int(item)):
-        if float(value[layer_key]) > 1e-6:
-            return int(layer_key)
-    return None
+def _build_exact_length_inputs(
+    harness: Qwen35AttentionSubsetDotCacheHarness,
+    *,
+    prompt_unit: str,
+    prompt_length: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if harness.tokenizer is None:
+        raise ValueError("tokenizer is unavailable for exact-length prompt construction")
+    if prompt_length <= 0:
+        raise ValueError("prompt_length must be positive")
+    tokenizer = harness.tokenizer
+    unit_ids = tokenizer(prompt_unit, add_special_tokens=False)["input_ids"]
+    if not unit_ids:
+        raise ValueError("prompt_unit tokenized to an empty sequence")
+    token_ids: list[int] = []
+    if tokenizer.bos_token_id is not None:
+        token_ids.append(int(tokenizer.bos_token_id))
+    while len(token_ids) < prompt_length:
+        token_ids.extend(int(token_id) for token_id in unit_ids)
+    token_ids = token_ids[:prompt_length]
+    device = harness.adapter.device
+    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+    return input_ids, attention_mask
+
+
+def _run_case(
+    harness: Qwen35AttentionSubsetDotCacheHarness,
+    *,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    max_new_tokens: int,
+    group_size: int,
+    state_bits: int,
+    state_stage: str,
+    state_renorm_interval: int,
+    recurrent_mode_overrides: dict[int, str],
+    base_record: dict[str, object],
+    continue_on_error: bool,
+) -> None:
+    try:
+        record = harness.run_attention_subset_dotcache_statecache(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decode_steps=max_new_tokens,
+            group_size=group_size,
+            bits=state_bits,
+            state_stage=state_stage,
+            renorm_interval=state_renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
+        )
+    except Exception as exc:  # pragma: no cover - benchmark failure path
+        if not continue_on_error:
+            raise
+        error_record = dict(base_record)
+        error_record.update(
+            {
+                "benchmark": "qwen35_attention_subset_statecache_dotcache",
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "prompt_length": int(input_ids.shape[1]),
+            }
+        )
+        print(json.dumps(error_record, sort_keys=True), flush=True)
+        return
+    record.update(base_record)
+    print(json.dumps(record, sort_keys=True), flush=True)
 
 
 def main() -> None:
     args = parse_args()
     if not transformers_available():
-        raise SystemExit("bench_qwen35_hybrid_failure_localize.py requires the optional transformers dependencies")
+        raise SystemExit("bench_qwen35_attention_subset_statecache_dotcache.py requires the optional transformers dependencies")
 
-    layer_bit_overrides = _parse_layer_bit_overrides(args.statecache_layer_bit_overrides)
-    recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.statecache_recurrent_mode_override)
     model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
     text_config = getattr(model_config, "text_config", model_config)
+    max_position_embeddings = int(getattr(text_config, "max_position_embeddings", 0) or 0)
     head_dim = int(text_config.hidden_size) // int(text_config.num_attention_heads)
-
     if args.layer_profile is not None:
         profile = load_layer_profile(args.layer_profile)
         profile_model_id = profile.get("model_id")
@@ -191,107 +215,71 @@ def main() -> None:
         m1_token_p95_error_threshold=args.m1_token_p95_error_threshold,
         tokens_per_page=args.tokens_per_page,
     )
+    recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.recurrent_mode_override)
 
-    text_harness = Qwen35TextHarness.from_pretrained(
-        args.model_id,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
-    )
-    dotcache_harness = Qwen35AttentionSubsetDotCacheHarness.from_pretrained(
+    harness = Qwen35AttentionSubsetDotCacheHarness.from_pretrained(
         args.model_id,
         dotcache_config=dotcache_config,
         backend=args.backend,
         device=args.device,
         torch_dtype=args.torch_dtype,
     )
-    statecache_harness = Qwen35DeltaNetStateHarness.from_pretrained(
-        args.model_id,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
-    )
-
-    input_ids, attention_mask = _build_exact_length_inputs(
-        text_harness,
-        prompt_unit=args.prompt_unit,
-        prompt_length=args.sequence_length,
-    )
-    prefix_input_ids = input_ids[:, : args.prefix_length]
-    prefix_attention_mask = attention_mask[:, : args.prefix_length]
-
-    dense_result = text_harness.evaluate_loss(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        prefix_length=args.prefix_length,
-        eval_steps=args.eval_steps,
-    )
-    dotcache_result = dotcache_harness.run_attention_subset_dotcache(
-        input_ids=prefix_input_ids,
-        attention_mask=prefix_attention_mask,
-        decode_steps=args.eval_steps - 1,
-        profile_backend=args.profile_backend,
-    )
-    statecache_result = run_qwen35_deltanet_statecache_localization_harness(
-        statecache_harness.model,
-        statecache_harness.adapter,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        tokenizer=statecache_harness.tokenizer,
-        prefix_length=args.prefix_length,
-        eval_steps=args.eval_steps,
-        group_size=args.group_size,
-        bits=args.statecache_bits,
-        layer_bits_overrides=layer_bit_overrides,
-        state_stage=args.statecache_stage,
-        renorm_interval=args.statecache_renorm_interval,
-        recurrent_mode_overrides=recurrent_mode_overrides,
-    )
-    combined_result = dotcache_harness.run_hybrid_combined_localization(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        prefix_length=args.prefix_length,
-        eval_steps=args.eval_steps,
-        profile_backend=args.profile_backend,
-        statecache_group_size=args.group_size,
-        statecache_bits=args.statecache_bits,
-        statecache_layer_bits_overrides=layer_bit_overrides,
-        statecache_stage=args.statecache_stage,
-        statecache_renorm_interval=args.statecache_renorm_interval,
-        statecache_recurrent_mode_overrides=recurrent_mode_overrides,
-    )
-
-    summary = {
-        "benchmark": "qwen35_hybrid_failure_localize",
+    common_record = {
+        "benchmark": "qwen35_attention_subset_statecache_dotcache",
         "model_id": args.model_id,
         "backend": args.backend,
         "device": args.device,
         "torch_dtype": args.torch_dtype,
-        "sequence_length": args.sequence_length,
-        "prefix_length": args.prefix_length,
-        "eval_steps": args.eval_steps,
-        "tokens_per_page": args.tokens_per_page,
-        "statecache_bits": args.statecache_bits,
-        "statecache_stage": args.statecache_stage,
-        "statecache_renorm_interval": args.statecache_renorm_interval,
-        "statecache_layer_bit_overrides": {str(layer_id): bits for layer_id, bits in sorted(layer_bit_overrides.items())},
-        "statecache_recurrent_mode_overrides": {str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())},
-        "dense_teacher_forced_loss": dense_result["dense_teacher_forced_loss"],
-        "dotcache_first_attention_failure_layer": _first_layer_from_map(
-            dotcache_result.get("replay_output_max_abs_error_by_layer")
-        ),
-        "dotcache_attention_output_max_abs_error_by_layer": dotcache_result.get("replay_output_max_abs_error_by_layer", {}),
-        "dotcache_teacher_forced_logit_max_abs_error": dotcache_result.get("teacher_forced_logit_max_abs_error", 0.0),
-        "statecache_first_divergence_step": statecache_result.get("deltanet_statecache_first_divergence_step"),
-        "statecache_first_failure_layer": statecache_result.get("deltanet_statecache_first_failure_layer"),
-        "statecache_per_step_logit_max_abs_error": statecache_result.get("deltanet_statecache_per_step_logit_max_abs_error", []),
-        "combined_first_divergence_step": combined_result.get("combined_first_divergence_step"),
-        "combined_first_attention_failure_layer": combined_result.get("combined_first_attention_failure_layer"),
-        "combined_per_step_logit_max_abs_error": combined_result.get("combined_per_step_logit_max_abs_error", []),
-        "combined_attention_output_max_abs_error_by_layer": combined_result.get("combined_attention_output_max_abs_error_by_layer", {}),
-        "dotcache_result": dotcache_result,
-        "statecache_result": statecache_result,
-        "combined_result": combined_result,
+        "prompt_unit": args.prompt_unit,
+        "model_max_position_embeddings": max_position_embeddings,
+        "text_only": True,
+        "dotcache_ready": False,
+        "hybrid_family": "qwen3_5",
+        "deltanet_statecache_stage_name": args.state_stage,
+        "deltanet_statecache_bits": args.state_bits,
+        "deltanet_statecache_renorm_interval": args.state_renorm_interval,
     }
-    print(json.dumps(summary, sort_keys=True), flush=True)
+    if recurrent_mode_overrides:
+        common_record["deltanet_statecache_recurrent_mode_overrides"] = {
+            str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())
+        }
+
+    for repeat_count in args.repeat_counts:
+        prompt = " ".join([args.prompt_unit] * repeat_count)
+        input_ids, attention_mask = harness.tokenize_prompt(prompt)
+        _run_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=args.max_new_tokens,
+            group_size=args.group_size,
+            state_bits=args.state_bits,
+            state_stage=args.state_stage,
+            state_renorm_interval=args.state_renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
+            base_record={**common_record, "prompt_mode": "repeat_count", "repeat_count": repeat_count},
+            continue_on_error=args.continue_on_error,
+        )
+
+    for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
+        input_ids, attention_mask = _build_exact_length_inputs(
+            harness,
+            prompt_unit=args.prompt_unit,
+            prompt_length=prompt_length,
+        )
+        _run_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=args.max_new_tokens,
+            group_size=args.group_size,
+            state_bits=args.state_bits,
+            state_stage=args.state_stage,
+            state_renorm_interval=args.state_renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
+            base_record={**common_record, "prompt_mode": "exact_length", "prompt_length": prompt_length},
+            continue_on_error=args.continue_on_error,
+        )
 
 
 if __name__ == "__main__":

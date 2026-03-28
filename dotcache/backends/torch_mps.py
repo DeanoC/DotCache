@@ -1973,6 +1973,36 @@ def _mix_m0_contribution_torch(weights, codes, scales, bias):
     raise ValueError("codes must have shape [page_count, token_count, group_size] or [batch_size, page_count, token_count, group_size]")
 
 
+def _mix_m0_contribution_groupbatched_torch(weights, codes_groups, scales_groups, bias_groups):
+    torch = _load_torch()
+    if weights.ndim != 3:
+        raise ValueError("weights must have shape [query_count, page_count, token_count]")
+    if codes_groups.ndim != 4:
+        raise ValueError("codes_groups must have shape [num_groups, page_count, token_count, group_size]")
+    if scales_groups.ndim != 3 or bias_groups.ndim != 3:
+        raise ValueError("scales_groups and bias_groups must have shape [num_groups, page_count, token_count]")
+
+    num_groups = int(codes_groups.shape[0])
+    page_count = int(codes_groups.shape[1])
+    token_count = int(codes_groups.shape[2])
+    group_size = int(codes_groups.shape[3])
+    query_count = int(weights.shape[0])
+    if tuple(weights.shape[1:]) != (page_count, token_count):
+        raise ValueError("weights must align with codes_groups shape")
+    if tuple(scales_groups.shape) != (num_groups, page_count, token_count):
+        raise ValueError("scales_groups must align with codes_groups shape")
+    if tuple(bias_groups.shape) != (num_groups, page_count, token_count):
+        raise ValueError("bias_groups must align with codes_groups shape")
+
+    matmul_dtype = codes_groups.dtype if torch.is_floating_point(codes_groups) else torch.float32
+    codes_flat = codes_groups.to(dtype=matmul_dtype).reshape(num_groups, -1, group_size)
+    weights_flat = weights.reshape(1, query_count, -1)
+    weighted_scales = (weights_flat * scales_groups.reshape(num_groups, 1, -1)).to(dtype=matmul_dtype)
+    contribution = torch.bmm(weighted_scales, codes_flat).to(torch.float32)
+    bias_term = (weights_flat * bias_groups.reshape(num_groups, 1, -1)).sum(dim=-1, keepdim=True)
+    return (contribution + bias_term).permute(1, 0, 2).reshape(query_count, num_groups * group_size)
+
+
 def _mix_m0_contribution_packed32_torch(weights, payload_words, scales, bias, *, unpack_shifts, unpack_mask, trace=None):
     codes = _unpack_packed_group32_torch(
         payload_words,
@@ -3029,6 +3059,35 @@ def _mix_page_chunk_multiquery_torch(
         return output
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
+    if (
+        device_type == "cuda"
+        and header.mode_default == "M0"
+        and header.quant_scheme == "affine"
+        and header.group_size == 32
+        and header.num_groups == 8
+        and header.padded_head_dim == 256
+        and query_count <= 4
+        and page_count <= 4
+        and token_count == 16
+        and prepared_chunk is not None
+        and prepared_chunk.codes_groups is not None
+        and prepared_chunk.scales_groups is not None
+        and prepared_chunk.bias_groups is not None
+    ):
+        codes_groups = torch.stack(prepared_chunk.codes_groups, dim=0)
+        scales_groups = torch.stack(prepared_chunk.scales_groups, dim=0)
+        bias_groups = torch.stack(prepared_chunk.bias_groups, dim=0)
+        if trace is not None:
+            trace.record_temporary(int(codes_groups.numel() * codes_groups.element_size()))
+            trace.record_temporary(int(scales_groups.numel() * scales_groups.element_size()))
+            trace.record_temporary(int(bias_groups.numel() * bias_groups.element_size()))
+        output[:, : header.padded_head_dim] += _mix_m0_contribution_groupbatched_torch(
+            weights,
+            codes_groups,
+            scales_groups,
+            bias_groups,
+        )
+        return output
     if (
         prepared_chunk is not None
         and prepared_chunk.fused_scaled_codes is not None

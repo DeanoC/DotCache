@@ -2406,6 +2406,58 @@ That makes the current CUDA read clearer:
 - this helps both the standalone attention-subset lane and the combined hybrid-compressed lane
 - the next optimization target remains inside the full-attention DotCache decode math itself, but the dispatch policy is now better matched to the actual workload
 
+## 2026-03-28 19:02 UTC - Narrow batched-group mix path trims the Qwen3.5 standalone CUDA lane
+
+The next obvious CUDA idea after the dispatch fix was to attack the value-side `mix` loop in [torch_mps.py](/workspace/DotCache/dotcache/backends/torch_mps.py), because the tuned localization trace still showed `mix` as the dominant full-attention cost. A broad generic fused `M0` cache for the ungrouped `head_dim=256` path was correctness-clean but not keepable; on the real tuned `Qwen3.5-0.8B` lane it regressed both `mix` and total decode runtime, so I backed it out.
+
+The keepable change is narrower: for the exact small CUDA shape used by the Qwen3.5 `0.8B` attention-subset lane
+
+- `head_dim = 256`
+- `group_size = 32`
+- `num_groups = 8`
+- `tokens_per_page = 16`
+- `page_count <= 4`
+- `query_count <= 4`
+
+the ungrouped multiquery value mix path now batches the eight affine `M0` groups together and does one group-batched matmul instead of eight separate group loop iterations. That path is still only for the small ungrouped CUDA case; the broader generic fused-cache experiment remains rejected.
+
+Validation:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_torch_cuda_backend.py -k 'ungrouped_head_dim256_matches_numpy_path_on_cuda'`
+  - result: `1 passed`
+
+Tuned localization rerun on `Qwen/Qwen3.5-0.8B`, `sequence_length = 66`, `prefix_length = 64`, `eval_steps = 2`, CUDA third-pass profile:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_hybrid_failure_localize.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --torch-dtype float16 --sequence-length 66 --prefix-length 64 --eval-steps 2 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml --profile-backend`
+- standalone DotCache result:
+  - `dense_decode_ms_per_step = 17.07`
+  - `dotcache_decode_ms_per_step = 166.39`
+  - `dotcache_decode_runtime_ms_total = 144.47`
+  - `mix_ms_total = 83.41`
+  - `score_ms_total = 41.76`
+  - `softmax_ms_total = 15.40`
+  - `teacher_forced_logit_max_abs_error = 0.7188`
+  - `replay_context_max_abs_error = 0.2076`
+  - `replay_output_max_abs_error = 0.0309`
+- combined StateCache + DotCache result:
+  - `combined_decode_ms_per_step = 67.19`
+  - `mix_ms_total = 23.43`
+  - `score_ms_total = 20.15`
+  - `softmax_ms_total = 0.17`
+
+Compared with the earlier tuned localization checkpoint, this is a small but real improvement for the standalone full-attention lane:
+
+- `dotcache_decode_runtime_ms_total`: `145.47 -> 144.47`
+- `mix_ms_total`: `~85.35 -> 83.41`
+- `score_ms_total`: `~45.67 -> 41.76`
+
+The combined lane is only slightly improved, which keeps the overall conclusion the same:
+
+- the DeltaNet StateCache side is not the bottleneck
+- the remaining latency problem is still the full-attention DotCache half
+- but the useful CUDA wins so far are workload-shaped dispatch and narrow mix specialization, not a broad generic fused-page rewrite
+
 ## 2026-03-28 19:10 UTC - Qwen3.5 DeltaNet probes now run on CUDA and point at an 8-bit StateCache path
 
 I fixed two real integration issues in the DeltaNet state-capture path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py):
