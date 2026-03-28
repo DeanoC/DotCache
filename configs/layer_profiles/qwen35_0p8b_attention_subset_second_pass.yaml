@@ -1,0 +1,28 @@
+model_id: Qwen/Qwen3.5-0.8B
+source:
+  benchmark: >
+    Local Qwen3.5 attention-subset DotCache replay follow-up on Apple MPS.
+  backend: torch_mps
+  prompt_length: 32
+  tokens_per_page: 16
+  notes: >
+    Second-pass handwritten profile after the first pass proved that generic
+    value strictness is the wrong fit for Qwen3.5 attention pages. In the local
+    planner, strict values prefer V:M1 4b before V:M0 4b, and that pushed the
+    late full-attention layers too far. This profile keeps the key-side strict
+    hints from the K-only/V-only ablation, but replaces the fragile late-value
+    tiering with explicit safer value candidate sets.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+recent_window: 0
+
+key_layer_sensitivity:
+  - layer:7=strict
+  - layer:11=strict
+  - layer:19=strict
+
+value_policy_overrides:
+  - layer:15=M0/affine/4,M0/affine/3,M1/lut/4
+  - layer:19=M0/affine/4,M0/affine/3,M1/lut/4
+  - layer:23=M0/affine/4,M0/affine/3,M1/lut/4

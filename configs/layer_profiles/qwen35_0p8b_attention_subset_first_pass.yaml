@@ -1,0 +1,28 @@
+model_id: Qwen/Qwen3.5-0.8B
+source:
+  benchmark: >
+    Local Qwen3.5 attention-subset prefill ablation on Apple MPS.
+  backend: torch_mps
+  prompt_length: 32
+  tokens_per_page: 16
+  notes: >
+    First-pass handwritten profile for the six full-attention layers in the
+    Qwen3.5-0.8B text stack. It is intentionally scoped only to the attention
+    subset DotCache lane, not the DeltaNet / linear-attention path. The local
+    K-only vs V-only ablation suggested layer-specific sensitivity rather than
+    a one-sided global rule: layers 7, 11, and 19 were more K-sensitive; layers
+    15 and 23 were more V-sensitive; layer 3 remained mixed and is left at the
+    default balanced tier.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+recent_window: 0
+
+key_layer_sensitivity:
+  - layer:7=strict
+  - layer:11=strict
+  - layer:19=strict
+
+value_layer_sensitivity:
+  - layer:15=strict
+  - layer:23=strict
