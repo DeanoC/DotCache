@@ -24,8 +24,10 @@ from dotcache.integrations.qwen35 import (
     inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
     run_qwen35_attention_subset_dotcache_harness,
+    run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_replay_harness,
     run_qwen35_deltanet_state_ablation_harness,
+    run_qwen35_deltanet_statecache_localization_harness,
     run_qwen35_deltanet_statecache_readout_harness,
     run_qwen35_deltanet_statecache_loss_harness,
     run_qwen35_text_generation_harness,
@@ -579,6 +581,29 @@ def test_qwen35_deltanet_statecache_loss_accepts_recurrent_mode_overrides() -> N
     assert result["deltanet_statecache_recurrent_state_bytes"] > 0
 
 
+def test_qwen35_deltanet_statecache_localization_reports_first_failure_hints() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+    )
+    assert result["deltanet_statecache_ready"] is True
+    assert result["runtime_mode"] == "dense_deltanet_statecache_localization"
+    assert len(result["deltanet_statecache_per_step_logit_max_abs_error"]) == 3
+    assert "0" in result["deltanet_statecache_result"]["per_layer_output_max_abs_error"]
+
+
 def test_qwen35_deltanet_statecache_readout_reports_per_layer_recurrent_modes() -> None:
     model = _tiny_deltanet_qwen35_model()
     adapter = Qwen35DeltaNetStateModelAdapter(model=model)
@@ -761,3 +786,30 @@ def test_qwen35_attention_subset_prefill_ablation_runs_on_tiny_hybrid_model() ->
     assert result["attention_subset_layer_ids"] == [3]
     assert "3" in result["prefill_k_only_context_max_abs_error_by_layer"]
     assert result["prefill_dominant_kind_by_layer"]["3"] in {"K", "V", "mixed"}
+
+
+def test_qwen35_hybrid_combined_localization_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    encoded = tokenizer("hello combined localization", return_tensors="pt")
+    result = run_qwen35_hybrid_combined_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        statecache_group_size=16,
+        statecache_bits=8,
+        statecache_stage="post_update_m0",
+    )
+    assert result["hybrid_combined_ready"] is True
+    assert result["runtime_mode"] == "qwen35_hybrid_combined_localization"
+    assert len(result["combined_per_step_logit_max_abs_error"]) == 3
+    assert result["native_hybrid_fixed_resident_preserved"] is True
