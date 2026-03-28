@@ -208,6 +208,7 @@ def _grouped_pages_can_batch(
             page.device_type,
             header.kind,
             header.mode_default,
+            header.escape_dtype if header.mode_default == "M3" else "",
             header.token_count,
             header.head_dim,
             header.padded_head_dim,
@@ -274,6 +275,7 @@ def _grouped_pages_can_batch(
     for page_index in range(page_count):
         key_signature = (
             key_pages_by_group[0][page_index].header.mode_default,
+            key_pages_by_group[0][page_index].header.escape_dtype if key_pages_by_group[0][page_index].header.mode_default == "M3" else "",
             key_pages_by_group[0][page_index].header.token_count,
             key_pages_by_group[0][page_index].header.head_dim,
             key_pages_by_group[0][page_index].header.padded_head_dim,
@@ -288,6 +290,7 @@ def _grouped_pages_can_batch(
         )
         value_signature = (
             value_pages_by_group[0][page_index].header.mode_default,
+            value_pages_by_group[0][page_index].header.escape_dtype if value_pages_by_group[0][page_index].header.mode_default == "M3" else "",
             value_pages_by_group[0][page_index].header.token_count,
             value_pages_by_group[0][page_index].header.head_dim,
             value_pages_by_group[0][page_index].header.padded_head_dim,
@@ -305,6 +308,7 @@ def _grouped_pages_can_batch(
             value_page = value_pages_by_group[group_index][page_index]
             if (
                 key_page.header.mode_default,
+                key_page.header.escape_dtype if key_page.header.mode_default == "M3" else "",
                 key_page.header.token_count,
                 key_page.header.head_dim,
                 key_page.header.padded_head_dim,
@@ -320,6 +324,7 @@ def _grouped_pages_can_batch(
                 return False
             if (
                 value_page.header.mode_default,
+                value_page.header.escape_dtype if value_page.header.mode_default == "M3" else "",
                 value_page.header.token_count,
                 value_page.header.head_dim,
                 value_page.header.padded_head_dim,
@@ -1366,8 +1371,12 @@ class ModelPagedKVCache:
             fallback_key = source.header.fallback_reason or "none"
             fallback_reason_counts[fallback_key] = fallback_reason_counts.get(fallback_key, 0) + 1
             signature = f"{source.header.kind}:{source.header.mode_default}:{source.header.quant_scheme}:{source.header.bits}"
+            if source.header.mode_default == "M3":
+                signature = f"{signature}:{source.header.escape_dtype}"
             signature_counts[signature] = signature_counts.get(signature, 0) + 1
             layer_mode_key = f"layer:{source.header.layer_id}:{source.header.kind}:{source.header.mode_default}:{source.header.bits}"
+            if source.header.mode_default == "M3":
+                layer_mode_key = f"{layer_mode_key}:{source.header.escape_dtype}"
             layer_kind_mode_counts[layer_mode_key] = layer_kind_mode_counts.get(layer_mode_key, 0) + 1
             if source.m2_sketch is not None and source.m2_basis is not None and source.header.mode_default != "M2":
                 counts["m2_sidecar_pages"] += 1

@@ -80,6 +80,7 @@ class DotCacheConfig:
     quant_scheme_k: str = "affine"
     quant_scheme_v: str = "affine"
     escape_dtype: str = "float16"
+    recent_page_escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
     m2_center_k: bool = False
     m2_segment_count_k: int = 1
@@ -132,6 +133,8 @@ class DotCacheConfig:
             raise ValueError("quant_scheme_v must be affine, symmetric, lut, or turbo3")
         if self.escape_dtype not in ("float16", "float32", "int8"):
             raise ValueError("escape_dtype must be float16, float32, or int8")
+        if self.recent_page_escape_dtype not in ("float16", "float32", "int8"):
+            raise ValueError("recent_page_escape_dtype must be float16, float32, or int8")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
         if not isinstance(self.m2_center_k, bool):
@@ -283,6 +286,7 @@ class DotCacheConfig:
                 policy_id=f"{kind.lower()}_mode_override_layer_{int(layer_id)}",
                 sensitivity_tier="exact",
                 candidates=(PageModeSpec(mode=resolved_mode, bits=default_bits, quant_scheme=override_scheme),),
+                recent_escape_dtype=self.recent_page_escape_dtype,
                 recent_window=0,
             )
 
@@ -294,6 +298,7 @@ class DotCacheConfig:
                     policy_id=f"{kind.lower()}_policy_override_layer_{int(layer_id)}",
                     sensitivity_tier="balanced",
                     candidates=candidates,
+                    recent_escape_dtype=self.recent_page_escape_dtype,
                     recent_window=self.recent_window,
                 )
 
@@ -312,5 +317,6 @@ class DotCacheConfig:
             default_bits=default_bits,
             default_quant_scheme=default_quant_scheme,
             default_mode=default_mode,
+            recent_escape_dtype=self.recent_page_escape_dtype,
             recent_window=self.recent_window,
         )

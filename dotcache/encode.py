@@ -167,6 +167,11 @@ def encode_page(
     }
 
     if page_mode_name == "M3":
+        escape_dtype = (
+            selected_page_mode.escape_dtype
+            if selected_page_mode is not None and selected_page_mode.escape_dtype is not None
+            else config.escape_dtype
+        )
         header = PageHeader(
             layer_id=layer_id,
             kv_head_id=kv_head_id,
@@ -183,9 +188,9 @@ def encode_page(
             layout=page_layout,
             quant_scheme=scheme,
             **header_kwargs,
-            escape_dtype=config.escape_dtype,
+            escape_dtype=escape_dtype,
         )
-        escape_payload, escape_scales = encode_escape_storage(values, dtype=config.escape_dtype)
+        escape_payload, escape_scales = encode_escape_storage(values, dtype=escape_dtype)
         return EncodedPage(
             header=header,
             escape_payload=escape_payload,

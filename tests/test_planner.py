@@ -25,12 +25,28 @@ def test_choose_page_mode_forces_recent_pages_to_escape() -> None:
         default_bits=4,
         default_quant_scheme="affine",
         default_mode="M0",
+        recent_escape_dtype="float16",
         recent_window=128,
     )
     mode = choose_page_mode(0, "K", 12, observe_page(np.ones((4, 8), dtype=np.float32)), layer_policy=policy)
     assert mode.mode == "M3"
     assert mode.fallback_reason == "recent_window"
     assert mode.age_bucket == "recent"
+
+
+def test_choose_page_mode_recent_pages_can_use_int8_escape() -> None:
+    policy = make_tier_candidates(
+        kind="V",
+        sensitivity_tier="balanced",
+        default_bits=4,
+        default_quant_scheme="affine",
+        default_mode="M0",
+        recent_escape_dtype="int8",
+        recent_window=128,
+    )
+    mode = choose_page_mode(0, "V", 12, observe_page(np.ones((4, 8), dtype=np.float32)), layer_policy=policy)
+    assert mode.mode == "M3"
+    assert mode.escape_dtype == "int8"
 
 
 def test_choose_page_mode_balanced_k_prefers_cheaper_candidate_when_stats_are_safe() -> None:

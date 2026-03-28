@@ -24,6 +24,7 @@ class PageModeSpec:
     mode: ModeName
     bits: int
     quant_scheme: QuantSchemeName
+    escape_dtype: str | None = None
     policy_id: str = "exact_baseline"
     sensitivity_tier: SensitivityTier = "exact"
     fallback_reason: str = ""
@@ -36,6 +37,7 @@ class LayerPolicy:
     sensitivity_tier: SensitivityTier
     kind: str
     candidates: tuple[PageModeSpec, ...]
+    recent_candidate: PageModeSpec | None = None
     recent_window: int = 128
     outlier_fraction_threshold: float = 0.05
     abs_max_threshold: float = 6.0
@@ -80,10 +82,23 @@ def choose_page_mode(
 ) -> PageModeSpec:
     del layer
     if token_age < int(layer_policy.recent_window):
+        recent_candidate = layer_policy.recent_candidate
+        if recent_candidate is not None:
+            return PageModeSpec(
+                mode=recent_candidate.mode,
+                bits=recent_candidate.bits,
+                quant_scheme=recent_candidate.quant_scheme,
+                escape_dtype=recent_candidate.escape_dtype,
+                policy_id=layer_policy.policy_id,
+                sensitivity_tier=layer_policy.sensitivity_tier,
+                fallback_reason="recent_window",
+                age_bucket="recent",
+            )
         return PageModeSpec(
             mode="M3",
             bits=layer_policy.candidates[-1].bits if layer_policy.candidates else 4,
             quant_scheme=layer_policy.candidates[-1].quant_scheme if layer_policy.candidates else "affine",
+            escape_dtype=None,
             policy_id=layer_policy.policy_id,
             sensitivity_tier=layer_policy.sensitivity_tier,
             fallback_reason="recent_window",
@@ -111,6 +126,7 @@ def choose_page_mode(
                 mode=candidate.mode,
                 bits=candidate.bits,
                 quant_scheme=candidate.quant_scheme,
+                escape_dtype=candidate.escape_dtype,
                 policy_id=layer_policy.policy_id,
                 sensitivity_tier=layer_policy.sensitivity_tier,
                 fallback_reason=fallback_reason,
@@ -123,6 +139,7 @@ def choose_page_mode(
         mode=safest.mode,
         bits=safest.bits,
         quant_scheme=safest.quant_scheme,
+        escape_dtype=safest.escape_dtype,
         policy_id=layer_policy.policy_id,
         sensitivity_tier=layer_policy.sensitivity_tier,
         fallback_reason="+".join(failure_reasons) if failure_reasons else "threshold_fallback",
@@ -160,9 +177,9 @@ def choose_mode(
 
 def parse_page_mode_token(token: str) -> PageModeSpec:
     parts = [part.strip() for part in token.split("/") if part.strip()]
-    if len(parts) != 3:
-        raise ValueError("page mode tokens must use MODE/SCHEME/BITS, for example M0/affine/4")
-    mode_text, scheme_text, bits_text = parts
+    if len(parts) not in (3, 4):
+        raise ValueError("page mode tokens must use MODE/SCHEME/BITS[/ESCAPE_DTYPE], for example M0/affine/4 or M3/affine/4/int8")
+    mode_text, scheme_text, bits_text = parts[:3]
     mode = mode_text.upper()
     if mode not in {"M0", "M1", "M2", "M3", "T3"}:
         raise ValueError(f"unsupported page mode: {mode_text}")
@@ -170,7 +187,14 @@ def parse_page_mode_token(token: str) -> PageModeSpec:
     if quant_scheme not in {"affine", "symmetric", "lut", "sketch", "turbo3"}:
         raise ValueError(f"unsupported quant scheme: {scheme_text}")
     bits = int(bits_text)
-    return PageModeSpec(mode=mode, bits=bits, quant_scheme=quant_scheme)
+    escape_dtype = None
+    if len(parts) == 4:
+        escape_dtype = parts[3].lower()
+        if escape_dtype not in {"float16", "float32", "int8"}:
+            raise ValueError(f"unsupported escape dtype: {parts[3]}")
+        if mode != "M3":
+            raise ValueError("escape dtype qualifiers are only supported for M3 page modes")
+    return PageModeSpec(mode=mode, bits=bits, quant_scheme=quant_scheme, escape_dtype=escape_dtype)
 
 
 def make_tier_candidates(
@@ -181,6 +205,7 @@ def make_tier_candidates(
     default_quant_scheme: str,
     default_mode: str,
     recent_window: int,
+    recent_escape_dtype: str = "float16",
 ) -> LayerPolicy:
     def candidate(mode: ModeName, scheme: QuantSchemeName, bits: int) -> PageModeSpec:
         return PageModeSpec(mode=mode, quant_scheme=scheme, bits=bits, sensitivity_tier=sensitivity_tier)
@@ -233,6 +258,13 @@ def make_tier_candidates(
         sensitivity_tier=sensitivity_tier,
         kind=kind,
         candidates=candidates,
+        recent_candidate=PageModeSpec(
+            mode="M3",
+            bits=default_bits,
+            quant_scheme="affine",
+            escape_dtype=recent_escape_dtype,
+            sensitivity_tier=sensitivity_tier,
+        ),
         recent_window=0 if sensitivity_tier == "exact" else recent_window,
         outlier_fraction_threshold=float(thresholds[0]),
         abs_max_threshold=float(thresholds[1]),
@@ -247,14 +279,25 @@ def make_explicit_policy(
     sensitivity_tier: SensitivityTier,
     candidates: Sequence[PageModeSpec],
     recent_window: int,
+    recent_escape_dtype: str = "float16",
 ) -> LayerPolicy:
     if not candidates:
         raise ValueError("explicit policies must provide at least one candidate")
+    recent_candidate = next((candidate for candidate in candidates if candidate.mode == "M3"), None)
+    if recent_candidate is None:
+        recent_candidate = PageModeSpec(
+            mode="M3",
+            bits=4,
+            quant_scheme="affine",
+            escape_dtype=recent_escape_dtype,
+            sensitivity_tier=sensitivity_tier,
+        )
     return LayerPolicy(
         policy_id=policy_id,
         sensitivity_tier=sensitivity_tier,
         kind=kind,
         candidates=tuple(candidates),
+        recent_candidate=recent_candidate,
         recent_window=recent_window,
     )
 
