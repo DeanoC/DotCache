@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -7,13 +8,17 @@ transformers = pytest.importorskip("transformers")
 
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
+from dotcache.config import DotCacheConfig
 from dotcache.integrations.qwen35 import (
+    Qwen35AttentionSubsetDotCacheHarness,
+    Qwen35AttentionSubsetDotCacheModelAdapter,
     Qwen35AttentionSubsetHarness,
     Qwen35AttentionSubsetModelAdapter,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
     inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
+    run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
@@ -238,3 +243,50 @@ def test_qwen35_attention_subset_harness_tokenizes_and_runs() -> None:
         decode_steps=1,
     )
     assert result["attention_subset_capture_layer_count"] == 1
+
+
+def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["attention_subset_layer_ids"] == [3]
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["dotcache_ready"] is False
+    assert result["attention_subset_capture_record_count"] == 2
+    assert np.isfinite(result["replay_context_max_abs_error"])
+    assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+
+
+def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetDotCacheHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetDotCacheModelAdapter(
+            model=model,
+            dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+            backend="cpu_ref",
+        ),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello")
+    result = harness.run_attention_subset_dotcache(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+    assert result["attention_subset_capture_layer_count"] == 1
+    assert result["dotcache_attention_subset_ready"] is True
