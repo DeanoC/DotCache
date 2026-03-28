@@ -2717,3 +2717,76 @@ Validation:
 
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
+
+## 2026-03-29 00:40 UTC - Serving-only StateCache extends the 4B long-context ceiling
+
+I added a serving-style DeltaNet StateCache harness that removes the dense-vs-StateCache side-by-side comparison path and only runs:
+
+- one dense prefill to obtain the native recurrent state
+- recurrent-state compression into StateCache form
+- StateCache-only decode
+
+That matters for long-context scaling because the earlier `Qwen3.5-4B @ 32768` failures were coming from compare-mode peak VRAM, not the steady-state resident StateCache bytes.
+
+New bench surface:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+
+New runtime mode:
+
+- `runtime_mode = "statecache_serving_only"`
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_serving.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout or statecache_serving'`
+  - result: `15 passed`
+
+The decisive run was:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py \
+  --model-id Qwen/Qwen3.5-4B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 16384 32768 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --recurrent-mode-override layer:0=M3 \
+  --recurrent-mode-override layer:1=M3 \
+  --recurrent-mode-override layer:2=M3 \
+  --continue-on-error
+```
+
+This answers the main scaling question:
+
+- compare-mode `Qwen3.5-4B @ 32768` still OOMed, even with `bnb_8bit`
+- serving-only `Qwen3.5-4B @ 32768` passes on the same pod
+
+Serving-only checkpoints with `bnb_8bit` weights:
+
+- exact `16384`
+  - `deltanet_statecache_decode_ms_per_step = 97.46`
+  - prefill peak allocated/reserved: `14.02 GB / 17.21 GB`
+  - decode peak allocated/reserved: `14.55 GB / 17.21 GB`
+- exact `32768`
+  - `deltanet_statecache_decode_ms_per_step = 98.41`
+  - prefill peak allocated/reserved: `22.77 GB / 23.43 GB`
+  - decode peak allocated/reserved: `23.80 GB / 24.19 GB`
+
+Resident-state accounting at `32768`:
+
+- fixed resident dense bytes: `51.90 MB`
+- fixed resident StateCache bytes: `21.63 MB`
+- token-growing bytes: `1.0738 GB`
+
+So the long-context blocker is now much clearer:
+
+- StateCache itself scales further than the compare harness suggested
+- the compare-mode ceiling was mostly benchmark overhead
+- the true remaining limit is the token-growing full-attention half plus long-context prefill/runtime peak memory, not the compressed recurrent state

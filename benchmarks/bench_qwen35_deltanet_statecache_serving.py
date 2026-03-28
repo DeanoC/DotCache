@@ -25,7 +25,7 @@ def _parse_layer_bit_overrides(values: list[str]) -> dict[int, int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prototype 8-bit readout-only StateCache benchmark for Qwen3.5 DeltaNet layers.")
+    parser = argparse.ArgumentParser(description="Serving-style StateCache benchmark for Qwen3.5 DeltaNet layers.")
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--device", default=None)
     parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
@@ -87,7 +87,7 @@ def _run_case(
     continue_on_error: bool,
 ) -> None:
     try:
-        record = harness.run_deltanet_statecache_readout(
+        record = harness.run_deltanet_statecache_serving(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decode_steps=max_new_tokens,
@@ -104,7 +104,7 @@ def _run_case(
         error_record = dict(base_record)
         error_record.update(
             {
-                "benchmark": "qwen35_deltanet_statecache_readout",
+                "benchmark": "qwen35_deltanet_statecache_serving",
                 "status": "error",
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
@@ -120,7 +120,7 @@ def _run_case(
 def main() -> None:
     args = parse_args()
     if not transformers_available():
-        raise SystemExit("bench_qwen35_deltanet_statecache_readout.py requires the optional transformers dependencies")
+        raise SystemExit("bench_qwen35_deltanet_statecache_serving.py requires the optional transformers dependencies")
 
     layer_bit_overrides = _parse_layer_bit_overrides(args.layer_bit_overrides)
     model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
@@ -135,7 +135,7 @@ def main() -> None:
     )
 
     common_record = {
-        "benchmark": "qwen35_deltanet_statecache_readout",
+        "benchmark": "qwen35_deltanet_statecache_serving",
         "model_id": args.model_id,
         "backend": args.backend,
         "device": args.device,
