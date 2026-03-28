@@ -12,6 +12,7 @@ from dotcache.attention_runtime import (
     score_pages,
 )
 from dotcache.backends import mps_available
+from dotcache.backends.torch_mps import _get_prepared_chunk_mps
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
@@ -401,6 +402,24 @@ def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages(bits: i
     assert exec_trace.host_to_device_bytes == 0
     assert exec_trace.m0_full_page_materializations == 0
     assert exec_trace.payload_bytes_read == sum(page.payload_nbytes for page in key_pages + value_pages)
+
+
+@requires_mps
+def test_prepared_chunk_cache_builds_fused_codes_for_m0_3bit_pages() -> None:
+    rng = np.random.default_rng(2125)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=3, bits_v=3, tokens_per_page=16)
+    context_length = 64
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    prepared_key_pages = prepare_pages(key_pages, backend="torch_mps")
+    prepared_chunk = _get_prepared_chunk_mps(prepared_key_pages)
+
+    assert prepared_chunk is not None
+    assert prepared_chunk.fused_scaled_codes is not None
+    assert prepared_chunk.codes_groups is None
+    assert prepared_chunk.scales_groups is None
+    assert prepared_chunk.bias_groups is not None
 
 
 @requires_mps
