@@ -1,0 +1,40 @@
+model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+source:
+  benchmark: >
+    First-pass local TinyLlama profile plus exact-prompt and teacher-forced follow-up on the M4 Mac.
+  backend: torch_mps
+  prompt_length: 577
+  tokens_per_page: 256
+  notes: >
+    Second local handwritten TinyLlama profile. This keeps the conservative middle-layer key
+    spine from the first pass, but makes the earliest key layers more aggressive to test whether
+    Tiny can safely accept a little more K-side compression before the stricter middle layers.
+
+key_policy_tier: balanced
+value_policy_tier: aggressive
+
+key_layer_sensitivity:
+  - layer:0=aggressive
+  - layer:1=aggressive
+  - layer:2=aggressive
+  - layer:3=strict
+  - layer:4=strict
+  - layer:5=strict
+  - layer:6=strict
+  - layer:7=strict
+  - layer:8=strict
+  - layer:9=strict
+  - layer:10=strict
+  - layer:11=strict
+  - layer:12=strict
+  - layer:13=strict
+  - layer:14=strict
+  - layer:15=strict
+  - layer:16=strict
+  - layer:17=strict
+  - layer:18=strict
+  - layer:19=strict
+  - layer:20=strict
+  - layer:21=strict
+
+value_layer_sensitivity: []

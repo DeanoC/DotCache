@@ -10,6 +10,7 @@ The two supporting tools are:
 The current profile artifacts live in:
 
 - [tinyllama_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_first_pass.yaml)
+- [tinyllama_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_second_pass.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
 - [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
 - [smollm2_360m_local_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_third_pass.yaml)
@@ -42,6 +43,43 @@ Cheap one-token teacher-forced checks at `289` tokens were reassuring:
 - default aggressive values: perfect agreement
 
 These checks are intentionally weak, but they say the first-pass Tiny profile is at least sane.
+
+### TinyLlama Second Pass
+
+The second Tiny pass tested whether the earliest key layers could be made more aggressive while keeping the same long strict middle-layer key spine and the same aggressive value policy.
+
+That profile added:
+
+- `layer:0=aggressive`
+- `layer:1=aggressive`
+- `layer:2=aggressive`
+
+while keeping `layers 3-21` key `strict`.
+
+What happened locally:
+
+- exact `577` prompt:
+  - first pass:
+    - decode `6601.72 ms/step`
+    - resident KV `9.35 MB`
+    - `K:M2` pages `1`
+  - second pass:
+    - decode `9427.54 ms/step`
+    - resident KV `9.33 MB`
+    - `K:M2` pages `3`
+
+- teacher-forced `320 / 288 / 16`:
+  - first pass loss delta: `+0.00008`
+  - second pass loss delta: `+0.00015`
+  - token agreement stayed `1.0`
+
+So the second Tiny pass is a useful negative result:
+
+- it did not buy a meaningful extra KV-memory win
+- it increased prefill/decode cost on this Mac
+- it did not improve the already-good loss behavior
+
+That means the **first-pass Tiny profile remains the better local checkpoint**. The value-side aggression looks useful, but pushing the earliest key layers harder does not seem worth it.
 
 ## SmolLM2 360M
 
