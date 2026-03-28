@@ -974,6 +974,38 @@ So the follow-up conclusion is more nuanced than the earlier cold-load probes:
 - The main blocker for `V=3b` on this Mac is now clearly the write/prefill side, not grouped decode.
 - That still makes `K=4b, V=3b` a useful CUDA hint, but only if the write path there is materially cheaper than it is on MPS.
 
+I then optimized the host `3b` payload builder itself in [packing.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/packing.py) and [page_format.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/page_format.py):
+
+- the old spill path packed `3b` row-by-row in Python
+- the new path packs per symbol across all rows at once
+- `group_major` payload building now packs all groups in one vectorized call instead of looping group-by-group
+
+The dedicated write-path microbench in [bench_m0_write_micro.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_m0_write_micro.py) shows that this was a real bottleneck:
+
+- synthetic write microbench (`256 x 128`, `group_size=32`)
+  - `3b` quantize: `0.284 ms`
+  - `3b` payload build: `0.230 ms`
+  - `3b` legacy payload build: `81.236 ms`
+  - `3b` payload speedup vs legacy: about `352.6x`
+  - `4b` quantize: `0.916 ms`
+  - `4b` payload build: `0.373 ms`
+
+And the post-change one-load TinyLlama rerun confirms the win reached the model path:
+
+| Model | Prompt | Split | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement |
+|---|---:|---|---:|---:|---:|---:|
+| `TinyLlama 1.1B` | `577` | `K=4b, V=4b` | `24736.65` | `4233.71` | `14,958,592` | `1.00` |
+| `TinyLlama 1.1B` | `577` | `K=4b, V=3b` | `22635.27` | `2399.05` | `14,598,144` | `1.00` |
+
+Compared with the earlier one-load TinyLlama mixed-bits probe, `K=4b, V=3b` prefill ingest improved from `12250.44 ms` down to `2399.05 ms`, about `5.1x` better. So host payload packing really was a large part of the `V=3b` write-side pain on this Mac.
+
+The remaining honest read is:
+
+- `K=4b, V=3b` is now a much more credible local lane on TinyLlama
+- the write-path fix materially improved prefill ingest
+- we still need a post-fix SmolLM2 rerun before claiming the same improvement there
+- the next likely bottleneck after payload packing is the remaining encode/quantize work, not grouped decode
+
 One backend-focused optimization pass did move the local `3b` decode shape in the right direction. Static `M0 3b` pages on MPS now build a fused pre-scaled prepared chunk, not just cached unpacked per-group codes. On a synthetic cached static-page decode microbench (`4` pages, `head_dim=64`, `tokens_per_page=16`):
 
 - without prepared chunk cache: `142.71 ms`

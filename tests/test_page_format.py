@@ -1,6 +1,9 @@
+import numpy as np
+
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
-from dotcache.page_format import deserialize_header, serialize_header
+from dotcache.page_format import build_payload, deserialize_header, serialize_header
+from dotcache.packing import pack_bits
 from dotcache.types import PageHeader
 
 
@@ -34,3 +37,9 @@ def test_encoded_page_reports_payload_and_metadata_bytes() -> None:
     assert page.metadata_nbytes > 0
     assert page.total_nbytes == page.payload_nbytes + page.metadata_nbytes
 
+
+def test_build_payload_group_major_matches_per_group_pack_for_3bit() -> None:
+    codes = (np.arange(2 * 4 * 32, dtype=np.uint8).reshape(2, 4, 32) % 8).astype(np.uint8)
+    payload = build_payload(codes, bits=3, layout="group_major")
+    expected = np.stack([pack_bits(codes[:, group_index, :], 3) for group_index in range(codes.shape[1])], axis=0)
+    np.testing.assert_array_equal(payload, expected)
