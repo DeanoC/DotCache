@@ -12,6 +12,8 @@ The current profile artifacts live in:
 - [tinyllama_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_first_pass.yaml)
 - [tinyllama_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_second_pass.yaml)
 - [tinyllama_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_cuda_start.yaml)
+- [qwen35_0p8b_attention_subset_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_first_pass.yaml)
+- [qwen35_0p8b_attention_subset_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_second_pass.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
 - [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
 - [smollm2_360m_local_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_third_pass.yaml)
@@ -210,3 +212,73 @@ The next natural step is to make the CUDA box compare:
 - exact baseline
 - first-pass profile
 - refined profile after loss-based validation
+
+## Qwen3.5 Attention Subset
+
+Qwen3.5 is different from the TinyLlama and SmolLM2 profiles because the local policy work only applies to the six `full_attention` layers in the text stack:
+
+- `3`
+- `7`
+- `11`
+- `15`
+- `19`
+- `23`
+
+The first useful local ablation was on the attention-subset DotCache replay lane at exact `32` prompt tokens with `tokens_per_page=16`. That ablation compared `K-only`, `V-only`, and `K+V` prefill quantization for those six layers.
+
+The current first-pass profile is:
+
+- default `balanced` for both keys and values
+- `recent_window: 0` so the probe actually exercises sealed static pages instead of hiding everything in the live-tail `M3` path
+- stricter key layers:
+  - `7`
+  - `11`
+  - `19`
+- stricter value layers:
+  - `15`
+  - `23`
+- layer `3` left at the default because it looked mixed in the local probe
+
+Interpretation:
+
+- the Qwen3.5 attention-subset drift is not one-sided
+- later layer `23` looked more value-sensitive
+- later layer `19` looked more key-sensitive
+- the first policy pass should therefore be layer-aware instead of globally “safer keys” or globally “safer values”
+
+This is intentionally only an attention-subset profile. It does **not** say anything yet about how the DeltaNet / `linear_attention` state should be cached or compressed.
+
+### Qwen3.5 Attention Subset Second Pass
+
+The first pass turned out to be a useful negative result once it was rerun with `recent_window: 0` so the benchmark actually exercised sealed static pages:
+
+- the profile did apply
+- but generic late-value `strict` was the wrong lever
+- on the current planner, `strict` values prefer `V:M1 4b` before `V:M0 4b`
+
+That pushed the late attention layers too far:
+
+- first pass, exact `32` prompt, `tokens_per_page=16`:
+  - `V:M1 4b` pages: `14`
+  - replay context max abs error: `0.9731`
+  - teacher-forced logit max abs error: `1.8027`
+
+The second pass keeps the same key-side strict hints, but replaces the fragile late-value tiering with explicit `M0`-first overrides at layers `15`, `19`, and `23`:
+
+- `layer:15=M0/affine/4,M0/affine/3,M1/lut/4`
+- `layer:19=M0/affine/4,M0/affine/3,M1/lut/4`
+- `layer:23=M0/affine/4,M0/affine/3,M1/lut/4`
+
+That materially improved the local exact `32` prompt result:
+
+- second pass:
+  - `V:M1 4b` pages: `4`
+  - replay context max abs error: `0.2688`
+  - teacher-forced logit max abs error: `1.2402`
+
+So the current local Qwen3.5 attention-subset read is:
+
+- layer-aware policy really does matter
+- the value side needs explicit safer candidate sets, not generic `strict`
+- the second-pass profile is the better local checkpoint
+- the attention-subset lane is still not a performance win, but it is now a much cleaner design spike for the CUDA side and for later hybrid-state work

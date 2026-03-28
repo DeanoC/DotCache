@@ -16,6 +16,7 @@ This document is the scaffold for "proper model" work beyond the current TinyLla
   - There is now a dedicated hybrid-state inspection runner for mapping attention-KV vs DeltaNet-style recurrent state.
   - There is also an attention-subset capture runner that wraps only the `full_attention` layers and records their decode-time Q/K/V/context without touching the DeltaNet layers.
   - There is now an attention-subset DotCache replay lane that uses DotCache only for the `full_attention` layers while leaving DeltaNet state on the native cache path.
+  - There is now a policy-aware attention-subset profile family that applies the existing layer/page policy system only to those six `full_attention` layers, with a safer second pass that uses explicit `M0`-first value overrides for fragile late attention layers.
   - DotCache is still not ready for the full hybrid attention/delta state path.
   - Larger Qwen3.5 lanes remain reference-only until the hybrid-state abstraction exists.
 
@@ -93,7 +94,7 @@ Use the unlabeled wrapper defaults for the recommended path. Add the explicit `-
   - Llama 3.2 3B HF when access exists
 - GGUF should be treated as an external baseline lane, not as a replacement for the native-weight DotCache path.
 - `Qwen/Qwen3.5-0.8B` is now the first runnable hybrid-family smoke lane, with dense text-only, hybrid inspection, attention-subset capture, and attention-subset DotCache replay lanes.
-- The next Qwen3.5 step is deciding whether to grow the attention-only DotCache lane or design a broader hybrid-state abstraction for the DeltaNet path.
+- The next Qwen3.5 step is validating the new layer-aware attention-subset policy and then deciding whether to grow that attention-only DotCache lane or design a broader hybrid-state abstraction for the DeltaNet path.
 
 ## CUDA Pod Lane
 

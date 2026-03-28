@@ -292,6 +292,39 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     assert result["dotcache_attention_subset_ready"] is True
 
 
+def test_qwen35_attention_subset_dotcache_harness_accepts_policy_aware_config() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetDotCacheHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetDotCacheModelAdapter(
+            model=model,
+            dotcache_config=DotCacheConfig(
+                head_dim=16,
+                group_size=16,
+                bits_k=4,
+                bits_v=4,
+                tokens_per_page=2,
+                key_policy_tier="balanced",
+                value_policy_tier="balanced",
+                key_layer_sensitivity=("layer:3=strict",),
+                value_layer_sensitivity=("layer:3=strict",),
+            ),
+            backend="cpu_ref",
+        ),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello subset policy path")
+    result = harness.run_attention_subset_dotcache(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+    assert result["dotcache_attention_subset_ready"] is True
+    assert "policy_tier_counts" in result
+    assert "mode_signature_counts" in result
+
+
 def test_qwen35_attention_subset_prefill_ablation_runs_on_tiny_hybrid_model() -> None:
     model = _tiny_qwen35_model()
     tokenizer = _TinyTokenizer()

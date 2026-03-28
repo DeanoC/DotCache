@@ -384,6 +384,14 @@ There is now also an attention-subset DotCache replay runner for the same six `f
 
 That lane seeds DotCache only from the native attention KV cache, leaves every DeltaNet / `linear_attention` layer on the native hybrid cache path, and measures replay/logit drift for the attention subset. It is the first partial DotCache integration point for Qwen3.5, but it is still not full hybrid-state support.
 
+There is now also a layer-aware profile family for that lane:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --repeat-counts --target-prompt-lengths 32 --max-new-tokens 1 --tokens-per-page 16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_second_pass.yaml
+```
+
+That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
+
 For the external GGUF / `llama.cpp` reference lane, use:
 
 ```bash
