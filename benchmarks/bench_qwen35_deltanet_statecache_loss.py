@@ -5,7 +5,11 @@ import json
 
 import torch
 
-from dotcache.integrations.qwen35 import Qwen35DeltaNetStateHarness, transformers_available
+from dotcache.integrations.qwen35 import (
+    Qwen35DeltaNetStateHarness,
+    parse_qwen35_deltanet_statecache_mode_overrides,
+    transformers_available,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="readout_only_m0")
     parser.add_argument("--renorm-interval", type=int, default=0)
+    parser.add_argument("--recurrent-mode-override", action="append", default=[])
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     return parser.parse_args()
 
@@ -70,6 +75,7 @@ def main() -> None:
         prompt_unit=args.prompt_unit,
         sequence_length=args.sequence_length,
     )
+    recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.recurrent_mode_override)
     result = harness.evaluate_deltanet_statecache_loss(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -79,6 +85,7 @@ def main() -> None:
         bits=args.bits,
         state_stage=args.state_stage,
         renorm_interval=args.renorm_interval,
+        recurrent_mode_overrides=recurrent_mode_overrides,
     )
     result.update(
         {
@@ -95,6 +102,10 @@ def main() -> None:
             "deltanet_statecache_renorm_interval": args.renorm_interval,
         }
     )
+    if recurrent_mode_overrides:
+        result["deltanet_statecache_recurrent_mode_overrides"] = {
+            str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())
+        }
     print(json.dumps(result, sort_keys=True), flush=True)
 
 

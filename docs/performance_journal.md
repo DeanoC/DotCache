@@ -1743,6 +1743,76 @@ Validation:
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
 
+## 2026-03-28 19:35 UTC - Qwen3.5 4B StateCache needs an early-layer M3 escape policy, not a tail-only rescue
+
+I added per-layer recurrent-state mode overrides to the Qwen3.5 DeltaNet StateCache harnesses so the 4B lane can mix `M0` and `M3` on resident recurrent state.
+
+Files:
+
+- [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py)
+- [bench_qwen35_deltanet_statecache_readout.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_readout.py)
+- [bench_qwen35_deltanet_statecache_loss.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_loss.py)
+- [test_qwen35_integration.py](/workspace/DotCache/tests/test_qwen35_integration.py)
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_loss.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'statecache_readout or statecache_loss'`
+  - result: `5 passed`
+
+The first mixed-policy teacher-forced `1024` comparison on `Qwen/Qwen3.5-4B` showed that late-layer escapes alone are not enough:
+
+- baseline `post_update_m0`, `8-bit`, no renorm:
+  - `teacher_forced_token_agreement_rate = 0.90625`
+  - `teacher_forced_loss_delta = 0.0132`
+- layers `28-30 = M3`:
+  - agreement stayed `0.90625`
+  - `teacher_forced_loss_delta = 0.0123`
+- layers `24-26, 28-30 = M3`:
+  - agreement stayed `0.90625`
+  - `teacher_forced_loss_delta = 0.0117`
+
+The real-state sweep explains why. On captured recurrent samples at exact `64`, `M0 8-bit` is actually worst at the head:
+
+- layer `0`: `best_update_error = 0.0129`
+- layer `16`: `best_update_error = 0.0021`
+- layer `30`: `best_update_error = 0.0037`
+- `renorm_interval = 0` remained best for all three sampled layers
+
+That shifted the policy search to the early recurrent layers, and that fixed the 4B lane:
+
+- teacher-forced `1024`, `32` eval steps, `post_update_m0`, `8-bit`, no renorm, recurrent `M3` on layers `0,1,2`:
+  - `teacher_forced_token_agreement_rate = 1.0`
+  - `teacher_forced_target_match_rate = 1.0`
+  - `teacher_forced_loss_delta = 0.0015`
+  - `teacher_forced_perplexity_ratio = 1.0015`
+  - `deltanet_statecache_recurrent_state_bytes = 20,054,016`
+  - `effective_recurrent_compression_ratio = 2.51x`
+
+Adding late-layer escapes on top of that did not materially improve quality:
+
+- layers `0,1,2,28,29,30`:
+  - agreement stayed `1.0`
+  - `teacher_forced_loss_delta = 0.0009`
+- layers `0,1,2,24,25,26,28,29,30`:
+  - agreement stayed `1.0`
+  - `teacher_forced_loss_delta = 0.0022`
+
+Exact generation at `1024` also stayed clean with the minimal early escape policy:
+
+- layers `0,1,2 = M3`:
+  - dense ids `[12482, 364, 4778, 45543]`
+  - StateCache ids `[12482, 364, 4778, 45543]`
+  - `greedy_token_agreement_rate = 1.0`
+  - `deltanet_statecache_decode_ms_per_step = 22.46`
+  - `deltanet_statecache_recurrent_state_bytes = 20,054,016`
+
+So the 4B read is now concrete:
+
+- the safe rescue is an early recurrent escape policy, not a late one
+- the smallest keepable policy is recurrent `M3` on layers `0,1,2`
+- that policy is strong enough to promote into the CUDA matrix surface
+
 ## 2026-03-28 19:45 UTC - Qwen3.5 now has a runnable 8-bit readout-only StateCache prototype
 
 I turned the earlier DeltaNet ablation result into a real harness mode instead of leaving it as a journal-only conclusion.
