@@ -5,6 +5,7 @@ import numpy as np
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import reconstruct_group_m2
+from .modes.m4_key_project import reconstruct_group_m4
 from .modes.m3_escape import decode_escape_payload
 from .modes.turbo3 import dequantize_group_turbo3
 from .page_format import load_group_words
@@ -30,6 +31,14 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
             page.m2_sketch[:, group_index, :],
             basis=page.m2_basis[group_index],
             mean=None if page.m2_mean is None else page.m2_mean[group_index],
+        )
+    if header.mode_default == "M4":
+        if page.m2_sketch is None or page.m2_mean is None:
+            raise ValueError("M4 page is missing projected payload")
+        return reconstruct_group_m4(
+            page.m2_sketch[:, group_index, :],
+            mean=page.m2_mean[group_index],
+            group_size=header.group_size,
         )
 
     words = load_group_words(page, group_index)

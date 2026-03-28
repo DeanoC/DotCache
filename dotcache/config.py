@@ -6,7 +6,7 @@ from math import ceil
 from .planner import LayerPolicy, PageModeSpec, make_explicit_policy, make_tier_candidates, parse_page_mode_token
 
 
-_VALID_KEY_MODES = ("M0", "M1", "M2", "M3", "T3")
+_VALID_KEY_MODES = ("M0", "M1", "M2", "M3", "M4", "T3")
 _VALID_VALUE_MODES = ("M0", "M1", "M3", "T3")
 
 
@@ -88,6 +88,7 @@ class DotCacheConfig:
     m2_adaptive_min_improvement_k: float = 0.1
     m2_prefilter_top_k: int = 0
     m2_prefilter_min_pages: int = 8
+    prefer_m4_project_k: bool = False
     lut_refine_steps: int = 6
     preconditioner: str = "none"
     precondition_strength: float = 2.0
@@ -124,11 +125,11 @@ class DotCacheConfig:
         if self.payload_layout_v not in ("group_major", "token_major"):
             raise ValueError("payload_layout_v must be group_major or token_major")
         if self.default_mode_k not in _VALID_KEY_MODES:
-            raise ValueError("default_mode_k must be M0, M1, M2, M3, or T3")
+            raise ValueError("default_mode_k must be M0, M1, M2, M3, M4, or T3")
         if self.default_mode_v not in _VALID_VALUE_MODES:
             raise ValueError("default_mode_v must be M0, M1, M3, or T3")
-        if self.quant_scheme_k not in ("affine", "symmetric", "lut", "sketch", "turbo3"):
-            raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, or turbo3")
+        if self.quant_scheme_k not in ("affine", "symmetric", "lut", "sketch", "project", "turbo3"):
+            raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, project, or turbo3")
         if self.quant_scheme_v not in ("affine", "symmetric", "lut", "turbo3"):
             raise ValueError("quant_scheme_v must be affine, symmetric, lut, or turbo3")
         if self.escape_dtype not in ("float16", "float32", "int8"):
@@ -278,6 +279,7 @@ class DotCacheConfig:
             override_scheme = (
                 "lut" if resolved_mode == "M1"
                 else "sketch" if resolved_mode == "M2"
+                else "project" if resolved_mode == "M4"
                 else "turbo3" if resolved_mode == "T3"
                 else default_quant_scheme
             )
@@ -319,4 +321,5 @@ class DotCacheConfig:
             default_mode=default_mode,
             recent_escape_dtype=self.recent_page_escape_dtype,
             recent_window=self.recent_window,
+            prefer_project_key_mode=self.prefer_m4_project_k if kind == "K" else False,
         )

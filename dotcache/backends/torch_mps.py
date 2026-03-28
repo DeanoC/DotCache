@@ -9,6 +9,7 @@ import numpy as np
 from ..tracing import ExecutionTrace
 from ..types import EncodedPage, PageHeader
 from ..modes.m2_key_sketch import segment_ids_for_token_count
+from ..modes.m4_key_project import fixed_project_basis
 from ..modes.turbo3 import TURBO3_CENTROIDS, fwht_last_dim
 from ..packing import words_per_group
 
@@ -19,6 +20,8 @@ _UNPACK_METADATA: dict[tuple[TorchDevice, int], tuple[Any, Any]] = {}
 _SPILL_UNPACK_METADATA: dict[tuple[TorchDevice, int, int], tuple[Any, Any, Any, Any, Any, Any]] = {}
 _TURBO3_CENTROID_TENSORS: dict[TorchDevice, Any] = {}
 _FWHT_MATRICES: dict[tuple[TorchDevice, int], Any] = {}
+_M4_BASIS_TENSORS: dict[tuple[TorchDevice, int, int], Any] = {}
+_SEGMENT_ID_TENSORS: dict[tuple[TorchDevice, int, int], Any] = {}
 _MAX_PREPARE_PAGES_PER_CHUNK = 128
 _MPS_M0_KEY_PREPARE_PAGES_PER_CHUNK = 256
 _MAX_PREPARED_CHUNK_CACHE_ENTRIES = 64
@@ -32,15 +35,12 @@ _PREPARED_GROUPED_CHUNK_CACHE: "OrderedDict[tuple[tuple[tuple[int, int], ...], .
 _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES = 0
 _PREPARED_PAGE_UID = 1
 _PREPARED_CHUNK_CACHE_TOUCH_ID = 0
-
-
 def _load_torch():
     try:
         import torch
     except ImportError as exc:  # pragma: no cover - exercised in environments without torch
         raise RuntimeError("torch is required for the torch accelerator backends") from exc
     return torch
-
 
 def _backend_name(device_type: TorchDevice) -> PreparedDevice:
     return "torch_cuda" if device_type == "cuda" else "torch_mps"
@@ -143,8 +143,12 @@ class PreparedChunkMPS:
     codes_groups: tuple[Any, ...] | None
     scales_groups: tuple[Any, ...] | None
     bias_groups: tuple[Any, ...] | None
-    fused_scaled_codes: Any | None
-    resident_nbytes: int
+    fused_scaled_codes: Any | None = None
+    m2_sketch_groups: tuple[Any, ...] | None = None
+    m2_basis_groups: tuple[Any, ...] | None = None
+    m2_mean_groups: tuple[Any, ...] | None = None
+    m2_segment_ids: Any | None = None
+    resident_nbytes: int = 0
     touch_id: int = 0
 
 
@@ -155,8 +159,15 @@ class PreparedGroupedChunkMPS:
     codes_groups: tuple[Any, ...] | None
     scales_groups: tuple[Any, ...] | None
     bias_groups: tuple[Any, ...] | None
-    fused_scaled_codes: Any | None
-    resident_nbytes: int
+    fused_scaled_codes: Any | None = None
+    m2_sketch_groups: tuple[Any, ...] | None = None
+    m2_basis_groups: tuple[Any, ...] | None = None
+    m2_mean_groups: tuple[Any, ...] | None = None
+    m2_segment_ids: Any | None = None
+    m2_sketch_tensor: Any | None = None
+    m2_basis_tensor: Any | None = None
+    m2_mean_tensor: Any | None = None
+    resident_nbytes: int = 0
     payload_groups_tensor: Any | None = None
     scales_groups_tensor: Any | None = None
     bias_groups_tensor: Any | None = None
@@ -215,8 +226,6 @@ def _escape_scale_dtype(*, device_type: TorchDevice):
     if device_type == "mps":
         return torch.float32
     return torch.float16
-
-
 def prepared_chunk_cache_resident_bytes() -> int:
     return int(_PREPARED_CHUNK_CACHE_RESIDENT_BYTES + _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES)
 
@@ -461,9 +470,21 @@ def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple
         return None
     if len(_chunk_compatible_pages(pages)) != 1:
         return None
-    if pages[0].header.mode_default not in ("M0", "T3"):
+    if pages[0].header.mode_default not in ("M0", "M2", "M4", "T3"):
         return None
     return tuple((int(page.cache_uid), int(page.header.token_count)) for page in pages)
+
+
+def _segment_ids_tensor(token_count: int, segment_count: int, *, device_type: TorchDevice):
+    cache_key = (device_type, int(token_count), int(segment_count))
+    cached = _SEGMENT_ID_TENSORS.get(cache_key)
+    if cached is not None:
+        return cached
+    tensor = _load_torch().from_numpy(
+        segment_ids_for_token_count(int(token_count), int(segment_count))
+    ).to(device=device_type)
+    _SEGMENT_ID_TENSORS[cache_key] = tensor
+    return tensor
 
 
 def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChunkMPS:
@@ -472,8 +493,68 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         raise ValueError("pages must be non-empty")
     header = pages[0].header
     device_type = pages[0].device_type
-    if header.mode_default not in ("M0", "T3"):
-        raise ValueError("prepared chunk cache currently supports only M0 and T3 pages")
+    if header.mode_default not in ("M0", "M2", "M4", "T3"):
+        raise ValueError("prepared chunk cache currently supports only M0, M2, M4, and T3 pages")
+    if header.mode_default == "M2":
+        m2_sketch_groups = tuple(
+            torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_basis_groups = tuple(
+            torch.stack([page.m2_basis[group_index] for page in pages], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_mean_groups = tuple(
+            torch.stack([page.m2_mean[group_index] for page in pages], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_segment_ids = None
+        if m2_basis_groups and int(m2_basis_groups[0].dim()) == 4:
+            m2_segment_ids = _segment_ids_tensor(
+                header.token_count,
+                int(m2_basis_groups[0].shape[1]),
+                device_type=device_type,
+            )
+        resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_sketch_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_basis_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_mean_groups)
+        return PreparedChunkMPS(
+            header=header,
+            payload_groups=(),
+            codes_groups=None,
+            scales_groups=None,
+            bias_groups=None,
+            m2_sketch_groups=m2_sketch_groups,
+            m2_basis_groups=m2_basis_groups,
+            m2_mean_groups=m2_mean_groups,
+            m2_segment_ids=m2_segment_ids,
+            fused_scaled_codes=None,
+            resident_nbytes=resident_nbytes,
+        )
+    if header.mode_default == "M4":
+        m2_sketch_groups = tuple(
+            torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_mean_groups = tuple(
+            torch.stack([page.m2_mean[group_index] for page in pages], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_sketch_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_mean_groups)
+        return PreparedChunkMPS(
+            header=header,
+            payload_groups=(),
+            codes_groups=None,
+            scales_groups=None,
+            bias_groups=None,
+            m2_sketch_groups=m2_sketch_groups,
+            m2_basis_groups=None,
+            m2_mean_groups=m2_mean_groups,
+            m2_segment_ids=None,
+            fused_scaled_codes=None,
+            resident_nbytes=resident_nbytes,
+        )
     payload_groups = tuple(torch.stack([page.payload[group_index] for page in pages], dim=0) for group_index in range(header.num_groups))
     codes_groups = tuple(
         _unpack_bits_torch(
@@ -529,6 +610,10 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         codes_groups=codes_groups,
         scales_groups=scales_groups,
         bias_groups=bias_groups,
+        m2_sketch_groups=None,
+        m2_basis_groups=None,
+        m2_mean_groups=None,
+        m2_segment_ids=None,
         fused_scaled_codes=fused_scaled_codes,
         resident_nbytes=resident_nbytes,
     )
@@ -568,7 +653,7 @@ def _grouped_prepared_chunk_cache_key(
 ) -> tuple[tuple[tuple[int, int], ...], ...] | None:
     if not pages_by_group or not pages_by_group[0]:
         return None
-    if pages_by_group[0][0].header.mode_default != "M0":
+    if pages_by_group[0][0].header.mode_default not in {"M0", "M2", "M4"}:
         return None
     page_count = len(pages_by_group[0])
     cache_key: list[tuple[tuple[int, int], ...]] = []
@@ -599,6 +684,87 @@ def _build_grouped_prepared_chunk_mps(
         return _build_prepared_chunk_mps(group_pages)
     header = pages_by_group[0][0].header
     device_type = pages_by_group[0][0].device_type
+    if header.mode_default == "M2":
+        prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
+        if any(chunk is None for chunk in prepared_chunks):
+            return None
+        m2_sketch_groups = tuple(
+            torch.stack([chunk.m2_sketch_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_basis_groups = tuple(
+            torch.stack([chunk.m2_basis_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_mean_groups = tuple(
+            torch.stack([chunk.m2_mean_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_sketch_tensor = torch.stack(m2_sketch_groups, dim=3).contiguous()
+        m2_basis_tensor = torch.stack(m2_basis_groups, dim=2).contiguous()
+        m2_mean_tensor = torch.stack(m2_mean_groups, dim=2).contiguous()
+        resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_sketch_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_basis_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_mean_groups)
+        resident_nbytes += int(m2_sketch_tensor.numel() * m2_sketch_tensor.element_size())
+        resident_nbytes += int(m2_basis_tensor.numel() * m2_basis_tensor.element_size())
+        resident_nbytes += int(m2_mean_tensor.numel() * m2_mean_tensor.element_size())
+        return PreparedGroupedChunkMPS(
+            header=header,
+            payload_groups=(),
+            codes_groups=None,
+            scales_groups=None,
+            bias_groups=None,
+            m2_sketch_groups=m2_sketch_groups,
+            m2_basis_groups=m2_basis_groups,
+            m2_mean_groups=m2_mean_groups,
+            m2_segment_ids=prepared_chunks[0].m2_segment_ids,
+            m2_sketch_tensor=m2_sketch_tensor,
+            m2_basis_tensor=m2_basis_tensor,
+            m2_mean_tensor=m2_mean_tensor,
+            payload_groups_tensor=None,
+            scales_groups_tensor=None,
+            bias_groups_tensor=None,
+            fused_scaled_codes=None,
+            resident_nbytes=resident_nbytes,
+        )
+    if header.mode_default == "M4":
+        prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
+        if any(chunk is None for chunk in prepared_chunks):
+            return None
+        m2_sketch_groups = tuple(
+            torch.stack([chunk.m2_sketch_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_mean_groups = tuple(
+            torch.stack([chunk.m2_mean_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
+            for group_index in range(header.num_groups)
+        )
+        m2_sketch_tensor = torch.stack(m2_sketch_groups, dim=3).contiguous()
+        m2_mean_tensor = torch.stack(m2_mean_groups, dim=2).contiguous()
+        resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_sketch_groups)
+        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in m2_mean_groups)
+        resident_nbytes += int(m2_sketch_tensor.numel() * m2_sketch_tensor.element_size())
+        resident_nbytes += int(m2_mean_tensor.numel() * m2_mean_tensor.element_size())
+        return PreparedGroupedChunkMPS(
+            header=header,
+            payload_groups=(),
+            codes_groups=None,
+            scales_groups=None,
+            bias_groups=None,
+            m2_sketch_groups=m2_sketch_groups,
+            m2_basis_groups=None,
+            m2_mean_groups=m2_mean_groups,
+            m2_segment_ids=None,
+            m2_sketch_tensor=m2_sketch_tensor,
+            m2_basis_tensor=None,
+            m2_mean_tensor=m2_mean_tensor,
+            resident_nbytes=resident_nbytes,
+            payload_groups_tensor=None,
+            scales_groups_tensor=None,
+            bias_groups_tensor=None,
+            fused_scaled_codes=None,
+        )
     if _supports_packed_four_group128_cuda(header, device_type=device_type):
         metadata_dtype = _m0_affine_metadata_dtype(device_type=device_type)
         payload_groups_tensor = torch.stack(
@@ -652,6 +818,13 @@ def _build_grouped_prepared_chunk_mps(
             codes_groups=None,
             scales_groups=scales_groups,
             bias_groups=bias_groups,
+            m2_sketch_groups=None,
+            m2_basis_groups=None,
+            m2_mean_groups=None,
+            m2_segment_ids=None,
+            m2_sketch_tensor=None,
+            m2_basis_tensor=None,
+            m2_mean_tensor=None,
             payload_groups_tensor=payload_groups_tensor,
             scales_groups_tensor=scales_groups_tensor,
             bias_groups_tensor=bias_groups_tensor,
@@ -679,6 +852,13 @@ def _build_grouped_prepared_chunk_mps(
             codes_groups=None,
             scales_groups=None,
             bias_groups=bias_groups,
+            m2_sketch_groups=None,
+            m2_basis_groups=None,
+            m2_mean_groups=None,
+            m2_segment_ids=None,
+            m2_sketch_tensor=None,
+            m2_basis_tensor=None,
+            m2_mean_tensor=None,
             payload_groups_tensor=None,
             scales_groups_tensor=None,
             bias_groups_tensor=None,
@@ -716,6 +896,13 @@ def _build_grouped_prepared_chunk_mps(
         codes_groups=codes_groups,
         scales_groups=scales_groups,
         bias_groups=bias_groups,
+        m2_sketch_groups=None,
+        m2_basis_groups=None,
+        m2_mean_groups=None,
+        m2_segment_ids=None,
+        m2_sketch_tensor=None,
+        m2_basis_tensor=None,
+        m2_mean_tensor=None,
         payload_groups_tensor=None,
         scales_groups_tensor=None,
         bias_groups_tensor=None,
@@ -802,6 +989,13 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and header.quant_scheme == "sketch"
             and source_page.m2_sketch is not None
             and source_page.m2_basis is not None
+            and source_page.m2_mean is not None
+        )
+    if header.mode_default == "M4":
+        return (
+            header.kind == "K"
+            and header.quant_scheme == "project"
+            and source_page.m2_sketch is not None
             and source_page.m2_mean is not None
         )
     if header.mode_default == "T3":
@@ -903,6 +1097,19 @@ def _fwht_matrix_torch(width: int, *, device_type: TorchDevice):
     tensor = _device_tensor(transformed, device=device_type).to(dtype=_load_torch().float32)
     _FWHT_MATRICES[cache_key] = tensor
     return tensor
+
+
+def _m4_basis_torch(group_size: int, rank: int, *, device_type: TorchDevice):
+    cache_key = (device_type, int(group_size), int(rank))
+    cached = _M4_BASIS_TENSORS.get(cache_key)
+    if cached is not None:
+        return cached
+    basis = _device_tensor(
+        fixed_project_basis(int(group_size), int(rank)),
+        device=device_type,
+    ).to(dtype=_load_torch().float32)
+    _M4_BASIS_TENSORS[cache_key] = basis
+    return basis
 
 
 def _synchronize_torch_device(device_type: TorchDevice) -> None:
@@ -1070,6 +1277,36 @@ def _prepare_page_chunk_torch(
                 resident_nbytes=(
                     int(sketch_batch[index].numel() * sketch_batch[index].element_size())
                     + int(basis_batch[index].numel() * basis_batch[index].element_size())
+                    + int(mean_batch[index].numel() * mean_batch[index].element_size())
+                ),
+                cache_uid=_next_prepared_page_uid(),
+            )
+            for index, page in enumerate(pages)
+        ]
+        if trace is not None:
+            trace.record_host_to_device(total_host_to_device_nbytes)
+        return prepared_pages
+
+    if header.mode_default == "M4":
+        sketch_array = np.stack([np.asarray(page.m2_sketch) for page in pages], axis=0)
+        mean_array = np.stack([np.asarray(page.m2_mean) for page in pages], axis=0)
+        sketch_batch = _device_tensor(sketch_array, device=device_type)
+        mean_batch = _device_tensor(mean_array, device=device_type)
+        total_host_to_device_nbytes += int(sketch_array.nbytes)
+        total_host_to_device_nbytes += int(mean_array.nbytes)
+        if device_type == "mps":
+            sketch_batch = sketch_batch.to(dtype=_load_torch().float32)
+            mean_batch = mean_batch.to(dtype=_load_torch().float32)
+        prepared_pages = [
+            PreparedPageTorch(
+                device_type=device_type,
+                source_page=page,
+                header=page.header,
+                m2_sketch=sketch_batch[index],
+                m2_mean=mean_batch[index],
+                host_to_device_nbytes=_prepared_page_host_nbytes(page),
+                resident_nbytes=(
+                    int(sketch_batch[index].numel() * sketch_batch[index].element_size())
                     + int(mean_batch[index].numel() * mean_batch[index].element_size())
                 ),
                 cache_uid=_next_prepared_page_uid(),
@@ -1430,6 +1667,22 @@ def _coerce_m2_operands(query_groups, group_sketch, group_basis, group_mean):
     if group_mean.dtype != work_dtype:
         group_mean = group_mean.to(dtype=work_dtype)
     return query_groups, group_sketch, group_basis, group_mean
+
+
+def _coerce_m2_grouped_operands(query_groups, sketch_tensor, basis_tensor, mean_tensor):
+    torch = _load_torch()
+    work_dtype = torch.promote_types(query_groups.dtype, sketch_tensor.dtype)
+    work_dtype = torch.promote_types(work_dtype, basis_tensor.dtype)
+    work_dtype = torch.promote_types(work_dtype, mean_tensor.dtype)
+    if query_groups.dtype != work_dtype:
+        query_groups = query_groups.to(dtype=work_dtype)
+    if sketch_tensor.dtype != work_dtype:
+        sketch_tensor = sketch_tensor.to(dtype=work_dtype)
+    if basis_tensor.dtype != work_dtype:
+        basis_tensor = basis_tensor.to(dtype=work_dtype)
+    if mean_tensor.dtype != work_dtype:
+        mean_tensor = mean_tensor.to(dtype=work_dtype)
+    return query_groups, sketch_tensor, basis_tensor, mean_tensor
 
 
 def _prepare_output_accumulator(out_acc: np.ndarray | None, head_dim: int, padded_head_dim: int, *, device_type: TorchDevice):
@@ -1939,10 +2192,23 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         query_groups = query.reshape(header.num_groups, header.group_size)
         page_count = len(pages)
         logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
+        prepared_chunk = _get_prepared_chunk_mps(pages)
         for group_index in range(header.num_groups):
-            group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
-            group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
-            group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            group_sketch = (
+                prepared_chunk.m2_sketch_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_sketch_groups is not None
+                else torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            )
+            group_basis = (
+                prepared_chunk.m2_basis_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_basis_groups is not None
+                else torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            )
+            group_mean = (
+                prepared_chunk.m2_mean_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_mean_groups is not None
+                else torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            )
             qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
                 query_groups[group_index],
                 group_sketch,
@@ -1954,10 +2220,39 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
                 logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
                 logits += torch.einsum("pg,g->p", group_mean, qg)[:, None]
                 continue
-            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
+            segment_ids = (
+                prepared_chunk.m2_segment_ids
+                if prepared_chunk is not None and prepared_chunk.m2_segment_ids is not None
+                else _segment_ids_tensor(header.token_count, int(group_basis.shape[1]), device_type=device_type)
+            )
             q_proj = torch.einsum("psrg,g->psr", group_basis, qg)
             logits += torch.einsum("ptr,ptr->pt", group_sketch, q_proj[:, segment_ids, :])
             logits += torch.einsum("ptg,g->pt", group_mean[:, segment_ids, :], qg)
+        return logits.reshape(-1)
+
+    if header.mode_default == "M4":
+        query = _pad_query(query_slice, header.padded_head_dim, device_type=device_type)
+        query_groups = query.reshape(header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
+        prepared_chunk = _get_prepared_chunk_mps(pages)
+        basis = _m4_basis_torch(header.group_size, int(pages[0].m2_sketch.shape[-1]), device_type=device_type)
+        for group_index in range(header.num_groups):
+            group_sketch = (
+                prepared_chunk.m2_sketch_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_sketch_groups is not None
+                else torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            )
+            group_mean = (
+                prepared_chunk.m2_mean_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_mean_groups is not None
+                else torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            )
+            qg = query_groups[group_index]
+            qg, group_sketch, _, group_mean = _coerce_m2_operands(qg, group_sketch, basis, group_mean)
+            q_proj = torch.matmul(qg, basis.to(dtype=qg.dtype).transpose(0, 1))
+            logits += torch.einsum("ptr,r->pt", group_sketch, q_proj)
+            logits += torch.einsum("pg,g->p", group_mean, qg)[:, None]
         return logits.reshape(-1)
 
     if header.mode_default == "M1":
@@ -2102,8 +2397,8 @@ def _mix_page_chunk_torch(
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
 
-    if header.mode_default == "M2":
-        raise ValueError("M2 is only supported for key scoring in this phase")
+    if header.mode_default in {"M2", "M4"}:
+        raise ValueError(f"{header.mode_default} is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):
@@ -2355,10 +2650,23 @@ def _score_page_chunk_multiquery_torch(
         query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
         page_count = len(pages)
         logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        prepared_chunk = _get_prepared_chunk_mps(pages)
         for group_index in range(header.num_groups):
-            group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
-            group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
-            group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            group_sketch = (
+                prepared_chunk.m2_sketch_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_sketch_groups is not None
+                else torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            )
+            group_basis = (
+                prepared_chunk.m2_basis_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_basis_groups is not None
+                else torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
+            )
+            group_mean = (
+                prepared_chunk.m2_mean_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_mean_groups is not None
+                else torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            )
             qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
                 query_groups[:, group_index, :],
                 group_sketch,
@@ -2370,10 +2678,39 @@ def _score_page_chunk_multiquery_torch(
                 logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
                 logits += torch.einsum("pg,qg->qp", group_mean, qg)[:, :, None]
                 continue
-            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
+            segment_ids = (
+                prepared_chunk.m2_segment_ids
+                if prepared_chunk is not None and prepared_chunk.m2_segment_ids is not None
+                else _segment_ids_tensor(header.token_count, int(group_basis.shape[1]), device_type=device_type)
+            )
             q_proj = torch.einsum("psrg,qg->qpsr", group_basis, qg)
             logits += torch.einsum("ptr,qptr->qpt", group_sketch, q_proj[:, :, segment_ids, :])
             logits += torch.einsum("ptg,qg->qpt", group_mean[:, segment_ids, :], qg)
+        return logits.reshape(query_count, -1)
+
+    if header.mode_default == "M4":
+        queries = _pad_queries(query_slices, header.padded_head_dim, device_type=device_type)
+        query_groups = queries.reshape(query_count, header.num_groups, header.group_size)
+        page_count = len(pages)
+        logits = torch.zeros((query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        prepared_chunk = _get_prepared_chunk_mps(pages)
+        basis = _m4_basis_torch(header.group_size, int(pages[0].m2_sketch.shape[-1]), device_type=device_type)
+        for group_index in range(header.num_groups):
+            group_sketch = (
+                prepared_chunk.m2_sketch_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_sketch_groups is not None
+                else torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
+            )
+            group_mean = (
+                prepared_chunk.m2_mean_groups[group_index]
+                if prepared_chunk is not None and prepared_chunk.m2_mean_groups is not None
+                else torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            )
+            qg = query_groups[:, group_index, :]
+            qg, group_sketch, _, group_mean = _coerce_m2_operands(qg, group_sketch, basis, group_mean)
+            q_proj = torch.matmul(qg, basis.to(dtype=qg.dtype).transpose(0, 1))
+            logits += torch.einsum("ptr,qr->qpt", group_sketch, q_proj)
+            logits += torch.einsum("pg,qg->qp", group_mean, qg)[:, :, None]
         return logits.reshape(query_count, -1)
 
     if header.mode_default == "M1":
@@ -2523,8 +2860,8 @@ def _mix_page_chunk_multiquery_torch(
         output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
         return output
 
-    if header.mode_default == "M2":
-        raise ValueError("M2 is only supported for key scoring in this phase")
+    if header.mode_default in {"M2", "M4"}:
+        raise ValueError(f"{header.mode_default} is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):
@@ -2690,19 +3027,65 @@ def _score_page_chunk_grouped_multiquery_torch(
             ).reshape(batch_size, query_count, header.padded_head_dim)
             query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        if (
+            grouped_prepared_chunk is not None
+            and grouped_prepared_chunk.m2_sketch_tensor is not None
+            and grouped_prepared_chunk.m2_basis_tensor is not None
+            and grouped_prepared_chunk.m2_mean_tensor is not None
+        ):
+            qg, sketch_tensor, basis_tensor, mean_tensor = _coerce_m2_grouped_operands(
+                query_groups_tensor,
+                grouped_prepared_chunk.m2_sketch_tensor,
+                grouped_prepared_chunk.m2_basis_tensor,
+                grouped_prepared_chunk.m2_mean_tensor,
+            )
+            if int(basis_tensor.shape[3]) == 1:
+                squeezed_basis = basis_tensor.squeeze(3)
+                squeezed_mean = mean_tensor.squeeze(3)
+                q_proj = torch.einsum("bpgrc,bqgc->bqpgr", squeezed_basis, qg)
+                logits += torch.einsum("bptgr,bqpgr->bqpt", sketch_tensor, q_proj)
+                logits += torch.einsum("bpgc,bqgc->bqp", squeezed_mean, qg)[:, :, :, None]
+                return logits.reshape(batch_size, query_count, -1)
+            segment_ids = (
+                grouped_prepared_chunk.m2_segment_ids
+                if grouped_prepared_chunk.m2_segment_ids is not None
+                else _segment_ids_tensor(header.token_count, int(basis_tensor.shape[3]), device_type=device_type)
+            )
+            q_proj = torch.einsum("bpgsrc,bqgc->bqpgsr", basis_tensor, qg)
+            logits += torch.einsum("bptgr,bqpgtr->bqpt", sketch_tensor, q_proj[:, :, :, :, segment_ids, :])
+            logits += torch.einsum("bpgtc,bqgc->bqpt", mean_tensor[:, :, :, segment_ids, :], qg)
+            return logits.reshape(batch_size, query_count, -1)
+        prepared_chunks = None if grouped_prepared_chunk is not None else [
+            _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
+            for group_pages in pages_by_group
+        ]
         for group_index in range(header.num_groups):
-            group_sketch = torch.stack(
-                [torch.stack([page.m2_sketch[:, group_index, :] for page in group_pages], dim=0) for group_pages in pages_by_group],
-                dim=0,
-            )
-            group_basis = torch.stack(
-                [torch.stack([page.m2_basis[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
-                dim=0,
-            )
-            group_mean = torch.stack(
-                [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
-                dim=0,
-            )
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.m2_sketch_groups is not None:
+                group_sketch = grouped_prepared_chunk.m2_sketch_groups[group_index]
+                group_basis = grouped_prepared_chunk.m2_basis_groups[group_index]
+                group_mean = grouped_prepared_chunk.m2_mean_groups[group_index]
+            elif prepared_chunks is not None and all(
+                chunk is not None and chunk.m2_sketch_groups is not None for chunk in prepared_chunks
+            ):
+                group_sketch = torch.stack([chunk.m2_sketch_groups[group_index] for chunk in prepared_chunks], dim=0)
+                group_basis = torch.stack([chunk.m2_basis_groups[group_index] for chunk in prepared_chunks], dim=0)
+                group_mean = torch.stack([chunk.m2_mean_groups[group_index] for chunk in prepared_chunks], dim=0)
+            else:
+                group_sketch = torch.stack(
+                    [torch.stack([page.m2_sketch[:, group_index, :] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                )
+                group_basis = torch.stack(
+                    [torch.stack([page.m2_basis[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                )
+                group_mean = torch.stack(
+                    [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                )
             qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
                 query_groups_tensor[:, :, group_index, :],
                 group_sketch,
@@ -2714,10 +3097,78 @@ def _score_page_chunk_grouped_multiquery_torch(
                 logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
                 logits += torch.einsum("bpg,bqg->bqp", group_mean, qg)[:, :, :, None]
                 continue
-            segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[2]))).to(device=device_type)
+            segment_ids = (
+                grouped_prepared_chunk.m2_segment_ids
+                if grouped_prepared_chunk is not None and grouped_prepared_chunk.m2_segment_ids is not None
+                else (
+                    prepared_chunks[0].m2_segment_ids
+                    if prepared_chunks is not None and prepared_chunks[0] is not None and prepared_chunks[0].m2_segment_ids is not None
+                    else _segment_ids_tensor(header.token_count, int(group_basis.shape[2]), device_type=device_type)
+                )
+            )
             q_proj = torch.einsum("bpsrg,bqg->bqpsr", group_basis, qg)
             logits += torch.einsum("bptr,bqptr->bqpt", group_sketch, q_proj[:, :, :, segment_ids, :])
             logits += torch.einsum("bptg,bqg->bqpt", group_mean[:, :, segment_ids, :], qg)
+        return logits.reshape(batch_size, query_count, -1)
+
+    if header.mode_default == "M4":
+        query_groups_tensor = prepared_query_groups_tensor
+        if query_groups_tensor is None:
+            padded_queries = _pad_queries(
+                queries.reshape(batch_size * query_count, header.head_dim),
+                header.padded_head_dim,
+                device_type=device_type,
+            ).reshape(batch_size, query_count, header.padded_head_dim)
+            query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
+        logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
+        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        basis = _m4_basis_torch(header.group_size, int(pages_by_group[0][0].m2_sketch.shape[-1]), device_type=device_type)
+        if (
+            grouped_prepared_chunk is not None
+            and grouped_prepared_chunk.m2_sketch_tensor is not None
+            and grouped_prepared_chunk.m2_mean_tensor is not None
+        ):
+            qg, sketch_tensor, _, mean_tensor = _coerce_m2_grouped_operands(
+                query_groups_tensor,
+                grouped_prepared_chunk.m2_sketch_tensor,
+                basis.view(1, 1, 1, *basis.shape),
+                grouped_prepared_chunk.m2_mean_tensor,
+            )
+            basis_work = basis.to(dtype=qg.dtype)
+            q_proj = torch.einsum("rc,bqgc->bqgr", basis_work, qg)
+            logits += torch.einsum("bptgr,bqgr->bqpt", sketch_tensor, q_proj)
+            logits += torch.einsum("bpgc,bqgc->bqp", mean_tensor, qg)[:, :, :, None]
+            return logits.reshape(batch_size, query_count, -1)
+        prepared_chunks = None if grouped_prepared_chunk is not None else [
+            _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
+            for group_pages in pages_by_group
+        ]
+        for group_index in range(header.num_groups):
+            if grouped_prepared_chunk is not None and grouped_prepared_chunk.m2_sketch_groups is not None:
+                group_sketch = grouped_prepared_chunk.m2_sketch_groups[group_index]
+                group_mean = grouped_prepared_chunk.m2_mean_groups[group_index]
+            elif prepared_chunks is not None and all(
+                chunk is not None and chunk.m2_sketch_groups is not None for chunk in prepared_chunks
+            ):
+                group_sketch = torch.stack([chunk.m2_sketch_groups[group_index] for chunk in prepared_chunks], dim=0)
+                group_mean = torch.stack([chunk.m2_mean_groups[group_index] for chunk in prepared_chunks], dim=0)
+            else:
+                group_sketch = torch.stack(
+                    [torch.stack([page.m2_sketch[:, group_index, :] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                )
+                group_mean = torch.stack(
+                    [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+                    dim=0,
+                )
+            qg = query_groups_tensor[:, :, group_index, :]
+            qg, group_sketch, _, group_mean = _coerce_m2_operands(qg, group_sketch, basis, group_mean)
+            basis_work = basis.to(dtype=qg.dtype)
+            q_proj = torch.einsum("rc,bqc->bqr", basis_work, qg)
+            logits += torch.einsum("bptr,bqr->bqpt", group_sketch, q_proj)
+            logits += torch.einsum("bpg,bqg->bqp", group_mean, qg)[:, :, :, None]
         return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":
@@ -3042,8 +3493,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
         output[:, :, : header.head_dim] += torch.einsum("bqpt,bpth->bqh", weights, dense)
         return output
 
-    if header.mode_default == "M2":
-        raise ValueError("M2 is only supported for key scoring in this phase")
+    if header.mode_default in {"M2", "M4"}:
+        raise ValueError(f"{header.mode_default} is only supported for key scoring in this phase")
 
     if header.mode_default == "M1":
         for group_index in range(header.num_groups):

@@ -1203,3 +1203,179 @@ So the repo now has two distinct `Qwen2.5 7B` CUDA stories:
 
 - best runtime lane: `K=M3 / V=M0`
 - best low-memory adaptive lane: planner `aggressive` per-page keys on top of `K=M0 / V=M0`
+
+## 2026-03-28 - Cached grouped M2 tensors on CUDA
+
+The next CUDA optimization target after landing the planner-aggressive `Qwen2.5 7B` lane was the `M2` key score path itself. The exact `4096` planner-aggressive profile made the bottleneck clear:
+
+- `decode_score_ms_per_step = 130.19`
+- `decode_mix_ms_per_step = 112.51`
+- `decode_unpack_ms_per_step = 4.66`
+
+So this was not an unpack problem. The hot path was repeatedly rebuilding grouped `M2` score tensors (`m2_sketch`, `m2_basis`, `m2_mean`) from individual prepared pages inside every decode step.
+
+I fixed that by extending the prepared chunk caches in [torch_mps.py](/workspace/DotCache/dotcache/backends/torch_mps.py) to support `M2` pages on CUDA:
+
+- single prepared chunks can now cache per-group stacked `M2` sketch, basis, and mean tensors
+- grouped prepared chunks can now cache the batched grouped `M2` view used by grouped decode
+- the CUDA `M2` score path now reuses those cached tensors instead of restacking them every layer
+
+Validation:
+
+- [test_torch_cuda_backend.py](/workspace/DotCache/tests/test_torch_cuda_backend.py): grouped CUDA `M2` decode slices still pass
+- [test_vllm_adapter.py](/workspace/DotCache/tests/test_vllm_adapter.py): grouped prepared chunk cache now has explicit `M2` CUDA coverage
+
+Measured on `Qwen/Qwen2.5-7B-Instruct`, exact `4096`, planner-aggressive, CUDA:
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | KV resident bytes | Total resident bytes | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before cached grouped `M2` | `307.50` | `130.19` | `112.51` | `4.66` | `91,995,136` | `137,968,640` | `1.00` |
+| after cached grouped `M2` | `304.79` | `127.64` | `110.55` | `4.27` | `91,995,136` | `136,784,896` | `1.00` |
+
+This is a real but modest win. The grouped `M2` path is still fundamentally score-heavy, but the chunk-cache extension did trim some decode-time orchestration overhead without changing the model-facing behavior.
+
+I then pushed one step further on the same path: when the grouped prepared chunk cache is available, it now also materializes batched all-group `M2` tensors, and the grouped CUDA scorer uses those directly instead of looping over the `4` groups in Python.
+
+Measured again on `Qwen/Qwen2.5-7B-Instruct`, exact `4096`, planner-aggressive, CUDA:
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | KV resident bytes | Total resident bytes | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| after cached grouped `M2` | `304.79` | `127.64` | `110.55` | `4.27` | `91,995,136` | `136,784,896` | `1.00` |
+| after batched grouped `M2` score | `297.56` | `116.63` | `109.76` | `4.78` | `91,995,136` | `136,072,192` | `1.00` |
+
+This second step is worth keeping. It trims another `7.23 ms/step` off the real exact-length decode path and takes a meaningful bite out of the `M2` score band without increasing KV residency.
+
+I also tried replacing the single-segment grouped `M2` score branch with a flattened batched-`matmul` formulation instead of the cached-tensor `einsum` path. That was a clear regression on the same workload, so I reverted it:
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kept batched grouped `M2` score | `297.56` | `116.63` | `109.76` | `4.78` | `1.00` |
+| reverted flattened `matmul` rewrite | `354.51` | `125.67` | `117.86` | `6.05` | `1.00` |
+
+So the next useful CUDA step is not another PyTorch-level reshaping of the single-segment `M2` score math. The remaining win, if there is one, likely needs a dedicated lower-level kernel or a different page-native formulation.
+
+I also tried that next lower-level step directly: a guarded CUDA-only Triton scorer for the exact single-segment grouped `M2` lane used by `Qwen2.5 7B` planner-aggressive (`group_size=32`, `num_groups=4`, `rank=8`). The result was mixed and not good enough to keep, so I reverted it.
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kept cached grouped `M2` path | `297.56` | `116.63` | `109.76` | `4.78` | `1.00` |
+| reverted Triton `M2` scorer, profiled | `302.55` | `114.48` | `109.30` | `4.75` | `1.00` |
+| reverted Triton `M2` scorer, plain rerun A | `306.87` | n/a | n/a | n/a | `1.00` |
+| reverted Triton `M2` scorer, plain rerun B | `317.92` | n/a | n/a | n/a | `1.00` |
+
+So even though the profiled score band improved slightly, the real exact-length end-to-end decode regressed. That rules out this first Triton score-only shape as the next keepable CUDA path.
+
+I also tried a decode-structure change instead of a new kernel: routing `decode_layer_torch` through the grouped output-only path only for the CUDA adaptive-key case (`M2` keys with `M0` values), since that path already does online softmax and only needs the final activations. That also turned out to be a dead end, so I reverted it.
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kept cached grouped `M2` path | `297.56` | `116.63` | `109.76` | `4.78` | `1.00` |
+| reverted selective output-only route, profiled | `308.45` | `117.41` | `110.88` | `4.72` | `1.00` |
+| reverted selective output-only route, plain | `314.63` | n/a | n/a | n/a | `1.00` |
+
+So the next useful CUDA step is narrower again: not a score-only kernel, and not switching the adaptive lane over to the existing output-only decode structure. The remaining win likely needs a more integrated fused design or a different adaptive page representation.
+
+## 2026-03-28 - Experimental fixed-project key pages (`M4`) for CUDA adaptive Qwen7B
+
+The next experiment after exhausting the obvious `M2/sketch` kernel and decode-structure ideas was a different adaptive key representation altogether. I added an experimental key-only mode, `M4/project`, behind an explicit config flag:
+
+- it keeps the planner shape the same as the current aggressive adaptive lane
+- it swaps the `M2/sketch` candidate for a fixed-basis projected key page
+- each key page stores per-token coefficients against a shared Hadamard-derived basis plus one page mean per group
+- score no longer needs page-specific basis application; it becomes a projected-query dot product against those stored coefficients
+
+This mode is intentionally guarded by `prefer_m4_project_k=True`; it does not affect the current default planner behavior.
+
+Validation:
+
+- [test_m4_key_project.py](/workspace/DotCache/tests/test_m4_key_project.py): CPU/reference coverage for `M4/project`
+- [test_torch_cuda_backend.py](/workspace/DotCache/tests/test_torch_cuda_backend.py): CUDA decode parity for `M4` key pages
+- [test_vllm_adapter.py](/workspace/DotCache/tests/test_vllm_adapter.py): grouped prepared-chunk cache coverage for CUDA `M4` pages
+
+Measured on `Qwen/Qwen2.5-7B-Instruct`, exact `4096`, planner-aggressive, CUDA, same command shape:
+
+| Run | Decode ms/step | Score ms/step | Mix ms/step | Unpack ms/step | KV resident bytes | Agreement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| planner aggressive `M2/sketch`, plain | `334.83` | n/a | n/a | n/a | `89,400,576` | `1.00` |
+| planner aggressive `M4/project`, plain | `311.43` | n/a | n/a | n/a | `88,227,072` | `1.00` |
+| planner aggressive `M2/sketch`, profiled | `330.62` | `138.49` | `121.63` | `1.97` | `89,400,576` | `1.00` |
+| planner aggressive `M4/project`, profiled | `337.30` | `133.62` | `127.02` | `2.22` | `88,227,072` | `1.00` |
+
+So the current read is mixed but useful:
+
+- the plain exact-length run improved materially with `M4/project`
+- KV residency also improved slightly
+- the profiled run stayed in roughly the same overall band
+- score improved a bit, but that win was partly offset elsewhere, so this is not yet a clear decode-kernel breakthrough
+
+That makes `M4/project` worth keeping as an experimental lane, but not worth promoting over `M2/sketch` yet. It gives the repo a reproducible alternative adaptive key representation to iterate on, and it is simple enough that future work can target either:
+
+- better fixed-basis choices / projection rank, or
+- a dedicated fast path for `M4/project` if the plain-path improvement proves stable
+
+I then reran the `M4/project` lane after merging the newer `main` branch, which now includes the recent MPS low-bit follow-ups and planner updates, and did a small exact `4096` stability sweep on the CUDA `Qwen2.5 7B` planner-aggressive lane:
+
+| Run | Decode ms/step | KV resident bytes | Agreement |
+| --- | ---: | ---: | ---: |
+| `M2/sketch` baseline (`rank=8`) | `347.49` | `89,400,576` | `1.00` |
+| `M4/project` `rank=4` | `340.82` | `83,533,056` | `1.00` |
+| `M4/project` `rank=8` run A | `326.80` | `88,227,072` | `1.00` |
+| `M4/project` `rank=8` run B | `335.98` | `88,227,072` | `1.00` |
+| `M4/project` `rank=16` | `336.71` | `97,615,104` | `1.00` |
+
+That sweep tightened the conclusion:
+
+- `M4/project` is still a real keepable experimental lane
+- `rank=8` remains the best current `M4` setting on this pod
+- `rank=4` saves more memory but gives up some decode time
+- `rank=16` increases memory without paying it back in speed
+- the two `rank=8` runs show enough variance that `M4` should stay experimental for now rather than replacing `M2` in the planner defaults
+
+The next question was whether the new `main` branch `M0` 3-bit work helps if we pair it with the experimental `M4/project` key lane on CUDA. I ran a three-way exact-length sweep on `Qwen/Qwen2.5-7B-Instruct`, planner-aggressive keys, exact values, CUDA:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen2_compare.py \
+  --model-id Qwen/Qwen2.5-7B-Instruct \
+  --backend torch_cuda \
+  --device cuda \
+  --default-mode-k M0 \
+  --default-mode-v M0 \
+  --key-policy-tier aggressive \
+  --value-policy-tier exact \
+  --repeat-counts \
+  --target-prompt-lengths 1024 2048 4096 \
+  --max-new-tokens 2
+```
+
+The three compared lanes were:
+
+- baseline adaptive lane: planner-aggressive `K=M2/sketch`, `V=M0` 4-bit
+- experimental fast adaptive lane: planner-aggressive `K=M4/project rank=8`, `V=M0` 4-bit
+- experimental low-memory lane: planner-aggressive `K=M4/project rank=8`, `V=M0` 3-bit
+
+| Prompt | Lane | Decode ms/step | KV resident bytes | Agreement |
+| --- | --- | ---: | ---: | ---: |
+| `1024` | `M2/V4` | `215.45` | `33,361,920` | `1.00` |
+| `1024` | `M4/V4` | `228.96` | `33,067,008` | `1.00` |
+| `1024` | `M4/V3` | `269.84` | `31,232,000` | `1.00` |
+| `2048` | `M2/V4` | `242.44` | `52,043,776` | `1.00` |
+| `2048` | `M4/V4` | `226.51` | `51,453,952` | `1.00` |
+| `2048` | `M4/V3` | `273.78` | `47,783,936` | `1.00` |
+| `4096` | `M2/V4` | `355.10` | `89,400,576` | `1.00` |
+| `4096` | `M4/V4` | `302.23` | `88,227,072` | `1.00` |
+| `4096` | `M4/V3` | `345.53` | `80,887,040` | `1.00` |
+
+The page mix stayed structurally the same across the three lanes; the planner was deciding the key pages and values remained all `M0` pages. At exact `4096`:
+
+- `M2/V4`: `1219` `K:M0:2`, `573` `K:M2:4`, `1792` `V:M0`
+- `M4/V4`: `1219` `K:M0:2`, `573` `K:M4:4`, `1792` `V:M0`
+- `M4/V3`: `1219` `K:M0:2`, `573` `K:M4:4`, `1792` `V:M0`
+
+That sweep gives the next working split:
+
+- best adaptive-performance lane: `M4/project rank=8` with `V=M0` 4-bit
+- best adaptive-min-memory lane: `M4/project rank=8` with `V=M0` 3-bit
+- current baseline to beat: `M2/sketch` with `V=M0` 4-bit
+
+The practical conclusion is that the new 3-bit value support is useful here as a memory tier, but not as the default adaptive CUDA lane. It trims about `7.34 MiB` of KV memory at exact `4096`, while giving back most of the decode-time win from `M4/project`.

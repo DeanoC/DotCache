@@ -5,6 +5,7 @@ import numpy as np
 from .decode_reference import decode_page
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import segment_ids_for_token_count
+from .modes.m4_key_project import fixed_project_basis
 from .modes.m3_escape import decode_escape_payload
 from .modes.turbo3 import fwht_last_dim
 from .page_format import load_group_words
@@ -59,6 +60,18 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
             logits += np.einsum("tr,tr->t", page.m2_sketch[:, group_index, :].astype(np.float32), q_proj[segment_ids])
             if group_mean is not None:
                 logits += group_mean[segment_ids].astype(np.float32) @ query_groups[group_index]
+        return logits
+
+    if header.mode_default == "M4":
+        if page.m2_sketch is None or page.m2_mean is None:
+            raise ValueError("M4 page is missing projected payload")
+        query_groups = query.reshape(header.num_groups, header.group_size)
+        logits = np.zeros(header.token_count, dtype=np.float32)
+        basis = fixed_project_basis(header.group_size, int(page.m2_sketch.shape[-1]))
+        for group_index in range(header.num_groups):
+            q_proj = basis @ query_groups[group_index]
+            logits += page.m2_sketch[:, group_index, :].astype(np.float32) @ q_proj.astype(np.float32)
+            logits += np.dot(page.m2_mean[group_index].astype(np.float32), query_groups[group_index]).astype(np.float32)
         return logits
 
     if header.mode_default == "T3":
@@ -128,8 +141,8 @@ def mix_page_ref(attn_weights: np.ndarray, page: EncodedPage, out_acc: np.ndarra
         output[: header.head_dim] += weights @ dense
         return output[: header.head_dim].copy()
 
-    if header.mode_default == "M2":
-        raise ValueError("M2 is only supported for key scoring in this phase")
+    if header.mode_default in {"M2", "M4"}:
+        raise ValueError(f"{header.mode_default} is only supported for key scoring in this phase")
 
     if header.mode_default == "T3":
         if page.payload is None or page.scales is None or page.codebooks is None:

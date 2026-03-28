@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from dotcache.attention_runtime import decode_step
 from dotcache.backends.torch_mps import (
@@ -381,6 +382,154 @@ def test_grouped_prepared_chunk_cache_builds_packed_cuda_view_for_four_group128(
     assert tuple(first.payload_groups[0].shape) == (len(pages_by_group), len(pages_by_group[0]), config.tokens_per_page, 4)
     assert first.scales_groups[0].dtype == torch.float32
     assert first.bias_groups[0].dtype == torch.float32
+
+
+def test_grouped_prepared_chunk_cache_builds_m2_cuda_view() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    rng = np.random.default_rng(1209)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            mode="M2",
+            quant_scheme="sketch",
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            m2_sketch=torch.from_numpy(encoded.m2_sketch.copy()),
+            m2_basis=torch.from_numpy(encoded.m2_basis.copy()),
+            m2_mean=torch.from_numpy(encoded.m2_mean.copy()),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=301),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=302),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=303),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=304),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=311),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=312),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=313),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=314),
+        ],
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.m2_sketch_groups is not None
+    assert first.m2_basis_groups is not None
+    assert first.m2_mean_groups is not None
+    assert first.m2_sketch_tensor is not None
+    assert first.m2_basis_tensor is not None
+    assert first.m2_mean_tensor is not None
+    assert first.codes_groups is None
+    assert tuple(first.m2_sketch_groups[0].shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert tuple(first.m2_basis_groups[0].shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert tuple(first.m2_mean_groups[0].shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert tuple(first.m2_sketch_tensor.shape[:4]) == (
+        len(pages_by_group),
+        len(pages_by_group[0]),
+        config.tokens_per_page,
+        config.head_dim // config.group_size,
+    )
+    assert tuple(first.m2_basis_tensor.shape[:3]) == (
+        len(pages_by_group),
+        len(pages_by_group[0]),
+        config.head_dim // config.group_size,
+    )
+    assert tuple(first.m2_mean_tensor.shape[:3]) == (
+        len(pages_by_group),
+        len(pages_by_group[0]),
+        config.head_dim // config.group_size,
+    )
+
+
+def test_grouped_prepared_chunk_cache_builds_m4_cuda_view() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    rng = np.random.default_rng(1210)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            mode="M4",
+            quant_scheme="project",
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            m2_sketch=torch.from_numpy(encoded.m2_sketch.copy()),
+            m2_mean=torch.from_numpy(encoded.m2_mean.copy()),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=321),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=322),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=323),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=324),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=331),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=332),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=333),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=334),
+        ],
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.m2_sketch_groups is not None
+    assert first.m2_basis_groups is None
+    assert first.m2_mean_groups is not None
+    assert first.m2_sketch_tensor is not None
+    assert first.m2_basis_tensor is None
+    assert first.m2_mean_tensor is not None
+    assert tuple(first.m2_sketch_groups[0].shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert tuple(first.m2_mean_groups[0].shape[:2]) == (len(pages_by_group), len(pages_by_group[0]))
+    assert tuple(first.m2_sketch_tensor.shape[:4]) == (
+        len(pages_by_group),
+        len(pages_by_group[0]),
+        config.tokens_per_page,
+        config.head_dim // config.group_size,
+    )
+    assert tuple(first.m2_mean_tensor.shape[:3]) == (
+        len(pages_by_group),
+        len(pages_by_group[0]),
+        config.head_dim // config.group_size,
+    )
 
 
 torch = pytest.importorskip("torch")

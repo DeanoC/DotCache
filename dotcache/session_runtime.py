@@ -15,6 +15,7 @@ from .attention_runtime import (
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import reconstruct_group_m2
+from .modes.m4_key_project import reconstruct_group_m4
 from .modes.m3_escape import decode_escape_payload
 from .modes.turbo3 import dequantize_group_turbo3
 from .page_cache import PreparedPageCache
@@ -55,6 +56,20 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
                 source_page.m2_sketch[:, group_index, :],
                 basis=source_page.m2_basis[group_index],
                 mean=None if source_page.m2_mean is None else source_page.m2_mean[group_index],
+            )
+        return dense[:, : header.head_dim]
+
+    if header.mode_default == "M4":
+        if source_page.m2_sketch is None or source_page.m2_mean is None:
+            raise ValueError("M4 page is missing projected payload")
+        dense = np.zeros((header.token_count, header.padded_head_dim), dtype=np.float32)
+        for group_index in range(header.num_groups):
+            start = group_index * header.group_size
+            end = start + header.group_size
+            dense[:, start:end] = reconstruct_group_m4(
+                source_page.m2_sketch[:, group_index, :],
+                mean=source_page.m2_mean[group_index],
+                group_size=header.group_size,
             )
         return dense[:, : header.head_dim]
 

@@ -246,6 +246,38 @@ def test_model_paged_kv_cache_segmented_m2_keys_decode_on_cuda() -> None:
 
 
 @requires_cuda
+def test_model_paged_kv_cache_project_m4_keys_decode_on_cuda() -> None:
+    rng = np.random.default_rng(9033)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M4",
+        default_mode_v="M0",
+        quant_scheme_k="project",
+        m2_sketch_dim_k=8,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_cuda",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    queries = rng.normal(size=(2, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    numpy_outputs = cache.decode_layer(0, queries, np.array([0, 1], dtype=np.int64))
+    torch_outputs = cache.decode_layer_torch(0, torch.from_numpy(queries).to(device="cuda"), np.array([0, 1], dtype=np.int64))
+
+    np.testing.assert_allclose(torch_outputs.detach().cpu().numpy(), numpy_outputs, atol=1e-4, rtol=1e-4)
+
+
+@requires_cuda
 def test_model_paged_kv_cache_append_step_torch_avoids_host_uploads_on_cuda() -> None:
     rng = np.random.default_rng(904)
     config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
