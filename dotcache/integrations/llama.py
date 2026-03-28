@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
@@ -83,6 +84,16 @@ class LlamaLayerRuntimeProfile:
 def _require_transformers() -> None:
     if not transformers_available():
         raise RuntimeError("transformers and torch are required for the Llama integration path")
+
+
+def resolve_hf_auth_kwargs() -> dict[str, str]:
+    for env_name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN"):
+        token = os.environ.get(env_name)
+        if token is not None:
+            token = token.strip()
+        if token:
+            return {"token": token}
+    return {}
 
 
 def _torch_backend_matches_device(backend: str, device_type: str) -> bool:
@@ -687,10 +698,11 @@ class LlamaDotCacheHarness:
         _require_transformers()
         dtype = getattr(torch, torch_dtype)
         resolved_device = _default_model_device() if device is None else device
-        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
+        auth_kwargs = resolve_hf_auth_kwargs()
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype, **auth_kwargs)
         model.to(resolved_device)
         model.eval()
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **auth_kwargs)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         adapter = LlamaDotCacheModelAdapter(model, dotcache_config, backend=backend)

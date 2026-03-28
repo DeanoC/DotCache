@@ -6,7 +6,7 @@ import json
 from transformers import AutoConfig
 
 from dotcache.config import DotCacheConfig
-from dotcache.integrations.llama import LlamaDotCacheHarness, transformers_available
+from dotcache.integrations.llama import LlamaDotCacheHarness, resolve_hf_auth_kwargs, transformers_available
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,7 +80,7 @@ def main() -> None:
     if not transformers_available():
         raise SystemExit("bench_llama_mode_profile.py requires the optional transformers dependencies")
 
-    model_config = AutoConfig.from_pretrained(args.model_id)
+    model_config = AutoConfig.from_pretrained(args.model_id, **resolve_hf_auth_kwargs())
     head_dim = model_config.hidden_size // model_config.num_attention_heads
     initial_config = _build_config(
         args.modes[0],

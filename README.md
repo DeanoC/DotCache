@@ -37,10 +37,30 @@ This repo now has a `torch_cuda` backend for NVIDIA development, so the practica
 Bootstrap the local environment with:
 
 ```bash
+source scripts/env_cuda.sh
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
-That script creates `.venv`, reuses a working system CUDA PyTorch when the pod already has one, otherwise installs a current `torch>=2.8` wheel, then installs the dev and Hugging Face dependencies and fails fast if `torch.cuda.is_available()` is false.
+The sourced env script normalizes `CUDA_HOME`, `CUDA_PATH`, `PATH`, `LD_LIBRARY_PATH`, and a shared Hugging Face cache under `/workspace/.cache/huggingface`, so a pod move does not depend on whatever the new login shell happens to export.
+
+The bootstrap script then creates `.venv`, reuses a working system CUDA PyTorch when the pod already has one, otherwise installs a current `torch>=2.8` wheel, then installs the dev and Hugging Face dependencies and fails fast if `torch.cuda.is_available()` is false.
+
+For gated Hugging Face checkpoints such as Llama 3.2, export your token before running the model benchmarks:
+
+```bash
+export HF_TOKEN=...
+source scripts/env_cuda.sh
+```
+
+The env script mirrors `HF_TOKEN` and `HUGGINGFACE_HUB_TOKEN`, and the current harnesses / benchmark entrypoints now pass that token into `from_pretrained(...)`.
+
+After a pod move, the minimal recovery flow is:
+
+```bash
+cd /workspace/DotCache
+source scripts/env_cuda.sh
+bash scripts/bootstrap_nvidia_llama_dev.sh
+```
 
 For a local no-download smoke run on this machine, use:
 

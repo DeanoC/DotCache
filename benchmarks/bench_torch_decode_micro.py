@@ -9,6 +9,7 @@ import torch
 from transformers import AutoConfig
 
 from dotcache.backends.torch_mps import _mix_m0_contribution_torch, _mix_m0_contribution_two_group64_torch, _score_m0_logits_flat_torch, _score_m0_logits_two_group64_torch
+from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,7 +68,7 @@ def main() -> None:
         raise SystemExit("MPS is unavailable")
 
     torch.manual_seed(args.seed)
-    config = AutoConfig.from_pretrained(args.model_id)
+    config = AutoConfig.from_pretrained(args.model_id, **resolve_hf_auth_kwargs())
     hidden_size = int(config.hidden_size)
     num_attention_heads = int(config.num_attention_heads)
     num_key_value_heads = int(config.num_key_value_heads)

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Standardize CUDA and Hugging Face cache paths across pod moves.
+source "$ROOT_DIR/scripts/env_cuda.sh"
+
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
 TORCH_SPEC="${TORCH_SPEC:-torch>=2.8}"

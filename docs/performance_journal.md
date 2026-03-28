@@ -236,6 +236,114 @@ That adaptive-budget checkpoint is useful, but it changes the tradeoff:
 - At `4096`, the same policy is much more clearly a memory-first trade. Total resident ratio drops further from `0.39x` to `0.28x`, but decode slows from `416.66 ms/step` to `512.20 ms/step`.
 - The right read is that this budgeted path is not a free win. It is a useful guardrail for memory-sensitive deployments, but the 5090 data says the uncapped trimmed fused cache remains the better throughput-oriented default for longer exact contexts unless we make the cache policy more workload-shaped.
 
+### Recent CUDA negative results on the RTX 5090 32 GB
+
+We ran three more CUDA experiments against the real `meta-llama/Llama-3.2-3B-Instruct` exact-length `4096` lane after the FP32 affine-metadata win. All three kept `greedy_token_agreement_rate = 1.0`, but none beat the current stable checkpoint, so all three were reverted.
+
+Current stable checkpoint after those reversions:
+
+| Prompt Len | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | KV Resident Bytes | Total Resident Bytes | Prepared Chunk Resident |
+|---|---:|---:|---:|---:|---:|---:|
+| `4096` | `46.72` | `617.02` | `564.93` | `205,520,896` | `271,056,896` | `65,536,000` |
+
+Failed follow-up experiments:
+
+| Experiment | Profiled Decode ms/step | Score | Mix | Non-profiled Decode ms/step | Total Resident Bytes | Verdict |
+|---|---:|---:|---:|---:|---:|---|
+| Static-pages plus dense-tail specialized merge | `651.88` | `255.43` | `243.20` | `614.34` | `271,056,896` | Correct but not faster |
+| Fused `4 x 32 -> 128` PyTorch matmul path | `653.23` | `272.40` | `262.99` | `707.77` | `272,433,152` | Regressed badly |
+| Triton grouped `4 x 32 -> 128` fused score/mix path | `638.32` | `264.25` | `256.60` | `631.86` | `251,658,240` | Memory win only, still slower |
+
+What that changed in our read:
+
+- The remaining `4096` Llama 3.2 bottleneck is not chunk-boundary bookkeeping. The specialized static-plus-tail merge removed some structure, but it did not move the real end-to-end number enough to justify extra complexity.
+- Wider fused matmuls over precomputed `codes * scales` are not automatically a win on this workload. The eager `4 x 32 -> 128` PyTorch fusion regressed sharply even though the narrower `2 x 64` fused path remains useful on the models that match it.
+- The first Triton grouped `128`-dim path was directionally better than the eager fused-PyTorch attempt and cut prepared-chunk residency from `65.54 MiB` to `46.14 MiB`, but it still lost to the stable checkpoint on decode time.
+- The next useful kernel step therefore needs to drop below the current prepared-chunk abstraction. If we want a real CUDA/Triton win on the Llama 3.2 `128`-dim lane, the kernel must consume packed page words directly and fuse unpack plus affine score or mix, instead of first materializing the current unpacked grouped tensors or fused scaled-code buffers.
+
+### Latest Llama 3.2 packed-word CUDA checkpoint on the RTX 5090 32 GB
+
+That next lower-level idea did pay off once we kept it narrow. For the CUDA-only `M0` grouped `head_dim=128` lane, the grouped prepared-chunk cache now retains packed page payload words plus affine scales and bias, and the hot score/mix path unpacks one packed word at a time instead of caching full unpacked `[... , 32]` code tensors.
+
+Latest exact `4096` checkpoint on `meta-llama/Llama-3.2-3B-Instruct`:
+
+| Run | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | Score | Mix | Unpack | KV Resident Bytes | Total Resident Bytes | Prepared Chunk Resident | Agreement |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Previous stable checkpoint | `46.72` | `617.02` | `564.93` | n/a | n/a | n/a | `205,520,896` | `271,056,896` | `65,536,000` | `1.0` |
+| New profiled packed-word run | `108.77` | `569.00` | `523.33` | `221.63` | `207.63` | `48.90` | `205,520,896` | `271,581,184` | `66,060,288` | `1.0` |
+| New non-profiled packed-word run | `95.63` | `575.75` | `521.39` | n/a | n/a | n/a | `205,520,896` | `271,581,184` | `66,060,288` | `1.0` |
+
+What that changed in our read:
+
+- The grouped `128`-dim CUDA lane was in fact paying too much for cached unpacked codes. Replacing that cache with packed payload words plus affine metadata improved the real exact `4096` Llama 3.2 decode checkpoint from `617.02 ms/step` to `575.75 ms/step`.
+- The profile breakdown is healthier than the earlier eager or Triton grouped `128`-dim experiments. Score fell into the `221.63 ms` band, mix into `207.63 ms`, and the new explicit unpack work stayed bounded at `48.90 ms`.
+- The memory trade is basically flat. KV residency stayed unchanged, total resident bytes moved only slightly from `271.06 MiB` to `271.58 MiB`, and prepared-chunk residency stayed in the same rough `~66 MiB` band.
+- The important systems detail is that the packed-word path keeps peak temporary decode materialization small. On the recorded profile the trace reported only `1.0 MiB` max temporary bytes while the grouped path executed `896` unpack calls across the full decode step.
+- This is the first lower-level grouped `128`-dim CUDA change that beat the prior stable checkpoint and kept exact greedy agreement, so it should remain the default path for this exact lane.
+
+### Latest Llama 3.2 unpack-once CUDA checkpoint on the RTX 5090 32 GB
+
+There was still avoidable overhead inside that packed-word path. The next refinement kept the same CUDA-only grouped `128`-dim cache shape, but changed score and mix to unpack each `32`-symbol group once per call and then reuse the unpacked group for the existing grouped `32`-dim matmul, instead of doing four separate unpack-plus-word-matmul passes.
+
+Latest exact `4096` checkpoint on `meta-llama/Llama-3.2-3B-Instruct` after that refinement:
+
+| Run | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | Score | Mix | Unpack | Unpack Calls | Max Temporary Bytes | KV Resident Bytes | Total Resident Bytes | Agreement |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Previous packed-word checkpoint | `95.63` | `575.75` | `521.39` | `221.63` | `207.63` | `48.90` | `896` | `1.0 MiB` | `205,520,896` | `271,581,184` | `1.0` |
+| New profiled unpack-once run | `99.63` | `533.48` | `456.93` | `186.32` | `175.64` | `15.20` | `224` | `4.0 MiB` | `205,520,896` | `271,581,184` | `1.0` |
+| New non-profiled unpack-once run | `100.32` | `513.68` | `467.18` | n/a | n/a | n/a | n/a | n/a | `205,520,896` | `271,581,184` | `1.0` |
+
+What that changed in our read:
+
+- The remaining unpack overhead was mostly call structure, not unavoidable arithmetic. Collapsing four word-level unpack passes into one per grouped `32`-symbol chunk cut profiled unpack time from `48.90 ms` to `15.20 ms`.
+- The score and mix bands also improved materially once the grouped path stopped bouncing through the smaller per-word loop. On the recorded profile, score fell from `221.63 ms` to `186.32 ms` and mix from `207.63 ms` to `175.64 ms`.
+- The real end-to-end checkpoint moved again in the right direction: non-profiled exact `4096` decode improved from `575.75 ms/step` to `513.68 ms/step` while keeping exact greedy agreement.
+- The tradeoff is a larger temporary decode buffer. Peak temporary bytes rose from `1.0 MiB` to `4.0 MiB`, but that is still small relative to the overall resident footprint and the total resident bytes stayed flat.
+- This is a cleaner steady-state shape for the current eager CUDA path. The next worthwhile kernel step is now below this unpack-once grouped path, not another reorganization of the same eager tensor work.
+
+Rejected follow-up Triton score-only kernel on the same lane:
+
+| Experiment | Profiled Decode ms/step | Decode Runtime ms/step | Score | Mix | Unpack | Verdict |
+|---|---:|---:|---:|---:|---:|---|
+| Triton page-native score-only kernel over packed grouped `32`-symbol pages | `940.64` | `889.81` | `608.91` | `183.77` | `9.53` | Reverted |
+
+What that changed in our read:
+
+- The first page-native Triton direction did reduce the explicit unpack band, but it made the score path dramatically worse on the real `4096` Llama 3.2 workload.
+- The failure mode is useful: dropping below the eager path is not enough by itself. A kernel that wins must preserve the score-side memory access and reduction structure of the workload, not just fuse the arithmetic.
+- The current best checkpoint therefore remains the eager unpack-once grouped path above, and any next kernel pass should target a fuller fused score-plus-mix design or a substantially better score tiling strategy rather than this score-only Triton shape.
+
+Rejected follow-up CUDA grouped output-only decode swap:
+
+| Experiment | Profiled Decode ms/step | Decode Runtime ms/step | Score | Mix | Softmax | Unpack | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Route CUDA grouped decode through the existing output-only streaming score-softmax-mix path | `575.08` | `519.68` | `223.98` | `185.22` | `6.96` | `14.71` | Reverted |
+
+What that changed in our read:
+
+- The broader algorithmic fusion was not free. Avoiding full logits materialization on CUDA increased the softmax call count and pushed enough extra work into the streaming normalize path to erase the gain.
+- On this exact lane, the current unpack-once eager grouped decode remains better than the output-only streaming variant. The eager path keeps softmax essentially negligible, while the streaming route moved it into a measurable new cost center.
+- That means the next useful step still has to be lower-level than control-flow reshaping. We need a truly fused kernel or a better score/mix implementation, not just a different orchestration of the same eager operators.
+
+### Latest Llama 3.2 pairwise grouped-batch CUDA checkpoint on the RTX 5090 32 GB
+
+The next useful CUDA step turned out not to be a full four-group batch. Batching all four `32`-dim groups together cut unpack calls too aggressively and drove temporary decode materialization up to `16 MiB`, which regressed the profiled exact `4096` lane to `582.28 ms/step` even though the explicit unpack band fell to `5.65 ms`. The keepable version is narrower: batch the packed grouped `128`-dim path in pairwise `2`-group slices so score and mix launch fewer small kernels without paying the full temporary-memory penalty of the all-four-group version.
+
+Latest exact `4096` checkpoint on `meta-llama/Llama-3.2-3B-Instruct` after that refinement:
+
+| Run | Dense Decode ms/step | DotCache Decode ms/step | DotCache Decode Runtime ms/step | Score | Mix | Unpack | Unpack Calls | Max Temporary Bytes | KV Resident Bytes | Total Resident Bytes | Agreement |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Previous unpack-once checkpoint | `100.32` | `513.68` | `467.18` | `186.32` | `175.64` | `15.20` | `224` | `4.0 MiB` | `205,520,896` | `271,581,184` | `1.0` |
+| New profiled pairwise grouped-batch run | `103.61` | `511.98` | `467.09` | `193.37` | `176.75` | `7.05` | `112` | `8.0 MiB` | `205,520,896` | `271,581,184` | `1.0` |
+| New non-profiled pairwise grouped-batch run | `100.60` | `498.32` | `452.72` | n/a | n/a | n/a | n/a | n/a | `205,520,896` | `271,581,184` | `1.0` |
+
+What that changed in our read:
+
+- The best next CUDA win was a launch-shape adjustment inside the existing eager grouped `32`-dim math, not a wider `128`-dim fusion. Pairwise batching keeps the arithmetic on the favorable `32`-wide kernels while cutting packed-path unpack calls from `224` to `112`.
+- The explicit unpack band dropped materially again, from `15.20 ms` to `7.05 ms`, without changing the resident memory footprint or losing exact greedy agreement on the real `4096` Llama 3.2 lane.
+- The full four-group version overshot the temporary-memory budget and lost despite even lower unpack time. The pairwise version is the better balance: peak temporary bytes rise from `4.0 MiB` to `8.0 MiB`, which is still small enough to keep the end-to-end checkpoint moving in the right direction.
+- The new steady-state checkpoint is the best one on this lane so far. Non-profiled exact `4096` decode improved from `513.68 ms/step` to `498.32 ms/step`, while the profiled run moved from `533.48 ms/step` to `511.98 ms/step`.
+
 ### Phase 5 model-integration snapshot
 
 The first exact Llama-family integration path is now implemented in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py) on top of [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py).
