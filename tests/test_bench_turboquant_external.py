@@ -2,6 +2,7 @@ from argparse import Namespace
 
 from benchmarks.bench_turboquant_external import (
     _build_llama_cli_command,
+    _build_repeat_prompt,
     _parse_ppl,
     _parse_timings,
     _CONFIGS,
@@ -24,12 +25,14 @@ def test_parse_ppl_extracts_value() -> None:
     assert _parse_ppl(text) == 5.8375
 
 
-def test_build_llama_cli_command_sets_layer_adaptive_env() -> None:
+def test_build_llama_cli_command_sets_layer_adaptive_env(tmp_path) -> None:
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"gguf")
     args = Namespace(
         llama_cli="llama-cli",
-        model_id="/tmp/model.gguf",
+        model_id=str(model_path),
         hf_file=None,
-        gguf_models_dir="/tmp",
+        gguf_models_dir=str(tmp_path),
         max_new_tokens=2,
         threads=None,
         n_gpu_layers=99,
@@ -43,7 +46,7 @@ def test_build_llama_cli_command_sets_layer_adaptive_env() -> None:
     assert command[:9] == [
         "llama-cli",
         "-m",
-        "/tmp/model.gguf",
+        str(model_path),
         "-ctk",
         "turbo3",
         "-ctv",
@@ -54,12 +57,14 @@ def test_build_llama_cli_command_sets_layer_adaptive_env() -> None:
     assert env["TURBO_LAYER_ADAPTIVE"] == "1"
 
 
-def test_build_llama_cli_command_unsets_layer_adaptive_for_uniform() -> None:
+def test_build_llama_cli_command_unsets_layer_adaptive_for_uniform(tmp_path) -> None:
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"gguf")
     args = Namespace(
         llama_cli="llama-cli",
-        model_id="/tmp/model.gguf",
+        model_id=str(model_path),
         hf_file=None,
-        gguf_models_dir="/tmp",
+        gguf_models_dir=str(tmp_path),
         max_new_tokens=2,
         threads=None,
         n_gpu_layers=None,
@@ -71,3 +76,7 @@ def test_build_llama_cli_command_unsets_layer_adaptive_for_uniform() -> None:
         prompt_text="hello",
     )
     assert "TURBO_LAYER_ADAPTIVE" not in env
+
+
+def test_build_repeat_prompt_repeats_unit_with_spaces() -> None:
+    assert _build_repeat_prompt("hello", 3) == "hello hello hello"

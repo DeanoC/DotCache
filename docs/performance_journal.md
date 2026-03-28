@@ -2985,3 +2985,65 @@ This is intentionally still a local debugging surface, not a promoted CUDA defau
 - or only when multiple compressed families interact
 
 That should make the CUDA combined DotCache+StateCache bring-up much easier to debug, especially when a regression is small enough that a single scalar loss number is not very informative.
+
+## 2026-03-28 20:20 UTC - First TurboQuant CUDA comparison slice: TinyLlama works, SmolLM2 exposes a Turbo3 fork limitation
+
+I moved the external-runtime comparison from planning into the first real CUDA rows using the TurboQuant llama.cpp fork built at:
+
+- `/workspace/llama-cpp-turboquant-cuda`
+
+The comparison setup is:
+
+- DotCache / HF baseline from `bench_llama_compare.py`
+- external reference from raw `llama-cli` runs on the TurboQuant CUDA fork
+- shared prompt family: `"Cache locality matters for fast decoding."` repeated `64` times
+
+TinyLlama first-pass comparison (`repeat_count = 64`):
+
+- HF dense baseline:
+  - prompt length `577`
+  - `dense_decode_ms_per_step = 8.73`
+  - `114.51 tok/s`
+- HF DotCache exact `M0/M0`:
+  - `decode_ms_per_step = 91.81`
+  - `10.89 tok/s`
+  - greedy agreement `1.0`
+- TurboQuant external `q8_0` KV:
+  - prompt `17595.4 tok/s`
+  - generation `336.1 tok/s`
+- TurboQuant external `turbo3 uniform`:
+  - prompt `17403.3 tok/s`
+  - generation `275.3 tok/s`
+- TurboQuant external `turbo3 LA-1`:
+  - prompt `17974.1 tok/s`
+  - generation `297.9 tok/s`
+
+So the first honest external read is what we expected: the specialized llama.cpp CUDA KV-quant runtime is dramatically faster than the current HF DotCache TinyLlama lane, and still materially faster than the HF dense baseline.
+
+SmolLM2 `360M` first-pass comparison is useful too, but mainly as a compatibility result:
+
+- HF dense baseline:
+  - prompt length `448`
+  - `dense_decode_ms_per_step = 37.83`
+  - `26.43 tok/s`
+- HF DotCache exact `M0/M0`:
+  - `decode_ms_per_step = 167.35`
+  - `5.98 tok/s`
+  - greedy agreement `1.0`
+- TurboQuant external `q8_0` KV:
+  - prompt `20526.5 tok/s`
+  - generation `335.2 tok/s`
+- TurboQuant external `turbo3 uniform`, `turbo3 LA-1`, and `turbo3 LA-5`:
+  - all fail on the current CUDA fork with:
+    - `GGML_ASSERT(ne00 % QK_TURBO3_GROUP == 0) failed`
+    - source location `ggml/src/ggml-cuda/set-rows.cu:333`
+
+So the current comparison story is:
+
+- TinyLlama gives a clean apples-to-apples first slice across HF dense, HF DotCache, TurboQuant `q8_0`, and TurboQuant `turbo3`
+- SmolLM2 already shows that this CUDA TurboQuant fork is not universally compatible yet; `q8_0` works, but Turbo3-mode KV quantization asserts on this model shape
+
+That means the next comparison work should stay narrow:
+
+- finish the JSONL/reporter path for the working TinyLlama slice
+- treat SmolLM2 as a documented negative-compatibility data point until the external fork fixes the Turbo3 CUDA assert

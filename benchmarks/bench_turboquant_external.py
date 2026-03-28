@@ -10,8 +10,6 @@ import time
 from dataclasses import dataclass
 
 from transformers import AutoTokenizer
-
-from benchmarks.bench_gguf_external import _build_exact_prompt_text, _resolve_local_gguf_path
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
 
@@ -64,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gguf-models-dir", default=_DEFAULT_GGUF_MODELS_DIR)
     parser.add_argument("--configs", nargs="+", default=["q8_0", "turbo3_uniform", "turbo3_la1", "turbo3_la5"])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[4096, 16384, 32768])
+    parser.add_argument("--repeat-counts", type=int, nargs="*", default=[])
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--threads", type=int, default=None)
@@ -74,6 +73,66 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--perplexity-chunks", type=int, default=8)
     parser.add_argument("--continue-on-error", action="store_true")
     return parser.parse_args()
+
+
+def _build_exact_prompt_text(
+    tokenizer: AutoTokenizer,
+    *,
+    prompt_unit: str,
+    prompt_length: int,
+) -> tuple[str, int]:
+    if prompt_length <= 0:
+        raise ValueError("prompt_length must be positive")
+    unit_ids = tokenizer(prompt_unit, add_special_tokens=False)["input_ids"]
+    if not unit_ids:
+        raise ValueError("prompt_unit tokenized to an empty sequence")
+
+    token_ids: list[int] = []
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if bos_token_id is not None:
+        token_ids.append(int(bos_token_id))
+    while len(token_ids) < prompt_length:
+        token_ids.extend(int(token_id) for token_id in unit_ids)
+    token_ids = token_ids[:prompt_length]
+    prompt_text = tokenizer.decode(token_ids, skip_special_tokens=False)
+    retokenized_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+    return prompt_text, len(retokenized_ids)
+
+
+def _resolve_local_gguf_path(
+    model_id: str,
+    *,
+    hf_file: str | None,
+    gguf_models_dir: str,
+) -> str | None:
+    if os.path.isfile(model_id):
+        return model_id
+    if hf_file is None or not os.path.isdir(gguf_models_dir):
+        return None
+
+    repo_leaf = model_id.rsplit("/", 1)[-1]
+    repo_stem = repo_leaf[:-5] if repo_leaf.endswith("-GGUF") else repo_leaf
+    preferred_candidates = (
+        os.path.join(gguf_models_dir, model_id.replace("/", "--"), hf_file),
+        os.path.join(gguf_models_dir, repo_leaf, hf_file),
+        os.path.join(gguf_models_dir, repo_stem, hf_file),
+        os.path.join(gguf_models_dir, repo_stem.lower(), hf_file),
+    )
+    for candidate in preferred_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    matches: list[str] = []
+    for dirpath, _, filenames in os.walk(gguf_models_dir):
+        if hf_file in filenames:
+            matches.append(os.path.join(dirpath, hf_file))
+    if not matches:
+        return None
+    return sorted(matches)[0]
+
+
+def _build_repeat_prompt(prompt_unit: str, repeat_count: int) -> str:
+    return " ".join([prompt_unit] * repeat_count)
 
 
 def _parse_timings(text: str) -> dict[str, float | int]:
@@ -138,7 +197,8 @@ def _build_llama_cli_command(
             str(args.max_new_tokens),
             "-p",
             prompt_text,
-            "--no-conversation",
+            "-no-cnv",
+            "-st",
             "--simple-io",
             "--temp",
             "0",
@@ -204,6 +264,8 @@ def _run_decode_case(
     config: TurboConfig,
     prompt_text: str,
     prompt_length: int,
+    prompt_mode: str,
+    repeat_count: int | None = None,
 ) -> None:
     command, env = _build_llama_cli_command(args, config=config, prompt_text=prompt_text)
     start = time.perf_counter()
@@ -225,6 +287,8 @@ def _run_decode_case(
         "model_id": args.model_id,
         "tokenizer_model_id": args.tokenizer_model_id,
         "prompt_length": prompt_length,
+        "prompt_mode": prompt_mode,
+        "repeat_count": repeat_count,
         "max_new_tokens": args.max_new_tokens,
         "weight_format": "gguf",
         "status": "ok" if completed.returncode == 0 else "error",
@@ -331,6 +395,7 @@ def main() -> None:
                     config=config,
                     prompt_text=prompt_text,
                     prompt_length=actual_prompt_length,
+                    prompt_mode="exact_length",
                 )
             except Exception as exc:
                 if not args.continue_on_error:
@@ -343,6 +408,39 @@ def main() -> None:
                         "config": config.key,
                         "model_id": args.model_id,
                         "prompt_length": actual_prompt_length,
+                        "prompt_mode": "exact_length",
+                        "status": "error",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
+
+    for repeat_count in args.repeat_counts:
+        prompt_text = _build_repeat_prompt(args.prompt_unit, repeat_count)
+        actual_prompt_length = len(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
+        for config in configs:
+            try:
+                _run_decode_case(
+                    args,
+                    config=config,
+                    prompt_text=prompt_text,
+                    prompt_length=actual_prompt_length,
+                    prompt_mode="repeat_count",
+                    repeat_count=repeat_count,
+                )
+            except Exception as exc:
+                if not args.continue_on_error:
+                    raise
+                _emit(
+                    {
+                        "benchmark": "turboquant_external",
+                        "mode": "decode",
+                        "runtime": "llama.cpp_turboquant",
+                        "config": config.key,
+                        "model_id": args.model_id,
+                        "prompt_length": actual_prompt_length,
+                        "prompt_mode": "repeat_count",
+                        "repeat_count": repeat_count,
                         "status": "error",
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
