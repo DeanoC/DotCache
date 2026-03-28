@@ -2791,6 +2791,82 @@ So the long-context blocker is now much clearer:
 - the compare-mode ceiling was mostly benchmark overhead
 - the true remaining limit is the token-growing full-attention half plus long-context prefill/runtime peak memory, not the compressed recurrent state
 
+## 2026-03-29 01:05 UTC - Serving-only StateCache reaches 32768 on both tested Qwen3.5 members
+
+I extended the serving-only StateCache ladder to both currently supported Qwen3.5 models with `bnb_8bit` weights and the same StateCache runtime:
+
+- `state_stage = post_update_m0`
+- `bits = 8`
+- `renorm_interval = 0`
+- `Qwen3.5-4B` keeps the known recurrent `M3` escapes on layers `0,1,2`
+
+The useful result is that both models now reach exact `32768` on the serving-only path, while both still fail at exact `65536`.
+
+Commands:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 32768 65536 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --continue-on-error
+```
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py \
+  --model-id Qwen/Qwen3.5-4B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 32768 65536 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --recurrent-mode-override layer:0=M3 \
+  --recurrent-mode-override layer:1=M3 \
+  --recurrent-mode-override layer:2=M3 \
+  --continue-on-error
+```
+
+Serving-only checkpoints:
+
+- `Qwen3.5-0.8B @ 32768`
+  - `deltanet_statecache_decode_ms_per_step = 74.60`
+  - `13.41 tok/s`
+  - prefill peak allocated/reserved: `17.91 GB / 20.33 GB`
+  - decode peak allocated/reserved: `18.29 GB / 20.33 GB`
+  - fixed resident saving: `65.67%`
+  - total state saving: `3.07%`
+- `Qwen3.5-4B @ 32768`
+  - `deltanet_statecache_decode_ms_per_step = 100.86`
+  - `9.91 tok/s`
+  - prefill peak allocated/reserved: `22.77 GB / 29.11 GB`
+  - decode peak allocated/reserved: `23.80 GB / 29.11 GB`
+  - fixed resident saving: `58.33%`
+  - total state saving: `2.69%`
+
+Both `65536` runs still failed with `OutOfMemoryError`, and both failures were dominated by a single huge allocation request:
+
+- attempted allocation: `30.31 GiB`
+
+So the current serving-mode read is:
+
+- serving-only StateCache is the right way to test long-context scaling
+- the real ceiling on this pod is now exact `32768` for both tested Qwen3.5 members
+- the remaining long-context limiter is not recurrent-state storage
+- it is the token-growing full-attention half plus the large long-context runtime allocation spike that still appears at `65536`
+
 ## 2026-03-28 00:15 UTC - Qwen3.5 local runtime ablations now cover conv state as a first-class family
 
 I extended the local Qwen3.5 DeltaNet StateCache debugging lane so it can ablate and localize conv state separately from recurrent state.
