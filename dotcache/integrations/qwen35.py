@@ -3795,6 +3795,18 @@ def run_qwen35_deltanet_statecache_localization_harness(
     deltanet_layer_ids = adapter.deltanet_layer_ids()
     resolved_scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
     resolved_conv_bits = int(bits if conv_bits is None else conv_bits)
+    statecache_prefill_partition = adapter.partition_hybrid_state(prefill_outputs.past_key_values)
+    byte_summary = _summarize_qwen35_deltanet_statecache_bytes(
+        statecache_prefill_partition,
+        group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        recurrent_bits=int(bits),
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
     if state_stage == "post_update_m0":
         _prepare_qwen35_deltanet_statecache(
             statecache_past_key_values,
