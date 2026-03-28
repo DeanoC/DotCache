@@ -30,6 +30,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_deltanet_state_ablation_harness,
     run_qwen35_deltanet_statecache_localization_harness,
     run_qwen35_deltanet_statecache_readout_harness,
+    run_qwen35_deltanet_statecache_serving_harness,
     run_qwen35_deltanet_statecache_loss_harness,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
@@ -678,6 +679,28 @@ def test_qwen35_deltanet_statecache_readout_reports_per_layer_recurrent_modes() 
     )
     assert result["deltanet_statecache_recurrent_mode_overrides"] == {"0": "M3"}
     assert result["deltanet_statecache_per_layer_recurrent_mode"]["0"] == "M3"
+
+
+def test_qwen35_deltanet_statecache_serving_reports_serving_runtime_mode() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache serving", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+    )
+    assert result["runtime_mode"] == "statecache_serving_only"
+    assert result["deltanet_statecache_ready"] is True
+    assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
+    assert result["deltanet_dense_fixed_resident_bytes"] > result["deltanet_statecache_fixed_resident_bytes"]
+    assert len(result["deltanet_statecache_generated_ids"]) == 2
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:

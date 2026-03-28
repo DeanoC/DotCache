@@ -2270,6 +2270,70 @@ The repo-level conclusion is straightforward:
 - `4B` is viable as long as the early recurrent `M3` escapes stay in place
 - the next Qwen3.5 product work should stay on StateCache or broader model-scale validation, not on productizing the combined hybrid-compression lane
 
+## 2026-03-29 02:12 UTC - Longer-prompt CUDA scaling holds for the Qwen3.5 StateCache lanes
+
+I extended the same CUDA matrix surface to longer exact prompts for the two Qwen3.5 StateCache entries:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --prompt-lengths 2048 4096 --output-format jsonl`
+
+The result is that the StateCache-only lanes stay stable at `2048` and `4096` for both currently supported Qwen3.5 models. All four exact-length runs kept `greedy_token_agreement_rate = 1.0`.
+
+- `Qwen3.5 0.8B`
+  - `2048`: dense `43.93 ms/step`, StateCache `16.67 ms/step`, `2.63x` faster
+  - `4096`: dense `35.21 ms/step`, StateCache `16.65 ms/step`, `2.12x` faster
+  - total tracked state bytes:
+    - `2048`: `44,949,504 -> 31,973,376`, saving `12,976,128` bytes (`28.87%`)
+    - `4096`: `70,115,328 -> 57,139,200`, saving `12,976,128` bytes (`18.51%`)
+  - fixed-resident compression: `2.91x`
+  - recurrent compression: `3.2x`
+- `Qwen3.5 4B`
+  - `2048`: dense `55.75 ms/step`, StateCache `23.00 ms/step`, `2.42x` faster
+  - `4096`: dense `88.41 ms/step`, StateCache `23.72 ms/step`, `3.73x` faster
+  - total tracked state bytes:
+    - `2048`: `119,078,912 -> 88,801,280`, saving `30,277,632` bytes (`25.43%`)
+    - `4096`: `186,187,776 -> 155,910,144`, saving `30,277,632` bytes (`16.26%`)
+  - fixed-resident compression: `2.4x`
+  - recurrent compression: `2.51x`
+
+The main pattern is exactly what the smaller matrix already suggested:
+
+- absolute savings stay flat with prompt length because StateCache is compressing fixed resident recurrent state, not the token-growing attention state
+- total saving percentage falls as the prompt gets longer because the uncompressed token-growing portion becomes a larger share of total state
+- decode speedups still hold well at longer context on both models, so this remains a real product lane rather than a short-prompt artifact
+
+I then extended the same exact-length ladder again on this pod:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --prompt-lengths 8192 16384 32768 65536 --output-format jsonl`
+
+That establishes the current tested StateCache ceiling here:
+
+- both Qwen3.5 StateCache lanes are still clean at exact `8192` and `16384`
+- both hit `OutOfMemoryError` at exact `32768` and `65536`
+- the models still advertise `262144` max positions, so this is a pod/runtime ceiling rather than an architectural one
+
+Extended exact-length CUDA results:
+
+- `Qwen3.5 0.8B`
+  - `8192`: dense `50.32 ms/step`, StateCache `17.09 ms/step`, `2.94x` faster, agreement `1.0`
+  - `16384`: dense `27.77 ms/step`, StateCache `16.83 ms/step`, `1.65x` faster, agreement `1.0`
+  - total tracked state savings:
+    - `8192`: `10.77%`
+    - `16384`: `5.87%`
+- `Qwen3.5 4B`
+  - `8192`: dense `83.16 ms/step`, StateCache `23.44 ms/step`, `3.55x` faster, agreement `1.0`
+  - `16384`: dense `79.91 ms/step`, StateCache `26.54 ms/step`, `3.01x` faster, agreement `1.0`
+  - total tracked state savings:
+    - `8192`: `9.45%`
+    - `16384`: `5.14%`
+
+So the longer-context read is consistent with the shorter one:
+
+- StateCache remains a real decode-speed win through exact `16384`
+- total saving percentage keeps falling as token-growing attention state dominates the total
+- on this pod, exact `16384` is the current reliable tested ceiling for both currently supported Qwen3.5 StateCache lanes
+
 ## 2026-03-28 23:59 UTC - First combined Qwen3.5 0.8B CUDA hybrid lane is runnable, but still exploratory
 
 I added a new combined bench surface in [bench_qwen35_attention_subset_statecache_dotcache.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py) and a matching integration path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py) that does both:
@@ -2653,6 +2717,80 @@ Validation:
 
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
+
+## 2026-03-29 00:40 UTC - Serving-only StateCache extends the 4B long-context ceiling
+
+I added a serving-style DeltaNet StateCache harness that removes the dense-vs-StateCache side-by-side comparison path and only runs:
+
+- one dense prefill to obtain the native recurrent state
+- recurrent-state compression into StateCache form
+- StateCache-only decode
+
+That matters for long-context scaling because the earlier `Qwen3.5-4B @ 32768` failures were coming from compare-mode peak VRAM, not the steady-state resident StateCache bytes.
+
+New bench surface:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+
+New runtime mode:
+
+- `runtime_mode = "statecache_serving_only"`
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_serving.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout or statecache_serving'`
+  - result: `15 passed`
+
+The decisive run was:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py \
+  --model-id Qwen/Qwen3.5-4B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 16384 32768 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --recurrent-mode-override layer:0=M3 \
+  --recurrent-mode-override layer:1=M3 \
+  --recurrent-mode-override layer:2=M3 \
+  --continue-on-error
+```
+
+This answers the main scaling question:
+
+- compare-mode `Qwen3.5-4B @ 32768` still OOMed, even with `bnb_8bit`
+- serving-only `Qwen3.5-4B @ 32768` passes on the same pod
+
+Serving-only checkpoints with `bnb_8bit` weights:
+
+- exact `16384`
+  - `deltanet_statecache_decode_ms_per_step = 97.46`
+  - prefill peak allocated/reserved: `14.02 GB / 17.21 GB`
+  - decode peak allocated/reserved: `14.55 GB / 17.21 GB`
+- exact `32768`
+  - `deltanet_statecache_decode_ms_per_step = 98.41`
+  - prefill peak allocated/reserved: `22.77 GB / 23.43 GB`
+  - decode peak allocated/reserved: `23.80 GB / 24.19 GB`
+
+Resident-state accounting at `32768`:
+
+- fixed resident dense bytes: `51.90 MB`
+- fixed resident StateCache bytes: `21.63 MB`
+- token-growing bytes: `1.0738 GB`
+
+So the long-context blocker is now much clearer:
+
+- StateCache itself scales further than the compare harness suggested
+- the compare-mode ceiling was mostly benchmark overhead
+- the true remaining limit is the token-growing full-attention half plus long-context prefill/runtime peak memory, not the compressed recurrent state
+
 ## 2026-03-28 00:15 UTC - Qwen3.5 local runtime ablations now cover conv state as a first-class family
 
 I extended the local Qwen3.5 DeltaNet StateCache debugging lane so it can ablate and localize conv state separately from recurrent state.
