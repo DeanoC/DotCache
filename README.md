@@ -24,6 +24,7 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [docs/local_layer_profiles.md](./docs/local_layer_profiles.md)
 - [docs/cuda_next_steps.md](./docs/cuda_next_steps.md)
 - [docs/turboquant_comparison_plan.md](./docs/turboquant_comparison_plan.md)
+- [docs/state_cache_roadmap.md](./docs/state_cache_roadmap.md)
 
 ## Quick start on NVIDIA Linux / 5090-class CUDA pods
 
@@ -389,6 +390,21 @@ There is now also a layer-aware profile family for that lane:
 ```bash
 .venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --repeat-counts --target-prompt-lengths 32 --max-new-tokens 1 --tokens-per-page 16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_second_pass.yaml
 ```
+
+For the parallel DeltaNet-side probe lane, use the new StateCache inspection and ablation runners:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_deltanet_state_inspect.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 32 --max-new-tokens 2
+.venv/bin/python benchmarks/bench_qwen35_deltanet_state_ablation.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 32 --max-new-tokens 2 --bits 8 4
+.venv/bin/python benchmarks/bench_state_cache_sim.py --state-rows 128 --state-cols 128 --steps 16 --bits 8 4 3 --modes M0 M3
+```
+
+Those lanes are intentionally probe-only:
+
+- they inspect and perturb DeltaNet recurrent state
+- they do not implement a compressed recurrent-state runtime
+- they use `M0` low-bit and `M3` escape as the first codec pair
+- they are meant to guide the CUDA-side StateCache work, not replace the existing attention-side DotCache lane
 
 That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
 

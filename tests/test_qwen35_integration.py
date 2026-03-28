@@ -14,12 +14,16 @@ from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheModelAdapter,
     Qwen35AttentionSubsetHarness,
     Qwen35AttentionSubsetModelAdapter,
+    Qwen35DeltaNetStateHarness,
+    Qwen35DeltaNetStateModelAdapter,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
+    inspect_qwen35_deltanet_state,
     inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
+    run_qwen35_deltanet_state_ablation_harness,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
@@ -70,6 +74,27 @@ def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
             "intermediate_size": 64,
             "depth": 1,
             "num_heads": 4,
+        },
+    )
+    return Qwen3_5ForConditionalGeneration(config).eval()
+
+
+def _tiny_deltanet_qwen35_model() -> Qwen3_5ForConditionalGeneration:
+    config = Qwen3_5Config(
+        text_config={
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_hidden_layers": 4,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 128,
+            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+        },
+        vision_config={
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "depth": 1,
+            "num_heads": 2,
         },
     )
     return Qwen3_5ForConditionalGeneration(config).eval()
@@ -197,6 +222,85 @@ def test_qwen35_hybrid_state_inspection_reports_split_state_bytes() -> None:
     assert len(result["hybrid_state_layers"]) == 4
     assert result["hybrid_state_layers"][0]["layer_type"] == "linear_attention"
     assert result["hybrid_state_layers"][3]["layer_type"] == "full_attention"
+
+
+def test_qwen35_deltanet_state_adapter_wraps_only_linear_layers() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    assert adapter.deltanet_layer_ids() == [0, 1, 2]
+
+
+def test_qwen35_deltanet_state_inspection_reports_only_linear_layers() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = inspect_qwen35_deltanet_state(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+    )
+    assert result["deltanet_state_ready"] is True
+    assert result["deltanet_total_state_bytes"] > 0
+    assert result["deltanet_conv_state_bytes"] > 0
+    assert result["deltanet_recurrent_state_bytes"] > 0
+    assert len(result["deltanet_state_layers"]) == 3
+    assert all(record["layer_type"] == "linear_attention" for record in result["deltanet_state_layers"])
+    assert "recurrent_state" in result["deltanet_state_layers"][0]["state_shapes"]
+    assert len(result["deltanet_state_layers"][0]["state_delta_norms"]) == 1
+
+
+def test_qwen35_deltanet_state_harness_tokenizes_and_runs() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35DeltaNetStateHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35DeltaNetStateModelAdapter(model=model),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("x")
+    result = harness.inspect_deltanet_state(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+    assert result["deltanet_state_ready"] is True
+    assert len(result["deltanet_state_layers"]) == 3
+
+
+def test_qwen35_deltanet_state_ablation_reports_stages() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_state_ablation_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=(4,),
+    )
+    assert result["deltanet_state_ablation_ready"] is True
+    assert result["deltanet_dominant_failure_stage"] in {
+        "dense_baseline",
+        "readout_only_m0",
+        "post_update_m0",
+        "pre_update_m0",
+        "full_state_path_m0",
+    }
+    stages = {(entry["stage_name"], entry["bits"]) for entry in result["deltanet_ablation_results"]}
+    assert ("dense_baseline", None) in stages
+    assert ("escape_m3", None) in stages
+    dense_stage = next(entry for entry in result["deltanet_ablation_results"] if entry["stage_name"] == "dense_baseline")
+    escape_stage = next(entry for entry in result["deltanet_ablation_results"] if entry["stage_name"] == "escape_m3")
+    assert dense_stage["output_max_abs_error"] <= 1e-6
+    assert escape_stage["output_max_abs_error"] <= 1e-4
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:

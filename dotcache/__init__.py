@@ -16,6 +16,14 @@ from .model_kv_cache import ModelPagedKVCache
 from .kv_quant_registry import KvQuantBaselineSpec, get_kv_quant_baseline, list_kv_quant_baselines
 from .model_registry import ModelSpec, get_model_spec, list_model_specs
 from .planner import LayerPolicy, PageModeSpec, PageStats, choose_page_mode, observe_page
+from .state_cache_sim import (
+    StateAblationResult,
+    StateLayerRecord,
+    StateSimResult,
+    StateTileSpec,
+    simulate_state_codec,
+    simulate_state_sequence,
+)
 
 __all__ = [
     "DotCacheConfig",
@@ -30,6 +38,10 @@ __all__ = [
     "PageHeader",
     "PagedDecodeSession",
     "PreparedPageCache",
+    "StateAblationResult",
+    "StateLayerRecord",
+    "StateSimResult",
+    "StateTileSpec",
     "choose_mode",
     "choose_page_mode",
     "decode_step",
@@ -46,6 +58,8 @@ __all__ = [
     "run_attention_reference",
     "score_page",
     "score_page_ref",
+    "simulate_state_codec",
+    "simulate_state_sequence",
     "observe_page",
 ]
 
@@ -60,6 +74,8 @@ try:  # pragma: no cover - optional HF path
         Qwen35AttentionSubsetDotCacheModelAdapter,
         Qwen35AttentionSubsetHarness,
         Qwen35AttentionSubsetModelAdapter,
+        Qwen35DeltaNetStateHarness,
+        Qwen35DeltaNetStateModelAdapter,
         Qwen35TextHarness,
         Qwen35TextModelAdapter,
         VllmAdapterConfig,
@@ -71,11 +87,13 @@ try:  # pragma: no cover - optional HF path
         install_dotcache_on_vllm_model,
         install_dotcache_on_vllm_runtime,
         require_supported_vllm_version,
+        inspect_qwen35_deltanet_state,
         inspect_qwen35_hybrid_state,
         load_qwen35_text_only_from_pretrained,
         run_qwen35_attention_subset_prefill_ablation_harness,
         run_qwen35_attention_subset_dotcache_harness,
         run_qwen35_attention_subset_replay_harness,
+        run_qwen35_deltanet_state_ablation_harness,
         run_llama_generation_harness,
         run_llama_replay_harness,
         run_qwen2_generation_harness,
@@ -102,6 +120,8 @@ else:
             "Qwen35AttentionSubsetDotCacheModelAdapter",
             "Qwen35AttentionSubsetHarness",
             "Qwen35AttentionSubsetModelAdapter",
+            "Qwen35DeltaNetStateHarness",
+            "Qwen35DeltaNetStateModelAdapter",
             "Qwen35TextHarness",
             "Qwen35TextModelAdapter",
             "VllmAdapterConfig",
@@ -113,11 +133,13 @@ else:
             "install_dotcache_on_vllm_model",
             "install_dotcache_on_vllm_runtime",
             "require_supported_vllm_version",
+            "inspect_qwen35_deltanet_state",
             "inspect_qwen35_hybrid_state",
             "load_qwen35_text_only_from_pretrained",
             "run_qwen35_attention_subset_prefill_ablation_harness",
             "run_qwen35_attention_subset_dotcache_harness",
             "run_qwen35_attention_subset_replay_harness",
+            "run_qwen35_deltanet_state_ablation_harness",
             "run_llama_generation_harness",
             "run_llama_replay_harness",
             "run_qwen2_generation_harness",
