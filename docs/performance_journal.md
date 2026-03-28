@@ -955,6 +955,14 @@ So the honest local conclusion is:
 - the current MPS implementation is still much too slow to promote it as a runtime win
 - if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
 
+One backend-focused optimization pass did move the local `3b` decode shape in the right direction. Static `M0 3b` pages on MPS now build a fused pre-scaled prepared chunk, not just cached unpacked per-group codes. On a synthetic cached static-page decode microbench (`4` pages, `head_dim=64`, `tokens_per_page=16`):
+
+- without prepared chunk cache: `142.71 ms`
+- with fused prepared chunk cache: `102.91 ms`
+- speedup: about `1.39x`
+
+That does not make `M0 3b` a real end-to-end model-path win yet, but it is a useful directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a much better hot decode shape than rebuilding group-by-group math every step.
+
 ## Local M3 int8 Probe
 
 `M3` now supports an `int8` escape path with per-row scales on the local MPS runtime. This keeps the `M3` live-tail semantics the same while reducing resident bytes for recent pages.

@@ -153,6 +153,14 @@ def _supports_fused_two_group64(header: PageHeader) -> bool:
         and header.num_groups == 2
     )
 
+def _supports_fused_m0_3bit(header: PageHeader, *, device_type: TorchDevice) -> bool:
+    return bool(
+        device_type == "mps"
+        and header.mode_default == "M0"
+        and header.bits == 3
+        and header.quant_scheme == "affine"
+    )
+
 
 def _supports_packed_four_group128_cuda(header: PageHeader, *, device_type: TorchDevice) -> bool:
     return bool(
@@ -176,8 +184,6 @@ def _fused_two_group64_cache_dtype(*, device_type: TorchDevice):
 
 def _m0_affine_metadata_dtype(*, device_type: TorchDevice):
     return _load_torch().float32
-
-
 def prepared_chunk_cache_resident_bytes() -> int:
     return int(_PREPARED_CHUNK_CACHE_RESIDENT_BYTES + _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES)
 
@@ -428,7 +434,9 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         else None
     )
     fused_scaled_codes = None
-    if header.mode_default == "M0" and _supports_fused_two_group64(header):
+    if header.mode_default == "M0" and (
+        _supports_fused_two_group64(header) or _supports_fused_m0_3bit(header, device_type=pages[0].device_type)
+    ):
         fused_dtype = _fused_two_group64_cache_dtype(device_type=device_type)
         fused_scaled_codes = torch.cat(
             [
@@ -446,7 +454,6 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         codes_groups = None
         scales_groups = None
         resident_nbytes = int(fused_scaled_codes.numel() * fused_scaled_codes.element_size())
-        resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
     else:
         resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
         resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
@@ -1660,6 +1667,33 @@ def _score_m0_logits_two_group64_torch(fused_scaled_codes, fused_queries, bias_g
     raise ValueError("fused_scaled_codes must have shape [page_count, token_count, 64] or [batch_size, page_count, token_count, 64]")
 
 
+def _score_m0_logits_fused_torch(fused_scaled_codes, fused_queries, bias_groups, query_group_sums):
+    torch = _load_torch()
+    if fused_scaled_codes.ndim == 3:
+        logits = torch.matmul(
+            fused_scaled_codes.reshape(-1, int(fused_scaled_codes.shape[-1])),
+            fused_queries.transpose(0, 1),
+        ).transpose(0, 1).to(torch.float32)
+        bias_term = torch.zeros_like(logits)
+        for group_index, bias_group in enumerate(bias_groups):
+            bias_term += query_group_sums[:, group_index : group_index + 1] * bias_group.reshape(1, -1)
+        return logits + bias_term
+    if fused_scaled_codes.ndim == 4:
+        batch_size = int(fused_scaled_codes.shape[0])
+        logits = torch.bmm(
+            fused_scaled_codes.reshape(batch_size, -1, int(fused_scaled_codes.shape[-1])),
+            fused_queries.transpose(1, 2),
+        ).transpose(1, 2).to(torch.float32)
+        bias_term = torch.zeros_like(logits)
+        for group_index, bias_group in enumerate(bias_groups):
+            bias_term += query_group_sums[:, :, group_index : group_index + 1] * bias_group.reshape(batch_size, 1, -1)
+        return logits + bias_term
+    raise ValueError(
+        "fused_scaled_codes must have shape [page_count, token_count, padded_head_dim] "
+        "or [batch_size, page_count, token_count, padded_head_dim]"
+    )
+
+
 def _mix_m0_contribution_two_group64_torch(weights, fused_scaled_codes, bias_groups):
     torch = _load_torch()
     bias0, bias1 = bias_groups
@@ -1686,6 +1720,39 @@ def _mix_m0_contribution_two_group64_torch(weights, fused_scaled_codes, bias_gro
         bias1_term = (weights_flat * bias1.reshape(batch_size, 1, -1)).sum(dim=-1, keepdim=True)
         return torch.cat([contribution[:, :, :32] + bias0_term, contribution[:, :, 32:] + bias1_term], dim=-1)
     raise ValueError("fused_scaled_codes must have shape [page_count, token_count, 64] or [batch_size, page_count, token_count, 64]")
+
+
+def _mix_m0_contribution_fused_torch(weights, fused_scaled_codes, bias_groups, *, group_size: int):
+    torch = _load_torch()
+    if fused_scaled_codes.ndim == 3:
+        weights_flat = weights.reshape(weights.shape[0], -1)
+        output = torch.matmul(
+            weights_flat,
+            fused_scaled_codes.reshape(-1, int(fused_scaled_codes.shape[-1])),
+        ).to(torch.float32)
+        for group_index, bias_group in enumerate(bias_groups):
+            bias_term = (weights_flat * bias_group.reshape(1, -1)).sum(dim=-1, keepdim=True)
+            start = group_index * group_size
+            end = start + group_size
+            output[:, start:end] += bias_term
+        return output
+    if fused_scaled_codes.ndim == 4:
+        batch_size = int(fused_scaled_codes.shape[0])
+        weights_flat = weights.reshape(batch_size, weights.shape[1], -1)
+        output = torch.bmm(
+            weights_flat,
+            fused_scaled_codes.reshape(batch_size, -1, int(fused_scaled_codes.shape[-1])),
+        ).to(torch.float32)
+        for group_index, bias_group in enumerate(bias_groups):
+            bias_term = (weights_flat * bias_group.reshape(batch_size, 1, -1)).sum(dim=-1, keepdim=True)
+            start = group_index * group_size
+            end = start + group_size
+            output[:, :, start:end] += bias_term
+        return output
+    raise ValueError(
+        "fused_scaled_codes must have shape [page_count, token_count, padded_head_dim] "
+        "or [batch_size, page_count, token_count, padded_head_dim]"
+    )
 
 
 def _lookup_lut_group_torch(codebooks, codes):
@@ -1862,6 +1929,19 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
     logits = torch.zeros((page_count, header.token_count), dtype=torch.float32, device=device_type)
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
+    if (
+        prepared_chunk is not None
+        and prepared_chunk.fused_scaled_codes is not None
+        and prepared_chunk.bias_groups is not None
+    ):
+        fused_query = query.reshape(1, header.padded_head_dim).contiguous()
+        fused_query_group_sums = query_group_sums.reshape(1, header.num_groups).contiguous()
+        return _score_m0_logits_fused_torch(
+            prepared_chunk.fused_scaled_codes,
+            fused_query,
+            prepared_chunk.bias_groups,
+            fused_query_group_sums,
+        ).reshape(-1)
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -1985,6 +2065,18 @@ def _mix_page_chunk_torch(
         return output
 
     prepared_chunk = _get_prepared_chunk_mps(pages)
+    if (
+        prepared_chunk is not None
+        and prepared_chunk.fused_scaled_codes is not None
+        and prepared_chunk.bias_groups is not None
+    ):
+        output[: header.padded_head_dim] += _mix_m0_contribution_fused_torch(
+            weights.reshape(1, page_count, token_count),
+            prepared_chunk.fused_scaled_codes,
+            prepared_chunk.bias_groups,
+            group_size=header.group_size,
+        ).reshape(-1)
+        return output
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -2669,6 +2761,18 @@ def _score_page_chunk_grouped_multiquery_torch(
             query_group_sums_tensor,
         )
     if (
+        grouped_prepared_chunk is not None
+        and grouped_prepared_chunk.fused_scaled_codes is not None
+        and grouped_prepared_chunk.bias_groups is not None
+    ):
+        fused_queries = query_groups_tensor.reshape(batch_size, query_count, header.padded_head_dim).contiguous()
+        return _score_m0_logits_fused_torch(
+            grouped_prepared_chunk.fused_scaled_codes,
+            fused_queries,
+            grouped_prepared_chunk.bias_groups,
+            query_group_sums_tensor,
+        )
+    if (
         grouped_prepared_chunk is None
         and prepared_chunks is not None
         and _supports_fused_two_group64(header)
@@ -2681,6 +2785,36 @@ def _score_page_chunk_grouped_multiquery_torch(
         )
         fused_queries = query_groups_tensor.reshape(batch_size, query_count, header.padded_head_dim).contiguous()
         return _score_m0_logits_two_group64_torch(
+            fused_scaled_codes,
+            fused_queries,
+            bias_groups,
+            query_group_sums_tensor,
+        )
+    if (
+        grouped_prepared_chunk is None
+        and prepared_chunks is not None
+        and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
+    ):
+        fused_scaled_codes = _trace_timed_call(
+            trace,
+            "chunk_assembly",
+            device_type=device_type,
+            fn=lambda: _load_torch().stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0),
+        )
+        bias_groups = tuple(
+            _trace_timed_call(
+                trace,
+                "chunk_assembly",
+                device_type=device_type,
+                fn=lambda group_index=group_index: _load_torch().stack([chunk.bias_groups[group_index] for chunk in prepared_chunks], dim=0),
+            )
+            for group_index in range(header.num_groups)
+        )
+        if trace is not None:
+            trace.record_temporary(int(fused_scaled_codes.numel() * fused_scaled_codes.element_size()))
+            trace.record_temporary(sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups))
+        fused_queries = query_groups_tensor.reshape(batch_size, query_count, header.padded_head_dim).contiguous()
+        return _score_m0_logits_fused_torch(
             fused_scaled_codes,
             fused_queries,
             bias_groups,
@@ -2925,6 +3059,18 @@ def _mix_page_chunk_grouped_multiquery_torch(
         )
         return output
     if (
+        grouped_prepared_chunk is not None
+        and grouped_prepared_chunk.fused_scaled_codes is not None
+        and grouped_prepared_chunk.bias_groups is not None
+    ):
+        output[:, :, : header.padded_head_dim] += _mix_m0_contribution_fused_torch(
+            weights,
+            grouped_prepared_chunk.fused_scaled_codes,
+            grouped_prepared_chunk.bias_groups,
+            group_size=header.group_size,
+        )
+        return output
+    if (
         grouped_prepared_chunk is None
         and prepared_chunks is not None
         and _supports_fused_two_group64(header)
@@ -2939,6 +3085,36 @@ def _mix_page_chunk_grouped_multiquery_torch(
             weights,
             fused_scaled_codes,
             bias_groups,
+        )
+        return output
+    if (
+        grouped_prepared_chunk is None
+        and prepared_chunks is not None
+        and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
+    ):
+        fused_scaled_codes = _trace_timed_call(
+            trace,
+            "chunk_assembly",
+            device_type=device_type,
+            fn=lambda: _load_torch().stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0),
+        )
+        bias_groups = tuple(
+            _trace_timed_call(
+                trace,
+                "chunk_assembly",
+                device_type=device_type,
+                fn=lambda group_index=group_index: _load_torch().stack([chunk.bias_groups[group_index] for chunk in prepared_chunks], dim=0),
+            )
+            for group_index in range(header.num_groups)
+        )
+        if trace is not None:
+            trace.record_temporary(int(fused_scaled_codes.numel() * fused_scaled_codes.element_size()))
+            trace.record_temporary(sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups))
+        output[:, :, : header.padded_head_dim] += _mix_m0_contribution_fused_torch(
+            weights,
+            fused_scaled_codes,
+            bias_groups,
+            group_size=header.group_size,
         )
         return output
     for group_index in range(header.num_groups):
