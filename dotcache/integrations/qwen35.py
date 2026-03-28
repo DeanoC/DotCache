@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import numpy as np
+from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -2299,6 +2300,109 @@ def inspect_qwen35_deltanet_state(
     )
 
 
+def build_qwen35_deltanet_state_sample(
+    per_step_records: list[list[Qwen35DeltaNetStateRecord]],
+    *,
+    prompt_length: int,
+    layer_id: int | None = None,
+    state_kind: Literal["recurrent", "conv"] = "recurrent",
+) -> dict[str, Any]:
+    records_by_layer: dict[int, list[Qwen35DeltaNetStateRecord]] = {}
+    for step_records in per_step_records:
+        for record in step_records:
+            records_by_layer.setdefault(int(record.layer_id), []).append(record)
+    if not records_by_layer:
+        raise ValueError("no DeltaNet state records were captured")
+    selected_layer_id = min(records_by_layer) if layer_id is None else int(layer_id)
+    if selected_layer_id not in records_by_layer:
+        raise ValueError(f"requested DeltaNet sample layer {selected_layer_id} was not captured")
+    records = sorted(records_by_layer[selected_layer_id], key=lambda item: int(item.step_index))
+    if state_kind == "recurrent":
+        initial_state = records[0].pre_recurrent_state
+        pre_states = [record.pre_recurrent_state for record in records]
+        post_states = [record.post_recurrent_state for record in records]
+    else:
+        initial_state = records[0].pre_conv_state
+        pre_states = [record.pre_conv_state for record in records]
+        post_states = [record.post_conv_state for record in records]
+    if initial_state is None:
+        raise ValueError(f"captured DeltaNet {state_kind} state is unavailable for layer {selected_layer_id}")
+    if any(state is None for state in pre_states) or any(state is None for state in post_states):
+        raise ValueError(f"incomplete DeltaNet {state_kind} state history for layer {selected_layer_id}")
+
+    token_indices: list[int] = []
+    update_arrays: list[np.ndarray] = []
+    for record, pre_state, post_state in zip(records, pre_states, post_states):
+        assert pre_state is not None and post_state is not None
+        token_indices.append(int(record.token_index))
+        update_arrays.append((post_state - pre_state).detach().to(dtype=torch.float32).cpu().numpy())
+
+    return {
+        "source": "qwen35_deltanet_capture",
+        "state_kind": state_kind,
+        "layer_id": selected_layer_id,
+        "prompt_length": int(prompt_length),
+        "token_indices": token_indices,
+        "initial_state": initial_state.detach().to(dtype=torch.float32).cpu().numpy(),
+        "update_deltas": np.stack(update_arrays, axis=0),
+    }
+
+
+def save_qwen35_deltanet_state_sample(path: str | Path, sample: dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        target,
+        source=np.asarray(sample["source"]),
+        state_kind=np.asarray(sample["state_kind"]),
+        layer_id=np.asarray(int(sample["layer_id"]), dtype=np.int64),
+        prompt_length=np.asarray(int(sample["prompt_length"]), dtype=np.int64),
+        token_indices=np.asarray(sample["token_indices"], dtype=np.int64),
+        initial_state=np.asarray(sample["initial_state"], dtype=np.float32),
+        update_deltas=np.asarray(sample["update_deltas"], dtype=np.float32),
+    )
+
+
+def capture_qwen35_deltanet_state_sample(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    layer_id: int | None = None,
+    state_kind: Literal["recurrent", "conv"] = "recurrent",
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_deltanet_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    sample = build_qwen35_deltanet_state_sample(
+        dense_capture["capture_records"],
+        prompt_length=int(input_ids.shape[1]),
+        layer_id=layer_id,
+        state_kind=state_kind,
+    )
+    sample["decode_steps"] = int(decode_steps)
+    return sample
+
+
 def run_qwen35_deltanet_state_ablation_harness(
     model,
     adapter: Qwen35DeltaNetStateModelAdapter,
@@ -2857,8 +2961,11 @@ __all__ = [
     "Qwen35AttentionSubsetDotCacheModelAdapter",
     "Qwen35AttentionSubsetHarness",
     "Qwen35AttentionSubsetModelAdapter",
+    "Qwen35DeltaNetStateRecord",
     "Qwen35DeltaNetStateHarness",
     "Qwen35DeltaNetStateModelAdapter",
+    "build_qwen35_deltanet_state_sample",
+    "capture_qwen35_deltanet_state_sample",
     "Qwen35TextHarness",
     "Qwen35TextModelAdapter",
     "inspect_qwen35_deltanet_state",
@@ -2870,6 +2977,7 @@ __all__ = [
     "run_qwen35_deltanet_state_ablation_harness",
     "run_qwen35_text_generation_harness",
     "run_qwen35_text_loss_harness",
+    "save_qwen35_deltanet_state_sample",
     "summarize_qwen35_dotcache_fit",
     "summarize_qwen35_hybrid_state",
     "summarize_qwen35_hybrid_state_growth",

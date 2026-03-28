@@ -49,6 +49,7 @@ The physical unit is different:
   - compare pre-update, post-update, readout-only, and full-path perturbations
 - `bench_state_cache_sim.py`
   - synthetic simulator for compression ratio and long-horizon error curves
+  - can also consume a captured Qwen3.5 DeltaNet state sample from the inspection lane
 
 ## Deferred Follow-On
 
@@ -58,3 +59,29 @@ The physical unit is different:
 - learned policy selection
 
 The intent is to answer the structural questions first on local hardware, then move runtime work to CUDA.
+
+## Useful Local Workflow
+
+Capture a small real recurrent-state sample:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_deltanet_state_inspect.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_mps \
+  --device mps \
+  --target-prompt-lengths 32 \
+  --max-new-tokens 1 \
+  --save-state-sample benchmarks/results/qwen35_deltanet_sample.npz
+```
+
+Then sweep renorm settings on the captured state:
+
+```bash
+.venv/bin/python benchmarks/bench_state_cache_sim.py \
+  --captured-sample benchmarks/results/qwen35_deltanet_sample-exact-32.npz \
+  --bits 8 4 3 \
+  --modes M0 M3 \
+  --renorm-intervals 0 2 4 8
+```
+
+That is the intended local support loop for the CUDA compressed-DeltaNet work: real captured state on the front end, cheap renorm and bit sweeps on the back end.
