@@ -23,6 +23,7 @@ _TIMING_PATTERN = re.compile(
 )
 
 _DEFAULT_GGUF_MODELS_DIR = os.environ.get("GGUF_MODELS_DIR", "/workspace/models/gguf")
+_DEFAULT_LLAMA_CPP_N_GPU_LAYERS = os.environ.get("LLAMA_CPP_N_GPU_LAYERS")
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,7 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[])
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--threads", type=int, default=None)
-    parser.add_argument("--n-gpu-layers", type=int, default=None)
+    parser.add_argument(
+        "--n-gpu-layers",
+        type=int,
+        default=int(_DEFAULT_LLAMA_CPP_N_GPU_LAYERS) if _DEFAULT_LLAMA_CPP_N_GPU_LAYERS else None,
+    )
     parser.add_argument("--context-size", type=int, default=None)
     parser.add_argument("--continue-on-error", action="store_true")
     return parser.parse_args()
@@ -153,6 +158,8 @@ def _llama_cli_command(
             str(args.max_new_tokens),
             "-p",
             prompt_text,
+            "--no-conversation",
+            "--simple-io",
             "--temp",
             "0",
             "--seed",

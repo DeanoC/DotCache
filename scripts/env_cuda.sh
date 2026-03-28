@@ -72,8 +72,10 @@ fi
 
 export HF_HOME="${DOTCACHE_HF_HOME:-/workspace/.cache/huggingface}"
 export TRANSFORMERS_CACHE="${DOTCACHE_TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
+export GGUF_MODELS_DIR="${DOTCACHE_GGUF_MODELS_DIR:-/workspace/models/gguf}"
+export LLAMA_CPP_N_GPU_LAYERS="${DOTCACHE_LLAMA_CPP_N_GPU_LAYERS:-999}"
 
-mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}"
+mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}" "${GGUF_MODELS_DIR}"
 
 _dotcache_llama_cpp_root="${DOTCACHE_LLAMA_CPP_ROOT:-/workspace/llama.cpp}"
 _dotcache_llama_cpp_bin="${_dotcache_llama_cpp_root}/build/bin"

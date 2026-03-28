@@ -46,6 +46,8 @@ def test_llama_cli_command_uses_hf_file_when_requested(tmp_path: Path) -> None:
         "-hff",
         "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     ]
+    assert "--no-conversation" in command
+    assert "--simple-io" in command
 
 
 def test_llama_cli_command_prefers_local_workspace_gguf_when_present(tmp_path: Path) -> None:
@@ -66,3 +68,5 @@ def test_llama_cli_command_prefers_local_workspace_gguf_when_present(tmp_path: P
     )
     command = _llama_cli_command(args, prompt_text="hello")
     assert command[:3] == ["llama-cli", "-m", str(local_file)]
+    assert "--no-conversation" in command
+    assert "--simple-io" in command

@@ -181,6 +181,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         benchmark_harness="gguf_external",
         prompt_lengths=(1024, 2048, 4096),
         notes="External GGUF reference lane for future TurboQuant / llama.cpp comparisons.",
+        gguf_hf_file="qwen2.5-3b-instruct-q4_k_m.gguf",
     ),
     "qwen25_7b_gguf": ModelSpec(
         key="qwen25_7b_gguf",
@@ -196,6 +197,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         benchmark_harness="gguf_external",
         prompt_lengths=(1024, 2048, 4096),
         notes="External GGUF reference lane for larger Qwen2.5 CUDA comparisons.",
+        gguf_hf_file="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
     ),
 }
 

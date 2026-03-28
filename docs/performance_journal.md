@@ -1564,3 +1564,40 @@ That is the first `M4` variant that actually clears the target tradeoff:
 - it stays faster than `M2/V4`, though not as fast as the unstable fixed-basis `M4`
 
 So the next repo-level move is no longer representation discovery. It is productization: promote `svd_shared` as the experimental low-memory adaptive `Qwen2.5 7B` CUDA lane, and then rerun the broader matrix or wrapper surface on top of that corrected basis-sharing path.
+
+## 2026-03-28 13:29 UTC - GGUF / llama.cpp CUDA reference baseline
+
+I finished hardening the GGUF reference path on the pod:
+
+- `llama-cli` is installed from `/workspace/llama.cpp`
+- the runner prefers persistent local files under `/workspace/models/gguf`
+- the dead `ggml-org/Llama-3.2-3B-Instruct-GGUF` repo ID is replaced with `bartowski/Llama-3.2-3B-Instruct-GGUF`
+- the Qwen GGUF lanes now pin explicit `Q4_K_M` files too
+
+I attempted the existing exact-prompt `bench_gguf_external.py` matrix first, but it is a poor fit for full-pod baseline collection here because `llama-cli` startup and prompt-eval cost dominate and make the long-form exact harness too expensive to complete across all three models in one pass. For the actual GGUF CUDA checkpoint, I switched to `llama-bench`, which is the right reference tool for raw `llama.cpp` throughput.
+
+Command:
+
+- `source scripts/env_cuda.sh && {`
+- `llama-bench -m /workspace/models/gguf/llama32_3b/Llama-3.2-3B-Instruct-Q4_K_M.gguf -p 1024,2048,4096 -n 2 -r 1 -o jsonl;`
+- `llama-bench -m /workspace/models/gguf/qwen25_3b/qwen2.5-3b-instruct-q4_k_m.gguf -p 1024,2048,4096 -n 2 -r 1 -o jsonl;`
+- `llama-bench -m /workspace/models/gguf/qwen25_7b/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf -p 1024,2048,4096 -n 2 -r 1 -o jsonl;`
+- `} > benchmarks/results/gguf_reference_bench_20260328.jsonl`
+
+Raw artifact:
+
+- [benchmarks/results/gguf_reference_bench_20260328.jsonl](/workspace/DotCache/benchmarks/results/gguf_reference_bench_20260328.jsonl)
+
+All rows are `CUDA` backend with `n_gpu_layers=99`, `type_k=f16`, and `type_v=f16`.
+
+| Model | Prompt tok/s @1024 | Prompt tok/s @2048 | Prompt tok/s @4096 | Decode tok/s @n=2 |
+| --- | ---: | ---: | ---: | ---: |
+| `Llama 3.2 3B Instruct Q4_K_M` | `22014.87` | `20106.80` | `16518.82` | `225.75` |
+| `Qwen2.5 3B Instruct Q4_K_M` | `21209.22` | `19723.76` | `16761.18` | `190.97` |
+| `Qwen2.5 7B Instruct Q4_K_M` | `13734.35` | `12480.03` | `10766.71` | `169.80` |
+
+The useful practical baseline is:
+
+- prompt throughput stays high on the RTX 5090, even at `4096`, ranging from about `10.8k` to `22.0k tok/s`
+- decode throughput is much lower and scales with model size, ranging from about `169.8` to `225.8 tok/s`
+- the GGUF reference lane is now genuinely runnable and locally cached, but the right baseline tool for it is `llama-bench`, not the exact-text `llama-cli` harness
