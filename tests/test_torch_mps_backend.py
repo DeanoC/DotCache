@@ -227,10 +227,10 @@ def test_prepare_pages_mps_batches_upload_without_widening_affine_metadata() -> 
 
 
 @requires_mps
-@pytest.mark.parametrize(("token_count", "head_dim"), [(8, 48), (64, 128)])
-def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int) -> None:
-    rng = np.random.default_rng(token_count + head_dim)
-    config = DotCacheConfig(head_dim=head_dim, group_size=32, bits_k=4, tokens_per_page=64)
+@pytest.mark.parametrize(("token_count", "head_dim", "bits"), [(8, 48, 4), (64, 128, 4), (64, 128, 3)])
+def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int, bits: int) -> None:
+    rng = np.random.default_rng(token_count + head_dim + bits)
+    config = DotCacheConfig(head_dim=head_dim, group_size=32, bits_k=bits, tokens_per_page=64)
     keys = rng.normal(size=(token_count, head_dim)).astype(np.float32)
     query = rng.normal(size=(head_dim,)).astype(np.float32)
     page = encode_page(keys, config, kind="K", mode="M0")

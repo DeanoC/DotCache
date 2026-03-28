@@ -626,19 +626,19 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and source_page.codebooks is not None
         )
     return (
-        header.mode_default in ("M0", "M1")
-        and header.bits in (2, 4)
-        and header.group_size in (32, 64)
+        header.group_size in (32, 64)
         and source_page.payload is not None
         and (
             (
                 header.mode_default == "M0"
+                and header.bits in (2, 3, 4)
                 and header.quant_scheme == "affine"
                 and source_page.scales is not None
                 and source_page.bias is not None
             )
             or (
                 header.mode_default == "M1"
+                and header.bits in (2, 4)
                 and header.quant_scheme == "lut"
                 and source_page.codebooks is not None
             )

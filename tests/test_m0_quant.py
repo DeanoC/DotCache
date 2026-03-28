@@ -26,3 +26,16 @@ def test_symmetric_quantization_roundtrip_is_reasonable() -> None:
     assert bias is None
     assert np.max(np.abs(values - decoded)) < 0.4
 
+
+def test_affine_quantization_3bit_roundtrip_is_reasonable() -> None:
+    rng = np.random.default_rng(2)
+    values = rng.normal(size=(4, 48)).astype(np.float32)
+    codes, scales, bias, padded_head_dim = quantize_tensor(values, group_size=32, bits=3, scheme="affine")
+    decoded = dequantize_groups(codes, scales=scales, bias=bias, bits=3, scheme="affine").reshape(4, padded_head_dim)[:, :48]
+
+    assert codes.shape == (4, 2, 32)
+    assert scales.shape == (4, 2)
+    assert bias is not None
+    assert bias.shape == (4, 2)
+    assert padded_head_dim == 64
+    assert np.max(np.abs(values - decoded)) < 0.8

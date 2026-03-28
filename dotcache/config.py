@@ -112,10 +112,10 @@ class DotCacheConfig:
             raise ValueError("head_dim must be positive")
         if self.group_size <= 0:
             raise ValueError("group_size must be positive")
-        if self.bits_k not in (2, 4):
-            raise ValueError("bits_k must be 2 or 4 for the MVP")
-        if self.bits_v not in (2, 4):
-            raise ValueError("bits_v must be 2 or 4 for the MVP")
+        if self.bits_k not in (2, 3, 4):
+            raise ValueError("bits_k must be 2, 3, or 4 for the current runtime")
+        if self.bits_v not in (2, 3, 4):
+            raise ValueError("bits_v must be 2, 3, or 4 for the current runtime")
         if self.tokens_per_page <= 0:
             raise ValueError("tokens_per_page must be positive")
         if self.payload_layout_k not in ("group_major", "token_major"):
