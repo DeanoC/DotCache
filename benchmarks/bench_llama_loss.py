@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-profile", default=None)
     parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "turbo3"], default="affine")
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut", "turbo3"], default="affine")
+    parser.add_argument("--escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
@@ -126,6 +127,7 @@ def main() -> None:
         value_policy_overrides=tuple(args.value_policy_override),
         quant_scheme_k=args.quant_scheme_k,
         quant_scheme_v=args.quant_scheme_v,
+        escape_dtype=args.escape_dtype,
         m2_sketch_dim_k=args.m2_sketch_dim_k,
         m2_center_k=args.m2_center_k,
         m2_segment_count_k=args.m2_segment_count_k,

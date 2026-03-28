@@ -5,6 +5,7 @@ import numpy as np
 from .decode_reference import decode_page
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import segment_ids_for_token_count
+from .modes.m3_escape import decode_escape_payload
 from .modes.turbo3 import fwht_last_dim
 from .page_format import load_group_words
 from .packing import unpack_bits
@@ -36,7 +37,7 @@ def score_page_ref(query_slice: np.ndarray, page: EncodedPage) -> np.ndarray:
     if header.mode_default == "M3":
         if page.escape_payload is None:
             raise ValueError("escape payload is missing")
-        dense = page.escape_payload.astype(np.float32)[:, : header.head_dim]
+        dense = decode_escape_payload(page.escape_payload, head_dim=header.head_dim, scales=page.escape_scales)
         return dense @ query_slice.astype(np.float32)
 
     if header.mode_default == "M2":
@@ -123,7 +124,8 @@ def mix_page_ref(attn_weights: np.ndarray, page: EncodedPage, out_acc: np.ndarra
     if header.mode_default == "M3":
         if page.escape_payload is None:
             raise ValueError("escape payload is missing")
-        output[: header.head_dim] += weights @ page.escape_payload.astype(np.float32)[:, : header.head_dim]
+        dense = decode_escape_payload(page.escape_payload, head_dim=header.head_dim, scales=page.escape_scales)
+        output[: header.head_dim] += weights @ dense
         return output[: header.head_dim].copy()
 
     if header.mode_default == "M2":

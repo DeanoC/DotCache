@@ -7,7 +7,7 @@ from .planner import PageModeSpec
 from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
 from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
-from .modes.m3_escape import encode_escape_payload
+from .modes.m3_escape import encode_escape_storage
 from .modes.turbo3 import quantize_tensor_turbo3
 from .page_format import build_payload
 from .packing import words_per_group
@@ -185,10 +185,11 @@ def encode_page(
             **header_kwargs,
             escape_dtype=config.escape_dtype,
         )
-        escape_payload = encode_escape_payload(values, dtype=config.escape_dtype)
+        escape_payload, escape_scales = encode_escape_storage(values, dtype=config.escape_dtype)
         return EncodedPage(
             header=header,
             escape_payload=escape_payload,
+            escape_scales=escape_scales,
             requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,

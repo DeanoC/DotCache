@@ -61,6 +61,7 @@ class EncodedPage:
     m2_mean: np.ndarray | None = None
     lut_segment_count: int = 1
     escape_payload: np.ndarray | None = None
+    escape_scales: np.ndarray | None = None
     requested_mode: str | None = None
     trial_quant_error: float | None = None
     trial_token_p95_error: float | None = None
@@ -95,6 +96,8 @@ class EncodedPage:
             total += int(self.m2_basis.nbytes)
         if self.m2_mean is not None:
             total += int(self.m2_mean.nbytes)
+        if self.escape_scales is not None:
+            total += int(self.escape_scales.nbytes)
         return total
 
     @property

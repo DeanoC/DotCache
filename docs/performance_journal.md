@@ -829,3 +829,34 @@ So the honest local conclusion is:
 - it appears quality-viable on TinyLlama and plausible on SmolLM2
 - the current MPS implementation is still much too slow to promote it as a runtime win
 - if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
+
+## Local M3 int8 Probe
+
+`M3` now supports an `int8` escape path with per-row scales on the local MPS runtime. This keeps the `M3` live-tail semantics the same while reducing resident bytes for recent pages.
+
+TinyLlama exact `10` prompt tokens is a clean local isolation point because the whole KV lives in the tail:
+
+- `M3 float16`
+  - dense decode `691.90 ms/step`
+  - DotCache decode `3292.46 ms/step`
+  - tail resident bytes `5.77 MB`
+  - greedy agreement `1.0`
+- `M3 int8`
+  - dense decode `733.08 ms/step`
+  - DotCache decode `3743.42 ms/step`
+  - tail resident bytes `2.97 MB`
+  - greedy agreement `1.0`
+
+So the first-order trade is straightforward:
+
+- resident tail memory dropped by about `48%`
+- runtime got a bit worse on this MPS implementation
+- short-prompt greedy behavior stayed unchanged
+
+A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also stayed clean enough to keep exploring:
+
+- loss delta `-0.01082`
+- token agreement `1.0`
+- target match `1.0`
+
+That makes `M3 int8` a plausible memory-first live-tail option. It is not yet a speed win on this Mac, but it is the first quantized `M3` path worth carrying forward into later planner and CUDA work.

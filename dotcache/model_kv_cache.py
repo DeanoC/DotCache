@@ -579,6 +579,20 @@ def _tail_escape_dtype_numpy(dtype_name: str) -> np.dtype:
         return np.float16
     if dtype_name == "float32":
         return np.float32
+    if dtype_name == "int8":
+        return np.int8
+    raise ValueError(f"unsupported tail escape dtype: {dtype_name}")
+
+
+def _quantize_tail_rows_numpy(rows: np.ndarray, dtype_name: str) -> tuple[np.ndarray, np.ndarray | None]:
+    values = np.asarray(rows, dtype=np.float32)
+    if dtype_name in {"float16", "float32"}:
+        return values.astype(_tail_escape_dtype_numpy(dtype_name), copy=False), None
+    if dtype_name == "int8":
+        row_absmax = np.max(np.abs(values), axis=1)
+        scales = np.maximum(row_absmax / 127.0, 1e-8).astype(np.float16, copy=False)
+        quantized = np.clip(np.rint(values / scales[:, None]), -127.0, 127.0).astype(np.int8, copy=False)
+        return quantized, scales
     raise ValueError(f"unsupported tail escape dtype: {dtype_name}")
 
 
@@ -592,6 +606,7 @@ class _PersistentTailPage:
     source_page: EncodedPage | None = None
     prepared_page: PreparedPageTorch | None = None
     host_buffer: np.ndarray | None = None
+    host_scales: np.ndarray | None = None
     token_count: int = 0
     resident_nbytes: int = 0
 
@@ -600,6 +615,7 @@ class _PersistentTailPage:
         if self.source_page is not None:
             self.source_page.header.token_count = 0
             self.source_page.escape_payload = None if self.host_buffer is None else self.host_buffer[:0]
+            self.source_page.escape_scales = None if self.host_scales is None else self.host_scales[:0]
 
     def _ensure_allocated(self, *, token_start: int) -> None:
         if self.source_page is not None and self.prepared_page is not None and self.host_buffer is not None:
@@ -616,6 +632,7 @@ class _PersistentTailPage:
         np_dtype = _tail_escape_dtype_numpy(dtype_name)
         torch_dtype = getattr(torch, dtype_name)
         host_buffer = np.zeros((self.config.tokens_per_page, self.config.head_dim), dtype=np_dtype)
+        host_scales = None if dtype_name != "int8" else np.zeros((self.config.tokens_per_page,), dtype=np.float16)
         header = PageHeader(
             layer_id=self.layer_id,
             kv_head_id=self.kv_head_id,
@@ -633,23 +650,35 @@ class _PersistentTailPage:
             quant_scheme=self.config.quant_scheme_k if self.kind == "K" else self.config.quant_scheme_v,
             escape_dtype=dtype_name,
         )
-        source_page = EncodedPage(header=header, escape_payload=host_buffer[:0])
+        source_page = EncodedPage(
+            header=header,
+            escape_payload=host_buffer[:0],
+            escape_scales=None if host_scales is None else host_scales[:0],
+        )
         device_payload = torch.zeros(
             (self.config.tokens_per_page, self.config.head_dim),
             dtype=torch_dtype,
             device=self.device_type,
         )
+        device_scales = None
+        if dtype_name == "int8":
+            device_scales = torch.zeros((self.config.tokens_per_page,), dtype=torch.float16, device=self.device_type)
         prepared_page = PreparedPageTorch(
             device_type=self.device_type,
             source_page=source_page,
             header=header,
             escape_payload=device_payload,
-            host_to_device_nbytes=int(device_payload.numel() * device_payload.element_size()),
+            escape_scales=device_scales,
+            host_to_device_nbytes=int(device_payload.numel() * device_payload.element_size())
+            + (0 if device_scales is None else int(device_scales.numel() * device_scales.element_size())),
         )
         self.source_page = source_page
         self.prepared_page = prepared_page
         self.host_buffer = host_buffer
-        self.resident_nbytes = int(device_payload.numel() * device_payload.element_size())
+        self.host_scales = host_scales
+        self.resident_nbytes = int(device_payload.numel() * device_payload.element_size()) + (
+            0 if device_scales is None else int(device_scales.numel() * device_scales.element_size())
+        )
 
     def load_rows(
         self,
@@ -683,6 +712,7 @@ class _PersistentTailPage:
         self.source_page.header.token_count = end
         self.prepared_page.header.token_count = end
         self.source_page.escape_payload = self.host_buffer[:end]
+        self.source_page.escape_scales = None if self.host_scales is None else self.host_scales[:end]
         self.token_count = end
         return start, end
 
@@ -693,6 +723,8 @@ class _PersistentTailPage:
         device_rows: Any,
         token_start: int,
     ) -> None:
+        import torch
+
         values = np.asarray(rows, dtype=np.float32)
         if values.ndim != 2 or values.shape[1] != self.config.head_dim:
             raise ValueError("tail rows must have shape [token_count, head_dim]")
@@ -701,9 +733,30 @@ class _PersistentTailPage:
         if self.host_buffer is None or self.prepared_page is None:
             raise RuntimeError("persistent tail page is not initialized")
         start, end = self.prepare_append_span(token_start=token_start, row_count=values.shape[0])
-        converted = values.astype(self.host_buffer.dtype, copy=False)
+        converted, scales = _quantize_tail_rows_numpy(values, self.config.escape_dtype)
         self.host_buffer[start:end] = converted
-        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows
+        if self.host_scales is not None and scales is not None:
+            self.host_scales[start:end] = scales
+        if self.prepared_page.escape_payload.dtype == device_rows.dtype:
+            self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows
+        else:
+            if self.config.escape_dtype != "int8":
+                self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows.to(
+                    dtype=self.prepared_page.escape_payload.dtype
+                )
+            else:
+                row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(dtype=torch.float16)
+                quantized = torch.clamp(torch.round(device_rows / row_scales[:, None]), -127.0, 127.0).to(dtype=torch.int8)
+                self.prepared_page.escape_payload[start:end, : self.config.head_dim] = quantized
+                if self.prepared_page.escape_scales is None:
+                    raise RuntimeError("int8 persistent tail is missing escape scales")
+                self.prepared_page.escape_scales[start:end] = row_scales
+                return
+        if self.prepared_page.escape_scales is not None and scales is not None:
+            self.prepared_page.escape_scales[start:end] = torch.from_numpy(np.ascontiguousarray(scales)).to(
+                device=self.device_type,
+                dtype=self.prepared_page.escape_scales.dtype,
+            )
 
     def append_device_rows(
         self,
@@ -726,21 +779,28 @@ class _PersistentTailPage:
         if self.prepared_page is None:
             raise RuntimeError("persistent tail page is not initialized")
         start, end = self.prepare_append_span(token_start=token_start, row_count=int(device_rows.shape[0]))
-        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows.to(
-            dtype=self.prepared_page.escape_payload.dtype
-        )
+        if self.config.escape_dtype != "int8":
+            self.prepared_page.escape_payload[start:end, : self.config.head_dim] = device_rows.to(
+                dtype=self.prepared_page.escape_payload.dtype
+            )
+            return
+        row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(dtype=torch.float16)
+        quantized = torch.clamp(torch.round(device_rows / row_scales[:, None]), -127.0, 127.0).to(dtype=torch.int8)
+        self.prepared_page.escape_payload[start:end, : self.config.head_dim] = quantized
+        if self.prepared_page.escape_scales is None:
+            raise RuntimeError("int8 persistent tail is missing escape scales")
+        self.prepared_page.escape_scales[start:end] = row_scales
 
     def materialize_rows(self) -> np.ndarray:
         if self.prepared_page is None or self.token_count <= 0:
             return np.zeros((0, self.config.head_dim), dtype=np.float32)
-        return (
-            self.prepared_page.escape_payload[: self.token_count, : self.config.head_dim]
-            .detach()
-            .to(dtype=self.prepared_page.escape_payload.dtype)
-            .cpu()
-            .numpy()
-            .astype(np.float32, copy=False)
-        )
+        payload = self.prepared_page.escape_payload[: self.token_count, : self.config.head_dim].detach().cpu().numpy()
+        if self.prepared_page.header.escape_dtype == "int8":
+            if self.prepared_page.escape_scales is None:
+                raise RuntimeError("int8 persistent tail is missing escape scales")
+            scales = self.prepared_page.escape_scales[: self.token_count].detach().cpu().numpy()
+            return payload.astype(np.float32, copy=False) * scales.astype(np.float32, copy=False)[:, None]
+        return payload.astype(np.float32, copy=False)
 
     def append_rows(
         self,
@@ -757,7 +817,7 @@ class _PersistentTailPage:
         self._ensure_allocated(token_start=token_start if self.token_count == 0 else self.source_page.header.token_start)
         if self.source_page is None or self.prepared_page is None or self.host_buffer is None:
             raise RuntimeError("persistent tail page is not initialized")
-        converted = values.astype(self.host_buffer.dtype, copy=False)
+        converted, scales = _quantize_tail_rows_numpy(values, self.config.escape_dtype)
         try:
             import torch
         except ImportError as exc:  # pragma: no cover
@@ -765,9 +825,19 @@ class _PersistentTailPage:
         row_tensor = torch.from_numpy(np.ascontiguousarray(converted)).to(device=self.device_type)
         start, end = self.prepare_append_span(token_start=token_start, row_count=values.shape[0])
         self.host_buffer[start:end] = converted
+        if self.host_scales is not None and scales is not None:
+            self.host_scales[start:end] = scales
         self.prepared_page.escape_payload[start:end, : self.config.head_dim] = row_tensor
         if trace is not None:
             trace.record_host_to_device(int(row_tensor.numel() * row_tensor.element_size()))
+        if self.prepared_page.escape_scales is not None and scales is not None:
+            scale_tensor = torch.from_numpy(np.ascontiguousarray(scales)).to(
+                device=self.device_type,
+                dtype=self.prepared_page.escape_scales.dtype,
+            )
+            self.prepared_page.escape_scales[start:end] = scale_tensor
+            if trace is not None:
+                trace.record_host_to_device(int(scale_tensor.numel() * scale_tensor.element_size()))
 
     @property
     def active_page(self) -> PreparedPageTorch | None:

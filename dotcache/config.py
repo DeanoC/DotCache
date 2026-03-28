@@ -130,6 +130,8 @@ class DotCacheConfig:
             raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, or turbo3")
         if self.quant_scheme_v not in ("affine", "symmetric", "lut", "turbo3"):
             raise ValueError("quant_scheme_v must be affine, symmetric, lut, or turbo3")
+        if self.escape_dtype not in ("float16", "float32", "int8"):
+            raise ValueError("escape_dtype must be float16, float32, or int8")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
         if not isinstance(self.m2_center_k, bool):
