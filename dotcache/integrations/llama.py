@@ -48,6 +48,7 @@ class LlamaReplayRecord:
     value_states: np.ndarray
     context_states: np.ndarray
     output_states: np.ndarray
+    gate_states: np.ndarray | None = None
 
 
 @dataclass(slots=True)

@@ -376,6 +376,14 @@ For the next step after inspection, there is also a dense-only attention-subset 
 
 That runner only wraps the `full_attention` layers. It leaves every `linear_attention` / DeltaNet layer on the native dense path, and records decode-time Q/K/V/context for the attention subset so we can prototype partial DotCache support without pretending the recurrent state problem is solved.
 
+There is now also an attention-subset DotCache replay runner for the same six `full_attention` layers:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 64 --max-new-tokens 2 --tokens-per-page 16
+```
+
+That lane seeds DotCache only from the native attention KV cache, leaves every DeltaNet / `linear_attention` layer on the native hybrid cache path, and measures replay/logit drift for the attention subset. It is the first partial DotCache integration point for Qwen3.5, but it is still not full hybrid-state support.
+
 For the external GGUF / `llama.cpp` reference lane, use:
 
 ```bash
