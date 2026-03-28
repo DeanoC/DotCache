@@ -1775,6 +1775,46 @@ Results:
 
 Renorm did not change that first sample because it only contained one decode step. That is still useful: the bridge is working, and the next informative local sweep is multi-step captured recurrent state on early/mid/late layers.
 
+## 2026-03-28 22:35 UTC - Multi-step recurrent-state sweep shows layer-dependent renorm behavior
+
+I ran the new real-state sweep wrapper on Qwen3.5 recurrent state with:
+
+- prompt length `32`
+- decode steps `4`
+- layers `0`, `12`, `22`
+
+The useful read is:
+
+- early layer `0`
+  - `8b`: update `0.0056`, readout `0.0435`
+  - `4b`: update `0.1019`, readout `0.7565`
+  - `3b`: update `0.2061`, readout `1.3190`
+  - best renorm interval stayed `0`
+- mid layer `12`
+  - `8b`: update `0.0091`, readout `0.0746`
+  - `4b`: update `0.0887`, readout `1.0221`
+  - `3b`: update `0.1193`, readout `1.5740`
+  - best renorm interval was `2` for all `M0` bitwidths
+- late layer `22`
+  - `8b`: update `0.0162`, readout `0.1128`
+  - `4b`: update `0.1514`, readout `1.1857`
+  - `3b`: update `0.3026`, readout `3.9954`
+  - best renorm interval stayed `0`
+
+So the current local StateCache hint for the CUDA box is:
+
+- `M0 8b` looks like the first serious recurrent-state candidate
+- `M0 4b` is already quite marginal on readout by the time we hit late layers
+- `M0 3b` is too lossy on this captured recurrent-state slice
+- renorm is not a universal win
+  - it helped the mid layer
+  - it did not help the early or late layer on this `4`-step slice
+
+That suggests the CUDA implementation should probably start with:
+
+- recurrent-state `8b`
+- optional renorm, but measured per layer family rather than assumed globally
+
 Live CUDA check:
 
 ```bash
