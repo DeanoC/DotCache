@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import subprocess
 from dataclasses import dataclass
 from typing import Any
 
@@ -236,19 +237,165 @@ def _preferred_command(selected_policy: dict[str, Any] | None, selected_validati
     return None
 
 
+def _build_policy_suggestions(case_args: argparse.Namespace) -> dict[str, Any]:
+    if hasattr(suggest, "build_policy_suggestions"):
+        return suggest.build_policy_suggestions(case_args)
+
+    command = [
+        ".venv/bin/python",
+        "scripts/suggest_selective_k_policy.py",
+        "--family",
+        str(case_args.family),
+        "--model-id",
+        str(case_args.model_id),
+        "--backend",
+        str(case_args.backend),
+        "--torch-dtype",
+        str(case_args.torch_dtype),
+        "--group-size",
+        str(case_args.group_size),
+        "--bits-k",
+        str(case_args.bits_k),
+        "--bits-v",
+        str(case_args.bits_v),
+        "--quant-scheme-k",
+        str(case_args.quant_scheme_k),
+        "--quant-scheme-v",
+        str(case_args.quant_scheme_v),
+        "--tokens-per-page",
+        str(case_args.tokens_per_page),
+        "--decode-steps",
+        str(case_args.decode_steps),
+        "--top-k",
+        str(case_args.top_k),
+        "--prompt-unit",
+        str(case_args.prompt_unit),
+        "--prompt-length",
+        str(case_args.prompt_length),
+        "--candidate-layers",
+        str(case_args.candidate_layers),
+        "--max-kv-groups-per-layer",
+        str(case_args.max_kv_groups_per_layer),
+        "--max-combo-size",
+        str(case_args.max_combo_size),
+        "--target-recovery",
+        str(case_args.target_recovery),
+        "--budget-recovery-margin",
+        str(case_args.budget_recovery_margin),
+        "--top-policies",
+        str(case_args.top_policies),
+        "--validate-top-policies",
+        "0",
+        "--validation-max-new-tokens",
+        str(case_args.validation_max_new_tokens),
+        "--validation-agreement-threshold",
+        str(case_args.validation_agreement_threshold),
+        "--format",
+        "json",
+    ]
+    if case_args.device is not None:
+        command.extend(["--device", str(case_args.device)])
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"suggest_selective_k_policy.py failed with returncode {completed.returncode}: "
+            f"{(completed.stderr or completed.stdout).strip()}"
+        )
+    stdout = completed.stdout.strip()
+    if not stdout:
+        raise RuntimeError("suggest_selective_k_policy.py produced no JSON output")
+    start = stdout.find("{")
+    end = stdout.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise RuntimeError("suggest_selective_k_policy.py did not emit parseable JSON")
+    return json.loads(stdout[start : end + 1])
+
+
+def _selective_validation_candidates(result: dict[str, Any], *, top_n: int) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    preferred = [result.get("recommended_policy"), result.get("best_selective_policy")]
+    top_ranked = [
+        policy
+        for policy in (result.get("candidate_policies") or [])
+        if policy.get("label") not in {"all_m0", "exact_k"}
+    ][: max(top_n, 0)]
+    for policy in preferred + top_ranked:
+        if policy is None:
+            continue
+        label = str(policy.get("label"))
+        if label in seen or label in {"all_m0", "exact_k"}:
+            continue
+        seen.add(label)
+        candidates.append(policy)
+    return candidates
+
+
+def _validate_selective_candidates(
+    case_args: argparse.Namespace,
+    *,
+    result: dict[str, Any],
+    threshold: float,
+    top_n: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    validated: list[dict[str, Any]] = []
+    for policy in _selective_validation_candidates(result, top_n=top_n):
+        _cleanup_accelerator_memory()
+        validation = suggest._validate_candidate_policy(
+            case_args,
+            label=str(policy["label"]),
+            targets=tuple(policy.get("targets") or ()),
+        )
+        _cleanup_accelerator_memory()
+        policy_copy = dict(policy)
+        policy_copy["validation"] = validation
+        validated.append(policy_copy)
+    successful = [
+        policy
+        for policy in validated
+        if _successful(policy.get("validation"), threshold)
+    ]
+    if not successful:
+        return validated, None
+    selected = min(
+        successful,
+        key=lambda policy: (
+            float(policy.get("estimated_k_exact_fraction") or 1.0),
+            float(policy["validation"].get("decode_ms_per_step") or float("inf")),
+            -float((policy.get("recovery") or {}).get("composite_recovery") or 0.0),
+        ),
+    )
+    return validated, selected
+
+
 def build_compressibility_map(args: argparse.Namespace) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     case_results: list[dict[str, Any]] = []
     for spec in _case_specs(args):
         case_args = _case_args(args, spec)
+        suggest_args = argparse.Namespace(**vars(case_args))
+        suggest_args.validate_top_policies = 0
         _cleanup_accelerator_memory()
         try:
-            result = suggest.build_policy_suggestions(case_args)
+            result = _build_policy_suggestions(suggest_args)
+            _cleanup_accelerator_memory()
             baseline_validation = suggest._validate_candidate_policy(case_args, label="all_m0", targets=())
+            _cleanup_accelerator_memory()
             exact_validation = None
             if args.validate_exact_k:
                 exact_validation = suggest._validate_candidate_policy(case_args, label="exact_k", targets=())
-            validated_recommended = result.get("validated_recommended_policy")
+                _cleanup_accelerator_memory()
+            validated_candidates, validated_recommended = _validate_selective_candidates(
+                case_args,
+                result=result,
+                threshold=args.validation_agreement_threshold,
+                top_n=args.validate_top_policies,
+            )
             recommended_validation = None if validated_recommended is None else validated_recommended.get("validation")
             classification, selected_key = _classify_case(
                 threshold=args.validation_agreement_threshold,
@@ -322,6 +469,7 @@ def build_compressibility_map(args: argparse.Namespace) -> dict[str, Any]:
                     "classification": classification,
                     "baseline_validation": baseline_validation,
                     "exact_validation": exact_validation,
+                    "validated_selective_candidates": validated_candidates,
                     "suggestion_result": result,
                     "selected_policy_row": row,
                 }
