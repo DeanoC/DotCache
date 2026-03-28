@@ -66,6 +66,43 @@ def _hybrid_block_summary(model_or_config: Any) -> dict[str, Any]:
     return summary
 
 
+def _qwen35_text_model(model_or_config: Any) -> Any | None:
+    model = getattr(model_or_config, "model", model_or_config)
+    language_model = getattr(model, "language_model", None)
+    if language_model is not None:
+        return language_model
+    root_model = getattr(model, "model", None)
+    if root_model is not None:
+        return getattr(root_model, "language_model", None)
+    return None
+
+
+def _hybrid_layer_records(model_or_config: Any) -> list[dict[str, Any]]:
+    layer_types = _hybrid_layer_types(model_or_config)
+    text_model = _qwen35_text_model(model_or_config)
+    layers = getattr(text_model, "layers", None)
+    records: list[dict[str, Any]] = []
+    for layer_id, layer_type in enumerate(layer_types):
+        record = {
+            "layer_id": int(layer_id),
+            "layer_type": layer_type,
+            "state_family": "attention_kv" if layer_type == "full_attention" else "linear_recurrent",
+            "dotcache_candidate": bool(layer_type == "full_attention"),
+            "requires_hybrid_state": bool(layer_type != "full_attention"),
+            "token_mixer_module": None,
+            "layer_module": None,
+        }
+        if layers is not None and layer_id < len(layers):
+            layer = layers[layer_id]
+            record["layer_module"] = type(layer).__name__
+            if hasattr(layer, "self_attn"):
+                record["token_mixer_module"] = type(layer.self_attn).__name__
+            elif hasattr(layer, "linear_attn"):
+                record["token_mixer_module"] = type(layer.linear_attn).__name__
+        records.append(record)
+    return records
+
+
 def _iter_cache_tensors(cache: Any, *, _seen: set[int] | None = None):
     if _seen is None:
         _seen = set()
@@ -90,6 +127,7 @@ def _iter_cache_tensors(cache: Any, *, _seen: set[int] | None = None):
         "kv_states",
         "conv_states",
         "ssm_states",
+        "recurrent_states",
         "attention_mask_cache",
         "position_cache",
     ):
@@ -111,6 +149,72 @@ def _hybrid_cache_nbytes(cache: Any) -> int:
     for tensor in _iter_cache_tensors(cache):
         total += int(tensor.nelement() * tensor.element_size())
     return total
+
+
+def _cache_component_nbytes(cache: Any, attr_name: str, layer_id: int) -> int:
+    values = getattr(cache, attr_name, None)
+    if values is None:
+        return 0
+    if not isinstance(values, list | tuple):
+        return 0
+    if layer_id >= len(values):
+        return 0
+    value = values[layer_id]
+    if value is None:
+        return 0
+    return _hybrid_cache_nbytes(value)
+
+
+def summarize_qwen35_hybrid_state(cache: Any, model_or_config: Any) -> dict[str, Any]:
+    layer_records = _hybrid_layer_records(model_or_config)
+    attention_kv_bytes = 0
+    linear_conv_bytes = 0
+    linear_recurrent_bytes = 0
+    for record in layer_records:
+        layer_id = int(record["layer_id"])
+        key_bytes = _cache_component_nbytes(cache, "key_cache", layer_id)
+        value_bytes = _cache_component_nbytes(cache, "value_cache", layer_id)
+        conv_bytes = _cache_component_nbytes(cache, "conv_states", layer_id)
+        recurrent_bytes = _cache_component_nbytes(cache, "recurrent_states", layer_id)
+        record["key_cache_bytes"] = int(key_bytes)
+        record["value_cache_bytes"] = int(value_bytes)
+        record["conv_state_bytes"] = int(conv_bytes)
+        record["recurrent_state_bytes"] = int(recurrent_bytes)
+        record["layer_state_bytes"] = int(key_bytes + value_bytes + conv_bytes + recurrent_bytes)
+        attention_kv_bytes += key_bytes + value_bytes
+        linear_conv_bytes += conv_bytes
+        linear_recurrent_bytes += recurrent_bytes
+    total_state_bytes = attention_kv_bytes + linear_conv_bytes + linear_recurrent_bytes
+    return {
+        "hybrid_state_total_bytes": int(total_state_bytes),
+        "hybrid_attention_kv_bytes": int(attention_kv_bytes),
+        "hybrid_linear_conv_state_bytes": int(linear_conv_bytes),
+        "hybrid_linear_recurrent_state_bytes": int(linear_recurrent_bytes),
+        "hybrid_state_layers": layer_records,
+    }
+
+
+def summarize_qwen35_dotcache_fit(model_or_config: Any) -> dict[str, Any]:
+    layer_records = _hybrid_layer_records(model_or_config)
+    attention_candidate_layers = [record["layer_id"] for record in layer_records if record["dotcache_candidate"]]
+    hybrid_only_layers = [record["layer_id"] for record in layer_records if record["requires_hybrid_state"]]
+    linear_layer_count = len(hybrid_only_layers)
+    full_attention_layer_count = len(attention_candidate_layers)
+    suggested_next_step = (
+        "attention_subset_only_then_generalize_state"
+        if linear_layer_count > 0 and full_attention_layer_count > 0
+        else "dotcache_attention_path_only"
+        if full_attention_layer_count > 0
+        else "no_attention_subset_available"
+    )
+    return {
+        "attention_candidate_layer_ids": attention_candidate_layers,
+        "attention_candidate_layer_count": len(attention_candidate_layers),
+        "hybrid_only_layer_ids": hybrid_only_layers,
+        "hybrid_only_layer_count": len(hybrid_only_layers),
+        "requires_hybrid_state_abstraction": bool(linear_layer_count > 0),
+        "suggested_next_step": suggested_next_step,
+    }
 
 
 def _decode_text(tokenizer: Any | None, token_ids: list[int]) -> str | None:
@@ -161,6 +265,12 @@ class Qwen35TextModelAdapter:
 
     def hybrid_block_summary(self) -> dict[str, Any]:
         return _hybrid_block_summary(self.model)
+
+    def hybrid_layer_summary(self) -> list[dict[str, Any]]:
+        return _hybrid_layer_records(self.model)
+
+    def hybrid_fit_summary(self) -> dict[str, Any]:
+        return summarize_qwen35_dotcache_fit(self.model)
 
 
 @dataclass(slots=True)
@@ -240,6 +350,24 @@ class Qwen35TextHarness:
             attention_mask=attention_mask,
             prefix_length=prefix_length,
             eval_steps=eval_steps,
+            tokenizer=self.tokenizer,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def inspect_hybrid_state(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return inspect_qwen35_hybrid_state(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             tokenizer=self.tokenizer,
             multimodal_inputs=multimodal_inputs,
         )
@@ -472,10 +600,52 @@ def run_qwen35_text_loss_harness(
     return result
 
 
+def inspect_qwen35_hybrid_state(
+    model,
+    adapter: Qwen35TextModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    prefill_outputs, prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+        device=input_ids.device,
+    )
+    cache = prefill_outputs.past_key_values
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "prefill_ms": float(prefill_ms),
+        "text_only": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dense",
+        "uses_native_qwen35_class": True,
+    }
+    result.update(adapter.hybrid_block_summary())
+    result.update(summarize_qwen35_hybrid_state(cache, model))
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
 __all__ = [
     "Qwen35TextHarness",
     "Qwen35TextModelAdapter",
+    "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "run_qwen35_text_generation_harness",
     "run_qwen35_text_loss_harness",
+    "summarize_qwen35_dotcache_fit",
+    "summarize_qwen35_hybrid_state",
 ]

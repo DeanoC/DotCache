@@ -16,9 +16,12 @@ from .qwen2 import (
 from .qwen35 import (
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
+    inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
+    summarize_qwen35_dotcache_fit,
+    summarize_qwen35_hybrid_state,
 )
 from .vllm_adapter import (
     VllmAdapterConfig,
@@ -50,6 +53,7 @@ __all__ = [
     "install_dotcache_on_vllm_model",
     "install_dotcache_on_vllm_runtime",
     "require_supported_vllm_version",
+    "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "run_llama_generation_harness",
     "run_llama_replay_harness",
@@ -58,6 +62,8 @@ __all__ = [
     "run_qwen2_replay_harness",
     "run_qwen35_text_generation_harness",
     "run_qwen35_text_loss_harness",
+    "summarize_qwen35_dotcache_fit",
+    "summarize_qwen35_hybrid_state",
     "transformers_available",
     "vllm_available",
 ]
