@@ -7,6 +7,7 @@ from dotcache.config import DotCacheConfig
 from dotcache.integrations.llama import (
     LlamaDotCacheHarness,
     LlamaDotCacheModelAdapter,
+    resolve_hf_auth_kwargs,
     run_llama_generation_harness,
     transformers_available,
 )
@@ -84,7 +85,7 @@ def main() -> None:
         import torch
         from transformers import AutoConfig
 
-        model_config = AutoConfig.from_pretrained(args.model_id)
+        model_config = AutoConfig.from_pretrained(args.model_id, **resolve_hf_auth_kwargs())
         head_dim = model_config.hidden_size // model_config.num_attention_heads
         dotcache_config = DotCacheConfig(
             head_dim=head_dim,

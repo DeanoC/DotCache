@@ -14,6 +14,7 @@ from .llama import (
     _require_transformers,
     _timed_call,
     _torch_backend_matches_device,
+    resolve_hf_auth_kwargs,
     run_llama_generation_harness,
     run_llama_loss_harness,
     run_llama_replay_harness,
@@ -266,10 +267,11 @@ class Qwen2DotCacheHarness(LlamaDotCacheHarness):
         _require_transformers()
         dtype = getattr(torch, torch_dtype)
         resolved_device = _default_model_device() if device is None else device
-        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
+        auth_kwargs = resolve_hf_auth_kwargs()
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype, **auth_kwargs)
         model.to(resolved_device)
         model.eval()
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **auth_kwargs)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         adapter = Qwen2DotCacheModelAdapter(model, dotcache_config, backend=backend)
@@ -279,4 +281,3 @@ class Qwen2DotCacheHarness(LlamaDotCacheHarness):
 run_qwen2_replay_harness = run_llama_replay_harness
 run_qwen2_generation_harness = run_llama_generation_harness
 run_qwen2_loss_harness = run_llama_loss_harness
-

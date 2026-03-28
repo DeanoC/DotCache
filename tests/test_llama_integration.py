@@ -10,6 +10,7 @@ from dotcache.integrations import llama as llama_integration
 from dotcache.integrations.llama import (
     LlamaDotCacheModelAdapter,
     _prewarm_torch_decode_layers,
+    resolve_hf_auth_kwargs,
     run_llama_loss_harness,
     run_llama_generation_harness,
     run_llama_replay_harness,
@@ -84,6 +85,68 @@ def test_llama_adapter_can_reconfigure_dotcache_mode() -> None:
     assert adapter.dotcache_config.default_mode_v == "T3"
     assert adapter.model_kv_cache.config.default_mode_k == "T3"
     assert adapter.model_kv_cache.config.default_mode_v == "T3"
+
+
+def test_resolve_hf_auth_kwargs_prefers_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
+    assert resolve_hf_auth_kwargs() == {}
+
+    monkeypatch.setenv("HUGGINGFACE_HUB_TOKEN", "fallback-token")
+    assert resolve_hf_auth_kwargs() == {"token": "fallback-token"}
+
+    monkeypatch.setenv("HF_TOKEN", "primary-token")
+    assert resolve_hf_auth_kwargs() == {"token": "primary-token"}
+
+
+def test_llama_harness_from_pretrained_forwards_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, tuple[str, dict[str, object]]] = {}
+
+    def _fake_model_from_pretrained(model_id: str, **kwargs):
+        captured["model"] = (model_id, dict(kwargs))
+        config = LlamaConfig(
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            vocab_size=128,
+            max_position_embeddings=64,
+        )
+        return LlamaForCausalLM(config)
+
+    class _FakeTokenizer:
+        pad_token_id = None
+        eos_token_id = 7
+
+    def _fake_tokenizer_from_pretrained(model_id: str, **kwargs):
+        captured["tokenizer"] = (model_id, dict(kwargs))
+        return _FakeTokenizer()
+
+    monkeypatch.setenv("HF_TOKEN", "hf-secret")
+    monkeypatch.setattr(
+        llama_integration,
+        "AutoModelForCausalLM",
+        type("FakeAutoModelForCausalLM", (), {"from_pretrained": staticmethod(_fake_model_from_pretrained)}),
+    )
+    monkeypatch.setattr(
+        llama_integration,
+        "AutoTokenizer",
+        type("FakeAutoTokenizer", (), {"from_pretrained": staticmethod(_fake_tokenizer_from_pretrained)}),
+    )
+
+    harness = llama_integration.LlamaDotCacheHarness.from_pretrained(
+        "meta-llama/Llama-3.2-3B-Instruct",
+        DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4),
+        backend="cpu_ref",
+        device="cpu",
+    )
+
+    assert captured["model"][0] == "meta-llama/Llama-3.2-3B-Instruct"
+    assert captured["model"][1]["token"] == "hf-secret"
+    assert captured["tokenizer"][0] == "meta-llama/Llama-3.2-3B-Instruct"
+    assert captured["tokenizer"][1]["token"] == "hf-secret"
+    assert harness.tokenizer.pad_token_id == harness.tokenizer.eos_token_id
 
 def test_llama_generation_harness_emits_profile_on_tiny_random_model() -> None:
     model, adapter = _tiny_llama_model()
