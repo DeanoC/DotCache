@@ -2270,6 +2270,38 @@ The repo-level conclusion is straightforward:
 - `4B` is viable as long as the early recurrent `M3` escapes stay in place
 - the next Qwen3.5 product work should stay on StateCache or broader model-scale validation, not on productizing the combined hybrid-compression lane
 
+## 2026-03-29 02:12 UTC - Longer-prompt CUDA scaling holds for the Qwen3.5 StateCache lanes
+
+I extended the same CUDA matrix surface to longer exact prompts for the two Qwen3.5 StateCache entries:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --prompt-lengths 2048 4096 --output-format jsonl`
+
+The result is that the StateCache-only lanes stay stable at `2048` and `4096` for both currently supported Qwen3.5 models. All four exact-length runs kept `greedy_token_agreement_rate = 1.0`.
+
+- `Qwen3.5 0.8B`
+  - `2048`: dense `43.93 ms/step`, StateCache `16.67 ms/step`, `2.63x` faster
+  - `4096`: dense `35.21 ms/step`, StateCache `16.65 ms/step`, `2.12x` faster
+  - total tracked state bytes:
+    - `2048`: `44,949,504 -> 31,973,376`, saving `12,976,128` bytes (`28.87%`)
+    - `4096`: `70,115,328 -> 57,139,200`, saving `12,976,128` bytes (`18.51%`)
+  - fixed-resident compression: `2.91x`
+  - recurrent compression: `3.2x`
+- `Qwen3.5 4B`
+  - `2048`: dense `55.75 ms/step`, StateCache `23.00 ms/step`, `2.42x` faster
+  - `4096`: dense `88.41 ms/step`, StateCache `23.72 ms/step`, `3.73x` faster
+  - total tracked state bytes:
+    - `2048`: `119,078,912 -> 88,801,280`, saving `30,277,632` bytes (`25.43%`)
+    - `4096`: `186,187,776 -> 155,910,144`, saving `30,277,632` bytes (`16.26%`)
+  - fixed-resident compression: `2.4x`
+  - recurrent compression: `2.51x`
+
+The main pattern is exactly what the smaller matrix already suggested:
+
+- absolute savings stay flat with prompt length because StateCache is compressing fixed resident recurrent state, not the token-growing attention state
+- total saving percentage falls as the prompt gets longer because the uncompressed token-growing portion becomes a larger share of total state
+- decode speedups still hold well at longer context on both models, so this remains a real product lane rather than a short-prompt artifact
+
 ## 2026-03-28 23:59 UTC - First combined Qwen3.5 0.8B CUDA hybrid lane is runnable, but still exploratory
 
 I added a new combined bench surface in [bench_qwen35_attention_subset_statecache_dotcache.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py) and a matching integration path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py) that does both:
