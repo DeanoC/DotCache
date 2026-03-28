@@ -13,6 +13,13 @@ from .qwen2 import (
     run_qwen2_loss_harness,
     run_qwen2_replay_harness,
 )
+from .qwen35 import (
+    Qwen35TextHarness,
+    Qwen35TextModelAdapter,
+    load_qwen35_text_only_from_pretrained,
+    run_qwen35_text_generation_harness,
+    run_qwen35_text_loss_harness,
+)
 from .vllm_adapter import (
     VllmAdapterConfig,
     VllmDotCacheModelAdapter,
@@ -32,6 +39,8 @@ __all__ = [
     "LlamaReplayRecord",
     "Qwen2DotCacheHarness",
     "Qwen2DotCacheModelAdapter",
+    "Qwen35TextHarness",
+    "Qwen35TextModelAdapter",
     "VllmAdapterConfig",
     "VllmDotCacheModelAdapter",
     "VllmPagedKVCache",
@@ -41,11 +50,14 @@ __all__ = [
     "install_dotcache_on_vllm_model",
     "install_dotcache_on_vllm_runtime",
     "require_supported_vllm_version",
+    "load_qwen35_text_only_from_pretrained",
     "run_llama_generation_harness",
     "run_llama_replay_harness",
     "run_qwen2_generation_harness",
     "run_qwen2_loss_harness",
     "run_qwen2_replay_harness",
+    "run_qwen35_text_generation_harness",
+    "run_qwen35_text_loss_harness",
     "transformers_available",
     "vllm_available",
 ]

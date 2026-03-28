@@ -349,6 +349,14 @@ bash scripts/run_qwen25_compare.sh
 
 That wrapper targets `Qwen/Qwen2.5-3B-Instruct` through the new Qwen2-specific attention adapter in [qwen2.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen2.py), but reuses the same replay/generation/loss harness shape as the existing Llama path. It is treated as a stretch-model lane on this Mac and defaults to exact prompt lengths `1024 2048` with `--continue-on-error`.
 
+For the first runnable Qwen3.5 hybrid-family lane, use the new text-only dense smoke harness:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_text.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --max-new-tokens 2 --target-prompt-lengths 512
+```
+
+That lane is intentionally dense-only and text-only. It proves the shared model matrix and benchmark surface can handle Qwen3.5 without pretending DotCache already supports the hybrid attention/delta state path.
+
 For the external GGUF / `llama.cpp` reference lane, use:
 
 ```bash

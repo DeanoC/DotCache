@@ -89,6 +89,30 @@ def test_matrix_record_for_qwen25_emits_qwen2_runner_command() -> None:
     assert record["status"] == "runnable"
 
 
+def test_matrix_record_for_qwen35_emits_dense_text_runner_even_without_dotcache() -> None:
+    spec = get_model_spec("qwen35_0p8b_hf")
+    record = _matrix_record(
+        spec,
+        backend="torch_mps",
+        device="mps",
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        mount_hf_models=True,
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_qwen35_text.py" in " ".join(command)
+    assert "--model-id" in command
+    assert "Qwen/Qwen3.5-0.8B" in command
+    assert "--continue-on-error" in command
+    assert "--device" in command
+    assert "mps" in command
+    assert record["status"] == "runnable"
+
+
 def test_matrix_record_for_qwen25_7b_emits_qwen2_runner_command() -> None:
     spec = get_model_spec("qwen25_7b_hf")
     record = _matrix_record(

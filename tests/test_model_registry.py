@@ -10,6 +10,7 @@ def test_model_registry_contains_expected_keys() -> None:
     assert "qwen25_1p5b_hf" in specs
     assert "qwen25_3b_hf" in specs
     assert "qwen25_7b_hf" in specs
+    assert "qwen35_0p8b_hf" in specs
     assert "llama32_3b_gguf" in specs
     assert "qwen25_7b_gguf" in specs
 
@@ -47,6 +48,15 @@ def test_model_registry_marks_qwen35_as_reference_only() -> None:
     assert spec.dotcache_ready is False
     assert spec.local_tier == "reference_only"
     assert spec.family == "qwen3_5_hybrid"
+
+
+def test_model_registry_marks_qwen35_0p8b_as_runnable_dense_text_lane() -> None:
+    spec = get_model_spec("qwen35_0p8b_hf")
+    assert spec.dotcache_ready is False
+    assert spec.local_tier == "stretch_here"
+    assert spec.family == "qwen3_5_hybrid"
+    assert spec.runtime == "transformers"
+    assert spec.benchmark_harness == "qwen35_text"
 
 
 def test_model_registry_marks_gguf_lanes_as_external_runnable() -> None:
