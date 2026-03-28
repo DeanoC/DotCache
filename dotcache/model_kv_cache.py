@@ -762,7 +762,8 @@ class _PersistentTailPage:
         )
         device_scales = None
         if dtype_name == "int8":
-            device_scales = torch.zeros((self.config.tokens_per_page,), dtype=torch.float16, device=self.device_type)
+            scale_dtype = torch.float32 if self.device_type == "mps" else torch.float16
+            device_scales = torch.zeros((self.config.tokens_per_page,), dtype=scale_dtype, device=self.device_type)
         prepared_page = PreparedPageTorch(
             device_type=self.device_type,
             source_page=source_page,
@@ -845,7 +846,9 @@ class _PersistentTailPage:
                     dtype=self.prepared_page.escape_payload.dtype
                 )
             else:
-                row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(dtype=torch.float16)
+                row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(
+                    dtype=self.prepared_page.escape_scales.dtype
+                )
                 quantized = torch.clamp(torch.round(device_rows / row_scales[:, None]), -127.0, 127.0).to(dtype=torch.int8)
                 self.prepared_page.escape_payload[start:end, : self.config.head_dim] = quantized
                 if self.prepared_page.escape_scales is None:
@@ -884,7 +887,9 @@ class _PersistentTailPage:
                 dtype=self.prepared_page.escape_payload.dtype
             )
             return
-        row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(dtype=torch.float16)
+        row_scales = torch.clamp(device_rows.abs().amax(dim=-1) / 127.0, min=1e-8).to(
+            dtype=self.prepared_page.escape_scales.dtype
+        )
         quantized = torch.clamp(torch.round(device_rows / row_scales[:, None]), -127.0, 127.0).to(dtype=torch.int8)
         self.prepared_page.escape_payload[start:end, : self.config.head_dim] = quantized
         if self.prepared_page.escape_scales is None:
@@ -1192,8 +1197,6 @@ class ModelPagedKVCache:
         if self.config.quant_scheme_k != "affine" or self.config.quant_scheme_v != "affine":
             return False
         if self.config.payload_layout_k != "group_major" or self.config.payload_layout_v != "group_major":
-            return False
-        if 32 % int(self.config.bits_k) != 0 or 32 % int(self.config.bits_v) != 0:
             return False
         return True
 

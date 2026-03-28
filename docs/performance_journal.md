@@ -961,7 +961,15 @@ One backend-focused optimization pass did move the local `3b` decode shape in th
 - with fused prepared chunk cache: `102.91 ms`
 - speedup: about `1.39x`
 
-That does not make `M0 3b` a real end-to-end model-path win yet, but it is a useful directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a much better hot decode shape than rebuilding group-by-group math every step.
+The latest local pass also makes `3b` eligible for the direct torch prefill path instead of forcing it back through host encode+prepare. On a synthetic aligned MPS prefill prepare benchmark (`64` pages, `tokens_per_page=16`, `head_dim=64`):
+
+- direct tensor-side `3b` prepare: `66.93 ms`
+- encode on host plus prepare on MPS: `175.15 ms`
+- speedup: about `2.62x`
+- direct path host-to-device bytes: `0`
+- encode-plus-prepare host-to-device bytes: `32,768`
+
+That does not make `M0 3b` a real end-to-end model-path win yet, but it is a much stronger directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a better hot decode shape, and direct device-side spill packing is a much better prefill shape than bouncing `3b` pages back through host encode.
 
 ## Local M3 int8 Probe
 
@@ -985,6 +993,18 @@ So the first-order trade is straightforward:
 - resident tail memory dropped by about `48%`
 - runtime got a bit worse on this MPS implementation
 - short-prompt greedy behavior stayed unchanged
+
+The latest local cleanup trims a bit of avoidable MPS overhead without changing `M3 int8` form:
+
+- prepared `int8` escape scales now stay in `fp32` on MPS, so decode no longer widens them every step
+- single-page `M3` decode skips an unnecessary stack/concat path
+
+On a small synthetic single-page MPS decode microbench (`16` tokens, `head_dim=64`), the current shape is:
+
+- `M3 float16`: `208.97 ms`
+- `M3 int8`: `220.09 ms`
+
+So `M3 int8` is still slower than `float16` on this Apple path, but the remaining gap now looks more like core dequant cost than obvious metadata churn.
 
 A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also stayed clean enough to keep exploring:
 

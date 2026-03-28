@@ -2,6 +2,7 @@ import numpy as np
 
 from dotcache.attention_runtime import decode_step, prepare_pages
 from dotcache.backends import (
+    PreparedPageTorch,
     clear_prepared_chunk_cache,
     configure_prepared_chunk_cache,
     mps_available,
@@ -560,6 +561,34 @@ def test_model_paged_kv_cache_direct_prefill_pages_count_toward_resident_bytes()
         assert resident_summary["prepared_chunk_resident_bytes"] == 0
     finally:
         clear_prepared_chunk_cache()
+
+
+def test_model_paged_kv_cache_ingest_prefill_cache_torch_prepares_aligned_m0_3bit_pages_on_device() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(3092)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=3, bits_v=3, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 8, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    trace = ExecutionTrace()
+    cache.ingest_prefill_cache_torch(0, layer_keys, layer_values, trace=trace)
+
+    for kv_head_id in range(cache.num_key_value_heads):
+        state = cache._state(0, kv_head_id)
+        assert state.sequence_length == 8
+        assert all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages)
+        assert all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages)
+    assert trace.host_to_device_bytes == 0
 
 
 def test_model_paged_kv_cache_static_chunk_cache_is_reused_across_decodes() -> None:
