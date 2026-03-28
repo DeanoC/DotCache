@@ -988,6 +988,23 @@ So the current local read is nuanced:
 
 That is a useful CUDA hint rather than a direct product claim: low-bit grouped fused caches can be worth it for decode, but the cache policy itself matters almost as much as the codec.
 
+The new grouped low-bit microbench can now emit a small shape ladder instead of one hand-picked point. A compact MPS sweep over `bits={3,4}`, `page_count={2,4,8}`, and `query_count={1,2}` at the same grouped `64`-dim shape showed:
+
+- once `3b` and `4b` use the same grouped fused-cache policy, there is no clean universal winner on these tiny Apple workloads
+- both bits now scale chunk-cache residency identically in this shape:
+  - `67,584` bytes at `2` pages
+  - `135,168` bytes at `4` pages
+  - `270,336` bytes at `8` pages
+- decode timings bounce around enough that the safe conclusion is structural, not absolute:
+  - cache policy was a large part of the earlier `3b` vs `4b` difference
+  - the remaining codec-only gap on MPS is small and noisy at this scale
+
+So the best local read is:
+
+- grouped fused caching is the important idea
+- `3b` is still valuable because it opens a real extra planning tier
+- but for grouped decode throughput, we should not overfit to one small MPS shape and declare `3b` or `4b` the universal winner
+
 ## Local M3 int8 Probe
 
 `M3` now supports an `int8` escape path with per-row scales on the local MPS runtime. This keeps the `M3` live-tail semantics the same while reducing resident bytes for recent pages.
