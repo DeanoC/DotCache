@@ -414,8 +414,10 @@ def test_qwen35_deltanet_statecache_readout_reports_compressed_recurrent_bytes()
         bits=8,
     )
     assert result["deltanet_statecache_ready"] is True
+    assert result["deltanet_statecache_scope"] == "recurrent_only"
     assert result["deltanet_statecache_stage_name"] == "readout_only_m0"
     assert result["deltanet_statecache_bits"] == 8
+    assert result["deltanet_statecache_conv_state_bytes"] == result["deltanet_conv_state_bytes"]
     assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
     assert result["deltanet_dense_fixed_resident_bytes"] > result["deltanet_statecache_fixed_resident_bytes"]
     assert result["deltanet_statecache_output_max_abs_error"] >= 0.0
@@ -423,6 +425,53 @@ def test_qwen35_deltanet_statecache_readout_reports_compressed_recurrent_bytes()
     assert len(result["deltanet_dense_generated_ids"]) == 1
     assert len(result["deltanet_statecache_generated_ids"]) == 1
     assert 0.0 <= result["deltanet_statecache_greedy_token_agreement_rate"] <= 1.0
+
+
+def test_qwen35_deltanet_statecache_readout_supports_conv_only_scope() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        statecache_scope="conv_only",
+        conv_bits=8,
+    )
+    assert result["deltanet_statecache_scope"] == "conv_only"
+    assert result["deltanet_conv_state_bytes"] >= result["deltanet_statecache_conv_state_bytes"]
+    assert result["deltanet_statecache_recurrent_state_bytes"] == result["deltanet_recurrent_state_bytes"]
+    assert result["deltanet_statecache_per_layer_conv_bytes"]
+
+
+def test_qwen35_deltanet_statecache_readout_supports_conv_plus_recurrent_scope() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        statecache_scope="conv_plus_recurrent",
+        conv_bits=8,
+    )
+    assert result["deltanet_statecache_scope"] == "conv_plus_recurrent"
+    assert result["deltanet_conv_state_bytes"] >= result["deltanet_statecache_conv_state_bytes"]
+    assert result["deltanet_recurrent_state_bytes"] >= result["deltanet_statecache_recurrent_state_bytes"]
+    assert result["deltanet_statecache_per_layer_conv_bytes"]
+    assert result["deltanet_statecache_per_layer_recurrent_bytes"]
 
 
 def test_qwen35_deltanet_statecache_readout_uses_fresh_prefill_for_generation(
@@ -604,6 +653,12 @@ def test_qwen35_deltanet_statecache_localization_reports_first_failure_hints() -
     assert result["runtime_mode"] == "dense_deltanet_statecache_localization"
     assert len(result["deltanet_statecache_per_step_logit_max_abs_error"]) == 3
     assert "0" in result["deltanet_statecache_result"]["per_layer_output_max_abs_error"]
+    assert "deltanet_statecache_first_recurrent_failure_layer" in result
+    assert "deltanet_statecache_first_conv_failure_layer" in result
+    assert "deltanet_statecache_first_combined_failure_layer" in result
+    assert "deltanet_statecache_recurrent_result" in result
+    assert "deltanet_statecache_conv_result" in result
+    assert "deltanet_statecache_combined_result" in result
 
 
 def test_qwen35_deltanet_statecache_readout_reports_per_layer_recurrent_modes() -> None:
@@ -894,3 +949,69 @@ def test_qwen35_hybrid_combined_localization_runs_on_tiny_hybrid_model() -> None
     assert result["runtime_mode"] == "qwen35_hybrid_combined_localization"
     assert len(result["combined_per_step_logit_max_abs_error"]) == 3
     assert result["native_hybrid_fixed_resident_preserved"] is True
+    assert "combined_first_recurrent_failure_layer" in result
+    assert "combined_first_conv_failure_layer" in result
+    assert "combined_deltanet_recurrent_result" in result
+    assert "combined_deltanet_conv_result" in result
+    assert "combined_deltanet_combined_result" in result
+    assert result["combined_first_failure_family"] in {None, "attention", "recurrent", "conv", "mixed"}
+
+
+def test_qwen35_statecache_cli_parse_supports_conv_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    import benchmarks.bench_qwen35_deltanet_statecache_readout as readout_bench
+    import benchmarks.bench_qwen35_deltanet_statecache_loss as loss_bench
+    import benchmarks.bench_qwen35_hybrid_failure_localize as hybrid_bench
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_deltanet_statecache_readout.py",
+            "--statecache-scope",
+            "conv_plus_recurrent",
+            "--conv-bits",
+            "4",
+            "--conv-layer-bit-overrides",
+            "1:8",
+            "--conv-mode-override",
+            "1:M3",
+        ],
+    )
+    readout_args = readout_bench.parse_args()
+    assert readout_args.statecache_scope == "conv_plus_recurrent"
+    assert readout_args.conv_bits == 4
+    assert readout_args.conv_layer_bit_overrides == ["1:8"]
+    assert readout_args.conv_mode_override == ["1:M3"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_deltanet_statecache_loss.py",
+            "--statecache-scope",
+            "conv_only",
+            "--conv-bits",
+            "8",
+        ],
+    )
+    loss_args = loss_bench.parse_args()
+    assert loss_args.statecache_scope == "conv_only"
+    assert loss_args.conv_bits == 8
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_hybrid_failure_localize.py",
+            "--statecache-scope",
+            "conv_only",
+            "--statecache-conv-bits",
+            "8",
+            "--statecache-conv-layer-bit-overrides",
+            "0:4",
+            "--statecache-conv-mode-override",
+            "0:M3",
+        ],
+    )
+    hybrid_args = hybrid_bench.parse_args()
+    assert hybrid_args.statecache_scope == "conv_only"
+    assert hybrid_args.statecache_conv_bits == 8
+    assert hybrid_args.statecache_conv_layer_bit_overrides == ["0:4"]
+    assert hybrid_args.statecache_conv_mode_override == ["0:M3"]
