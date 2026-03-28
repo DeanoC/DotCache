@@ -24,6 +24,7 @@ class ModelSpec:
     benchmark_harness: str | None
     prompt_lengths: tuple[int, ...]
     notes: str
+    gguf_hf_file: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -153,7 +154,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
     "llama32_3b_gguf": ModelSpec(
         key="llama32_3b_gguf",
         display_name="Llama 3.2 3B Instruct GGUF",
-        model_id="ggml-org/Llama-3.2-3B-Instruct-GGUF",
+        model_id="bartowski/Llama-3.2-3B-Instruct-GGUF",
         tokenizer_model_id="meta-llama/Llama-3.2-3B-Instruct",
         family="llama",
         source_format="gguf",
@@ -164,6 +165,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         benchmark_harness="gguf_external",
         prompt_lengths=(1024, 2048, 4096),
         notes="External reference baseline for llama.cpp / GGUF comparisons.",
+        gguf_hf_file="Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     ),
     "qwen25_3b_gguf": ModelSpec(
         key="qwen25_3b_gguf",

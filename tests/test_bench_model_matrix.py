@@ -203,6 +203,8 @@ def test_matrix_record_for_llama32_gguf_emits_external_runner_command() -> None:
     command = record["command"]
     assert isinstance(command, list)
     assert "bench_gguf_external.py" in " ".join(command)
+    assert "--hf-file" in command
+    assert "Llama-3.2-3B-Instruct-Q4_K_M.gguf" in command
     assert "--tokenizer-model-id" in command
     assert "meta-llama/Llama-3.2-3B-Instruct" in command
     assert record["status"] == "runnable"

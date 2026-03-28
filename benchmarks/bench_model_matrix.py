@@ -169,6 +169,8 @@ def _default_compare_command(
             "--target-prompt-lengths",
             *[str(length) for length in prompt_lengths],
         ]
+        if spec.gguf_hf_file is not None:
+            command.extend(["--hf-file", spec.gguf_hf_file])
         if continue_on_error:
             command.append("--continue-on-error")
         return command
