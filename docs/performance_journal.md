@@ -2230,6 +2230,46 @@ So the current Qwen3.5 CUDA read is:
 - attention-subset DotCache is still the exploratory KV-compression lane and remains fidelity-limited
 - DeltaNet StateCache `post_update_m0` is now the first productizable compressed native lane because it stays very close to dense while cutting resident recurrent state materially
 
+## 2026-03-29 01:25 UTC - CUDA matrix refresh confirms the Qwen3.5 StateCache lanes
+
+I reran the shared matrix surface only for the two Qwen3.5 CUDA entries that now route through DeltaNet StateCache:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --output-format jsonl`
+
+That refresh keeps the current StateCache defaults intact:
+
+- `qwen35_0p8b_hf`
+  - `post_update_m0`
+  - `8-bit`
+  - `renorm_interval = 0`
+  - no recurrent escapes
+- `qwen35_4b_hf`
+  - `post_update_m0`
+  - `8-bit`
+  - `renorm_interval = 0`
+  - recurrent `M3` escapes on layers `0`, `1`, and `2`
+
+Exact-length CUDA results from the matrix rerun:
+
+- `Qwen3.5 0.8B`
+  - `512`: dense `42.49 ms/step`, StateCache `16.47 ms/step`, agreement `1.0`
+  - `1024`: dense `41.12 ms/step`, StateCache `16.22 ms/step`, agreement `1.0`
+  - fixed-resident bytes: `19,759,104 -> 6,782,976` (`2.91x` compression)
+  - recurrent compression: `3.2x`
+- `Qwen3.5 4B`
+  - `512`: dense `80.22 ms/step`, StateCache `22.81 ms/step`, agreement `1.0`
+  - `1024`: dense `84.05 ms/step`, StateCache `26.71 ms/step`, agreement `1.0`
+  - fixed-resident bytes: `51,904,512 -> 21,626,880` (`2.4x` compression)
+  - recurrent compression: `2.51x`
+
+The repo-level conclusion is straightforward:
+
+- both Qwen3.5 CUDA StateCache lanes are stable on the shared matrix surface
+- `0.8B` remains the cleaner and more aggressive lane
+- `4B` is viable as long as the early recurrent `M3` escapes stay in place
+- the next Qwen3.5 product work should stay on StateCache or broader model-scale validation, not on productizing the combined hybrid-compression lane
+
 ## 2026-03-28 23:59 UTC - First combined Qwen3.5 0.8B CUDA hybrid lane is runnable, but still exploratory
 
 I added a new combined bench surface in [bench_qwen35_attention_subset_statecache_dotcache.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py) and a matching integration path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py) that does both:
