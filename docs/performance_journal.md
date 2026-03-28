@@ -1117,3 +1117,89 @@ A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also staye
 - target match `1.0`
 
 That makes `M3 int8` a plausible memory-first live-tail option. It is not yet a speed win on this Mac, but it is the first quantized `M3` path worth carrying forward into later planner and CUDA work.
+
+## CUDA Supported Matrix Baseline
+
+Current CUDA-supported baseline on this pod was recorded from:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_model_matrix.py \
+  --run-supported \
+  --backend torch_cuda \
+  --device cuda \
+  --max-new-tokens 2 \
+  --output-format jsonl
+```
+
+Raw artifacts:
+
+- `benchmarks/results/cuda_supported_baseline_20260328_inference_mode.jsonl`
+- `benchmarks/results/cuda_supported_baseline_20260328_inference_mode.log`
+
+All successful exact-length HF runs kept greedy token agreement at `1.0`.
+
+This refreshed checkpoint also includes the shared harness change to run inference forwards under `torch.inference_mode()`, which removed the stale CUDA OOM boundaries on `SmolLM2 1.7B` and `Qwen2.5 7B @ 4096`.
+
+| Model | Exact prompt | Decode ms/step | KV resident bytes | Total resident bytes | Status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `TinyLlama 1.1B Chat` | `289` | `94.89` | `7,557,120` | `11,206,656` | pass |
+| `TinyLlama 1.1B Chat` | `577` | `102.68` | `9,340,032` | `13,935,744` | pass |
+| `TinyLlama 1.1B Chat` | `1536` | `125.34` | `16,479,872` | `24,589,952` | pass |
+| `SmolLM2 360M Instruct` | `1024` | `281.82` | `23,044,288` | `32,776,384` | pass |
+| `SmolLM2 360M Instruct` | `2048` | `322.09` | `35,377,984` | `53,017,408` | pass |
+| `SmolLM2 1.7B Instruct` | `1024` | `720.93` | `125,829,120` | `142,860,288` | pass |
+| `SmolLM2 1.7B Instruct` | `2048` | `897.94` | `201,326,592` | `235,388,928` | pass |
+| `Llama 3.2 3B Instruct` | `1024` | `212.36` | `73,400,320` | `109,576,192` | pass |
+| `Llama 3.2 3B Instruct` | `2048` | `283.52` | `117,440,512` | `175,636,480` | pass |
+| `Llama 3.2 3B Instruct` | `4096` | `488.79` | `205,520,896` | `271,581,184` | pass |
+| `Qwen2.5 1.5B Instruct` | `1024` | `99.54` | `18,677,760` | `27,918,336` | pass |
+| `Qwen2.5 1.5B Instruct` | `2048` | `112.51` | `30,015,488` | `44,957,696` | pass |
+| `Qwen2.5 3B Instruct` | `1024` | `128.15` | `24,084,480` | `35,979,264` | pass |
+| `Qwen2.5 3B Instruct` | `2048` | `145.21` | `38,731,776` | `57,802,752` | pass |
+| `Qwen2.5 3B Instruct` | `4096` | `192.83` | `68,026,368` | `101,449,728` | pass |
+| `Qwen2.5 7B Instruct` | `1024` | `143.55` | `37,519,360` | `56,033,280` | pass |
+| `Qwen2.5 7B Instruct` | `2048` | `187.39` | `60,358,656` | `90,308,608` | pass |
+| `Qwen2.5 7B Instruct` | `4096` | `264.85` | `106,037,248` | `158,072,832` | pass |
+
+Current limits from the same matrix:
+
+- GGUF external lanes were not runnable here because the required executable was missing
+
+The practical read is:
+
+- the full current HF CUDA matrix now clears through `Qwen2.5 7B @ 4096`
+- the strongest current larger-model CUDA lane is `Qwen2.5 7B` on the recommended `K=M3 / V=M0` path
+- `TinyLlama` still works as the smallest exact regression lane, but it is no longer the most representative performance target
+- the next frontier issue is no longer basic CUDA viability; it is performance work on the heaviest exact lanes, especially `SmolLM2 1.7B` and the larger-context `Llama 3.2 3B` / `Qwen2.5 7B` paths
+
+## 2026-03-28 - Qwen2.5 7B per-page planner policy on CUDA
+
+I checked whether the current `Qwen2.5 7B` CUDA lane was already using the newer per-page selectable policy machinery. It was not. The existing selective wrapper still uses fixed layer and KV-group overrides:
+
+- `layer:0=M3`
+- `layer:27:kv:1=M3`
+
+The real planner-driven benchmark path is the same `bench_qwen2_compare.py` harness with `--key-policy-tier ...` and no hardcoded `--key-mode-override` flags.
+
+Exact `4096` comparison on CUDA with `--max-new-tokens 2`:
+
+| Policy | Agreement | Decode ms/step | KV resident bytes | Total resident bytes | Key page mix |
+| --- | ---: | ---: | ---: | ---: | --- |
+| exact K (`K=M3 / V=M0`) | `1.00` | `150.22` | `176,160,768` | `220,200,960` | `1792` `K:M3` |
+| fixed selective overrides | `1.00` | `266.84` | `106,037,248` | `158,072,832` | `80` `K:M3`, `1712` `K:M0` |
+| planner `strict` | `0.50` | `324.38` | `102,760,448` | `153,092,096` | `1792` `K:M0` |
+| planner `balanced` | `1.00` | `499.95` | `95,701,504` | `143,174,144` | `1178` `K:M2`, `599` `K:M0:4`, `15` `K:M0:2` |
+| planner `aggressive` | `1.00` | `307.50` | `91,995,136` | `137,968,640` | `1692` `K:M2`, `98` `K:M0:2`, `2` `K:M0:4` |
+
+The useful result is:
+
+- plain planner `strict` is not enough for `Qwen2.5 7B`; it effectively collapses to all-`M0` and loses agreement
+- planner `balanced` and `aggressive` both keep `1.0` agreement with true per-page adaptive key selection
+- planner `aggressive` is the best current low-memory planner tier on this pod: it beats the fixed selective wrapper on KV bytes while staying materially faster than planner `balanced`
+- the recommended default runtime lane does not change; exact-K remains much faster than any current adaptive planner policy at `4096`
+
+So the repo now has two distinct `Qwen2.5 7B` CUDA stories:
+
+- best runtime lane: `K=M3 / V=M0`
+- best low-memory adaptive lane: planner `aggressive` per-page keys on top of `K=M0 / V=M0`
