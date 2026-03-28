@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import torch
 from transformers import AutoConfig
 
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
-from dotcache.integrations.qwen35 import Qwen35DeltaNetStateHarness, transformers_available
+from dotcache.integrations.qwen35 import (
+    Qwen35DeltaNetStateHarness,
+    capture_qwen35_deltanet_state_sample,
+    save_qwen35_deltanet_state_sample,
+    transformers_available,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +27,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
+    parser.add_argument("--save-state-sample", default=None)
+    parser.add_argument("--sample-layer-id", type=int, default=None)
+    parser.add_argument("--sample-state-kind", choices=["recurrent", "conv"], default="recurrent")
     return parser.parse_args()
+
+
+def _sample_output_path(base_path: str, base_record: dict[str, object]) -> Path:
+    target = Path(base_path)
+    if str(base_record.get("prompt_mode")) == "exact_length":
+        suffix = f"exact-{int(base_record['prompt_length'])}"
+    else:
+        suffix = f"repeat-{int(base_record['repeat_count'])}"
+    extension = target.suffix or ".npz"
+    return target.with_name(f"{target.stem}-{suffix}{extension}")
 
 
 def _build_exact_length_inputs(
@@ -58,13 +77,31 @@ def _run_case(
     max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
+    save_state_sample: str | None,
+    sample_layer_id: int | None,
+    sample_state_kind: str,
 ) -> None:
+    sample_path: str | None = None
     try:
         record = harness.inspect_deltanet_state(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decode_steps=max_new_tokens,
         )
+        if save_state_sample is not None:
+            sample = capture_qwen35_deltanet_state_sample(
+                harness.model,
+                harness.adapter,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                tokenizer=harness.tokenizer,
+                decode_steps=max_new_tokens,
+                layer_id=sample_layer_id,
+                state_kind=sample_state_kind,
+            )
+            resolved_path = _sample_output_path(save_state_sample, {**base_record, "prompt_length": int(input_ids.shape[1])})
+            save_qwen35_deltanet_state_sample(resolved_path, sample)
+            sample_path = str(resolved_path)
     except Exception as exc:  # pragma: no cover - benchmark failure path
         if not continue_on_error:
             raise
@@ -81,6 +118,9 @@ def _run_case(
         print(json.dumps(error_record, sort_keys=True), flush=True)
         return
     record.update(base_record)
+    if sample_path is not None:
+        record["captured_state_sample_path"] = sample_path
+        record["captured_state_sample_kind"] = sample_state_kind
     print(json.dumps(record, sort_keys=True), flush=True)
 
 
@@ -122,6 +162,9 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             base_record={**common_record, "prompt_mode": "repeat_count", "repeat_count": repeat_count},
             continue_on_error=args.continue_on_error,
+            save_state_sample=args.save_state_sample,
+            sample_layer_id=args.sample_layer_id,
+            sample_state_kind=args.sample_state_kind,
         )
 
     for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
@@ -137,6 +180,9 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             base_record={**common_record, "prompt_mode": "exact_length", "prompt_length": prompt_length},
             continue_on_error=args.continue_on_error,
+            save_state_sample=args.save_state_sample,
+            sample_layer_id=args.sample_layer_id,
+            sample_state_kind=args.sample_state_kind,
         )
 
 

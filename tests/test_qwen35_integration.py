@@ -14,8 +14,10 @@ from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheModelAdapter,
     Qwen35AttentionSubsetHarness,
     Qwen35AttentionSubsetModelAdapter,
+    Qwen35DeltaNetStateRecord,
     Qwen35DeltaNetStateHarness,
     Qwen35DeltaNetStateModelAdapter,
+    build_qwen35_deltanet_state_sample,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
     inspect_qwen35_deltanet_state,
@@ -366,6 +368,29 @@ def test_qwen35_deltanet_state_ablation_reports_stages() -> None:
     escape_stage = next(entry for entry in result["deltanet_ablation_results"] if entry["stage_name"] == "escape_m3")
     assert dense_stage["output_max_abs_error"] <= 1e-6
     assert escape_stage["output_max_abs_error"] <= 1e-4
+
+
+def test_qwen35_build_deltanet_state_sample_from_records() -> None:
+    pre_state = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8)
+    post_state = pre_state + 1.0
+    record = Qwen35DeltaNetStateRecord(
+        step_index=0,
+        layer_id=2,
+        token_index=17,
+        hidden_states=torch.zeros((1, 1, 8), dtype=torch.float32),
+        output_states=torch.zeros((1, 1, 8), dtype=torch.float32),
+        pre_conv_state=None,
+        post_conv_state=None,
+        pre_recurrent_state=pre_state,
+        post_recurrent_state=post_state,
+    )
+    sample = build_qwen35_deltanet_state_sample([[record]], prompt_length=16, layer_id=2, state_kind="recurrent")
+    assert sample["state_kind"] == "recurrent"
+    assert sample["layer_id"] == 2
+    assert sample["prompt_length"] == 16
+    assert sample["token_indices"] == [17]
+    assert sample["initial_state"].shape == (1, 3, 8)
+    assert sample["update_deltas"].shape == (1, 1, 3, 8)
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:

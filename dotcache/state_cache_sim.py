@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -68,6 +69,41 @@ class StateSimResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class CapturedStateSample:
+    source: str
+    state_kind: str
+    layer_id: int
+    prompt_length: int
+    token_indices: list[int]
+    initial_state: np.ndarray
+    update_deltas: np.ndarray
+
+    @property
+    def state_rows(self) -> int:
+        return int(np.prod(self.initial_state.shape[:-1], dtype=np.int64)) if self.initial_state.ndim > 1 else 1
+
+    @property
+    def state_cols(self) -> int:
+        return int(self.initial_state.shape[-1])
+
+    @property
+    def steps(self) -> int:
+        return int(self.update_deltas.shape[0])
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "state_kind": self.state_kind,
+            "layer_id": self.layer_id,
+            "prompt_length": self.prompt_length,
+            "token_indices": list(self.token_indices),
+            "state_rows": self.state_rows,
+            "state_cols": self.state_cols,
+            "steps": self.steps,
+        }
 
 
 def _codec_dtype_bytes(escape_dtype: str) -> int:
@@ -185,11 +221,39 @@ def simulate_state_sequence(
     )
 
 
+def load_captured_state_sample(path: str | Path) -> CapturedStateSample:
+    with np.load(Path(path), allow_pickle=False) as data:
+        source = str(data["source"].item())
+        state_kind = str(data["state_kind"].item())
+        layer_id = int(data["layer_id"].item())
+        prompt_length = int(data["prompt_length"].item())
+        token_indices = [int(value) for value in np.asarray(data["token_indices"]).tolist()]
+        initial_state = np.asarray(data["initial_state"], dtype=np.float32)
+        update_deltas = np.asarray(data["update_deltas"], dtype=np.float32)
+    if initial_state.ndim < 2:
+        raise ValueError("captured initial_state must be at least 2D")
+    if update_deltas.ndim < 3:
+        raise ValueError("captured update_deltas must be at least 3D")
+    if tuple(update_deltas.shape[1:]) != tuple(initial_state.shape):
+        raise ValueError("captured update_deltas shape must match initial_state shape")
+    return CapturedStateSample(
+        source=source,
+        state_kind=state_kind,
+        layer_id=layer_id,
+        prompt_length=prompt_length,
+        token_indices=token_indices,
+        initial_state=initial_state,
+        update_deltas=update_deltas,
+    )
+
+
 __all__ = [
+    "CapturedStateSample",
     "StateAblationResult",
     "StateLayerRecord",
     "StateSimResult",
     "StateTileSpec",
+    "load_captured_state_sample",
     "simulate_state_codec",
     "simulate_state_sequence",
 ]
