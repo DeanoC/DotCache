@@ -368,6 +368,14 @@ That runner reports:
 - how much prefill state lives in attention KV vs convolution/recurrent state
 - whether an attention-subset-only DotCache path is a coherent next step or whether a broader hybrid-state abstraction is required
 
+For the next step after inspection, there is also a dense-only attention-subset capture runner:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_attention_subset.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 128 --max-new-tokens 2
+```
+
+That runner only wraps the `full_attention` layers. It leaves every `linear_attention` / DeltaNet layer on the native dense path, and records decode-time Q/K/V/context for the attention subset so we can prototype partial DotCache support without pretending the recurrent state problem is solved.
+
 For the external GGUF / `llama.cpp` reference lane, use:
 
 ```bash
