@@ -85,3 +85,14 @@ Then sweep renorm settings on the captured state:
 ```
 
 That is the intended local support loop for the CUDA compressed-DeltaNet work: real captured state on the front end, cheap renorm and bit sweeps on the back end.
+
+For repeated early/mid/late layer sweeps, use the wrapper:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_statecache_real_sweep.py \
+  --backend torch_mps \
+  --device mps \
+  --prompt-length 32 \
+  --max-new-tokens 4 \
+  --layers 0 12 22
+```
