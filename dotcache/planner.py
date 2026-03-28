@@ -242,13 +242,14 @@ def make_tier_candidates(
         elif sensitivity_tier == "aggressive":
             candidates = (
                 candidate("M0", "affine", 2),
+                candidate("M0", "affine", 3),
                 candidate("M1", "lut", 4),
                 candidate("M0", "affine", 4),
             )
             thresholds = (0.10, 8.0, 5.5)
         else:
             candidates = (
-                candidate("M0", "affine", 2),
+                candidate("M0", "affine", 3),
                 candidate("M1", "lut", 4),
                 candidate("M0", "affine", 4),
             )
@@ -333,5 +334,10 @@ def _candidate_is_allowed(
         return (
             stats.outlier_fraction <= policy.outlier_fraction_threshold
             and stats.abs_max <= policy.abs_max_threshold
+        )
+    if candidate.mode == "M0" and candidate.bits == 3:
+        return (
+            stats.outlier_fraction <= (policy.outlier_fraction_threshold * 1.25)
+            and stats.abs_max <= (policy.abs_max_threshold * 1.2)
         )
     return True

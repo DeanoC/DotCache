@@ -248,6 +248,22 @@ def test_dotcache_config_resolves_layer_policy_tiers_and_explicit_candidates() -
     assert value_policy_l0.recent_candidate.escape_dtype == "int8"
 
 
+def test_dotcache_config_balanced_value_policy_includes_m0_3bit_candidate() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        key_policy_tier="strict",
+        value_policy_tier="balanced",
+    )
+
+    value_policy = config.resolve_layer_policy(kind="V", layer_id=0, kv_head_id=0)
+
+    assert [f"{candidate.mode}:{candidate.bits}" for candidate in value_policy.candidates] == [
+        "M0:3",
+        "M1:4",
+        "M0:4",
+    ]
+
+
 def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head() -> None:
     rng = np.random.default_rng(30415)
     config = DotCacheConfig(
@@ -556,7 +572,7 @@ def test_model_paged_kv_cache_direct_prefill_pages_count_toward_resident_bytes()
         resident_summary = cache.resident_byte_summary()
 
         assert cache.cache.resident_bytes == 0
-        assert cache.resident_bytes == 8 * (64 + 8 + 8)
+        assert cache.resident_bytes == 8 * (64 + 16 + 16)
         assert resident_summary["kv_resident_bytes"] == cache.resident_bytes
         assert resident_summary["prepared_chunk_resident_bytes"] == 0
     finally:
