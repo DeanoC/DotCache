@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from dotcache.config_io import load_dotcache_config, load_flat_yaml
+from dotcache.config_io import load_dotcache_config, load_flat_yaml, load_layer_profile
 
 
 def test_load_flat_yaml_parses_simple_scalars(tmp_path: Path) -> None:
@@ -61,3 +61,38 @@ def test_load_dotcache_config_rejects_unknown_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown DotCacheConfig fields"):
         load_dotcache_config(config_path)
+
+
+def test_load_layer_profile_parses_lists_and_nested_metadata(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(
+        "\n".join(
+            [
+                "model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                "source:",
+                "  benchmark: inspect_policy_prefill",
+                "  backend: torch_mps",
+                "  notes: >",
+                "    first line",
+                "    second line",
+                "key_policy_tier: balanced",
+                "value_policy_tier: aggressive",
+                "key_layer_sensitivity:",
+                "  - layer:3=strict",
+                "  - layer:4=strict",
+                "value_layer_sensitivity: []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_layer_profile(profile_path)
+
+    assert loaded["model_id"] == "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    assert loaded["source"]["benchmark"] == "inspect_policy_prefill"
+    assert loaded["source"]["backend"] == "torch_mps"
+    assert loaded["source"]["notes"] == "first line second line"
+    assert loaded["key_policy_tier"] == "balanced"
+    assert loaded["value_policy_tier"] == "aggressive"
+    assert loaded["key_layer_sensitivity"] == ["layer:3=strict", "layer:4=strict"]
+    assert loaded["value_layer_sensitivity"] == []

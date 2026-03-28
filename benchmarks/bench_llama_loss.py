@@ -7,6 +7,7 @@ import torch
 from transformers import AutoConfig
 
 from dotcache.config import DotCacheConfig
+from dotcache.config_io import load_layer_profile
 from dotcache.integrations.llama import LlamaDotCacheHarness, transformers_available
 
 
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--value-layer-sensitivity", action="append", default=[])
     parser.add_argument("--key-policy-override", action="append", default=[])
     parser.add_argument("--value-policy-override", action="append", default=[])
+    parser.add_argument("--layer-profile", default=None)
     parser.add_argument("--quant-scheme-k", choices=["affine", "lut", "sketch", "turbo3"], default="affine")
     parser.add_argument("--quant-scheme-v", choices=["affine", "lut", "turbo3"], default="affine")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -94,6 +96,19 @@ def main() -> None:
 
     model_config = AutoConfig.from_pretrained(args.model_id)
     head_dim = model_config.hidden_size // model_config.num_attention_heads
+    if args.layer_profile is not None:
+        profile = load_layer_profile(args.layer_profile)
+        profile_model_id = profile.get("model_id")
+        if profile_model_id not in (None, args.model_id):
+            raise SystemExit(f"layer profile model_id {profile_model_id!r} does not match --model-id {args.model_id!r}")
+        if args.key_policy_tier == "exact":
+            args.key_policy_tier = str(profile.get("key_policy_tier", args.key_policy_tier))
+        if args.value_policy_tier == "exact":
+            args.value_policy_tier = str(profile.get("value_policy_tier", args.value_policy_tier))
+        if not args.key_layer_sensitivity:
+            args.key_layer_sensitivity = list(profile.get("key_layer_sensitivity", []))
+        if not args.value_layer_sensitivity:
+            args.value_layer_sensitivity = list(profile.get("value_layer_sensitivity", []))
     dotcache_config = DotCacheConfig(
         head_dim=head_dim,
         group_size=args.group_size,
@@ -164,6 +179,7 @@ def main() -> None:
             "value_layer_sensitivity": list(args.value_layer_sensitivity),
             "key_policy_overrides": list(args.key_policy_override),
             "value_policy_overrides": list(args.value_policy_override),
+            "layer_profile": args.layer_profile,
             "quant_scheme_k": args.quant_scheme_k,
             "quant_scheme_v": args.quant_scheme_v,
             "m2_sketch_dim_k": args.m2_sketch_dim_k,
