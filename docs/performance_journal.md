@@ -2302,6 +2302,38 @@ The main pattern is exactly what the smaller matrix already suggested:
 - total saving percentage falls as the prompt gets longer because the uncompressed token-growing portion becomes a larger share of total state
 - decode speedups still hold well at longer context on both models, so this remains a real product lane rather than a short-prompt artifact
 
+I then extended the same exact-length ladder again on this pod:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf qwen35_4b_hf --run-supported --backend torch_cuda --device cuda --max-new-tokens 2 --prompt-lengths 8192 16384 32768 65536 --output-format jsonl`
+
+That establishes the current tested StateCache ceiling here:
+
+- both Qwen3.5 StateCache lanes are still clean at exact `8192` and `16384`
+- both hit `OutOfMemoryError` at exact `32768` and `65536`
+- the models still advertise `262144` max positions, so this is a pod/runtime ceiling rather than an architectural one
+
+Extended exact-length CUDA results:
+
+- `Qwen3.5 0.8B`
+  - `8192`: dense `50.32 ms/step`, StateCache `17.09 ms/step`, `2.94x` faster, agreement `1.0`
+  - `16384`: dense `27.77 ms/step`, StateCache `16.83 ms/step`, `1.65x` faster, agreement `1.0`
+  - total tracked state savings:
+    - `8192`: `10.77%`
+    - `16384`: `5.87%`
+- `Qwen3.5 4B`
+  - `8192`: dense `83.16 ms/step`, StateCache `23.44 ms/step`, `3.55x` faster, agreement `1.0`
+  - `16384`: dense `79.91 ms/step`, StateCache `26.54 ms/step`, `3.01x` faster, agreement `1.0`
+  - total tracked state savings:
+    - `8192`: `9.45%`
+    - `16384`: `5.14%`
+
+So the longer-context read is consistent with the shorter one:
+
+- StateCache remains a real decode-speed win through exact `16384`
+- total saving percentage keeps falling as token-growing attention state dominates the total
+- on this pod, exact `16384` is the current reliable tested ceiling for both currently supported Qwen3.5 StateCache lanes
+
 ## 2026-03-28 23:59 UTC - First combined Qwen3.5 0.8B CUDA hybrid lane is runnable, but still exploratory
 
 I added a new combined bench surface in [bench_qwen35_attention_subset_statecache_dotcache.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_statecache_dotcache.py) and a matching integration path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py) that does both:
