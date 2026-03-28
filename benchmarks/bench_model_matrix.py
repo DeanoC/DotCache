@@ -47,6 +47,16 @@ def _selected_specs(model_keys: list[str]) -> tuple[ModelSpec, ...]:
 def _recommended_mode_flags(spec: ModelSpec, *, backend: str) -> list[str]:
     if backend != "torch_cuda":
         return []
+    if spec.key == "tinyllama_hf":
+        return [
+            "--layer-profile",
+            "configs/layer_profiles/tinyllama_cuda_start.yaml",
+        ]
+    if spec.key == "smollm2_360m_hf":
+        return [
+            "--layer-profile",
+            "configs/layer_profiles/smollm2_360m_cuda_start.yaml",
+        ]
     if spec.key == "qwen25_1p5b_hf":
         return [
             "--default-mode-k",
