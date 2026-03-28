@@ -2867,6 +2867,99 @@ So the current serving-mode read is:
 - the remaining long-context limiter is not recurrent-state storage
 - it is the token-growing full-attention half plus the large long-context runtime allocation spike that still appears at `65536`
 
+## 2026-03-29 01:50 UTC - Qwen3.5-9B is viable on the same HF StateCache path
+
+I pushed the next larger native HF model, `Qwen/Qwen3.5-9B`, through the same StateCache path.
+
+Before the run, I cleaned the persistent cache so the model would fit without using a second temporary cache root:
+
+- removed `/workspace/.cache/pip`
+- removed duplicate HF GGUF snapshot for `bartowski/Llama-3.2-3B-Instruct-GGUF`
+- removed the temporary `/tmp/hf-qwen35-9b-cache`
+
+That left a single persistent copy of `Qwen3.5-9B` under `/workspace/.cache/huggingface`.
+
+First, I ran a short exact-length feasibility pass with compare-mode StateCache and `bnb_8bit` weights:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py \
+  --model-id Qwen/Qwen3.5-9B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 512 1024 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --continue-on-error
+```
+
+Feasibility results:
+
+- exact `512`
+  - greedy agreement `1.0`
+  - `deltanet_statecache_output_max_abs_error = 0.03125`
+  - dense decode `4.21 tok/s`
+  - StateCache decode `10.27 tok/s`
+  - speedup `2.44x`
+- exact `1024`
+  - greedy agreement `1.0`
+  - `deltanet_statecache_output_max_abs_error = 0.046875`
+  - dense decode `4.30 tok/s`
+  - StateCache decode `10.32 tok/s`
+  - speedup `2.40x`
+
+Resident-state compression on `9B`:
+
+- fixed resident dense bytes: `51.90 MB`
+- fixed resident StateCache bytes: `17.30 MB`
+- fixed resident saving: `66.67%`
+
+Then I ran the serving-only long-context ladder:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py \
+  --model-id Qwen/Qwen3.5-9B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --weight-quantization bnb_8bit \
+  --target-prompt-lengths 16384 32768 \
+  --max-new-tokens 2 \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --continue-on-error
+```
+
+Serving-only checkpoints:
+
+- `Qwen3.5-9B @ 16384`
+  - `deltanet_statecache_decode_ms_per_step = 99.89`
+  - `10.01 tok/s`
+  - prefill peak allocated/reserved: `20.33 GB / 24.02 GB`
+  - decode peak allocated/reserved: `20.82 GB / 24.02 GB`
+  - fixed resident saving: `66.67%`
+  - total state saving: `5.88%`
+- `Qwen3.5-9B @ 32768`
+  - `deltanet_statecache_decode_ms_per_step = 103.75`
+  - `9.64 tok/s`
+  - prefill peak allocated/reserved: `29.14 GB / 29.32 GB`
+  - decode peak allocated/reserved: `30.07 GB / 30.36 GB`
+  - fixed resident saving: `66.67%`
+  - total state saving: `3.07%`
+
+So the next-larger-family read is positive:
+
+- `Qwen3.5-9B` works on the same native HF StateCache path
+- it reaches exact `32768` on the serving-only methodology
+- it sits extremely close to the pod ceiling at that point
+- the serving-only StateCache methodology now scales across `0.8B`, `4B`, and `9B`
+
 ## 2026-03-28 00:15 UTC - Qwen3.5 local runtime ablations now cover conv state as a first-class family
 
 I extended the local Qwen3.5 DeltaNet StateCache debugging lane so it can ablate and localize conv state separately from recurrent state.
