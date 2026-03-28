@@ -357,6 +357,25 @@ For the first runnable Qwen3.5 hybrid-family lane, use the new text-only dense s
 
 That lane is intentionally dense-only and text-only. It proves the shared model matrix and benchmark surface can handle Qwen3.5 without pretending DotCache already supports the hybrid attention/delta state path.
 
+To inspect where DotCache could attach later, use the hybrid-state inspection runner:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_hybrid_inspect.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 128
+```
+
+That runner reports:
+- which text layers are `full_attention` vs `linear_attention`
+- how much prefill state lives in attention KV vs convolution/recurrent state
+- whether an attention-subset-only DotCache path is a coherent next step or whether a broader hybrid-state abstraction is required
+
+For the next step after inspection, there is also a dense-only attention-subset capture runner:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_attention_subset.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 128 --max-new-tokens 2
+```
+
+That runner only wraps the `full_attention` layers. It leaves every `linear_attention` / DeltaNet layer on the native dense path, and records decode-time Q/K/V/context for the attention subset so we can prototype partial DotCache support without pretending the recurrent state problem is solved.
+
 For the external GGUF / `llama.cpp` reference lane, use:
 
 ```bash

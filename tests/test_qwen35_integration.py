@@ -8,11 +8,16 @@ transformers = pytest.importorskip("transformers")
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
 from dotcache.integrations.qwen35 import (
+    Qwen35AttentionSubsetHarness,
+    Qwen35AttentionSubsetModelAdapter,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
+    inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
+    run_qwen35_attention_subset_replay_harness,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
+    summarize_qwen35_dotcache_fit,
 )
 
 
@@ -155,3 +160,81 @@ def test_qwen35_harness_exposes_block_summary() -> None:
     summary = harness.adapter.hybrid_block_summary()
     assert summary["hybrid_layer_count"] == 4
     assert summary["vision_config_present"] is True
+
+
+def test_qwen35_hybrid_fit_summary_marks_attention_subset_and_hybrid_need() -> None:
+    summary = summarize_qwen35_dotcache_fit(_tiny_qwen35_model())
+    assert summary["attention_candidate_layer_ids"] == [3]
+    assert summary["hybrid_only_layer_ids"] == [0, 1, 2]
+    assert summary["requires_hybrid_state_abstraction"] is True
+    assert summary["suggested_next_step"] == "attention_subset_only_then_generalize_state"
+
+
+def test_qwen35_hybrid_state_inspection_reports_split_state_bytes() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35TextModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello hybrid", return_tensors="pt")
+    result = inspect_qwen35_hybrid_state(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+    )
+    assert result["text_only"] is True
+    assert result["dotcache_ready"] is False
+    assert result["attention_candidate_layer_count"] == 1
+    assert result["hybrid_only_layer_count"] == 3
+    assert result["hybrid_state_total_bytes"] > 0
+    assert result["hybrid_linear_recurrent_state_bytes"] > 0
+    assert result["hybrid_attention_kv_bytes"] > 0
+    assert len(result["hybrid_state_layers"]) == 4
+    assert result["hybrid_state_layers"][0]["layer_type"] == "linear_attention"
+    assert result["hybrid_state_layers"][3]["layer_type"] == "full_attention"
+
+
+def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    assert adapter.attention_subset_layer_ids() == [3]
+    text_model = model.model.language_model
+    assert hasattr(text_model.layers[3], "self_attn")
+    assert hasattr(text_model.layers[0], "linear_attn")
+
+
+def test_qwen35_attention_subset_replay_captures_only_attention_layers() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset", return_tensors="pt")
+    result = run_qwen35_attention_subset_replay_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["attention_subset_layer_ids"] == [3]
+    assert result["attention_subset_capture_layer_count"] == 1
+    assert result["attention_subset_capture_record_count"] == 2
+    assert result["attention_subset_capture_counts_by_layer"] == {"3": 2}
+    assert "3" in result["attention_subset_capture_shapes_by_layer"]
+
+
+def test_qwen35_attention_subset_harness_tokenizes_and_runs() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetModelAdapter(model=model),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello")
+    result = harness.run_attention_subset_replay(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+    assert result["attention_subset_capture_layer_count"] == 1
