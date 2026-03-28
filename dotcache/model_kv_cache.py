@@ -2189,6 +2189,7 @@ class ModelPagedKVCache:
         q_head_to_kv_head: Sequence[int] | np.ndarray,
         *,
         query_scale: float = 1.0,
+        prefer_grouped_batching: bool = True,
         trace: ExecutionTrace | None = None,
     ):
         try:
@@ -2241,8 +2242,10 @@ class ModelPagedKVCache:
 
         self._sync_prepared_chunk_cache_budget()
 
-        cached_group_layout = _grouped_layouts_can_batch(active_layouts, active_queries)
-        if cached_group_layout or _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries):
+        cached_group_layout = prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
+        if cached_group_layout or (
+            prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
+        ):
             key_chunk_lengths = active_layouts[0].key_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
             value_chunk_lengths = active_layouts[0].value_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
             _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_torch_tensor(

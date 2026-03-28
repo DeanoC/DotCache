@@ -81,6 +81,7 @@ def _run_case(
     layer_bits_overrides: dict[int, int],
     state_stage: str,
     renorm_interval: int,
+    recurrent_mode_overrides: dict[int, str],
     base_record: dict[str, object],
     continue_on_error: bool,
 ) -> None:
@@ -94,6 +95,7 @@ def _run_case(
             layer_bits_overrides=layer_bits_overrides,
             state_stage=state_stage,
             renorm_interval=renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
         )
     except Exception as exc:  # pragma: no cover - benchmark failure path
         if not continue_on_error:
