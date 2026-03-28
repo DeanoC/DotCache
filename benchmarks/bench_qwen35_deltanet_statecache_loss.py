@@ -34,9 +34,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--layer-bit-overrides", nargs="*", default=[])
+    parser.add_argument(
+        "--statecache-scope",
+        choices=["recurrent_only", "conv_only", "conv_plus_recurrent"],
+        default="recurrent_only",
+    )
+    parser.add_argument("--conv-bits", type=int, default=None)
+    parser.add_argument("--conv-layer-bit-overrides", nargs="*", default=[])
     parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="readout_only_m0")
     parser.add_argument("--renorm-interval", type=int, default=0)
     parser.add_argument("--recurrent-mode-override", action="append", default=[])
+    parser.add_argument("--conv-mode-override", action="append", default=[])
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     return parser.parse_args()
 
@@ -76,6 +84,7 @@ def main() -> None:
     if args.eval_steps <= 0 or args.prefix_length + args.eval_steps > args.sequence_length:
         raise SystemExit("prefix_length + eval_steps must be <= sequence_length")
     layer_bit_overrides = _parse_layer_bit_overrides(args.layer_bit_overrides)
+    conv_layer_bit_overrides = _parse_layer_bit_overrides(args.conv_layer_bit_overrides)
 
     harness = Qwen35DeltaNetStateHarness.from_pretrained(
         args.model_id,
@@ -88,6 +97,7 @@ def main() -> None:
         sequence_length=args.sequence_length,
     )
     recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.recurrent_mode_override)
+    conv_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.conv_mode_override)
     result = harness.evaluate_deltanet_statecache_loss(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -96,9 +106,13 @@ def main() -> None:
         group_size=args.group_size,
         bits=args.bits,
         layer_bits_overrides=layer_bit_overrides,
+        statecache_scope=args.statecache_scope,
+        conv_bits=args.conv_bits,
+        conv_layer_bits_overrides=conv_layer_bit_overrides,
         state_stage=args.state_stage,
         renorm_interval=args.renorm_interval,
         recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
     )
     result.update(
         {
@@ -111,7 +125,12 @@ def main() -> None:
             "text_only": True,
             "dotcache_ready": False,
             "hybrid_family": "qwen3_5",
+            "deltanet_statecache_scope": args.statecache_scope,
+            "deltanet_statecache_conv_bits": args.conv_bits if args.conv_bits is not None else args.bits,
             "deltanet_statecache_layer_bits": {str(layer_id): bits for layer_id, bits in sorted(layer_bit_overrides.items())},
+            "deltanet_statecache_conv_layer_bits": {
+                str(layer_id): bits for layer_id, bits in sorted(conv_layer_bit_overrides.items())
+            },
             "deltanet_statecache_stage_name": args.state_stage,
             "deltanet_statecache_renorm_interval": args.renorm_interval,
         }
@@ -119,6 +138,10 @@ def main() -> None:
     if recurrent_mode_overrides:
         result["deltanet_statecache_recurrent_mode_overrides"] = {
             str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())
+        }
+    if conv_mode_overrides:
+        result["deltanet_statecache_conv_mode_overrides"] = {
+            str(layer_id): mode for layer_id, mode in sorted(conv_mode_overrides.items())
         }
     print(json.dumps(result, sort_keys=True), flush=True)
 

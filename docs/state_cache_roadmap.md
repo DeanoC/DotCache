@@ -4,17 +4,19 @@ This note scopes the first DeltaNet-side follow-on to DotCache.
 
 ## Goal
 
-Use Qwen3.5 as the first hybrid-family probe to understand whether recurrent DeltaNet state can support a DotCache-like compressed execution path.
+Use Qwen3.5 as the first hybrid-family probe to understand whether DeltaNet recurrent and short-conv state can support a DotCache-like compressed execution path.
 
 The first milestone is intentionally limited to:
 
 - dense-only Qwen3.5 DeltaNet state inspection
 - dense-only recurrent-state ablations
+- local runtime ablations for recurrent-only, conv-only, and conv-plus-recurrent StateCache scopes
 - a synthetic StateCache simulator for `M0` and `M3`
 
 It explicitly does **not** include:
 
 - a compressed recurrent-state runtime
+- a promoted CUDA default for conv-state compression
 - multimodal/image support
 - weight quantization
 - a full hybrid-state abstraction that replaces native Qwen3.5 cache objects
@@ -26,7 +28,7 @@ DotCache still covers the attention-side KV path.
 StateCache is the parallel exploration lane for the DeltaNet / `linear_attention` state family:
 
 - DotCache: page-oriented compressed KV execution
-- StateCache: tile-oriented compressed recurrent-state exploration
+- StateCache: tile-oriented compressed DeltaNet-state exploration
 
 The reusable ideas are the policy and codec discipline:
 
@@ -38,7 +40,7 @@ The reusable ideas are the policy and codec discipline:
 The physical unit is different:
 
 - attention path: KV pages
-- DeltaNet path: recurrent-state tiles
+- DeltaNet path: conv/recurrent state tiles
 
 ## V1 Deliverables
 
@@ -100,7 +102,7 @@ For repeated early/mid/late layer sweeps, use the wrapper:
 
 That wrapper now emits both detailed per-bit summaries and compact recommendation records for each sampled `(layer, state_kind)` pair, so the CUDA path can compare recurrent and conv compression candidates without post-processing.
 
-For selective recurrent-state probes on the resident CUDA/MPS lane, use the normal readout/loss harnesses with `--layer-bit-overrides`:
+For selective resident-state probes on the local CUDA/MPS lane, use the normal readout/loss harnesses with `--statecache-scope`, recurrent `--layer-bit-overrides`, and optional conv overrides:
 
 ```bash
 .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py \
@@ -111,8 +113,13 @@ For selective recurrent-state probes on the resident CUDA/MPS lane, use the norm
   --target-prompt-lengths 64 \
   --max-new-tokens 4 \
   --bits 8 \
+  --statecache-scope conv_plus_recurrent \
   --layer-bit-overrides 12:4 22:4 \
+  --conv-bits 8 \
+  --conv-layer-bit-overrides 0:8 \
   --state-stage post_update_m0 \
   --renorm-interval 0 \
   --continue-on-error
 ```
+
+Those conv-aware resident ablations are still local debugging support only. They are useful for failure localization and family-level byte accounting, but they are not yet promoted as the default CUDA runtime design.

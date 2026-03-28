@@ -63,9 +63,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--statecache-bits", type=int, default=8)
     parser.add_argument("--statecache-layer-bit-overrides", nargs="*", default=[])
+    parser.add_argument(
+        "--statecache-scope",
+        choices=["recurrent_only", "conv_only", "conv_plus_recurrent"],
+        default="recurrent_only",
+    )
+    parser.add_argument("--statecache-conv-bits", type=int, default=None)
+    parser.add_argument("--statecache-conv-layer-bit-overrides", nargs="*", default=[])
     parser.add_argument("--statecache-stage", choices=["readout_only_m0", "post_update_m0"], default="post_update_m0")
     parser.add_argument("--statecache-renorm-interval", type=int, default=0)
     parser.add_argument("--statecache-recurrent-mode-override", action="append", default=[])
+    parser.add_argument("--statecache-conv-mode-override", action="append", default=[])
     return parser.parse_args()
 
 
@@ -84,7 +92,9 @@ def main() -> None:
         raise SystemExit("bench_qwen35_hybrid_failure_localize.py requires the optional transformers dependencies")
 
     layer_bit_overrides = _parse_layer_bit_overrides(args.statecache_layer_bit_overrides)
+    conv_layer_bit_overrides = _parse_layer_bit_overrides(args.statecache_conv_layer_bit_overrides)
     recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.statecache_recurrent_mode_override)
+    conv_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.statecache_conv_mode_override)
 
     dotcache_config = DotCacheConfig(
         head_dim=256,
@@ -142,9 +152,13 @@ def main() -> None:
         group_size=args.group_size,
         bits=args.statecache_bits,
         layer_bits_overrides=layer_bit_overrides,
+        statecache_scope=args.statecache_scope,
+        conv_bits=args.statecache_conv_bits,
+        conv_layer_bits_overrides=conv_layer_bit_overrides,
         state_stage=args.statecache_stage,
         renorm_interval=args.statecache_renorm_interval,
         recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
     )
     combined_result = dotcache_harness.run_hybrid_combined_localization(
         input_ids=input_ids,
@@ -154,9 +168,13 @@ def main() -> None:
         statecache_group_size=args.group_size,
         statecache_bits=args.statecache_bits,
         statecache_layer_bits_overrides=layer_bit_overrides,
+        statecache_scope=args.statecache_scope,
+        statecache_conv_bits=args.statecache_conv_bits,
+        statecache_conv_layer_bits_overrides=conv_layer_bit_overrides,
         statecache_stage=args.statecache_stage,
         statecache_renorm_interval=args.statecache_renorm_interval,
         statecache_recurrent_mode_overrides=recurrent_mode_overrides,
+        statecache_conv_mode_overrides=conv_mode_overrides,
     )
 
     summary = {
@@ -169,11 +187,17 @@ def main() -> None:
         "prefix_length": args.prefix_length,
         "eval_steps": args.eval_steps,
         "tokens_per_page": args.tokens_per_page,
+        "statecache_scope": args.statecache_scope,
         "statecache_bits": args.statecache_bits,
+        "statecache_conv_bits": args.statecache_conv_bits if args.statecache_conv_bits is not None else args.statecache_bits,
         "statecache_stage": args.statecache_stage,
         "statecache_renorm_interval": args.statecache_renorm_interval,
         "statecache_layer_bit_overrides": {str(layer_id): bits for layer_id, bits in sorted(layer_bit_overrides.items())},
+        "statecache_conv_layer_bit_overrides": {
+            str(layer_id): bits for layer_id, bits in sorted(conv_layer_bit_overrides.items())
+        },
         "statecache_recurrent_mode_overrides": {str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())},
+        "statecache_conv_mode_overrides": {str(layer_id): mode for layer_id, mode in sorted(conv_mode_overrides.items())},
         "dense_teacher_forced_loss": dense_result["dense_teacher_forced_loss"],
         "dotcache_first_attention_failure_layer": _first_layer_from_map(
             dotcache_result.get("replay_output_max_abs_error_by_layer")
@@ -182,9 +206,15 @@ def main() -> None:
         "dotcache_teacher_forced_logit_max_abs_error": dotcache_result.get("teacher_forced_logit_max_abs_error", 0.0),
         "statecache_first_divergence_step": statecache_result.get("deltanet_statecache_first_divergence_step"),
         "statecache_first_failure_layer": statecache_result.get("deltanet_statecache_first_failure_layer"),
+        "statecache_first_recurrent_failure_layer": statecache_result.get("deltanet_statecache_first_recurrent_failure_layer"),
+        "statecache_first_conv_failure_layer": statecache_result.get("deltanet_statecache_first_conv_failure_layer"),
+        "statecache_first_combined_failure_layer": statecache_result.get("deltanet_statecache_first_combined_failure_layer"),
         "statecache_per_step_logit_max_abs_error": statecache_result.get("deltanet_statecache_per_step_logit_max_abs_error", []),
         "combined_first_divergence_step": combined_result.get("combined_first_divergence_step"),
         "combined_first_attention_failure_layer": combined_result.get("combined_first_attention_failure_layer"),
+        "combined_first_recurrent_failure_layer": combined_result.get("combined_first_recurrent_failure_layer"),
+        "combined_first_conv_failure_layer": combined_result.get("combined_first_conv_failure_layer"),
+        "combined_first_failure_family": combined_result.get("combined_first_failure_family"),
         "combined_per_step_logit_max_abs_error": combined_result.get("combined_per_step_logit_max_abs_error", []),
         "combined_attention_output_max_abs_error_by_layer": combined_result.get("combined_attention_output_max_abs_error_by_layer", {}),
         "dotcache_result": dotcache_result,
