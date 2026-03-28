@@ -955,6 +955,25 @@ So the honest local conclusion is:
 - the current MPS implementation is still much too slow to promote it as a runtime win
 - if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
 
+I then added a one-load real-model probe in [bench_llama_mixed_bits_profile.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_mixed_bits_profile.py) with the convenience wrapper [run_m0_mixed_bits_mps_probe.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m0_mixed_bits_mps_probe.sh) so `K=4b, V=4b` and `K=4b, V=3b` could be compared against the same loaded model and the same grouped fused-cache policy.
+
+That gave a more honest systems read:
+
+| Model | Prompt | Split | Dense Decode ms/step | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement | Max Abs Logit Drift |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| `TinyLlama 1.1B` | `577` | `K=4b, V=4b` | `1309.16` | `25681.65` | `3837.36` | `14,958,592` | `1.00` | `0.6074` |
+| `TinyLlama 1.1B` | `577` | `K=4b, V=3b` | `564.23` | `21779.50` | `12250.44` | `14,598,144` | `1.00` | `1.2207` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=4b` | `1415.17` | `36945.79` | `2083.56` | `39,190,528` | `1.00` | `0.9612` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=3b` | `446.14` | `37179.83` | `13848.80` | `37,339,136` | `1.00` | `2.1914` |
+
+So the follow-up conclusion is more nuanced than the earlier cold-load probes:
+
+- `K=4b, V=3b` does reduce resident bytes on both models.
+- On TinyLlama, it also improved decode time under the one-load comparison.
+- On SmolLM2, decode was effectively flat-to-worse while prefill ingest regressed badly.
+- The main blocker for `V=3b` on this Mac is now clearly the write/prefill side, not grouped decode.
+- That still makes `K=4b, V=3b` a useful CUDA hint, but only if the write path there is materially cheaper than it is on MPS.
+
 One backend-focused optimization pass did move the local `3b` decode shape in the right direction. Static `M0 3b` pages on MPS now build a fused pre-scaled prepared chunk, not just cached unpacked per-group codes. On a synthetic cached static-page decode microbench (`4` pages, `head_dim=64`, `tokens_per_page=16`):
 
 - without prepared chunk cache: `142.71 ms`

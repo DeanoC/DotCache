@@ -362,7 +362,7 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - CUDA is currently a correctness/parity backend, not a performance-leading one.
 - Prefill ingest and page preparation are still expensive at longer contexts, especially before warmup and caching effects settle.
 - Qwen2.5 3B can run on this Mac for small exact-length smokes, but it is not a good box for sustained 3B-class optimization work.
-- New local `M0 3b` probes show a plausible new quality tier, especially for `K=4b, V=3b`, but the current MPS implementation is still far too slow to treat `3b` as an optimization win.
+- New local `M0 3b` probes show a plausible new quality tier, especially for `K=4b, V=3b`, but the one-load MPS comparison says the benefit is still asymmetric: TinyLlama decode improved, while SmolLM2 mostly saw smaller KV plus much worse prefill ingest. So `3b` is still a planning hint, not a proven local systems win.
 - New local `M3 int8` probes cut live-tail resident bytes roughly in half on TinyLlama short prompts while keeping short teacher-forced behavior intact, but they are still slower than the existing `M3 float16` path on MPS.
 
 ### Likely causes
