@@ -2477,3 +2477,28 @@ Validation:
 
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
+## 2026-03-28 00:15 UTC - Qwen3.5 local runtime ablations now cover conv state as a first-class family
+
+I extended the local Qwen3.5 DeltaNet StateCache debugging lane so it can ablate and localize conv state separately from recurrent state.
+
+What landed:
+
+- `statecache_scope = recurrent_only | conv_only | conv_plus_recurrent`
+- matching conv-side runtime knobs:
+  - `conv_bits`
+  - `conv_layer_bits_overrides`
+  - `conv_mode_overrides`
+- conv-aware localization output for:
+  - first recurrent failure layer
+  - first conv failure layer
+  - first combined DeltaNet failure layer
+  - first combined-family failure kind in the hybrid localizer
+
+This is intentionally still a local debugging surface, not a promoted CUDA default. The main value is that combined Qwen3.5 runs can now answer a cleaner question than before:
+
+- does drift start on the attention subset
+- on recurrent state
+- on conv state
+- or only when multiple compressed families interact
+
+That should make the CUDA combined DotCache+StateCache bring-up much easier to debug, especially when a regression is small enough that a single scalar loss number is not very informative.

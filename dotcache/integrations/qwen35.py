@@ -41,8 +41,10 @@ else:  # pragma: no cover - exercised in environments without transformers
 Qwen35Mode = Literal["dense", "dotcache_attention_subset"]
 Qwen35DeltaNetStateCacheStage = Literal["readout_only_m0", "post_update_m0"]
 Qwen35DeltaNetStateCacheMode = Literal["M0", "M3"]
+Qwen35DeltaNetStateCacheScope = Literal["recurrent_only", "conv_only", "conv_plus_recurrent"]
 
 _VALID_QWEN35_DELTANET_STATECACHE_MODES: tuple[str, ...] = ("M0", "M3")
+_VALID_QWEN35_DELTANET_STATECACHE_SCOPES: tuple[str, ...] = ("recurrent_only", "conv_only", "conv_plus_recurrent")
 
 
 def _require_qwen35_model_class() -> None:
@@ -796,17 +798,37 @@ def parse_qwen35_deltanet_statecache_mode_overrides(
         if not raw:
             continue
         if "=" not in raw:
-            raise ValueError("recurrent_state_mode_overrides entries must use layer:<id>=<mode>")
+            raise ValueError("state_mode_overrides entries must use layer:<id>=<mode>")
         target, mode = raw.split("=", 1)
         parts = target.strip().split(":")
         if len(parts) != 2 or parts[0] != "layer":
-            raise ValueError("recurrent_state_mode_overrides entries must use layer:<id>=<mode>")
+            raise ValueError("state_mode_overrides entries must use layer:<id>=<mode>")
         resolved_mode = mode.strip().upper()
         if resolved_mode not in _VALID_QWEN35_DELTANET_STATECACHE_MODES:
             allowed = ", ".join(_VALID_QWEN35_DELTANET_STATECACHE_MODES)
-            raise ValueError(f"recurrent_state_mode_overrides mode must be one of {allowed}")
+            raise ValueError(f"state_mode_overrides mode must be one of {allowed}")
         parsed[int(parts[1])] = resolved_mode  # type: ignore[assignment]
     return parsed
+
+
+def _resolve_qwen35_deltanet_statecache_scope(
+    scope: Qwen35DeltaNetStateCacheScope | str,
+) -> Qwen35DeltaNetStateCacheScope:
+    resolved = str(scope)
+    if resolved not in _VALID_QWEN35_DELTANET_STATECACHE_SCOPES:
+        allowed = ", ".join(_VALID_QWEN35_DELTANET_STATECACHE_SCOPES)
+        raise ValueError(f"Qwen3.5 DeltaNet StateCache scope must be one of {allowed}")
+    return resolved  # type: ignore[return-value]
+
+
+def _statecache_scope_includes_recurrent(scope: Qwen35DeltaNetStateCacheScope | str) -> bool:
+    resolved = _resolve_qwen35_deltanet_statecache_scope(scope)
+    return resolved in {"recurrent_only", "conv_plus_recurrent"}
+
+
+def _statecache_scope_includes_conv(scope: Qwen35DeltaNetStateCacheScope | str) -> bool:
+    resolved = _resolve_qwen35_deltanet_statecache_scope(scope)
+    return resolved in {"conv_only", "conv_plus_recurrent"}
 
 
 def _resolve_qwen35_deltanet_statecache_mode(
@@ -860,6 +882,71 @@ def _resolve_deltanet_statecache_bits(
     return int(layer_bits_overrides.get(int(layer_id), int(default_bits)))
 
 
+def _prepare_qwen35_deltanet_statecache(
+    cache: Any,
+    *,
+    layer_ids: list[int],
+    recurrent_bits: int,
+    conv_bits: int,
+    group_size: int,
+    renorm: bool = False,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    recurrent_layer_bits_overrides: dict[int, int] | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
+    recurrent_default_mode: Qwen35DeltaNetStateCacheMode = "M0",
+    conv_default_mode: Qwen35DeltaNetStateCacheMode = "M0",
+    recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+) -> None:
+    scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    recurrent_states = getattr(cache, "recurrent_states", None)
+    conv_states = getattr(cache, "conv_states", None)
+    if _statecache_scope_includes_recurrent(scope) and recurrent_states is None:
+        raise ValueError("Qwen3.5 DeltaNet StateCache path requires recurrent_states on past_key_values")
+    if _statecache_scope_includes_conv(scope) and conv_states is None:
+        raise ValueError("Qwen3.5 DeltaNet StateCache path requires conv_states on past_key_values")
+
+    for layer_id in layer_ids:
+        if _statecache_scope_includes_recurrent(scope) and recurrent_states is not None and layer_id < len(recurrent_states):
+            recurrent_state = recurrent_states[layer_id]
+            if recurrent_state is not None:
+                if renorm:
+                    recurrent_state = _renorm_state_rows_tensor(recurrent_state)
+                recurrent_states[layer_id] = _quantize_state_tensor(
+                    recurrent_state,
+                    bits=_resolve_deltanet_statecache_bits(
+                        int(layer_id),
+                        default_bits=int(recurrent_bits),
+                        layer_bits_overrides=recurrent_layer_bits_overrides,
+                    ),
+                    group_size=int(group_size),
+                    mode=_resolve_qwen35_deltanet_statecache_mode(
+                        int(layer_id),
+                        default_mode=recurrent_default_mode,
+                        mode_overrides=recurrent_mode_overrides,
+                    ),
+                )
+        if _statecache_scope_includes_conv(scope) and conv_states is not None and layer_id < len(conv_states):
+            conv_state = conv_states[layer_id]
+            if conv_state is not None:
+                if renorm:
+                    conv_state = _renorm_state_rows_tensor(conv_state)
+                conv_states[layer_id] = _quantize_state_tensor(
+                    conv_state,
+                    bits=_resolve_deltanet_statecache_bits(
+                        int(layer_id),
+                        default_bits=int(conv_bits),
+                        layer_bits_overrides=conv_layer_bits_overrides,
+                    ),
+                    group_size=int(group_size),
+                    mode=_resolve_qwen35_deltanet_statecache_mode(
+                        int(layer_id),
+                        default_mode=conv_default_mode,
+                        mode_overrides=conv_mode_overrides,
+                    ),
+                )
+
+
 def _quantize_qwen35_deltanet_recurrent_state_in_cache(
     cache: Any,
     *,
@@ -870,29 +957,17 @@ def _quantize_qwen35_deltanet_recurrent_state_in_cache(
     default_mode: Qwen35DeltaNetStateCacheMode = "M0",
     mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
 ) -> None:
-    recurrent_states = getattr(cache, "recurrent_states", None)
-    if recurrent_states is None:
-        raise ValueError("Qwen3.5 DeltaNet StateCache path requires recurrent_states on past_key_values")
-    for layer_id in layer_ids:
-        if layer_id >= len(recurrent_states):
-            continue
-        recurrent_state = recurrent_states[layer_id]
-        if recurrent_state is None:
-            continue
-        recurrent_states[layer_id] = _quantize_state_tensor(
-            recurrent_state,
-            bits=_resolve_deltanet_statecache_bits(
-                int(layer_id),
-                default_bits=int(bits),
-                layer_bits_overrides=layer_bits_overrides,
-            ),
-            group_size=int(group_size),
-            mode=_resolve_qwen35_deltanet_statecache_mode(
-                int(layer_id),
-                default_mode=default_mode,
-                mode_overrides=mode_overrides,
-            ),
-        )
+    _prepare_qwen35_deltanet_statecache(
+        cache,
+        layer_ids=layer_ids,
+        recurrent_bits=int(bits),
+        conv_bits=int(bits),
+        group_size=int(group_size),
+        statecache_scope="recurrent_only",
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        recurrent_default_mode=default_mode,
+        recurrent_mode_overrides=mode_overrides,
+    )
 
 
 def _renorm_state_rows_tensor(tensor: torch.Tensor | None) -> torch.Tensor | None:
@@ -916,31 +991,133 @@ def _prepare_qwen35_deltanet_recurrent_statecache(
     default_mode: Qwen35DeltaNetStateCacheMode = "M0",
     mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
 ) -> None:
-    recurrent_states = getattr(cache, "recurrent_states", None)
-    if recurrent_states is None:
-        raise ValueError("Qwen3.5 DeltaNet StateCache path requires recurrent_states on past_key_values")
-    for layer_id in layer_ids:
-        if layer_id >= len(recurrent_states):
-            continue
-        recurrent_state = recurrent_states[layer_id]
-        if recurrent_state is None:
-            continue
-        if renorm:
-            recurrent_state = _renorm_state_rows_tensor(recurrent_state)
-        recurrent_states[layer_id] = _quantize_state_tensor(
-            recurrent_state,
-            bits=_resolve_deltanet_statecache_bits(
-                int(layer_id),
-                default_bits=int(bits),
-                layer_bits_overrides=layer_bits_overrides,
-            ),
-            group_size=int(group_size),
-            mode=_resolve_qwen35_deltanet_statecache_mode(
-                int(layer_id),
-                default_mode=default_mode,
-                mode_overrides=mode_overrides,
-            ),
+    _prepare_qwen35_deltanet_statecache(
+        cache,
+        layer_ids=layer_ids,
+        recurrent_bits=int(bits),
+        conv_bits=int(bits),
+        group_size=int(group_size),
+        renorm=renorm,
+        statecache_scope="recurrent_only",
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        recurrent_default_mode=default_mode,
+        recurrent_mode_overrides=mode_overrides,
+    )
+
+
+def _summarize_qwen35_deltanet_statecache_bytes(
+    prefill_partition: Qwen35HybridStatePartition,
+    *,
+    group_size: int,
+    statecache_scope: Qwen35DeltaNetStateCacheScope,
+    recurrent_bits: int,
+    conv_bits: int,
+    recurrent_layer_bits_overrides: dict[int, int] | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
+    recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+) -> dict[str, Any]:
+    scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    dense_conv_bytes = 0
+    dense_recurrent_bytes = 0
+    statecache_conv_bytes = 0
+    statecache_recurrent_bytes = 0
+    per_layer_dense_conv_bytes: dict[str, int] = {}
+    per_layer_dense_recurrent_bytes: dict[str, int] = {}
+    per_layer_statecache_conv_bytes: dict[str, int] = {}
+    per_layer_statecache_recurrent_bytes: dict[str, int] = {}
+    per_layer_conv_bits: dict[str, int] = {}
+    per_layer_recurrent_bits: dict[str, int] = {}
+    per_layer_conv_modes: dict[str, str] = {}
+    per_layer_recurrent_modes: dict[str, str] = {}
+
+    for layer in prefill_partition.fixed_resident_layers:
+        layer_key = str(int(layer.layer_id))
+
+        dense_conv = int(layer.conv_state_bytes)
+        dense_recurrent = int(layer.recurrent_state_bytes)
+        dense_conv_bytes += dense_conv
+        dense_recurrent_bytes += dense_recurrent
+        per_layer_dense_conv_bytes[layer_key] = dense_conv
+        per_layer_dense_recurrent_bytes[layer_key] = dense_recurrent
+
+        resolved_conv_bits = _resolve_deltanet_statecache_bits(
+            int(layer.layer_id),
+            default_bits=int(conv_bits),
+            layer_bits_overrides=conv_layer_bits_overrides,
         )
+        resolved_recurrent_bits = _resolve_deltanet_statecache_bits(
+            int(layer.layer_id),
+            default_bits=int(recurrent_bits),
+            layer_bits_overrides=recurrent_layer_bits_overrides,
+        )
+        resolved_conv_mode = _resolve_qwen35_deltanet_statecache_mode(
+            int(layer.layer_id),
+            default_mode="M0",
+            mode_overrides=conv_mode_overrides,
+        )
+        resolved_recurrent_mode = _resolve_qwen35_deltanet_statecache_mode(
+            int(layer.layer_id),
+            default_mode="M0",
+            mode_overrides=recurrent_mode_overrides,
+        )
+        per_layer_conv_bits[layer_key] = int(resolved_conv_bits)
+        per_layer_recurrent_bits[layer_key] = int(resolved_recurrent_bits)
+        per_layer_conv_modes[layer_key] = resolved_conv_mode
+        per_layer_recurrent_modes[layer_key] = resolved_recurrent_mode
+
+        compressed_conv = dense_conv
+        if _statecache_scope_includes_conv(scope) and layer.conv_state is not None:
+            compressed_conv = _compressed_state_nbytes(
+                layer.conv_state,
+                bits=resolved_conv_bits,
+                group_size=int(group_size),
+                mode=resolved_conv_mode,
+            )
+
+        compressed_recurrent = dense_recurrent
+        if _statecache_scope_includes_recurrent(scope) and layer.recurrent_state is not None:
+            compressed_recurrent = _compressed_state_nbytes(
+                layer.recurrent_state,
+                bits=resolved_recurrent_bits,
+                group_size=int(group_size),
+                mode=resolved_recurrent_mode,
+            )
+
+        statecache_conv_bytes += int(compressed_conv)
+        statecache_recurrent_bytes += int(compressed_recurrent)
+        per_layer_statecache_conv_bytes[layer_key] = int(compressed_conv)
+        per_layer_statecache_recurrent_bytes[layer_key] = int(compressed_recurrent)
+
+    dense_fixed_resident_bytes = int(dense_conv_bytes + dense_recurrent_bytes)
+    statecache_fixed_resident_bytes = int(statecache_conv_bytes + statecache_recurrent_bytes)
+    return {
+        "deltanet_conv_state_bytes": int(dense_conv_bytes),
+        "deltanet_recurrent_state_bytes": int(dense_recurrent_bytes),
+        "deltanet_statecache_conv_state_bytes": int(statecache_conv_bytes),
+        "deltanet_statecache_recurrent_state_bytes": int(statecache_recurrent_bytes),
+        "deltanet_dense_fixed_resident_bytes": dense_fixed_resident_bytes,
+        "deltanet_statecache_fixed_resident_bytes": statecache_fixed_resident_bytes,
+        "deltanet_statecache_effective_conv_compression_ratio": (
+            float(dense_conv_bytes / max(statecache_conv_bytes, 1)) if dense_conv_bytes > 0 else 1.0
+        ),
+        "deltanet_statecache_effective_recurrent_compression_ratio": (
+            float(dense_recurrent_bytes / max(statecache_recurrent_bytes, 1)) if dense_recurrent_bytes > 0 else 1.0
+        ),
+        "deltanet_statecache_effective_fixed_resident_compression_ratio": (
+            float(dense_fixed_resident_bytes / max(statecache_fixed_resident_bytes, 1))
+            if dense_fixed_resident_bytes > 0
+            else 1.0
+        ),
+        "deltanet_statecache_per_layer_dense_conv_bytes": dict(sorted(per_layer_dense_conv_bytes.items())),
+        "deltanet_statecache_per_layer_dense_recurrent_bytes": dict(sorted(per_layer_dense_recurrent_bytes.items())),
+        "deltanet_statecache_per_layer_conv_bytes": dict(sorted(per_layer_statecache_conv_bytes.items())),
+        "deltanet_statecache_per_layer_recurrent_bytes": dict(sorted(per_layer_statecache_recurrent_bytes.items())),
+        "deltanet_statecache_per_layer_conv_bits": dict(sorted(per_layer_conv_bits.items())),
+        "deltanet_statecache_per_layer_recurrent_bits": dict(sorted(per_layer_recurrent_bits.items())),
+        "deltanet_statecache_per_layer_conv_mode": dict(sorted(per_layer_conv_modes.items())),
+        "deltanet_statecache_per_layer_recurrent_mode": dict(sorted(per_layer_recurrent_modes.items())),
+    }
 
 
 def _decode_text(tokenizer: Any | None, token_ids: list[int]) -> str | None:
@@ -1097,7 +1274,10 @@ class Qwen35DeltaNetStateModelAdapter(Qwen35TextModelAdapter):
         for layer_id, layer in enumerate(layers[: len(layer_types)]):
             if layer_types[layer_id] != "linear_attention" or not hasattr(layer, "linear_attn"):
                 continue
-            wrapper = CaptureQwen35DeltaNet(layer.linear_attn, self)
+            base_linear_attn = layer.linear_attn
+            if isinstance(base_linear_attn, CaptureQwen35DeltaNet):
+                base_linear_attn = base_linear_attn.base_linear_attn
+            wrapper = CaptureQwen35DeltaNet(base_linear_attn, self)
             layer.linear_attn = wrapper
             self._wrappers.append(wrapper)
 
@@ -1366,7 +1546,10 @@ class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
         for layer_id, layer in enumerate(layers[: len(layer_types)]):
             if layer_types[layer_id] != "full_attention" or not hasattr(layer, "self_attn"):
                 continue
-            wrapper = DotCacheQwen35AttentionSubset(layer.self_attn, self)
+            base_attention = layer.self_attn
+            if isinstance(base_attention, DotCacheQwen35AttentionSubset):
+                base_attention = base_attention.base_attention
+            wrapper = DotCacheQwen35AttentionSubset(base_attention, self)
             layer.self_attn = wrapper
             self._wrappers.append(wrapper)
 
@@ -1710,9 +1893,13 @@ class Qwen35DeltaNetStateHarness:
         group_size: int = 32,
         bits: int = 8,
         layer_bits_overrides: dict[int, int] | None = None,
+        statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+        conv_bits: int | None = None,
+        conv_layer_bits_overrides: dict[int, int] | None = None,
         state_stage: Qwen35DeltaNetStateCacheStage = "readout_only_m0",
         renorm_interval: int = 0,
         recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+        conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_deltanet_statecache_readout_harness(
@@ -1726,9 +1913,13 @@ class Qwen35DeltaNetStateHarness:
             group_size=group_size,
             bits=bits,
             layer_bits_overrides=layer_bits_overrides,
+            statecache_scope=statecache_scope,
+            conv_bits=conv_bits,
+            conv_layer_bits_overrides=conv_layer_bits_overrides,
             state_stage=state_stage,
             renorm_interval=renorm_interval,
             recurrent_mode_overrides=recurrent_mode_overrides,
+            conv_mode_overrides=conv_mode_overrides,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -1743,9 +1934,13 @@ class Qwen35DeltaNetStateHarness:
         group_size: int = 32,
         bits: int = 8,
         layer_bits_overrides: dict[int, int] | None = None,
+        statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+        conv_bits: int | None = None,
+        conv_layer_bits_overrides: dict[int, int] | None = None,
         state_stage: Qwen35DeltaNetStateCacheStage = "readout_only_m0",
         renorm_interval: int = 0,
         recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+        conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_deltanet_statecache_loss_harness(
@@ -1760,9 +1955,13 @@ class Qwen35DeltaNetStateHarness:
             group_size=group_size,
             bits=bits,
             layer_bits_overrides=layer_bits_overrides,
+            statecache_scope=statecache_scope,
+            conv_bits=conv_bits,
+            conv_layer_bits_overrides=conv_layer_bits_overrides,
             state_stage=state_stage,
             renorm_interval=renorm_interval,
             recurrent_mode_overrides=recurrent_mode_overrides,
+            conv_mode_overrides=conv_mode_overrides,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -1908,9 +2107,13 @@ class Qwen35AttentionSubsetDotCacheHarness:
         statecache_group_size: int = 32,
         statecache_bits: int = 8,
         statecache_layer_bits_overrides: dict[int, int] | None = None,
+        statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+        statecache_conv_bits: int | None = None,
+        statecache_conv_layer_bits_overrides: dict[int, int] | None = None,
         statecache_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
         statecache_renorm_interval: int = 0,
         statecache_recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+        statecache_conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_hybrid_combined_localization_harness(
@@ -1924,9 +2127,13 @@ class Qwen35AttentionSubsetDotCacheHarness:
             statecache_group_size=statecache_group_size,
             statecache_bits=statecache_bits,
             statecache_layer_bits_overrides=statecache_layer_bits_overrides,
+            statecache_scope=statecache_scope,
+            statecache_conv_bits=statecache_conv_bits,
+            statecache_conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
             statecache_stage=statecache_stage,
             statecache_renorm_interval=statecache_renorm_interval,
             statecache_recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+            statecache_conv_mode_overrides=statecache_conv_mode_overrides,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -2451,9 +2658,16 @@ def _run_deltanet_ablation_stage(
     stage_name: str,
     bits: int | None,
     group_size: int,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    conv_bits: int | None = None,
+    recurrent_layer_bits_overrides: dict[int, int] | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
     recurrent_default_mode: Qwen35DeltaNetStateCacheMode = "M0",
     recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_default_mode: Qwen35DeltaNetStateCacheMode = "M0",
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
 ) -> StateAblationResult:
+    scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
     per_layer_max_abs_error: dict[str, float] = {}
     per_layer_max_rel_error: dict[str, float] = {}
     per_layer_output_max_abs_error: dict[str, float] = {}
@@ -2464,6 +2678,21 @@ def _run_deltanet_ablation_stage(
             int(layer_id),
             default_mode=recurrent_default_mode,
             mode_overrides=recurrent_mode_overrides,
+        )
+        conv_mode = _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
+            default_mode=conv_default_mode,
+            mode_overrides=conv_mode_overrides,
+        )
+        resolved_recurrent_bits = _resolve_deltanet_statecache_bits(
+            int(layer_id),
+            default_bits=int(bits or 8),
+            layer_bits_overrides=recurrent_layer_bits_overrides,
+        )
+        resolved_conv_bits = _resolve_deltanet_statecache_bits(
+            int(layer_id),
+            default_bits=int(conv_bits if conv_bits is not None else (bits or 8)),
+            layer_bits_overrides=conv_layer_bits_overrides,
         )
         carried_conv: torch.Tensor | None = None
         carried_recurrent: torch.Tensor | None = None
@@ -2494,20 +2723,59 @@ def _run_deltanet_ablation_stage(
                 replay_output, replay_post_conv, replay_post_recurrent = _replay_deltanet_linear_step(
                     adapter,
                     record,
-                    conv_state=dense_pre_conv,
-                    recurrent_state=_quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode),
+                    conv_state=(
+                        _quantize_state_tensor(dense_pre_conv, bits=resolved_conv_bits, group_size=group_size, mode=conv_mode)
+                        if _statecache_scope_includes_conv(scope)
+                        else dense_pre_conv
+                    ),
+                    recurrent_state=(
+                        _quantize_state_tensor(
+                            dense_pre_recurrent,
+                            bits=resolved_recurrent_bits,
+                            group_size=group_size,
+                            mode=recurrent_mode,
+                        )
+                        if _statecache_scope_includes_recurrent(scope)
+                        else dense_pre_recurrent
+                    ),
                 )
             elif stage_name == "pre_update_m0":
                 replay_output, replay_post_conv, replay_post_recurrent = _replay_deltanet_linear_step(
                     adapter,
                     record,
-                    conv_state=_quantize_state_tensor(dense_pre_conv, bits=int(bits or 8), group_size=group_size, mode="M0"),
-                    recurrent_state=_quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode),
+                    conv_state=(
+                        _quantize_state_tensor(dense_pre_conv, bits=resolved_conv_bits, group_size=group_size, mode=conv_mode)
+                        if _statecache_scope_includes_conv(scope)
+                        else dense_pre_conv
+                    ),
+                    recurrent_state=(
+                        _quantize_state_tensor(
+                            dense_pre_recurrent,
+                            bits=resolved_recurrent_bits,
+                            group_size=group_size,
+                            mode=recurrent_mode,
+                        )
+                        if _statecache_scope_includes_recurrent(scope)
+                        else dense_pre_recurrent
+                    ),
                 )
             elif stage_name == "post_update_m0":
                 replay_output = dense_output
-                replay_post_conv = _quantize_state_tensor(dense_post_conv, bits=int(bits or 8), group_size=group_size, mode="M0")
-                replay_post_recurrent = _quantize_state_tensor(dense_post_recurrent, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode)
+                replay_post_conv = (
+                    _quantize_state_tensor(dense_post_conv, bits=resolved_conv_bits, group_size=group_size, mode=conv_mode)
+                    if _statecache_scope_includes_conv(scope)
+                    else dense_post_conv
+                )
+                replay_post_recurrent = (
+                    _quantize_state_tensor(
+                        dense_post_recurrent,
+                        bits=resolved_recurrent_bits,
+                        group_size=group_size,
+                        mode=recurrent_mode,
+                    )
+                    if _statecache_scope_includes_recurrent(scope)
+                    else dense_post_recurrent
+                )
                 if step_index > 0:
                     replay_output, replay_post_conv_dense, replay_post_recurrent_dense = _replay_deltanet_linear_step(
                         adapter,
@@ -2515,18 +2783,49 @@ def _run_deltanet_ablation_stage(
                         conv_state=carried_conv,
                         recurrent_state=carried_recurrent,
                     )
-                    replay_post_conv = _quantize_state_tensor(replay_post_conv_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
-                    replay_post_recurrent = _quantize_state_tensor(replay_post_recurrent_dense, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode)
+                    replay_post_conv = (
+                        _quantize_state_tensor(
+                            replay_post_conv_dense,
+                            bits=resolved_conv_bits,
+                            group_size=group_size,
+                            mode=conv_mode,
+                        )
+                        if _statecache_scope_includes_conv(scope)
+                        else replay_post_conv_dense
+                    )
+                    replay_post_recurrent = (
+                        _quantize_state_tensor(
+                            replay_post_recurrent_dense,
+                            bits=resolved_recurrent_bits,
+                            group_size=group_size,
+                            mode=recurrent_mode,
+                        )
+                        if _statecache_scope_includes_recurrent(scope)
+                        else replay_post_recurrent_dense
+                    )
                 carried_conv = replay_post_conv
                 carried_recurrent = replay_post_recurrent
             elif stage_name == "full_state_path_m0":
                 input_conv = (
-                    _quantize_state_tensor(dense_pre_conv, bits=int(bits or 8), group_size=group_size, mode="M0")
+                    (
+                        _quantize_state_tensor(dense_pre_conv, bits=resolved_conv_bits, group_size=group_size, mode=conv_mode)
+                        if _statecache_scope_includes_conv(scope)
+                        else dense_pre_conv
+                    )
                     if carried_conv is None
                     else carried_conv
                 )
                 input_recurrent = (
-                    _quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode)
+                    (
+                        _quantize_state_tensor(
+                            dense_pre_recurrent,
+                            bits=resolved_recurrent_bits,
+                            group_size=group_size,
+                            mode=recurrent_mode,
+                        )
+                        if _statecache_scope_includes_recurrent(scope)
+                        else dense_pre_recurrent
+                    )
                     if carried_recurrent is None
                     else carried_recurrent
                 )
@@ -2536,8 +2835,26 @@ def _run_deltanet_ablation_stage(
                     conv_state=input_conv,
                     recurrent_state=input_recurrent,
                 )
-                replay_post_conv = _quantize_state_tensor(replay_post_conv_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
-                replay_post_recurrent = _quantize_state_tensor(replay_post_recurrent_dense, bits=int(bits or 8), group_size=group_size, mode=recurrent_mode)
+                replay_post_conv = (
+                    _quantize_state_tensor(
+                        replay_post_conv_dense,
+                        bits=resolved_conv_bits,
+                        group_size=group_size,
+                        mode=conv_mode,
+                    )
+                    if _statecache_scope_includes_conv(scope)
+                    else replay_post_conv_dense
+                )
+                replay_post_recurrent = (
+                    _quantize_state_tensor(
+                        replay_post_recurrent_dense,
+                        bits=resolved_recurrent_bits,
+                        group_size=group_size,
+                        mode=recurrent_mode,
+                    )
+                    if _statecache_scope_includes_recurrent(scope)
+                    else replay_post_recurrent_dense
+                )
                 carried_conv = replay_post_conv
                 carried_recurrent = replay_post_recurrent
             else:
@@ -2916,9 +3233,13 @@ def run_qwen35_deltanet_statecache_readout_harness(
     group_size: int = 32,
     bits: int = 8,
     layer_bits_overrides: dict[int, int] | None = None,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    conv_bits: int | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
     state_stage: Qwen35DeltaNetStateCacheStage = "readout_only_m0",
     renorm_interval: int = 0,
     recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
@@ -2949,6 +3270,8 @@ def run_qwen35_deltanet_statecache_readout_harness(
 
     prefill_partition = adapter.partition_hybrid_state(dense_capture["prefill_outputs"].past_key_values)
     deltanet_layer_ids = adapter.deltanet_layer_ids()
+    resolved_scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    resolved_conv_bits = int(bits if conv_bits is None else conv_bits)
     resolved_recurrent_mode_overrides = {
         int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
             int(layer_id),
@@ -2957,39 +3280,25 @@ def run_qwen35_deltanet_statecache_readout_harness(
         )
         for layer_id in deltanet_layer_ids
     }
-    recurrent_dense_bytes = 0
-    recurrent_statecache_bytes = 0
-    per_layer_dense_recurrent_bytes: dict[str, int] = {}
-    per_layer_statecache_recurrent_bytes: dict[str, int] = {}
-    per_layer_statecache_bits: dict[str, int] = {}
-    per_layer_statecache_modes: dict[str, str] = {}
-    for layer in prefill_partition.fixed_resident_layers:
-        if layer.recurrent_state is None:
-            continue
-        layer_id = str(int(layer.layer_id))
-        recurrent_mode = resolved_recurrent_mode_overrides.get(int(layer.layer_id), "M0")
-        dense_bytes = int(layer.recurrent_state_bytes)
-        layer_bits = _resolve_deltanet_statecache_bits(
-            int(layer.layer_id),
-            default_bits=int(bits),
-            layer_bits_overrides=layer_bits_overrides,
+    resolved_conv_mode_overrides = {
+        int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
+            default_mode="M0",
+            mode_overrides=conv_mode_overrides,
         )
-        compressed_bytes = _compressed_state_nbytes(
-            layer.recurrent_state,
-            bits=layer_bits,
-            group_size=int(group_size),
-            mode=recurrent_mode,
-        )
-        recurrent_dense_bytes += dense_bytes
-        recurrent_statecache_bytes += compressed_bytes
-        per_layer_dense_recurrent_bytes[layer_id] = dense_bytes
-        per_layer_statecache_recurrent_bytes[layer_id] = compressed_bytes
-        per_layer_statecache_bits[layer_id] = int(layer_bits)
-        per_layer_statecache_modes[layer_id] = recurrent_mode
-
-    conv_state_bytes = int(sum(layer.conv_state_bytes for layer in prefill_partition.fixed_resident_layers))
-    dense_fixed_resident_bytes = int(sum(layer.fixed_resident_state_bytes for layer in prefill_partition.fixed_resident_layers))
-    statecache_fixed_resident_bytes = int(conv_state_bytes + recurrent_statecache_bytes)
+        for layer_id in deltanet_layer_ids
+    }
+    byte_summary = _summarize_qwen35_deltanet_statecache_bytes(
+        prefill_partition,
+        group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        recurrent_bits=int(bits),
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
 
     dense_generated_ids = [
         int(decode_input[0, 0].item())
@@ -3010,15 +3319,20 @@ def run_qwen35_deltanet_statecache_readout_harness(
         )
         statecache_past_key_values = _clone_qwen35_past_key_values(statecache_prefill_outputs.past_key_values)
         if state_stage == "post_update_m0":
-            _prepare_qwen35_deltanet_recurrent_statecache(
+            _prepare_qwen35_deltanet_statecache(
                 statecache_past_key_values,
                 layer_ids=deltanet_layer_ids,
-                bits=int(bits),
+                recurrent_bits=int(bits),
+                conv_bits=resolved_conv_bits,
                 group_size=int(group_size),
                 renorm=False,
-                layer_bits_overrides=layer_bits_overrides,
-                default_mode="M0",
-                mode_overrides=recurrent_mode_overrides,
+                statecache_scope=resolved_scope,
+                recurrent_layer_bits_overrides=layer_bits_overrides,
+                conv_layer_bits_overrides=conv_layer_bits_overrides,
+                recurrent_default_mode="M0",
+                conv_default_mode="M0",
+                recurrent_mode_overrides=recurrent_mode_overrides,
+                conv_mode_overrides=conv_mode_overrides,
             )
         current_input_ids = statecache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         current_attention_mask = torch.cat(
@@ -3030,15 +3344,20 @@ def run_qwen35_deltanet_statecache_readout_harness(
             statecache_generated_ids.append(int(current_input_ids.item()))
             def _run_statecache_decode():
                 if state_stage == "readout_only_m0":
-                    _prepare_qwen35_deltanet_recurrent_statecache(
+                    _prepare_qwen35_deltanet_statecache(
                         statecache_past_key_values,
                         layer_ids=deltanet_layer_ids,
-                        bits=int(bits),
+                        recurrent_bits=int(bits),
+                        conv_bits=resolved_conv_bits,
                         group_size=int(group_size),
                         renorm=False,
-                        layer_bits_overrides=layer_bits_overrides,
-                        default_mode="M0",
-                        mode_overrides=recurrent_mode_overrides,
+                        statecache_scope=resolved_scope,
+                        recurrent_layer_bits_overrides=layer_bits_overrides,
+                        conv_layer_bits_overrides=conv_layer_bits_overrides,
+                        recurrent_default_mode="M0",
+                        conv_default_mode="M0",
+                        recurrent_mode_overrides=recurrent_mode_overrides,
+                        conv_mode_overrides=conv_mode_overrides,
                     )
                 return _run_dense_decode_step(
                     model,
@@ -3055,15 +3374,20 @@ def run_qwen35_deltanet_statecache_readout_harness(
             statecache_decode_ms_total += step_ms
             statecache_past_key_values = outputs.past_key_values
             if state_stage == "post_update_m0":
-                _prepare_qwen35_deltanet_recurrent_statecache(
+                _prepare_qwen35_deltanet_statecache(
                     statecache_past_key_values,
                     layer_ids=deltanet_layer_ids,
-                    bits=int(bits),
+                    recurrent_bits=int(bits),
+                    conv_bits=resolved_conv_bits,
                     group_size=int(group_size),
                     renorm=bool(renorm_interval > 0 and (step_index + 1) % int(renorm_interval) == 0),
-                    layer_bits_overrides=layer_bits_overrides,
-                    default_mode="M0",
-                    mode_overrides=recurrent_mode_overrides,
+                    statecache_scope=resolved_scope,
+                    recurrent_layer_bits_overrides=layer_bits_overrides,
+                    conv_layer_bits_overrides=conv_layer_bits_overrides,
+                    recurrent_default_mode="M0",
+                    conv_default_mode="M0",
+                    recurrent_mode_overrides=recurrent_mode_overrides,
+                    conv_mode_overrides=conv_mode_overrides,
                 )
             current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             current_attention_mask = torch.cat(
@@ -3098,7 +3422,12 @@ def run_qwen35_deltanet_statecache_readout_harness(
         stage_name=str(state_stage),
         bits=int(bits),
         group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
         recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
     )
 
     result = {
@@ -3116,34 +3445,29 @@ def run_qwen35_deltanet_statecache_readout_harness(
         "deltanet_statecache_ready": True,
         "runtime_mode": "dense_deltanet_statecache_readout",
         "uses_native_qwen35_class": True,
+        "deltanet_statecache_scope": resolved_scope,
         "deltanet_statecache_stage_name": str(state_stage),
         "deltanet_statecache_group_size": int(group_size),
         "deltanet_statecache_bits": int(bits),
-        "deltanet_statecache_layer_bits": dict(sorted(per_layer_statecache_bits.items())),
+        "deltanet_statecache_conv_bits": int(resolved_conv_bits),
+        "deltanet_statecache_layer_bits": byte_summary["deltanet_statecache_per_layer_recurrent_bits"],
+        "deltanet_statecache_conv_layer_bits": byte_summary["deltanet_statecache_per_layer_conv_bits"],
         "deltanet_statecache_mode": "M0",
         "deltanet_statecache_renorm_interval": int(renorm_interval),
         "deltanet_statecache_recurrent_mode_overrides": {
             str(layer_id): mode for layer_id, mode in sorted(resolved_recurrent_mode_overrides.items()) if mode != "M0"
         },
+        "deltanet_statecache_conv_mode_overrides": {
+            str(layer_id): mode for layer_id, mode in sorted(resolved_conv_mode_overrides.items()) if mode != "M0"
+        },
         "deltanet_statecache_result": statecache_result.to_dict(),
         "deltanet_statecache_output_max_abs_error": float(statecache_result.output_max_abs_error),
         "deltanet_statecache_max_abs_error": float(statecache_result.max_abs_error),
         "deltanet_statecache_error_grows_step_to_step": bool(statecache_result.error_grows_step_to_step),
-        "deltanet_conv_state_bytes": conv_state_bytes,
-        "deltanet_recurrent_state_bytes": recurrent_dense_bytes,
-        "deltanet_statecache_recurrent_state_bytes": int(recurrent_statecache_bytes),
-        "deltanet_dense_fixed_resident_bytes": dense_fixed_resident_bytes,
-        "deltanet_statecache_fixed_resident_bytes": statecache_fixed_resident_bytes,
-        "deltanet_statecache_effective_recurrent_compression_ratio": (
-            float(recurrent_dense_bytes / max(recurrent_statecache_bytes, 1)) if recurrent_dense_bytes > 0 else 1.0
-        ),
-        "deltanet_statecache_effective_fixed_resident_compression_ratio": (
-            float(dense_fixed_resident_bytes / max(statecache_fixed_resident_bytes, 1)) if dense_fixed_resident_bytes > 0 else 1.0
-        ),
-        "deltanet_statecache_per_layer_dense_recurrent_bytes": per_layer_dense_recurrent_bytes,
-        "deltanet_statecache_per_layer_recurrent_bytes": per_layer_statecache_recurrent_bytes,
-        "deltanet_statecache_per_layer_recurrent_mode": per_layer_statecache_modes,
+        "deltanet_statecache_per_layer_recurrent_mode": byte_summary["deltanet_statecache_per_layer_recurrent_mode"],
+        "deltanet_statecache_per_layer_conv_mode": byte_summary["deltanet_statecache_per_layer_conv_mode"],
     }
+    result.update(byte_summary)
     if first_divergence_step is not None:
         result["deltanet_statecache_first_divergence_step"] = first_divergence_step
     result.update(adapter.hybrid_block_summary())
@@ -3173,9 +3497,13 @@ def run_qwen35_deltanet_statecache_loss_harness(
     group_size: int = 32,
     bits: int = 8,
     layer_bits_overrides: dict[int, int] | None = None,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    conv_bits: int | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
     state_stage: Qwen35DeltaNetStateCacheStage = "readout_only_m0",
     renorm_interval: int = 0,
     recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
     tokenizer=None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
@@ -3223,16 +3551,35 @@ def run_qwen35_deltanet_statecache_loss_harness(
     cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
     statecache_decode_ms_total = 0.0
     deltanet_layer_ids = adapter.deltanet_layer_ids()
+    resolved_scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    resolved_conv_bits = int(bits if conv_bits is None else conv_bits)
+    statecache_prefill_partition = adapter.partition_hybrid_state(prefill_outputs.past_key_values)
+    byte_summary = _summarize_qwen35_deltanet_statecache_bytes(
+        statecache_prefill_partition,
+        group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        recurrent_bits=int(bits),
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
     if state_stage == "post_update_m0":
-        _prepare_qwen35_deltanet_recurrent_statecache(
+        _prepare_qwen35_deltanet_statecache(
             statecache_past_key_values,
             layer_ids=deltanet_layer_ids,
-            bits=int(bits),
+            recurrent_bits=int(bits),
+            conv_bits=resolved_conv_bits,
             group_size=int(group_size),
             renorm=False,
-            layer_bits_overrides=layer_bits_overrides,
-            default_mode="M0",
-            mode_overrides=recurrent_mode_overrides,
+            statecache_scope=resolved_scope,
+            recurrent_layer_bits_overrides=layer_bits_overrides,
+            conv_layer_bits_overrides=conv_layer_bits_overrides,
+            recurrent_default_mode="M0",
+            conv_default_mode="M0",
+            recurrent_mode_overrides=recurrent_mode_overrides,
+            conv_mode_overrides=conv_mode_overrides,
         )
 
     for step_index in range(max(eval_steps - 1, 0)):
@@ -3240,15 +3587,20 @@ def run_qwen35_deltanet_statecache_loss_harness(
 
         def _run_statecache_decode():
             if state_stage == "readout_only_m0":
-                _prepare_qwen35_deltanet_recurrent_statecache(
+                _prepare_qwen35_deltanet_statecache(
                     statecache_past_key_values,
                     layer_ids=deltanet_layer_ids,
-                    bits=int(bits),
+                    recurrent_bits=int(bits),
+                    conv_bits=resolved_conv_bits,
                     group_size=int(group_size),
                     renorm=False,
-                    layer_bits_overrides=layer_bits_overrides,
-                    default_mode="M0",
-                    mode_overrides=recurrent_mode_overrides,
+                    statecache_scope=resolved_scope,
+                    recurrent_layer_bits_overrides=layer_bits_overrides,
+                    conv_layer_bits_overrides=conv_layer_bits_overrides,
+                    recurrent_default_mode="M0",
+                    conv_default_mode="M0",
+                    recurrent_mode_overrides=recurrent_mode_overrides,
+                    conv_mode_overrides=conv_mode_overrides,
                 )
             return _run_dense_decode_step(
                 model,
@@ -3265,15 +3617,20 @@ def run_qwen35_deltanet_statecache_loss_harness(
         statecache_decode_ms_total += step_ms
         statecache_past_key_values = outputs.past_key_values
         if state_stage == "post_update_m0":
-            _prepare_qwen35_deltanet_recurrent_statecache(
+            _prepare_qwen35_deltanet_statecache(
                 statecache_past_key_values,
                 layer_ids=deltanet_layer_ids,
-                bits=int(bits),
+                recurrent_bits=int(bits),
+                conv_bits=resolved_conv_bits,
                 group_size=int(group_size),
                 renorm=bool(renorm_interval > 0 and (step_index + 1) % int(renorm_interval) == 0),
-                layer_bits_overrides=layer_bits_overrides,
-                default_mode="M0",
-                mode_overrides=recurrent_mode_overrides,
+                statecache_scope=resolved_scope,
+                recurrent_layer_bits_overrides=layer_bits_overrides,
+                conv_layer_bits_overrides=conv_layer_bits_overrides,
+                recurrent_default_mode="M0",
+                conv_default_mode="M0",
+                recurrent_mode_overrides=recurrent_mode_overrides,
+                conv_mode_overrides=conv_mode_overrides,
             )
         logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu())
         current_attention_mask = torch.cat(
@@ -3301,41 +3658,25 @@ def run_qwen35_deltanet_statecache_loss_harness(
         )
         for layer_id in deltanet_layer_ids
     }
-    recurrent_dense_bytes = int(sum(layer.recurrent_state_bytes for layer in statecache_prefill_partition.fixed_resident_layers))
-    per_layer_statecache_bits: dict[str, int] = {}
-    per_layer_statecache_recurrent_bytes: dict[str, int] = {}
-    recurrent_statecache_bytes = int(sum(
-        _compressed_state_nbytes(
-            layer.recurrent_state,
-            bits=_resolve_deltanet_statecache_bits(
-                int(layer.layer_id),
-                default_bits=int(bits),
-                layer_bits_overrides=layer_bits_overrides,
-            ),
-            group_size=int(group_size),
-            mode=resolved_recurrent_mode_overrides.get(int(layer.layer_id), "M0"),
+    resolved_conv_mode_overrides = {
+        int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
+            default_mode="M0",
+            mode_overrides=conv_mode_overrides,
         )
-        for layer in statecache_prefill_partition.fixed_resident_layers
-        if layer.recurrent_state is not None
-    ))
-    for layer in statecache_prefill_partition.fixed_resident_layers:
-        if layer.recurrent_state is None:
-            continue
-        layer_key = str(int(layer.layer_id))
-        layer_bits = _resolve_deltanet_statecache_bits(
-            int(layer.layer_id),
-            default_bits=int(bits),
-            layer_bits_overrides=layer_bits_overrides,
-        )
-        per_layer_statecache_bits[layer_key] = int(layer_bits)
-        per_layer_statecache_recurrent_bytes[layer_key] = int(
-            _compressed_state_nbytes(
-                layer.recurrent_state,
-                bits=layer_bits,
-                group_size=int(group_size),
-                mode="M0",
-            )
-        )
+        for layer_id in deltanet_layer_ids
+    }
+    byte_summary = _summarize_qwen35_deltanet_statecache_bytes(
+        statecache_prefill_partition,
+        group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        recurrent_bits=int(bits),
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
 
     result = {
         "sequence_length": int(input_ids.shape[1]),
@@ -3353,8 +3694,11 @@ def run_qwen35_deltanet_statecache_loss_harness(
         "teacher_forced_loss_delta": float(mean_loss - dense_result["dense_teacher_forced_loss"]),
         "teacher_forced_perplexity_ratio": float(perplexity / max(float(dense_result["dense_teacher_forced_perplexity"]), 1e-8)),
         "teacher_forced_token_agreement_rate": float((predictions == target_tokens).mean()),
+        "deltanet_statecache_scope": resolved_scope,
         "deltanet_statecache_bits": int(bits),
-        "deltanet_statecache_layer_bits": dict(sorted(per_layer_statecache_bits.items())),
+        "deltanet_statecache_conv_bits": int(resolved_conv_bits),
+        "deltanet_statecache_layer_bits": byte_summary["deltanet_statecache_per_layer_recurrent_bits"],
+        "deltanet_statecache_conv_layer_bits": byte_summary["deltanet_statecache_per_layer_conv_bits"],
         "deltanet_statecache_group_size": int(group_size),
         "deltanet_statecache_stage_name": str(state_stage),
         "deltanet_statecache_renorm_interval": int(renorm_interval),
@@ -3362,12 +3706,9 @@ def run_qwen35_deltanet_statecache_loss_harness(
         "deltanet_statecache_recurrent_mode_overrides": {
             str(layer_id): mode for layer_id, mode in sorted(resolved_recurrent_mode_overrides.items()) if mode != "M0"
         },
-        "deltanet_recurrent_state_bytes": recurrent_dense_bytes,
-        "deltanet_statecache_recurrent_state_bytes": recurrent_statecache_bytes,
-        "deltanet_statecache_per_layer_recurrent_bytes": dict(sorted(per_layer_statecache_recurrent_bytes.items())),
-        "deltanet_statecache_effective_recurrent_compression_ratio": (
-            float(recurrent_dense_bytes / max(recurrent_statecache_bytes, 1)) if recurrent_dense_bytes > 0 else 1.0
-        ),
+        "deltanet_statecache_conv_mode_overrides": {
+            str(layer_id): mode for layer_id, mode in sorted(resolved_conv_mode_overrides.items()) if mode != "M0"
+        },
         "text_only": True,
         "dotcache_ready": False,
         "deltanet_state_ready": True,
@@ -3375,6 +3716,7 @@ def run_qwen35_deltanet_statecache_loss_harness(
         "runtime_mode": "dense_deltanet_statecache_loss",
         "uses_native_qwen35_class": True,
     }
+    result.update(byte_summary)
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
     return result
@@ -3393,9 +3735,13 @@ def run_qwen35_deltanet_statecache_localization_harness(
     group_size: int = 32,
     bits: int = 8,
     layer_bits_overrides: dict[int, int] | None = None,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    conv_bits: int | None = None,
+    conv_layer_bits_overrides: dict[int, int] | None = None,
     state_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
     renorm_interval: int = 0,
     recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
@@ -3447,16 +3793,23 @@ def run_qwen35_deltanet_statecache_localization_harness(
     cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
     statecache_decode_ms_total = 0.0
     deltanet_layer_ids = adapter.deltanet_layer_ids()
+    resolved_scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    resolved_conv_bits = int(bits if conv_bits is None else conv_bits)
     if state_stage == "post_update_m0":
-        _prepare_qwen35_deltanet_recurrent_statecache(
+        _prepare_qwen35_deltanet_statecache(
             statecache_past_key_values,
             layer_ids=deltanet_layer_ids,
-            bits=int(bits),
+            recurrent_bits=int(bits),
+            conv_bits=resolved_conv_bits,
             group_size=int(group_size),
             renorm=False,
-            layer_bits_overrides=layer_bits_overrides,
-            default_mode="M0",
-            mode_overrides=recurrent_mode_overrides,
+            statecache_scope=resolved_scope,
+            recurrent_layer_bits_overrides=layer_bits_overrides,
+            conv_layer_bits_overrides=conv_layer_bits_overrides,
+            recurrent_default_mode="M0",
+            conv_default_mode="M0",
+            recurrent_mode_overrides=recurrent_mode_overrides,
+            conv_mode_overrides=conv_mode_overrides,
         )
 
     for step_index in range(max(eval_steps - 1, 0)):
@@ -3464,15 +3817,20 @@ def run_qwen35_deltanet_statecache_localization_harness(
 
         def _run_statecache_decode():
             if state_stage == "readout_only_m0":
-                _prepare_qwen35_deltanet_recurrent_statecache(
+                _prepare_qwen35_deltanet_statecache(
                     statecache_past_key_values,
                     layer_ids=deltanet_layer_ids,
-                    bits=int(bits),
+                    recurrent_bits=int(bits),
+                    conv_bits=resolved_conv_bits,
                     group_size=int(group_size),
                     renorm=False,
-                    layer_bits_overrides=layer_bits_overrides,
-                    default_mode="M0",
-                    mode_overrides=recurrent_mode_overrides,
+                    statecache_scope=resolved_scope,
+                    recurrent_layer_bits_overrides=layer_bits_overrides,
+                    conv_layer_bits_overrides=conv_layer_bits_overrides,
+                    recurrent_default_mode="M0",
+                    conv_default_mode="M0",
+                    recurrent_mode_overrides=recurrent_mode_overrides,
+                    conv_mode_overrides=conv_mode_overrides,
                 )
             return _run_dense_decode_step(
                 model,
@@ -3486,15 +3844,20 @@ def run_qwen35_deltanet_statecache_localization_harness(
         statecache_decode_ms_total += step_ms
         statecache_past_key_values = outputs.past_key_values
         if state_stage == "post_update_m0":
-            _prepare_qwen35_deltanet_recurrent_statecache(
+            _prepare_qwen35_deltanet_statecache(
                 statecache_past_key_values,
                 layer_ids=deltanet_layer_ids,
-                bits=int(bits),
+                recurrent_bits=int(bits),
+                conv_bits=resolved_conv_bits,
                 group_size=int(group_size),
                 renorm=bool(renorm_interval > 0 and (step_index + 1) % int(renorm_interval) == 0),
-                layer_bits_overrides=layer_bits_overrides,
-                default_mode="M0",
-                mode_overrides=recurrent_mode_overrides,
+                statecache_scope=resolved_scope,
+                recurrent_layer_bits_overrides=layer_bits_overrides,
+                conv_layer_bits_overrides=conv_layer_bits_overrides,
+                recurrent_default_mode="M0",
+                conv_default_mode="M0",
+                recurrent_mode_overrides=recurrent_mode_overrides,
+                conv_mode_overrides=conv_mode_overrides,
             )
         logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
         current_attention_mask = torch.cat(
@@ -3503,13 +3866,57 @@ def run_qwen35_deltanet_statecache_localization_harness(
         )
         cache_position = cache_position + 1
 
+    recurrent_only_result = _run_deltanet_ablation_stage(
+        adapter,
+        records_by_layer=records_by_layer,
+        stage_name=str(state_stage),
+        bits=int(bits),
+        group_size=int(group_size),
+        statecache_scope="recurrent_only",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
+    conv_only_result = _run_deltanet_ablation_stage(
+        adapter,
+        records_by_layer=records_by_layer,
+        stage_name=str(state_stage),
+        bits=int(bits),
+        group_size=int(group_size),
+        statecache_scope="conv_only",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
+    combined_state_result = _run_deltanet_ablation_stage(
+        adapter,
+        records_by_layer=records_by_layer,
+        stage_name=str(state_stage),
+        bits=int(bits),
+        group_size=int(group_size),
+        statecache_scope="conv_plus_recurrent",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
     statecache_result = _run_deltanet_ablation_stage(
         adapter,
         records_by_layer=records_by_layer,
         stage_name=str(state_stage),
         bits=int(bits),
         group_size=int(group_size),
+        statecache_scope=resolved_scope,
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=layer_bits_overrides,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
         recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
     )
     per_step_logit_max_abs_error: list[float] = []
     for dense_step, approx_step in zip(dense_capture["step_logits"], logits_list):
@@ -3525,8 +3932,10 @@ def run_qwen35_deltanet_statecache_localization_harness(
         "deltanet_statecache_ready": True,
         "deltanet_state_ready": True,
         "runtime_mode": "dense_deltanet_statecache_localization",
+        "deltanet_statecache_scope": resolved_scope,
         "deltanet_statecache_stage_name": str(state_stage),
         "deltanet_statecache_bits": int(bits),
+        "deltanet_statecache_conv_bits": int(resolved_conv_bits),
         "deltanet_statecache_group_size": int(group_size),
         "deltanet_statecache_layer_bits": {
             str(layer_id): _resolve_deltanet_statecache_bits(
@@ -3536,17 +3945,42 @@ def run_qwen35_deltanet_statecache_localization_harness(
             )
             for layer_id in deltanet_layer_ids
         },
+        "deltanet_statecache_conv_layer_bits": {
+            str(layer_id): _resolve_deltanet_statecache_bits(
+                int(layer_id),
+                default_bits=resolved_conv_bits,
+                layer_bits_overrides=conv_layer_bits_overrides,
+            )
+            for layer_id in deltanet_layer_ids
+        },
         "deltanet_statecache_recurrent_mode_overrides": {
             str(layer_id): mode
             for layer_id, mode in sorted((recurrent_mode_overrides or {}).items())
+        },
+        "deltanet_statecache_conv_mode_overrides": {
+            str(layer_id): mode
+            for layer_id, mode in sorted((conv_mode_overrides or {}).items())
         },
         "deltanet_statecache_per_step_logit_max_abs_error": per_step_logit_max_abs_error,
         "deltanet_statecache_first_divergence_step": _first_drift_step(dense_capture["step_logits"], logits_list),
         "deltanet_statecache_first_failure_layer": _first_layer_over_threshold(
             statecache_result.per_layer_output_max_abs_error
         ),
+        "deltanet_statecache_first_recurrent_failure_layer": _first_layer_over_threshold(
+            recurrent_only_result.per_layer_output_max_abs_error
+        ),
+        "deltanet_statecache_first_conv_failure_layer": _first_layer_over_threshold(
+            conv_only_result.per_layer_output_max_abs_error
+        ),
+        "deltanet_statecache_first_combined_failure_layer": _first_layer_over_threshold(
+            combined_state_result.per_layer_output_max_abs_error
+        ),
         "deltanet_statecache_result": statecache_result.to_dict(),
+        "deltanet_statecache_recurrent_result": recurrent_only_result.to_dict(),
+        "deltanet_statecache_conv_result": conv_only_result.to_dict(),
+        "deltanet_statecache_combined_result": combined_state_result.to_dict(),
     }
+    result.update(byte_summary)
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
     return result
@@ -3565,9 +3999,13 @@ def run_qwen35_hybrid_combined_localization_harness(
     statecache_group_size: int = 32,
     statecache_bits: int = 8,
     statecache_layer_bits_overrides: dict[int, int] | None = None,
+    statecache_scope: Qwen35DeltaNetStateCacheScope = "recurrent_only",
+    statecache_conv_bits: int | None = None,
+    statecache_conv_layer_bits_overrides: dict[int, int] | None = None,
     statecache_stage: Qwen35DeltaNetStateCacheStage = "post_update_m0",
     statecache_renorm_interval: int = 0,
     statecache_recurrent_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
+    statecache_conv_mode_overrides: dict[int, Qwen35DeltaNetStateCacheMode] | None = None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
@@ -3590,6 +4028,8 @@ def run_qwen35_hybrid_combined_localization_harness(
     prefix_input_ids = input_ids[:, :prefix_length]
     prefix_attention_mask = attention_mask[:, :prefix_length]
     continuation_ids = input_ids[:, prefix_length : prefix_length + eval_steps]
+    resolved_scope = _resolve_qwen35_deltanet_statecache_scope(statecache_scope)
+    resolved_conv_bits = int(statecache_bits if statecache_conv_bits is None else statecache_conv_bits)
 
     dense_capture = _run_qwen35_attention_subset_dense_teacher_forced_capture(
         model,
@@ -3598,6 +4038,21 @@ def run_qwen35_hybrid_combined_localization_harness(
         prefix_attention_mask=prefix_attention_mask,
         continuation_ids=continuation_ids,
     )
+    delta_adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    deltanet_dense_capture = _run_qwen35_deltanet_dense_teacher_forced_capture(
+        model,
+        delta_adapter,
+        prefix_input_ids=prefix_input_ids,
+        prefix_attention_mask=prefix_attention_mask,
+        continuation_ids=continuation_ids,
+    )
+    delta_records_by_layer: dict[int, list[Qwen35DeltaNetStateRecord]] = {}
+    for record in [
+        record
+        for step_records in deltanet_dense_capture["capture_records"]
+        for record in step_records
+    ]:
+        delta_records_by_layer.setdefault(int(record.layer_id), []).append(record)
 
     combined_prefill_outputs, combined_prefill_ms = _timed_call(
         lambda: _run_dense_prefill(model, input_ids=prefix_input_ids, attention_mask=prefix_attention_mask),
@@ -3612,17 +4067,50 @@ def run_qwen35_hybrid_combined_localization_harness(
         for layer_id, layer_type in enumerate(_hybrid_layer_types(model))
         if layer_type == "linear_attention"
     ]
-
-    if statecache_stage == "post_update_m0":
-        _prepare_qwen35_deltanet_recurrent_statecache(
-            runtime_state.model_past_key_values,
-            layer_ids=deltanet_layer_ids,
-            bits=int(statecache_bits),
-            group_size=int(statecache_group_size),
-            renorm=False,
-            layer_bits_overrides=statecache_layer_bits_overrides,
+    resolved_recurrent_mode_overrides = {
+        int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
             default_mode="M0",
             mode_overrides=statecache_recurrent_mode_overrides,
+        )
+        for layer_id in deltanet_layer_ids
+    }
+    resolved_conv_mode_overrides = {
+        int(layer_id): _resolve_qwen35_deltanet_statecache_mode(
+            int(layer_id),
+            default_mode="M0",
+            mode_overrides=statecache_conv_mode_overrides,
+        )
+        for layer_id in deltanet_layer_ids
+    }
+    combined_prefill_partition = delta_adapter.partition_hybrid_state(combined_prefill_outputs.past_key_values)
+    byte_summary = _summarize_qwen35_deltanet_statecache_bytes(
+        combined_prefill_partition,
+        group_size=int(statecache_group_size),
+        statecache_scope=resolved_scope,
+        recurrent_bits=int(statecache_bits),
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+        conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+        recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+        conv_mode_overrides=statecache_conv_mode_overrides,
+    )
+
+    if statecache_stage == "post_update_m0":
+        _prepare_qwen35_deltanet_statecache(
+            runtime_state.model_past_key_values,
+            layer_ids=deltanet_layer_ids,
+            recurrent_bits=int(statecache_bits),
+            conv_bits=resolved_conv_bits,
+            group_size=int(statecache_group_size),
+            renorm=False,
+            statecache_scope=resolved_scope,
+            recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+            conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+            recurrent_default_mode="M0",
+            conv_default_mode="M0",
+            recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+            conv_mode_overrides=statecache_conv_mode_overrides,
         )
 
     current_attention_mask = torch.cat(
@@ -3639,15 +4127,20 @@ def run_qwen35_hybrid_combined_localization_harness(
 
         def _run_combined_decode():
             if statecache_stage == "readout_only_m0":
-                _prepare_qwen35_deltanet_recurrent_statecache(
+                _prepare_qwen35_deltanet_statecache(
                     runtime_state.model_past_key_values,
                     layer_ids=deltanet_layer_ids,
-                    bits=int(statecache_bits),
+                    recurrent_bits=int(statecache_bits),
+                    conv_bits=resolved_conv_bits,
                     group_size=int(statecache_group_size),
                     renorm=False,
-                    layer_bits_overrides=statecache_layer_bits_overrides,
-                    default_mode="M0",
-                    mode_overrides=statecache_recurrent_mode_overrides,
+                    statecache_scope=resolved_scope,
+                    recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+                    conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+                    recurrent_default_mode="M0",
+                    conv_default_mode="M0",
+                    recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+                    conv_mode_overrides=statecache_conv_mode_overrides,
                 )
             return _run_dense_decode_step(
                 model,
@@ -3668,15 +4161,20 @@ def run_qwen35_hybrid_combined_localization_harness(
         combined_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
         runtime_state.advance(outputs.past_key_values)
         if statecache_stage == "post_update_m0":
-            _prepare_qwen35_deltanet_recurrent_statecache(
+            _prepare_qwen35_deltanet_statecache(
                 runtime_state.model_past_key_values,
                 layer_ids=deltanet_layer_ids,
-                bits=int(statecache_bits),
+                recurrent_bits=int(statecache_bits),
+                conv_bits=resolved_conv_bits,
                 group_size=int(statecache_group_size),
                 renorm=bool(statecache_renorm_interval > 0 and (step_index + 1) % int(statecache_renorm_interval) == 0),
-                layer_bits_overrides=statecache_layer_bits_overrides,
-                default_mode="M0",
-                mode_overrides=statecache_recurrent_mode_overrides,
+                statecache_scope=resolved_scope,
+                recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+                conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+                recurrent_default_mode="M0",
+                conv_default_mode="M0",
+                recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+                conv_mode_overrides=statecache_conv_mode_overrides,
             )
         current_attention_mask = torch.cat(
             [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
@@ -3710,6 +4208,64 @@ def run_qwen35_hybrid_combined_localization_harness(
     for dense_step, combined_step in zip(dense_capture["step_logits"], combined_step_logits):
         per_step_logit_max_abs_error.append(float(np.max(np.abs(combined_step - dense_step))))
 
+    recurrent_only_result = _run_deltanet_ablation_stage(
+        delta_adapter,
+        records_by_layer=delta_records_by_layer,
+        stage_name=str(statecache_stage),
+        bits=int(statecache_bits),
+        group_size=int(statecache_group_size),
+        statecache_scope="recurrent_only",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+        conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+        recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+        conv_mode_overrides=statecache_conv_mode_overrides,
+    )
+    conv_only_result = _run_deltanet_ablation_stage(
+        delta_adapter,
+        records_by_layer=delta_records_by_layer,
+        stage_name=str(statecache_stage),
+        bits=int(statecache_bits),
+        group_size=int(statecache_group_size),
+        statecache_scope="conv_only",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+        conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+        recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+        conv_mode_overrides=statecache_conv_mode_overrides,
+    )
+    deltanet_combined_result = _run_deltanet_ablation_stage(
+        delta_adapter,
+        records_by_layer=delta_records_by_layer,
+        stage_name=str(statecache_stage),
+        bits=int(statecache_bits),
+        group_size=int(statecache_group_size),
+        statecache_scope="conv_plus_recurrent",
+        conv_bits=resolved_conv_bits,
+        recurrent_layer_bits_overrides=statecache_layer_bits_overrides,
+        conv_layer_bits_overrides=statecache_conv_layer_bits_overrides,
+        recurrent_mode_overrides=statecache_recurrent_mode_overrides,
+        conv_mode_overrides=statecache_conv_mode_overrides,
+    )
+
+    attention_first_failure_layer = _first_layer_over_threshold(per_layer_attention_output_max_abs)
+    recurrent_first_failure_layer = _first_layer_over_threshold(recurrent_only_result.per_layer_output_max_abs_error)
+    conv_first_failure_layer = _first_layer_over_threshold(conv_only_result.per_layer_output_max_abs_error)
+    if attention_first_failure_layer is not None and (
+        recurrent_first_failure_layer is not None or conv_first_failure_layer is not None
+    ):
+        combined_first_failure_family = "mixed"
+    elif attention_first_failure_layer is not None:
+        combined_first_failure_family = "attention"
+    elif recurrent_first_failure_layer is not None and conv_first_failure_layer is not None:
+        combined_first_failure_family = "mixed"
+    elif recurrent_first_failure_layer is not None:
+        combined_first_failure_family = "recurrent"
+    elif conv_first_failure_layer is not None:
+        combined_first_failure_family = "conv"
+    else:
+        combined_first_failure_family = None
+
     result = {
         "sequence_length": int(input_ids.shape[1]),
         "prefix_length": int(prefix_length),
@@ -3718,21 +4274,40 @@ def run_qwen35_hybrid_combined_localization_harness(
         "combined_decode_ms_per_step": float(combined_decode_ms_total / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
         "hybrid_combined_ready": True,
         "runtime_mode": "qwen35_hybrid_combined_localization",
+        "statecache_scope": resolved_scope,
         "statecache_bits": int(statecache_bits),
+        "statecache_conv_bits": int(resolved_conv_bits),
         "statecache_group_size": int(statecache_group_size),
         "statecache_stage_name": str(statecache_stage),
         "statecache_renorm_interval": int(statecache_renorm_interval),
         "statecache_layer_bits_overrides": {
             str(layer_id): bits for layer_id, bits in sorted((statecache_layer_bits_overrides or {}).items())
         },
+        "statecache_conv_layer_bits_overrides": {
+            str(layer_id): bits for layer_id, bits in sorted((statecache_conv_layer_bits_overrides or {}).items())
+        },
         "statecache_recurrent_mode_overrides": {
             str(layer_id): mode for layer_id, mode in sorted((statecache_recurrent_mode_overrides or {}).items())
+        },
+        "statecache_conv_mode_overrides": {
+            str(layer_id): mode for layer_id, mode in sorted((statecache_conv_mode_overrides or {}).items())
         },
         "combined_per_step_logit_max_abs_error": per_step_logit_max_abs_error,
         "combined_first_divergence_step": _first_drift_step(dense_capture["step_logits"], combined_step_logits),
         "combined_attention_output_max_abs_error_by_layer": dict(sorted(per_layer_attention_output_max_abs.items())),
-        "combined_first_attention_failure_layer": _first_layer_over_threshold(per_layer_attention_output_max_abs),
+        "combined_first_attention_failure_layer": attention_first_failure_layer,
+        "combined_deltanet_recurrent_output_max_abs_error_by_layer": dict(sorted(recurrent_only_result.per_layer_output_max_abs_error.items())),
+        "combined_deltanet_conv_output_max_abs_error_by_layer": dict(sorted(conv_only_result.per_layer_output_max_abs_error.items())),
+        "combined_deltanet_output_max_abs_error_by_layer": dict(sorted(deltanet_combined_result.per_layer_output_max_abs_error.items())),
+        "combined_first_recurrent_failure_layer": recurrent_first_failure_layer,
+        "combined_first_conv_failure_layer": conv_first_failure_layer,
+        "combined_first_deltanet_failure_layer": _first_layer_over_threshold(deltanet_combined_result.per_layer_output_max_abs_error),
+        "combined_first_failure_family": combined_first_failure_family,
+        "combined_deltanet_recurrent_result": recurrent_only_result.to_dict(),
+        "combined_deltanet_conv_result": conv_only_result.to_dict(),
+        "combined_deltanet_combined_result": deltanet_combined_result.to_dict(),
     }
+    result.update(byte_summary)
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
