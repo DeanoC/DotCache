@@ -12,6 +12,7 @@ The current profile artifacts live in:
 - [tinyllama_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_first_pass.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
 - [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
+- [smollm2_360m_local_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_third_pass.yaml)
 
 ## TinyLlama
 
@@ -100,6 +101,43 @@ That second pass is the more realistic CUDA hint:
 - the early key pocket still looks meaningfully strict
 - the default balanced policy already finds approximate opportunities without forcing them
 - values should be allowed to stay mostly `M0 2b` unless we have stronger evidence that `M1` is safe on that layer
+
+### SmolLM2 Third Pass
+
+The third pass asked a narrower question: after fixing the bad value-side behavior, is the remaining loss mostly caused by late key `M2` usage?
+
+To test that, the third-pass profile:
+
+- kept the early strict key pocket at layers `3-5`
+- kept values at the safer default `balanced`
+- additionally marked the deepest key layers `24-31` as `strict`
+
+That changed the local exact `1024` prompt mix from:
+
+- second pass:
+  - `K:M2 4b`: `341`
+  - `K:M0 4b`: `287`
+
+to:
+
+- third pass:
+  - `K:M2 4b`: `223`
+  - `K:M0 4b`: `405`
+
+And on the short teacher-forced check at `1032 / 1024 / 8`:
+
+- second pass:
+  - loss delta `+0.0541`
+  - token agreement `1.0`
+- third pass:
+  - loss delta `+0.0516`
+  - token agreement `1.0`
+
+So the third pass is a small step in the right direction, but not a breakthrough:
+
+- it confirms that reducing late-key `M2` pressure helps
+- it does **not** reduce the loss enough to make the current SmolLM2 adaptive policy look good
+- the main local conclusion remains that TinyLlama is the clean success case, while SmolLM2 still needs more conservative key-side planning or better key codecs
 
 ## How To Use
 
