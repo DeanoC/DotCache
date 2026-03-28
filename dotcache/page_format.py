@@ -4,7 +4,7 @@ from typing import cast
 
 import numpy as np
 
-from .packing import pack_bits, words_per_group
+from .packing import pack_bits
 from .types import EncodedPage, Layout, PageHeader
 
 
@@ -17,19 +17,10 @@ def deserialize_header(payload: bytes) -> PageHeader:
 
 
 def build_payload(codes: np.ndarray, bits: int, layout: Layout) -> np.ndarray:
-    token_count, num_groups, group_size = codes.shape
-    group_word_count = words_per_group(group_size, bits)
-
     if layout == "group_major":
-        payload = np.zeros((num_groups, token_count, group_word_count), dtype=np.uint32)
-        for group_index in range(num_groups):
-            payload[group_index] = pack_bits(codes[:, group_index, :], bits)
-        return payload
+        return pack_bits(np.transpose(codes, (1, 0, 2)), bits)
 
-    payload = np.zeros((token_count, num_groups, group_word_count), dtype=np.uint32)
-    for token_index in range(token_count):
-        payload[token_index] = pack_bits(codes[token_index], bits)
-    return payload
+    return pack_bits(codes, bits)
 
 
 def load_group_words(page: EncodedPage, group_index: int) -> np.ndarray:
@@ -40,4 +31,3 @@ def load_group_words(page: EncodedPage, group_index: int) -> np.ndarray:
     if page.header.layout == "group_major":
         return cast(np.ndarray, page.payload[group_index])
     return cast(np.ndarray, page.payload[:, group_index, :])
-

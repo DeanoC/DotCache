@@ -955,13 +955,125 @@ So the honest local conclusion is:
 - the current MPS implementation is still much too slow to promote it as a runtime win
 - if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
 
+I then added a one-load real-model probe in [bench_llama_mixed_bits_profile.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_mixed_bits_profile.py) with the convenience wrapper [run_m0_mixed_bits_mps_probe.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_m0_mixed_bits_mps_probe.sh) so `K=4b, V=4b` and `K=4b, V=3b` could be compared against the same loaded model and the same grouped fused-cache policy.
+
+That gave a more honest systems read:
+
+| Model | Prompt | Split | Dense Decode ms/step | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement | Max Abs Logit Drift |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| `TinyLlama 1.1B` | `577` | `K=4b, V=4b` | `1309.16` | `25681.65` | `3837.36` | `14,958,592` | `1.00` | `0.6074` |
+| `TinyLlama 1.1B` | `577` | `K=4b, V=3b` | `564.23` | `21779.50` | `12250.44` | `14,598,144` | `1.00` | `1.2207` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=4b` | `1415.17` | `36945.79` | `2083.56` | `39,190,528` | `1.00` | `0.9612` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=3b` | `446.14` | `37179.83` | `13848.80` | `37,339,136` | `1.00` | `2.1914` |
+
+So the follow-up conclusion is more nuanced than the earlier cold-load probes:
+
+- `K=4b, V=3b` does reduce resident bytes on both models.
+- On TinyLlama, it also improved decode time under the one-load comparison.
+- On SmolLM2, decode was effectively flat-to-worse while prefill ingest regressed badly.
+- The main blocker for `V=3b` on this Mac is now clearly the write/prefill side, not grouped decode.
+- That still makes `K=4b, V=3b` a useful CUDA hint, but only if the write path there is materially cheaper than it is on MPS.
+
+I then optimized the host `3b` payload builder itself in [packing.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/packing.py) and [page_format.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/page_format.py):
+
+- the old spill path packed `3b` row-by-row in Python
+- the new path packs per symbol across all rows at once
+- `group_major` payload building now packs all groups in one vectorized call instead of looping group-by-group
+
+The dedicated write-path microbench in [bench_m0_write_micro.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_m0_write_micro.py) shows that this was a real bottleneck:
+
+- synthetic write microbench (`256 x 128`, `group_size=32`)
+  - `3b` quantize: `0.284 ms`
+  - `3b` payload build: `0.230 ms`
+  - `3b` legacy payload build: `81.236 ms`
+  - `3b` payload speedup vs legacy: about `352.6x`
+  - `4b` quantize: `0.916 ms`
+  - `4b` payload build: `0.373 ms`
+
+And the post-change one-load TinyLlama rerun confirms the win reached the model path:
+
+| Model | Prompt | Split | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement |
+|---|---:|---|---:|---:|---:|---:|
+| `TinyLlama 1.1B` | `577` | `K=4b, V=4b` | `24736.65` | `4233.71` | `14,958,592` | `1.00` |
+| `TinyLlama 1.1B` | `577` | `K=4b, V=3b` | `22635.27` | `2399.05` | `14,598,144` | `1.00` |
+
+Compared with the earlier one-load TinyLlama mixed-bits probe, `K=4b, V=3b` prefill ingest improved from `12250.44 ms` down to `2399.05 ms`, about `5.1x` better. So host payload packing really was a large part of the `V=3b` write-side pain on this Mac.
+
+The remaining honest read is:
+
+- `K=4b, V=3b` is now a much more credible local lane on TinyLlama
+- the write-path fix materially improved prefill ingest
+- the same write-path win also shows up on SmolLM2
+- the next likely bottleneck after payload packing is the remaining encode/quantize work, not grouped decode
+
+The post-fix SmolLM2 one-load rerun says the same thing more clearly:
+
+| Model | Prompt | Split | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement | Max Abs Logit Drift |
+|---|---:|---|---:|---:|---:|---:|---:|
+| `SmolLM2 360M` | `1024` | `K=4b, V=4b` | `47037.17` | `1802.12` | `39,190,528` | `1.00` | `0.9612` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=3b` | `37030.24` | `3203.19` | `37,339,136` | `1.00` | `2.1914` |
+
+Compared with the earlier pre-fix one-load SmolLM2 mixed-bits probe:
+
+- `K=4b, V=3b` prefill ingest improved from `13848.80 ms` to `3203.19 ms`, about `4.3x` better
+- `K=4b, V=4b` prefill ingest also improved slightly, from `2083.56 ms` to `1802.12 ms`
+- decode did not become a clear win; it only moved from roughly `37179.83` to `37030.24 ms/step`
+
+So the updated cross-model read is:
+
+- the vectorized `3b` payload builder fixed a real write-path bottleneck on both TinyLlama and SmolLM2
+- `K=4b, V=3b` is now much more plausible as a systems experiment than it was before
+- but on SmolLM2 the remaining question is no longer “can we write it fast enough?” so much as “is the extra quality loss worth the modest KV-memory reduction without a decode win?”
+
 One backend-focused optimization pass did move the local `3b` decode shape in the right direction. Static `M0 3b` pages on MPS now build a fused pre-scaled prepared chunk, not just cached unpacked per-group codes. On a synthetic cached static-page decode microbench (`4` pages, `head_dim=64`, `tokens_per_page=16`):
 
 - without prepared chunk cache: `142.71 ms`
 - with fused prepared chunk cache: `102.91 ms`
 - speedup: about `1.39x`
 
-That does not make `M0 3b` a real end-to-end model-path win yet, but it is a useful directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a much better hot decode shape than rebuilding group-by-group math every step.
+The latest local pass also makes `3b` eligible for the direct torch prefill path instead of forcing it back through host encode+prepare. On a synthetic aligned MPS prefill prepare benchmark (`64` pages, `tokens_per_page=16`, `head_dim=64`):
+
+- direct tensor-side `3b` prepare: `66.93 ms`
+- encode on host plus prepare on MPS: `175.15 ms`
+- speedup: about `2.62x`
+- direct path host-to-device bytes: `0`
+- encode-plus-prepare host-to-device bytes: `32,768`
+
+That does not make `M0 3b` a real end-to-end model-path win yet, but it is a much stronger directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a better hot decode shape, and direct device-side spill packing is a much better prefill shape than bouncing `3b` pages back through host encode.
+
+The next local follow-up tightened the grouped cached-decode shape too. On a synthetic grouped multi-query MPS microbench (`2` KV groups, `2` queries/group, `4` pages, `16` tokens/page, `head_dim=64`):
+
+- `M0 3b`
+  - grouped decode `10.99 ms`
+  - prepared chunk cache resident bytes `135,168`
+- `M0 4b`
+  - grouped decode `9.91 ms`
+  - prepared chunk cache resident bytes `135,168`
+
+So the current local read is nuanced:
+
+- the earlier “`3b` is faster than `4b`” read turned out to be mostly cache-policy shaped
+- once grouped `4b` is allowed to use the same fused-only grouped cache on MPS, it recovers most of the gap and slightly edges out `3b` on this rerun
+- both now pay the same grouped chunk-cache memory in this synthetic shape
+
+That is a useful CUDA hint rather than a direct product claim: low-bit grouped fused caches can be worth it for decode, but the cache policy itself matters almost as much as the codec.
+
+The new grouped low-bit microbench can now emit a small shape ladder instead of one hand-picked point. A compact MPS sweep over `bits={3,4}`, `page_count={2,4,8}`, and `query_count={1,2}` at the same grouped `64`-dim shape showed:
+
+- once `3b` and `4b` use the same grouped fused-cache policy, there is no clean universal winner on these tiny Apple workloads
+- both bits now scale chunk-cache residency identically in this shape:
+  - `67,584` bytes at `2` pages
+  - `135,168` bytes at `4` pages
+  - `270,336` bytes at `8` pages
+- decode timings bounce around enough that the safe conclusion is structural, not absolute:
+  - cache policy was a large part of the earlier `3b` vs `4b` difference
+  - the remaining codec-only gap on MPS is small and noisy at this scale
+
+So the best local read is:
+
+- grouped fused caching is the important idea
+- `3b` is still valuable because it opens a real extra planning tier
+- but for grouped decode throughput, we should not overfit to one small MPS shape and declare `3b` or `4b` the universal winner
 
 ## Local M3 int8 Probe
 
@@ -985,6 +1097,18 @@ So the first-order trade is straightforward:
 - resident tail memory dropped by about `48%`
 - runtime got a bit worse on this MPS implementation
 - short-prompt greedy behavior stayed unchanged
+
+The latest local cleanup trims a bit of avoidable MPS overhead without changing `M3 int8` form:
+
+- prepared `int8` escape scales now stay in `fp32` on MPS, so decode no longer widens them every step
+- single-page `M3` decode skips an unnecessary stack/concat path
+
+On a small synthetic single-page MPS decode microbench (`16` tokens, `head_dim=64`), the current shape is:
+
+- `M3 float16`: `208.97 ms`
+- `M3 int8`: `220.09 ms`
+
+So `M3 int8` is still slower than `float16` on this Apple path, but the remaining gap now looks more like core dequant cost than obvious metadata churn.
 
 A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also stayed clean enough to keep exploring:
 

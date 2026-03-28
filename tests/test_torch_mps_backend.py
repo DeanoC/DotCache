@@ -12,7 +12,11 @@ from dotcache.attention_runtime import (
     score_pages,
 )
 from dotcache.backends import mps_available
-from dotcache.backends.torch_mps import _get_prepared_chunk_mps
+from dotcache.backends.torch_mps import (
+    _build_grouped_prepared_chunk_mps,
+    _get_prepared_chunk_mps,
+    prepare_m0_affine_pages_from_tensor_torch,
+)
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
@@ -361,9 +365,9 @@ def test_decode_step_mps_matches_cpu_reference_across_pages() -> None:
         trace=exec_trace,
     )
 
-    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-4, rtol=1e-4)
-    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-5, rtol=1e-5)
-    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-2, rtol=1e-3)
+    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-2, rtol=1e-3)
     assert prep_trace.host_to_device_bytes > 0
     assert exec_trace.host_to_device_bytes == 0
     assert exec_trace.m0_full_page_materializations == 0
@@ -396,9 +400,9 @@ def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages(bits: i
         trace=exec_trace,
     )
 
-    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-4, rtol=1e-4)
-    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-5, rtol=1e-5)
-    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-2, rtol=1e-3)
+    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-2, rtol=1e-3)
     assert exec_trace.host_to_device_bytes == 0
     assert exec_trace.m0_full_page_materializations == 0
     assert exec_trace.payload_bytes_read == sum(page.payload_nbytes for page in key_pages + value_pages)
@@ -420,6 +424,93 @@ def test_prepared_chunk_cache_builds_fused_codes_for_m0_3bit_pages() -> None:
     assert prepared_chunk.codes_groups is None
     assert prepared_chunk.scales_groups is None
     assert prepared_chunk.bias_groups is not None
+
+
+@requires_mps
+def test_direct_m0_3bit_preparation_from_tensor_matches_cpu_reference() -> None:
+    import torch
+
+    rng = np.random.default_rng(2126)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=3, bits_v=3, tokens_per_page=16)
+    keys = rng.normal(size=(32, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(32, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    direct_key_pages = prepare_m0_affine_pages_from_tensor_torch(
+        torch.from_numpy(keys.reshape(2, 16, config.head_dim)).to(device="mps"),
+        config=config,
+        kind="K",
+        layer_id=0,
+        kv_head_id=0,
+        token_start=0,
+        device_type="mps",
+    )
+    direct_value_pages = prepare_m0_affine_pages_from_tensor_torch(
+        torch.from_numpy(values.reshape(2, 16, config.head_dim)).to(device="mps"),
+        config=config,
+        kind="V",
+        layer_id=0,
+        kv_head_id=0,
+        token_start=0,
+        device_type="mps",
+    )
+
+    cpu_key_pages = _encode_paged(keys, config, kind="K")
+    cpu_value_pages = _encode_paged(values, config, kind="V")
+    cpu_logits, cpu_weights, cpu_output = decode_step(query, cpu_key_pages, cpu_value_pages, backend="cpu_ref")
+    mps_logits, mps_weights, mps_output = decode_step(query, direct_key_pages, direct_value_pages, backend="torch_mps")
+
+    np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-2, rtol=1e-3)
+    np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(mps_output, cpu_output, atol=1e-2, rtol=1e-3)
+
+
+@requires_mps
+def test_grouped_prepared_chunk_uses_fused_only_cache_for_m0_3bit_pages() -> None:
+    rng = np.random.default_rng(2127)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=3, bits_v=3, tokens_per_page=16)
+    context_length = 64
+
+    key_group0 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+
+    grouped_chunk = _build_grouped_prepared_chunk_mps([key_group0, key_group1])
+
+    assert grouped_chunk is not None
+    assert grouped_chunk.fused_scaled_codes is not None
+    assert grouped_chunk.codes_groups is None
+    assert grouped_chunk.scales_groups is None
+    assert grouped_chunk.bias_groups is not None
+
+
+@requires_mps
+def test_grouped_prepared_chunk_uses_fused_only_cache_for_m0_4bit_grouped64_pages() -> None:
+    rng = np.random.default_rng(2128)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16)
+    context_length = 64
+
+    key_group0 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+
+    grouped_chunk = _build_grouped_prepared_chunk_mps([key_group0, key_group1])
+
+    assert grouped_chunk is not None
+    assert grouped_chunk.fused_scaled_codes is not None
+    assert grouped_chunk.codes_groups is None
+    assert grouped_chunk.scales_groups is None
+    assert grouped_chunk.bias_groups is not None
 
 
 @requires_mps

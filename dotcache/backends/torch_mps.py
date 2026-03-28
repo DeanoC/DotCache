@@ -69,16 +69,34 @@ def _torch_pack_codes(codes, *, bits: int, layout: str):
     torch = _load_torch()
     if int(codes.ndim) != 4:
         raise ValueError("codes must have shape [page_count, token_count, num_groups, group_size]")
-    if 32 % bits != 0:
-        raise ValueError("torch-side code packing currently requires 32 % bits == 0")
     page_count, token_count, num_groups, group_size = map(int, codes.shape)
-    symbols_per_word = 32 // bits
-    if group_size % symbols_per_word != 0:
-        raise ValueError("torch-side code packing requires group_size divisible by symbols_per_word")
-    word_count = group_size // symbols_per_word
-    grouped = codes.to(dtype=torch.int32).reshape(page_count, token_count, num_groups, word_count, symbols_per_word)
-    shifts = (torch.arange(symbols_per_word, dtype=torch.int32, device=codes.device) * int(bits)).reshape(1, 1, 1, 1, -1)
-    packed = torch.bitwise_left_shift(grouped, shifts).sum(dim=-1).to(dtype=torch.int32)
+    if 32 % bits == 0:
+        symbols_per_word = 32 // bits
+        if group_size % symbols_per_word != 0:
+            raise ValueError("torch-side code packing requires group_size divisible by symbols_per_word")
+        word_count = group_size // symbols_per_word
+        grouped = codes.to(dtype=torch.int32).reshape(page_count, token_count, num_groups, word_count, symbols_per_word)
+        shifts = (torch.arange(symbols_per_word, dtype=torch.int32, device=codes.device) * int(bits)).reshape(1, 1, 1, 1, -1)
+        packed = torch.bitwise_left_shift(grouped, shifts).sum(dim=-1).to(dtype=torch.int32)
+    else:
+        word_count = words_per_group(group_size, bits)
+        packed = torch.zeros((page_count, token_count, num_groups, word_count), dtype=torch.int32, device=codes.device)
+        codes_i64 = codes.to(dtype=torch.int64)
+        for symbol_index in range(group_size):
+            bit_offset = symbol_index * int(bits)
+            word_index = bit_offset // 32
+            bit_index = bit_offset % 32
+            value = codes_i64[..., symbol_index]
+            packed[..., word_index] = torch.bitwise_or(
+                packed[..., word_index],
+                torch.bitwise_left_shift(value, bit_index).to(dtype=torch.int32),
+            )
+            spill = bit_index + int(bits) - 32
+            if spill > 0:
+                packed[..., word_index + 1] = torch.bitwise_or(
+                    packed[..., word_index + 1],
+                    torch.bitwise_right_shift(value, int(bits) - spill).to(dtype=torch.int32),
+                )
     if layout == "group_major":
         return packed.permute(0, 2, 1, 3).contiguous()
     if layout == "token_major":
@@ -162,6 +180,12 @@ def _supports_fused_m0_3bit(header: PageHeader, *, device_type: TorchDevice) -> 
     )
 
 
+def _supports_grouped_fused_only_cache(header: PageHeader, *, device_type: TorchDevice) -> bool:
+    if _supports_fused_m0_3bit(header, device_type=device_type):
+        return True
+    return _supports_fused_two_group64(header) and device_type in {"cuda", "mps"}
+
+
 def _supports_packed_four_group128_cuda(header: PageHeader, *, device_type: TorchDevice) -> bool:
     return bool(
         device_type == "cuda"
@@ -184,6 +208,15 @@ def _fused_two_group64_cache_dtype(*, device_type: TorchDevice):
 
 def _m0_affine_metadata_dtype(*, device_type: TorchDevice):
     return _load_torch().float32
+
+
+def _escape_scale_dtype(*, device_type: TorchDevice):
+    torch = _load_torch()
+    if device_type == "mps":
+        return torch.float32
+    return torch.float16
+
+
 def prepared_chunk_cache_resident_bytes() -> int:
     return int(_PREPARED_CHUNK_CACHE_RESIDENT_BYTES + _PREPARED_GROUPED_CHUNK_CACHE_RESIDENT_BYTES)
 
@@ -628,12 +661,11 @@ def _build_grouped_prepared_chunk_mps(
     prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
     if any(chunk is None for chunk in prepared_chunks):
         return None
-    if _supports_fused_two_group64(header) and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks):
-        if device_type != "cuda":
-            # On MPS, avoid caching a second grouped fused copy. The per-group prepared
-            # chunks already hold the fused tensors, and grouped decode can stack them
-            # on demand to preserve the existing memory-first behavior.
-            return None
+    if (
+        _supports_grouped_fused_only_cache(header, device_type=device_type)
+        and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks)
+        and all(chunk.bias_groups is not None for chunk in prepared_chunks)
+    ):
         fused_scaled_codes = torch.stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0).contiguous()
         bias_groups = tuple(
             torch.stack([chunk.bias_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
@@ -653,8 +685,9 @@ def _build_grouped_prepared_chunk_mps(
             fused_scaled_codes=fused_scaled_codes,
             resident_nbytes=resident_nbytes,
         )
-    # Grouped decode uses unpacked codes/scales/bias directly, so duplicating stacked
-    # payload tensors here only burns memory without helping the hot path.
+    # Grouped decode uses unpacked codes/scales/bias directly when no fused-only cache
+    # is available, so duplicating stacked payload tensors here only burns memory
+    # without helping the hot path.
     payload_groups: tuple[Any, ...] = ()
     codes_groups = tuple(
         torch.stack([chunk.codes_groups[group_index] for chunk in prepared_chunks], dim=0)
@@ -931,9 +964,15 @@ def _decode_escape_batch_torch(
     head_dim: int,
 ):
     torch = _load_torch()
+    if len(pages) == 1:
+        payload = pages[0].escape_payload[:token_count, :head_dim]
+        if pages[0].header.escape_dtype == "int8":
+            scales = pages[0].escape_scales[:token_count]
+            return (payload.to(dtype=torch.float32) * scales[:, None]).unsqueeze(0)
+        return payload.to(dtype=torch.float32).unsqueeze(0)
     payload = torch.stack([page.escape_payload[:token_count, :head_dim] for page in pages], dim=0)
     if pages[0].header.escape_dtype == "int8":
-        scales = torch.stack([page.escape_scales[:token_count] for page in pages], dim=0).to(dtype=torch.float32)
+        scales = torch.stack([page.escape_scales[:token_count] for page in pages], dim=0)
         return payload.to(dtype=torch.float32) * scales[..., None]
     return payload.to(dtype=torch.float32)
 
@@ -981,6 +1020,7 @@ def _prepare_page_chunk_torch(
         if header.escape_dtype == "int8":
             escape_scale_array = np.stack([np.asarray(page.escape_scales) for page in pages], axis=0)
             escape_scale_batch = _device_tensor(escape_scale_array, device=device_type)
+            escape_scale_batch = escape_scale_batch.to(dtype=_escape_scale_dtype(device_type=device_type))
             total_host_to_device_nbytes += int(escape_scale_batch.numel() * escape_scale_batch.element_size())
         prepared_pages = [
             PreparedPageTorch(
@@ -1262,8 +1302,6 @@ def prepare_m0_affine_pages_from_tensor_torch(
     layout = config.payload_layout_k if kind == "K" else config.payload_layout_v
     if default_mode != "M0" or quant_scheme != "affine" or layout != "group_major":
         raise ValueError("direct torch preparation only supports exact M0 affine group_major pages")
-    if 32 % int(bits) != 0:
-        raise ValueError("direct torch preparation only supports bit widths that divide 32")
 
     page_count = int(values.shape[0])
     token_count = int(values.shape[1])

@@ -36,21 +36,15 @@ def pack_bits(codes: np.ndarray, bits: int) -> np.ndarray:
         return packed.reshape(*values.shape[:-1], word_count)
 
     packed = np.zeros((flat.shape[0], word_count), dtype=np.uint32)
-    for row_index, row in enumerate(flat):
-        bit_offset = 0
-        for raw_value in row:
-            value = int(raw_value) & mask
-            word_index = bit_offset // 32
-            bit_index = bit_offset % 32
-            current = int(packed[row_index, word_index])
-            current |= (value << bit_index) & 0xFFFFFFFF
-            packed[row_index, word_index] = np.uint32(current)
-            spill = bit_index + bits - 32
-            if spill > 0:
-                next_word = int(packed[row_index, word_index + 1])
-                next_word |= (value >> (bits - spill)) & 0xFFFFFFFF
-                packed[row_index, word_index + 1] = np.uint32(next_word)
-            bit_offset += bits
+    for symbol_index in range(symbol_count):
+        bit_offset = symbol_index * bits
+        word_index = bit_offset // 32
+        bit_index = bit_offset % 32
+        values_col = flat[:, symbol_index] & np.uint32(mask)
+        packed[:, word_index] |= np.left_shift(values_col, np.uint32(bit_index), dtype=np.uint32)
+        spill = bit_index + bits - 32
+        if spill > 0:
+            packed[:, word_index + 1] |= np.right_shift(values_col, np.uint32(bits - spill), dtype=np.uint32)
     return packed.reshape(*values.shape[:-1], word_count)
 
 
@@ -73,15 +67,15 @@ def unpack_bits(words: np.ndarray, bits: int, group_size: int) -> np.ndarray:
         return unpacked.reshape(*packed.shape[:-1], group_size)
 
     unpacked = np.zeros((flat.shape[0], group_size), dtype=np.uint8)
-    for row_index, row in enumerate(flat):
-        bit_offset = 0
-        for symbol_index in range(group_size):
-            word_index = bit_offset // 32
-            bit_index = bit_offset % 32
-            value = int(row[word_index] >> bit_index)
-            spill = bit_index + bits - 32
-            if spill > 0:
-                value |= int(row[word_index + 1] & ((1 << spill) - 1)) << (bits - spill)
-            unpacked[row_index, symbol_index] = value & int(mask)
-            bit_offset += bits
+    mask_int = int(mask)
+    for symbol_index in range(group_size):
+        bit_offset = symbol_index * bits
+        word_index = bit_offset // 32
+        bit_index = bit_offset % 32
+        values = np.right_shift(flat[:, word_index], np.uint32(bit_index)).astype(np.uint32, copy=False)
+        spill = bit_index + bits - 32
+        if spill > 0:
+            spill_bits = np.bitwise_and(flat[:, word_index + 1], np.uint32((1 << spill) - 1))
+            values = np.bitwise_or(values, np.left_shift(spill_bits, np.uint32(bits - spill), dtype=np.uint32))
+        unpacked[:, symbol_index] = np.bitwise_and(values, np.uint32(mask_int)).astype(np.uint8, copy=False)
     return unpacked.reshape(*packed.shape[:-1], group_size)

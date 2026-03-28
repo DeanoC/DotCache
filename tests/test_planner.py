@@ -65,6 +65,38 @@ def test_choose_page_mode_balanced_k_prefers_cheaper_candidate_when_stats_are_sa
     assert mode.sensitivity_tier == "balanced"
 
 
+def test_choose_page_mode_balanced_v_can_choose_m0_3bit_candidate() -> None:
+    policy = make_tier_candidates(
+        kind="V",
+        sensitivity_tier="balanced",
+        default_bits=4,
+        default_quant_scheme="affine",
+        default_mode="M0",
+        recent_window=0,
+    )
+    values = np.full((8, 32), 0.3, dtype=np.float32)
+    mode = choose_page_mode(0, "V", 256, observe_page(values), layer_policy=policy)
+    assert mode.mode == "M0"
+    assert mode.bits == 3
+    assert mode.quant_scheme == "affine"
+
+
+def test_choose_page_mode_aggressive_v_falls_back_from_2bit_to_3bit() -> None:
+    policy = make_tier_candidates(
+        kind="V",
+        sensitivity_tier="aggressive",
+        default_bits=4,
+        default_quant_scheme="affine",
+        default_mode="M0",
+        recent_window=0,
+    )
+    values = np.linspace(-8.5, 8.5, num=8 * 32, dtype=np.float32).reshape(8, 32)
+    mode = choose_page_mode(0, "V", 256, observe_page(values), layer_policy=policy)
+    assert mode.mode == "M0"
+    assert mode.bits == 3
+    assert "m0_stats" in mode.fallback_reason
+
+
 def test_choose_page_mode_strict_policy_excludes_aggressive_candidates() -> None:
     policy = make_tier_candidates(
         kind="K",
