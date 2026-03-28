@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from ..config import DotCacheConfig
+from ..decode_reference import decode_page
+from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
 from .llama import (
     _default_model_device,
@@ -171,6 +173,81 @@ def _advance_attention_subset_cache_placeholder(cache: Any, layer_id: int) -> No
         return
     key_cache[layer_id] = torch.cat([layer_keys, layer_keys[:, :, :1, :]], dim=2)
     value_cache[layer_id] = torch.cat([layer_values, layer_values[:, :, :1, :]], dim=2)
+
+
+def _default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: int) -> np.ndarray:
+    if num_attention_heads % num_key_value_heads != 0:
+        raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+    heads_per_kv = num_attention_heads // num_key_value_heads
+    return (np.arange(num_attention_heads, dtype=np.int32) // heads_per_kv).astype(np.int32, copy=False)
+
+
+def _reconstruct_prefill_history(
+    tensor_4d,
+    *,
+    config: DotCacheConfig,
+    kind: str,
+    layer_id: int,
+) -> np.ndarray:
+    values = np.asarray(tensor_4d.detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
+    if values.ndim != 4 or values.shape[0] != 1:
+        raise ValueError("attention-subset prefill tensors must have shape [1, kv_heads, seq_len, head_dim]")
+    kv_heads = values.shape[1]
+    seq_len = values.shape[2]
+    reconstructed = np.zeros((kv_heads, seq_len, values.shape[3]), dtype=np.float32)
+    page_size = int(config.tokens_per_page)
+    for kv_head_id in range(kv_heads):
+        token_start = 0
+        while token_start < seq_len:
+            token_end = min(token_start + page_size, seq_len)
+            encoded = encode_page(
+                values[0, kv_head_id, token_start:token_end, :],
+                config,
+                kind=kind,
+                layer_id=layer_id,
+                kv_head_id=kv_head_id,
+                token_start=token_start,
+            )
+            reconstructed[kv_head_id, token_start:token_end, :] = decode_page(encoded)
+            token_start = token_end
+    return reconstructed
+
+
+def _append_dense_decode_history(
+    prefill_history: np.ndarray,
+    decode_records: list[LlamaReplayRecord],
+    *,
+    kind: str,
+    step_index: int,
+) -> np.ndarray:
+    dense_suffix = []
+    for record in decode_records[: step_index + 1]:
+        dense_suffix.append(record.key_states if kind == "K" else record.value_states)
+    if not dense_suffix:
+        return prefill_history
+    suffix = np.stack(dense_suffix, axis=1).astype(np.float32, copy=False)
+    return np.concatenate([prefill_history, suffix], axis=1)
+
+
+def _replay_attention_subset_context(
+    *,
+    query_states: np.ndarray,
+    key_history: np.ndarray,
+    value_history: np.ndarray,
+    q_head_to_kv_head: np.ndarray,
+    scaling: float,
+) -> np.ndarray:
+    num_attention_heads, head_dim = query_states.shape
+    context = np.zeros((num_attention_heads, head_dim), dtype=np.float32)
+    for q_head_id in range(num_attention_heads):
+        kv_head_id = int(q_head_to_kv_head[q_head_id])
+        logits = key_history[kv_head_id] @ query_states[q_head_id]
+        logits = logits.astype(np.float32, copy=False) * np.float32(scaling)
+        shifted = logits - np.max(logits)
+        weights = np.exp(shifted)
+        weights = weights / np.sum(weights)
+        context[q_head_id] = weights.astype(np.float32, copy=False) @ value_history[kv_head_id]
+    return context.reshape(-1)
 
 
 def _iter_cache_tensors(cache: Any, *, _seen: set[int] | None = None):
@@ -457,6 +534,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                     value_states=fresh_value_states[0, :, 0, :].detach().to(dtype=torch.float32).cpu().numpy(),
                     context_states=gated_context[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )
             )
         return projected_output, attn_weights
@@ -546,6 +624,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                     value_states=value_step[:, 0, :].detach().cpu().numpy(),
                     context_states=gated_context[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )
             )
         return projected_output, None
@@ -815,6 +894,28 @@ class Qwen35AttentionSubsetHarness:
         return run_qwen35_attention_subset_replay_harness(
             self.model,
             self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_prefill_ablation(
+        self,
+        dotcache_config: DotCacheConfig,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_prefill_ablation_harness(
+            self.model,
+            self.adapter,
+            dotcache_config=dotcache_config,
             prompt=prompt,
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1293,6 +1394,175 @@ def run_qwen35_attention_subset_replay_harness(
     )
 
 
+def run_qwen35_attention_subset_prefill_ablation_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    dotcache_config: DotCacheConfig,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    attention_layer_ids = adapter.attention_subset_layer_ids()
+    prefill_tensors = _extract_attention_subset_prefill_tensors(dense_capture["prefill_outputs"].past_key_values, attention_layer_ids)
+    text_config = _qwen35_text_config(model)
+    q_head_to_kv_head = _default_q_head_to_kv_head(
+        int(text_config.num_attention_heads),
+        int(text_config.num_key_value_heads),
+    )
+    per_layer_decode_records: dict[int, list[LlamaReplayRecord]] = {layer_id: [] for layer_id in attention_layer_ids}
+    for step_records in dense_capture["capture_records"]:
+        for record in step_records:
+            per_layer_decode_records.setdefault(record.layer_id, []).append(record)
+
+    text_model = _qwen35_text_model(model)
+    if text_model is None or not hasattr(text_model, "layers"):
+        raise ValueError("Qwen3.5 attention-subset ablation requires text_model.layers")
+
+    k_only_context_by_layer: dict[str, float] = {}
+    v_only_context_by_layer: dict[str, float] = {}
+    kv_context_by_layer: dict[str, float] = {}
+    k_only_output_by_layer: dict[str, float] = {}
+    v_only_output_by_layer: dict[str, float] = {}
+    kv_output_by_layer: dict[str, float] = {}
+    dominant_kind_by_layer: dict[str, str] = {}
+
+    for layer_id in attention_layer_ids:
+        layer_keys, layer_values = prefill_tensors[layer_id]
+        dense_prefill_keys = np.asarray(layer_keys[0].detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
+        dense_prefill_values = np.asarray(layer_values[0].detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
+        quant_prefill_keys = _reconstruct_prefill_history(layer_keys, config=dotcache_config, kind="K", layer_id=layer_id)
+        quant_prefill_values = _reconstruct_prefill_history(layer_values, config=dotcache_config, kind="V", layer_id=layer_id)
+
+        attention_module = text_model.layers[layer_id].self_attn
+        if hasattr(attention_module, "base_attention"):
+            attention_module = attention_module.base_attention
+        scaling = float(attention_module.scaling)
+        output_weight = next(attention_module.o_proj.parameters())
+
+        layer_k_only_context = 0.0
+        layer_v_only_context = 0.0
+        layer_kv_context = 0.0
+        layer_k_only_output = 0.0
+        layer_v_only_output = 0.0
+        layer_kv_output = 0.0
+
+        layer_records = per_layer_decode_records.get(layer_id, [])
+        for step_index, record in enumerate(layer_records):
+            if record.gate_states is None:
+                raise ValueError("Qwen3.5 prefill ablation requires gate_states in the replay record")
+            dense_key_history = _append_dense_decode_history(dense_prefill_keys, layer_records, kind="K", step_index=step_index)
+            dense_value_history = _append_dense_decode_history(dense_prefill_values, layer_records, kind="V", step_index=step_index)
+            quant_key_history = _append_dense_decode_history(quant_prefill_keys, layer_records, kind="K", step_index=step_index)
+            quant_value_history = _append_dense_decode_history(quant_prefill_values, layer_records, kind="V", step_index=step_index)
+
+            k_only_context = _replay_attention_subset_context(
+                query_states=record.query_states,
+                key_history=quant_key_history,
+                value_history=dense_value_history,
+                q_head_to_kv_head=q_head_to_kv_head,
+                scaling=scaling,
+            )
+            v_only_context = _replay_attention_subset_context(
+                query_states=record.query_states,
+                key_history=dense_key_history,
+                value_history=quant_value_history,
+                q_head_to_kv_head=q_head_to_kv_head,
+                scaling=scaling,
+            )
+            kv_context = _replay_attention_subset_context(
+                query_states=record.query_states,
+                key_history=quant_key_history,
+                value_history=quant_value_history,
+                q_head_to_kv_head=q_head_to_kv_head,
+                scaling=scaling,
+            )
+            gate = 1.0 / (1.0 + np.exp(-record.gate_states.astype(np.float32, copy=False)))
+            k_only_gated = (k_only_context * gate).astype(np.float32, copy=False)
+            v_only_gated = (v_only_context * gate).astype(np.float32, copy=False)
+            kv_gated = (kv_context * gate).astype(np.float32, copy=False)
+
+            layer_k_only_context = max(layer_k_only_context, float(np.max(np.abs(k_only_gated - record.context_states))))
+            layer_v_only_context = max(layer_v_only_context, float(np.max(np.abs(v_only_gated - record.context_states))))
+            layer_kv_context = max(layer_kv_context, float(np.max(np.abs(kv_gated - record.context_states))))
+
+            with torch.no_grad():
+                k_only_output = attention_module.o_proj(
+                    torch.as_tensor(k_only_gated, dtype=output_weight.dtype, device=output_weight.device).reshape(1, 1, -1)
+                )[0, 0].detach().to(dtype=torch.float32).cpu().numpy()
+                v_only_output = attention_module.o_proj(
+                    torch.as_tensor(v_only_gated, dtype=output_weight.dtype, device=output_weight.device).reshape(1, 1, -1)
+                )[0, 0].detach().to(dtype=torch.float32).cpu().numpy()
+                kv_output = attention_module.o_proj(
+                    torch.as_tensor(kv_gated, dtype=output_weight.dtype, device=output_weight.device).reshape(1, 1, -1)
+                )[0, 0].detach().to(dtype=torch.float32).cpu().numpy()
+
+            layer_k_only_output = max(layer_k_only_output, float(np.max(np.abs(k_only_output - record.output_states))))
+            layer_v_only_output = max(layer_v_only_output, float(np.max(np.abs(v_only_output - record.output_states))))
+            layer_kv_output = max(layer_kv_output, float(np.max(np.abs(kv_output - record.output_states))))
+
+        layer_key = str(layer_id)
+        k_only_context_by_layer[layer_key] = layer_k_only_context
+        v_only_context_by_layer[layer_key] = layer_v_only_context
+        kv_context_by_layer[layer_key] = layer_kv_context
+        k_only_output_by_layer[layer_key] = layer_k_only_output
+        v_only_output_by_layer[layer_key] = layer_v_only_output
+        kv_output_by_layer[layer_key] = layer_kv_output
+        if layer_k_only_context > layer_v_only_context * 1.1:
+            dominant_kind_by_layer[layer_key] = "K"
+        elif layer_v_only_context > layer_k_only_context * 1.1:
+            dominant_kind_by_layer[layer_key] = "V"
+        else:
+            dominant_kind_by_layer[layer_key] = "mixed"
+
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "attention_subset_layer_ids": attention_layer_ids,
+        "attention_subset_prefill_ablation_ready": True,
+        "prefill_k_only_context_max_abs_error": max(k_only_context_by_layer.values(), default=0.0),
+        "prefill_v_only_context_max_abs_error": max(v_only_context_by_layer.values(), default=0.0),
+        "prefill_kv_context_max_abs_error": max(kv_context_by_layer.values(), default=0.0),
+        "prefill_k_only_output_max_abs_error": max(k_only_output_by_layer.values(), default=0.0),
+        "prefill_v_only_output_max_abs_error": max(v_only_output_by_layer.values(), default=0.0),
+        "prefill_kv_output_max_abs_error": max(kv_output_by_layer.values(), default=0.0),
+        "prefill_k_only_context_max_abs_error_by_layer": dict(sorted(k_only_context_by_layer.items())),
+        "prefill_v_only_context_max_abs_error_by_layer": dict(sorted(v_only_context_by_layer.items())),
+        "prefill_kv_context_max_abs_error_by_layer": dict(sorted(kv_context_by_layer.items())),
+        "prefill_k_only_output_max_abs_error_by_layer": dict(sorted(k_only_output_by_layer.items())),
+        "prefill_v_only_output_max_abs_error_by_layer": dict(sorted(v_only_output_by_layer.items())),
+        "prefill_kv_output_max_abs_error_by_layer": dict(sorted(kv_output_by_layer.items())),
+        "prefill_dominant_kind_by_layer": dict(sorted(dominant_kind_by_layer.items())),
+        "text_only": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dense_attention_subset_prefill_ablation",
+        "uses_native_qwen35_class": True,
+    }
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
 def run_qwen35_attention_subset_dotcache_harness(
     model,
     adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -1458,6 +1728,7 @@ __all__ = [
     "Qwen35TextModelAdapter",
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
+    "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_text_generation_harness",

@@ -290,3 +290,24 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     )
     assert result["attention_subset_capture_layer_count"] == 1
     assert result["dotcache_attention_subset_ready"] is True
+
+
+def test_qwen35_attention_subset_prefill_ablation_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetModelAdapter(model=model),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello ablation")
+    result = harness.run_prefill_ablation(
+        DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=2),
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+    assert result["attention_subset_prefill_ablation_ready"] is True
+    assert result["attention_subset_layer_ids"] == [3]
+    assert "3" in result["prefill_k_only_context_max_abs_error_by_layer"]
+    assert result["prefill_dominant_kind_by_layer"]["3"] in {"K", "V", "mixed"}
