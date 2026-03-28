@@ -23,6 +23,50 @@ def test_matrix_record_for_llama32_emits_runnable_command_with_continue_on_error
     assert record["status"] == "runnable"
 
 
+def test_matrix_record_for_tinyllama_uses_cuda_starter_profile() -> None:
+    spec = get_model_spec("tinyllama_hf")
+    record = _matrix_record(
+        spec,
+        backend="torch_cuda",
+        device="cuda",
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        mount_hf_models=False,
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_llama_compare.py" in " ".join(command)
+    assert "--layer-profile" in command
+    assert "configs/layer_profiles/tinyllama_cuda_start.yaml" in command
+    assert "--device" in command
+    assert "cuda" in command
+
+
+def test_matrix_record_for_smollm2_360m_uses_cuda_starter_profile() -> None:
+    spec = get_model_spec("smollm2_360m_hf")
+    record = _matrix_record(
+        spec,
+        backend="torch_cuda",
+        device="cuda",
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        mount_hf_models=False,
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_llama_compare.py" in " ".join(command)
+    assert "--layer-profile" in command
+    assert "configs/layer_profiles/smollm2_360m_cuda_start.yaml" in command
+    assert "--device" in command
+    assert "cuda" in command
+
+
 def test_matrix_record_for_qwen25_emits_qwen2_runner_command() -> None:
     spec = get_model_spec("qwen25_3b_hf")
     record = _matrix_record(
