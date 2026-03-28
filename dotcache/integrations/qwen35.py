@@ -107,6 +107,42 @@ def _qwen35_attention_head_dim(model_or_config: Any) -> int:
     return int(getattr(text_config, "head_dim", int(text_config.hidden_size) // int(text_config.num_attention_heads)))
 
 
+def _configure_qwen35_linear_attention_runtime(model_or_config: Any) -> None:
+    if qwen35_mod is None or torch is None:
+        return
+    text_model = _qwen35_text_model(model_or_config)
+    layers = getattr(text_model, "layers", None)
+    if layers is None:
+        return
+    layer_types = _hybrid_layer_types(model_or_config)
+    model = getattr(model_or_config, "model", model_or_config)
+    try:
+        use_cuda_fast_path = next(model.parameters()).device.type == "cuda"
+    except StopIteration:  # pragma: no cover - defensive only
+        use_cuda_fast_path = False
+    for layer_id, layer_type in enumerate(layer_types):
+        if layer_type != "linear_attention" or layer_id >= len(layers):
+            continue
+        linear_attn = getattr(layers[layer_id], "linear_attn", None)
+        if linear_attn is None:
+            continue
+        if use_cuda_fast_path:
+            continue
+        linear_attn.causal_conv1d_fn = None
+        linear_attn.causal_conv1d_update = qwen35_mod.torch_causal_conv1d_update
+        linear_attn.chunk_gated_delta_rule = qwen35_mod.torch_chunk_gated_delta_rule
+        linear_attn.recurrent_gated_delta_rule = qwen35_mod.torch_recurrent_gated_delta_rule
+        if type(linear_attn.norm).__name__ != "Qwen3_5RMSNormGated":
+            fallback_norm = qwen35_mod.Qwen3_5RMSNormGated(
+                linear_attn.head_v_dim,
+                eps=linear_attn.layer_norm_epsilon,
+            )
+            if hasattr(linear_attn.norm, "weight") and hasattr(fallback_norm, "weight"):
+                fallback_norm.weight.data.copy_(linear_attn.norm.weight.detach().to(dtype=fallback_norm.weight.dtype))
+            fallback_norm = fallback_norm.to(device=linear_attn.out_proj.weight.device)
+            linear_attn.norm = fallback_norm
+
+
 def _hybrid_layer_records(model_or_config: Any) -> list[dict[str, Any]]:
     layer_types = _hybrid_layer_types(model_or_config)
     text_model = _qwen35_text_model(model_or_config)
@@ -312,32 +348,198 @@ def _cache_component_nbytes(cache: Any, attr_name: str, layer_id: int) -> int:
     return _hybrid_cache_nbytes(value)
 
 
+def _cache_component_value(cache: Any, attr_name: str, layer_id: int) -> Any | None:
+    values = getattr(cache, attr_name, None)
+    if values is None:
+        return None
+    if not isinstance(values, list | tuple):
+        return None
+    if layer_id >= len(values):
+        return None
+    return values[layer_id]
+
+
+@dataclass(slots=True)
+class Qwen35HybridLayerStateSlice:
+    layer_id: int
+    layer_type: str
+    state_growth_family: Literal["fixed_resident", "token_growing"]
+    key_cache: Any | None = None
+    value_cache: Any | None = None
+    conv_state: Any | None = None
+    recurrent_state: Any | None = None
+
+    @property
+    def key_cache_bytes(self) -> int:
+        return _hybrid_cache_nbytes(self.key_cache)
+
+    @property
+    def value_cache_bytes(self) -> int:
+        return _hybrid_cache_nbytes(self.value_cache)
+
+    @property
+    def conv_state_bytes(self) -> int:
+        return _hybrid_cache_nbytes(self.conv_state)
+
+    @property
+    def recurrent_state_bytes(self) -> int:
+        return _hybrid_cache_nbytes(self.recurrent_state)
+
+    @property
+    def layer_state_bytes(self) -> int:
+        return self.key_cache_bytes + self.value_cache_bytes + self.conv_state_bytes + self.recurrent_state_bytes
+
+    @property
+    def fixed_resident_state_bytes(self) -> int:
+        return self.conv_state_bytes + self.recurrent_state_bytes if self.state_growth_family == "fixed_resident" else 0
+
+    @property
+    def token_growing_state_bytes(self) -> int:
+        return self.key_cache_bytes + self.value_cache_bytes if self.state_growth_family == "token_growing" else 0
+
+    def summary_record(self, base_record: dict[str, Any] | None = None) -> dict[str, Any]:
+        record = {} if base_record is None else dict(base_record)
+        record.update(
+            {
+                "layer_id": int(self.layer_id),
+                "layer_type": self.layer_type,
+                "state_growth_family": self.state_growth_family,
+                "key_cache_bytes": int(self.key_cache_bytes),
+                "value_cache_bytes": int(self.value_cache_bytes),
+                "conv_state_bytes": int(self.conv_state_bytes),
+                "recurrent_state_bytes": int(self.recurrent_state_bytes),
+                "layer_state_bytes": int(self.layer_state_bytes),
+                "fixed_resident_state_bytes": int(self.fixed_resident_state_bytes),
+                "token_growing_state_bytes": int(self.token_growing_state_bytes),
+            }
+        )
+        return record
+
+
+@dataclass(slots=True)
+class Qwen35HybridStatePartition:
+    fixed_resident_layers: tuple[Qwen35HybridLayerStateSlice, ...]
+    token_growing_layers: tuple[Qwen35HybridLayerStateSlice, ...]
+
+    @property
+    def all_layers(self) -> tuple[Qwen35HybridLayerStateSlice, ...]:
+        return tuple(sorted(self.fixed_resident_layers + self.token_growing_layers, key=lambda record: record.layer_id))
+
+    @property
+    def fixed_resident_layer_ids(self) -> list[int]:
+        return [int(record.layer_id) for record in self.fixed_resident_layers]
+
+    @property
+    def token_growing_layer_ids(self) -> list[int]:
+        return [int(record.layer_id) for record in self.token_growing_layers]
+
+    def to_summary(self, *, model_or_config: Any | None = None) -> dict[str, Any]:
+        layer_records = _hybrid_layer_records(model_or_config) if model_or_config is not None else []
+        layer_records_by_id = {int(record["layer_id"]): record for record in layer_records}
+        all_layers = self.all_layers
+        attention_kv_bytes = sum(record.key_cache_bytes + record.value_cache_bytes for record in all_layers)
+        linear_conv_bytes = sum(record.conv_state_bytes for record in all_layers)
+        linear_recurrent_bytes = sum(record.recurrent_state_bytes for record in all_layers)
+        fixed_resident_bytes = sum(record.fixed_resident_state_bytes for record in self.fixed_resident_layers)
+        token_growing_bytes = sum(record.token_growing_state_bytes for record in self.token_growing_layers)
+        return {
+            "hybrid_state_total_bytes": int(attention_kv_bytes + linear_conv_bytes + linear_recurrent_bytes),
+            "hybrid_attention_kv_bytes": int(attention_kv_bytes),
+            "hybrid_linear_conv_state_bytes": int(linear_conv_bytes),
+            "hybrid_linear_recurrent_state_bytes": int(linear_recurrent_bytes),
+            "hybrid_fixed_resident_bytes": int(fixed_resident_bytes),
+            "hybrid_token_growing_bytes": int(token_growing_bytes),
+            "hybrid_fixed_resident_layer_count": len(self.fixed_resident_layers),
+            "hybrid_token_growing_layer_count": len(self.token_growing_layers),
+            "hybrid_fixed_resident_layer_ids": self.fixed_resident_layer_ids,
+            "hybrid_token_growing_layer_ids": self.token_growing_layer_ids,
+            "hybrid_state_layers": [
+                record.summary_record(layer_records_by_id.get(int(record.layer_id)))
+                for record in all_layers
+            ],
+        }
+
+
+def partition_qwen35_hybrid_state(cache: Any, model_or_config: Any) -> Qwen35HybridStatePartition:
+    fixed_resident_layers: list[Qwen35HybridLayerStateSlice] = []
+    token_growing_layers: list[Qwen35HybridLayerStateSlice] = []
+    for layer_record in _hybrid_layer_records(model_or_config):
+        layer_id = int(layer_record["layer_id"])
+        layer_type = str(layer_record["layer_type"])
+        growth_family: Literal["fixed_resident", "token_growing"] = (
+            "token_growing" if layer_type == "full_attention" else "fixed_resident"
+        )
+        state_slice = Qwen35HybridLayerStateSlice(
+            layer_id=layer_id,
+            layer_type=layer_type,
+            state_growth_family=growth_family,
+            key_cache=_cache_component_value(cache, "key_cache", layer_id),
+            value_cache=_cache_component_value(cache, "value_cache", layer_id),
+            conv_state=_cache_component_value(cache, "conv_states", layer_id),
+            recurrent_state=_cache_component_value(cache, "recurrent_states", layer_id),
+        )
+        if growth_family == "fixed_resident":
+            fixed_resident_layers.append(state_slice)
+        else:
+            token_growing_layers.append(state_slice)
+    return Qwen35HybridStatePartition(
+        fixed_resident_layers=tuple(fixed_resident_layers),
+        token_growing_layers=tuple(token_growing_layers),
+    )
+
+
 def summarize_qwen35_hybrid_state(cache: Any, model_or_config: Any) -> dict[str, Any]:
-    layer_records = _hybrid_layer_records(model_or_config)
-    attention_kv_bytes = 0
-    linear_conv_bytes = 0
-    linear_recurrent_bytes = 0
-    for record in layer_records:
-        layer_id = int(record["layer_id"])
-        key_bytes = _cache_component_nbytes(cache, "key_cache", layer_id)
-        value_bytes = _cache_component_nbytes(cache, "value_cache", layer_id)
-        conv_bytes = _cache_component_nbytes(cache, "conv_states", layer_id)
-        recurrent_bytes = _cache_component_nbytes(cache, "recurrent_states", layer_id)
-        record["key_cache_bytes"] = int(key_bytes)
-        record["value_cache_bytes"] = int(value_bytes)
-        record["conv_state_bytes"] = int(conv_bytes)
-        record["recurrent_state_bytes"] = int(recurrent_bytes)
-        record["layer_state_bytes"] = int(key_bytes + value_bytes + conv_bytes + recurrent_bytes)
-        attention_kv_bytes += key_bytes + value_bytes
-        linear_conv_bytes += conv_bytes
-        linear_recurrent_bytes += recurrent_bytes
-    total_state_bytes = attention_kv_bytes + linear_conv_bytes + linear_recurrent_bytes
+    return partition_qwen35_hybrid_state(cache, model_or_config).to_summary(model_or_config=model_or_config)
+
+
+def summarize_qwen35_hybrid_state_growth(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    before_layers = {int(record["layer_id"]): record for record in before.get("hybrid_state_layers", [])}
+    after_layers = {int(record["layer_id"]): record for record in after.get("hybrid_state_layers", [])}
+    layer_growth: list[dict[str, Any]] = []
+    for layer_id in sorted(set(before_layers) | set(after_layers)):
+        before_record = before_layers.get(layer_id, {})
+        after_record = after_layers.get(layer_id, {})
+        layer_growth.append(
+            {
+                "layer_id": int(layer_id),
+                "layer_type": after_record.get("layer_type", before_record.get("layer_type")),
+                "state_growth_family": after_record.get("state_growth_family", before_record.get("state_growth_family")),
+                "key_cache_growth_bytes": int(after_record.get("key_cache_bytes", 0) - before_record.get("key_cache_bytes", 0)),
+                "value_cache_growth_bytes": int(
+                    after_record.get("value_cache_bytes", 0) - before_record.get("value_cache_bytes", 0)
+                ),
+                "conv_state_growth_bytes": int(
+                    after_record.get("conv_state_bytes", 0) - before_record.get("conv_state_bytes", 0)
+                ),
+                "recurrent_state_growth_bytes": int(
+                    after_record.get("recurrent_state_bytes", 0) - before_record.get("recurrent_state_bytes", 0)
+                ),
+                "layer_state_growth_bytes": int(
+                    after_record.get("layer_state_bytes", 0) - before_record.get("layer_state_bytes", 0)
+                ),
+            }
+        )
     return {
-        "hybrid_state_total_bytes": int(total_state_bytes),
-        "hybrid_attention_kv_bytes": int(attention_kv_bytes),
-        "hybrid_linear_conv_state_bytes": int(linear_conv_bytes),
-        "hybrid_linear_recurrent_state_bytes": int(linear_recurrent_bytes),
-        "hybrid_state_layers": layer_records,
+        "hybrid_state_growth_bytes": int(after.get("hybrid_state_total_bytes", 0) - before.get("hybrid_state_total_bytes", 0)),
+        "hybrid_attention_kv_growth_bytes": int(
+            after.get("hybrid_attention_kv_bytes", 0) - before.get("hybrid_attention_kv_bytes", 0)
+        ),
+        "hybrid_linear_conv_state_growth_bytes": int(
+            after.get("hybrid_linear_conv_state_bytes", 0) - before.get("hybrid_linear_conv_state_bytes", 0)
+        ),
+        "hybrid_linear_recurrent_state_growth_bytes": int(
+            after.get("hybrid_linear_recurrent_state_bytes", 0) - before.get("hybrid_linear_recurrent_state_bytes", 0)
+        ),
+        "hybrid_fixed_resident_growth_bytes": int(
+            after.get("hybrid_fixed_resident_bytes", 0) - before.get("hybrid_fixed_resident_bytes", 0)
+        ),
+        "hybrid_token_growing_growth_bytes": int(
+            after.get("hybrid_token_growing_bytes", 0) - before.get("hybrid_token_growing_bytes", 0)
+        ),
+        "hybrid_state_growth_layers": layer_growth,
     }
 
 
@@ -399,6 +601,9 @@ class Qwen35TextModelAdapter:
     model: Any
     mode: Qwen35Mode = "dense"
 
+    def __post_init__(self) -> None:
+        _configure_qwen35_linear_attention_runtime(self.model)
+
     @property
     def device(self):
         return next(self.model.parameters()).device
@@ -418,6 +623,9 @@ class Qwen35TextModelAdapter:
 
     def hybrid_fit_summary(self) -> dict[str, Any]:
         return summarize_qwen35_dotcache_fit(self.model)
+
+    def partition_hybrid_state(self, cache: Any) -> Qwen35HybridStatePartition:
+        return partition_qwen35_hybrid_state(cache, self.model)
 
 
 class DotCacheQwen35AttentionSubset(nn.Module):
@@ -639,6 +847,7 @@ class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
     _current_token_index_override: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        Qwen35TextModelAdapter.__post_init__(self)
         self._install_wrappers()
 
     def _install_wrappers(self) -> None:
@@ -699,6 +908,8 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     qkv_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
+    hybrid_prefill_partition: Qwen35HybridStatePartition | None = field(default=None, init=False, repr=False)
+    hybrid_prefill_state_summary: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35AttentionSubsetModelAdapter.__post_init__(self)
@@ -731,9 +942,26 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total = 0.0
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
+        self.hybrid_prefill_partition = None
+        self.hybrid_prefill_state_summary = None
+
+    def token_growing_layer_ids(self) -> list[int]:
+        if self.hybrid_prefill_partition is not None:
+            return list(self.hybrid_prefill_partition.token_growing_layer_ids)
+        return self.attention_subset_layer_ids()
+
+    def fixed_resident_layer_ids(self) -> list[int]:
+        if self.hybrid_prefill_partition is not None:
+            return list(self.hybrid_prefill_partition.fixed_resident_layer_ids)
+        return [
+            layer_id
+            for layer_id, layer_type in enumerate(_hybrid_layer_types(self.model))
+            if layer_type != "full_attention"
+        ]
 
     def load_attention_subset_prefill_cache(self, past_key_values: Any) -> None:
-        attention_layer_ids = self.attention_subset_layer_ids()
+        source_prefill_partition = self.partition_hybrid_state(past_key_values)
+        attention_layer_ids = source_prefill_partition.token_growing_layer_ids
         extracted = _extract_attention_subset_prefill_tensors(past_key_values, attention_layer_ids)
         self.model_kv_cache.clear()
         use_torch_prefill = _torch_backend_matches_device(self.backend, self.device.type)
@@ -749,6 +977,35 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
                 )
         self.model_kv_cache.prepare_static_pages()
         _replace_attention_subset_cache_with_placeholders(past_key_values, attention_layer_ids)
+        runtime_prefill_partition = self.partition_hybrid_state(past_key_values)
+        self.hybrid_prefill_partition = runtime_prefill_partition
+        self.hybrid_prefill_state_summary = runtime_prefill_partition.to_summary(model_or_config=self.model)
+
+    def summarize_dotcache_native_hybrid_state(self, past_key_values: Any) -> dict[str, Any]:
+        final_partition = self.partition_hybrid_state(past_key_values)
+        final_summary = final_partition.to_summary(model_or_config=self.model)
+        prefill_summary = self.hybrid_prefill_state_summary or final_summary
+        result = {
+            "hybrid_state_partition_ready": True,
+            "native_hybrid_fixed_resident_layer_ids": final_partition.fixed_resident_layer_ids,
+            "native_hybrid_token_growing_layer_ids": final_partition.token_growing_layer_ids,
+            "native_hybrid_prefill_fixed_resident_bytes": int(prefill_summary["hybrid_fixed_resident_bytes"]),
+            "native_hybrid_prefill_token_growing_bytes": int(prefill_summary["hybrid_token_growing_bytes"]),
+            "native_hybrid_final_fixed_resident_bytes": int(final_summary["hybrid_fixed_resident_bytes"]),
+            "native_hybrid_final_token_growing_bytes": int(final_summary["hybrid_token_growing_bytes"]),
+            "native_hybrid_fixed_resident_growth_bytes": int(
+                final_summary["hybrid_fixed_resident_bytes"] - prefill_summary["hybrid_fixed_resident_bytes"]
+            ),
+            "native_hybrid_token_growing_growth_bytes": int(
+                final_summary["hybrid_token_growing_bytes"] - prefill_summary["hybrid_token_growing_bytes"]
+            ),
+            "native_hybrid_prefill_state_layers": prefill_summary["hybrid_state_layers"],
+            "native_hybrid_final_state_layers": final_summary["hybrid_state_layers"],
+        }
+        result["native_hybrid_fixed_resident_preserved"] = (
+            result["native_hybrid_fixed_resident_growth_bytes"] == 0
+        )
+        return result
 
 
 @dataclass(slots=True)
@@ -838,6 +1095,7 @@ class Qwen35TextHarness:
         prompt: str | None = None,
         input_ids=None,
         attention_mask=None,
+        decode_steps: int = 0,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return inspect_qwen35_hybrid_state(
@@ -847,6 +1105,7 @@ class Qwen35TextHarness:
             input_ids=input_ids,
             attention_mask=attention_mask,
             tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -1218,6 +1477,7 @@ def inspect_qwen35_hybrid_state(
     input_ids=None,
     attention_mask=None,
     tokenizer=None,
+    decode_steps: int = 0,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
@@ -1234,17 +1494,71 @@ def inspect_qwen35_hybrid_state(
         lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
         device=input_ids.device,
     )
-    cache = prefill_outputs.past_key_values
+    prefill_cache = prefill_outputs.past_key_values
+    prefill_partition = adapter.partition_hybrid_state(prefill_cache)
+    prefill_state = prefill_partition.to_summary(model_or_config=model)
+    dense_decode_ms_total = 0.0
+    final_cache = prefill_cache
+    if decode_steps > 0:
+        current_input_ids = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+        for _step_index in range(decode_steps):
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=final_cache,
+                    cache_position=cache_position,
+                ),
+                device=input_ids.device,
+            )
+            dense_decode_ms_total += step_ms
+            final_cache = outputs.past_key_values
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+    final_partition = adapter.partition_hybrid_state(final_cache)
+    final_state = final_partition.to_summary(model_or_config=model)
     result = {
         "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
         "prefill_ms": float(prefill_ms),
+        "dense_decode_ms_per_step": float(dense_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
         "text_only": True,
         "dotcache_ready": False,
         "runtime_mode": "dense",
         "uses_native_qwen35_class": True,
+        "hybrid_state_partition_ready": True,
     }
     result.update(adapter.hybrid_block_summary())
-    result.update(summarize_qwen35_hybrid_state(cache, model))
+    result.update(prefill_state)
+    result.update(
+        {
+            "hybrid_prefill_state_total_bytes": int(prefill_state["hybrid_state_total_bytes"]),
+            "hybrid_prefill_attention_kv_bytes": int(prefill_state["hybrid_attention_kv_bytes"]),
+            "hybrid_prefill_linear_conv_state_bytes": int(prefill_state["hybrid_linear_conv_state_bytes"]),
+            "hybrid_prefill_linear_recurrent_state_bytes": int(prefill_state["hybrid_linear_recurrent_state_bytes"]),
+            "hybrid_prefill_fixed_resident_bytes": int(prefill_state["hybrid_fixed_resident_bytes"]),
+            "hybrid_prefill_token_growing_bytes": int(prefill_state["hybrid_token_growing_bytes"]),
+            "hybrid_prefill_state_layers": prefill_state["hybrid_state_layers"],
+            "hybrid_final_state_total_bytes": int(final_state["hybrid_state_total_bytes"]),
+            "hybrid_final_attention_kv_bytes": int(final_state["hybrid_attention_kv_bytes"]),
+            "hybrid_final_linear_conv_state_bytes": int(final_state["hybrid_linear_conv_state_bytes"]),
+            "hybrid_final_linear_recurrent_state_bytes": int(final_state["hybrid_linear_recurrent_state_bytes"]),
+            "hybrid_final_fixed_resident_bytes": int(final_state["hybrid_fixed_resident_bytes"]),
+            "hybrid_final_token_growing_bytes": int(final_state["hybrid_token_growing_bytes"]),
+            "hybrid_final_state_layers": final_state["hybrid_state_layers"],
+        }
+    )
+    result.update(summarize_qwen35_hybrid_state_growth(prefill_state, final_state))
     result.update(adapter.hybrid_fit_summary())
     return result
 
@@ -1714,6 +2028,7 @@ def run_qwen35_attention_subset_dotcache_harness(
             "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
         }
     )
+    result.update(adapter.summarize_dotcache_native_hybrid_state(past_key_values))
     result.update(adapter.model_kv_cache.resident_byte_summary())
     result.update(adapter.model_kv_cache.page_mode_summary())
     return result
@@ -1735,4 +2050,5 @@ __all__ = [
     "run_qwen35_text_loss_harness",
     "summarize_qwen35_dotcache_fit",
     "summarize_qwen35_hybrid_state",
+    "summarize_qwen35_hybrid_state_growth",
 ]

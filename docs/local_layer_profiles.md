@@ -14,6 +14,7 @@ The current profile artifacts live in:
 - [tinyllama_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_cuda_start.yaml)
 - [qwen35_0p8b_attention_subset_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_first_pass.yaml)
 - [qwen35_0p8b_attention_subset_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_second_pass.yaml)
+- [qwen35_0p8b_attention_subset_cuda_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
 - [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
 - [smollm2_360m_local_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_third_pass.yaml)
@@ -282,3 +283,41 @@ So the current local Qwen3.5 attention-subset read is:
 - the value side needs explicit safer candidate sets, not generic `strict`
 - the second-pass profile is the better local checkpoint
 - the attention-subset lane is still not a performance win, but it is now a much cleaner design spike for the CUDA side and for later hybrid-state work
+
+### Qwen3.5 Attention Subset CUDA Third Pass
+
+Once the native Qwen3.5 fast path was enabled on CUDA, the second-pass Mac profile was no longer the best starter unchanged.
+
+The main CUDA finding was that exact values at layers `19` and `23` mattered more than the old `layer:7` key strict hint:
+
+- second pass on CUDA, exact `64` prompt:
+  - replay context max abs error: `0.2979`
+  - replay output max abs error: `0.0740`
+  - teacher-forced logit max abs error: `1.2695`
+- CUDA third pass, exact `64` prompt:
+  - replay context max abs error: `0.2076`
+  - replay output max abs error: `0.0314`
+  - teacher-forced logit max abs error: `0.7148`
+- CUDA third pass, repeat `32` prompt:
+  - replay context max abs error: `0.2773`
+  - replay output max abs error: `0.0498`
+  - teacher-forced logit max abs error: `0.7441`
+
+The resulting CUDA-specific profile is:
+
+- default `balanced` for both keys and values
+- `recent_window: 0`
+- stricter key layers:
+  - `11`
+  - `19`
+- explicit value policy override:
+  - `layer:15=M0/affine/4,M0/affine/3,M1/lut/4`
+- exact value layers:
+  - `19`
+  - `23`
+
+Interpretation:
+
+- `layer:7` key strictness was not the right CUDA lever once the native linear-attention fast path was active
+- values at layers `19` and `23` are the main fidelity anchors on CUDA
+- the CUDA starter should therefore be a dedicated third pass, not a blind reuse of the Mac second pass

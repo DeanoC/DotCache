@@ -1601,3 +1601,182 @@ The useful practical baseline is:
 - prompt throughput stays high on the RTX 5090, even at `4096`, ranging from about `10.8k` to `22.0k tok/s`
 - decode throughput is much lower and scales with model size, ranging from about `169.8` to `225.8 tok/s`
 - the GGUF reference lane is now genuinely runnable and locally cached, but the right baseline tool for it is `llama-bench`, not the exact-text `llama-cli` harness
+
+## 2026-03-28 16:20 UTC - Qwen3.5 0.8B CUDA fast path and attention-subset third pass
+
+I installed the missing native Qwen3.5 fast-path dependencies into the repo `.venv`:
+
+- `flash-linear-attention==0.4.2`
+- `causal-conv1d==1.6.1` built with `--no-build-isolation` against local `torch 2.8.0+cu128`
+
+That flipped the Transformers gate from fallback-Torch mode to the intended native path:
+
+- `is_flash_linear_attention_available=True`
+- `is_causal_conv1d_available=True`
+- `transformers.models.qwen3_5.modeling_qwen3_5.is_fast_path_available=True`
+
+The dense CUDA baseline improved materially once that path was live:
+
+- exact `512` prompt:
+  - before: prefill `393.57 ms`, decode `21.99 ms/step`
+  - after: prefill `26.63 ms`, decode `16.25 ms/step`
+- repeat `64` prompt (`448` tokens):
+  - before: prefill `663.60 ms`, decode `93.60 ms/step`
+  - after: prefill `26.93 ms`, decode `16.86 ms/step`
+
+With the dense baseline fixed, I reran the attention-subset CUDA policy probes. The Mac second-pass profile was still useful directionally, but it was not the best CUDA starter once the native fast path was active.
+
+Second pass on CUDA:
+
+- exact `64` prompt:
+  - replay context max abs error: `0.2979`
+  - replay output max abs error: `0.0740`
+  - teacher-forced logit max abs error: `1.2695`
+- repeat `32` prompt:
+  - replay context max abs error: `0.3164`
+  - replay output max abs error: `0.1157`
+  - teacher-forced logit max abs error: `1.4531`
+
+The best narrower CUDA third pass was:
+
+- key strict:
+  - `layer:11`
+  - `layer:19`
+- value policy override:
+  - `layer:15=M0/affine/4,M0/affine/3,M1/lut/4`
+- exact values:
+  - `layer:19=M3`
+  - `layer:23=M3`
+
+That profile is now captured in:
+
+- [configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml](/workspace/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml)
+
+Its measured CUDA results were:
+
+- exact `64` prompt:
+  - replay context max abs error: `0.2076`
+  - replay output max abs error: `0.0314`
+  - teacher-forced logit max abs error: `0.7148`
+  - decode `51.76 ms/step`
+- repeat `32` prompt:
+  - replay context max abs error: `0.2773`
+  - replay output max abs error: `0.0498`
+  - teacher-forced logit max abs error: `0.7441`
+  - decode `95.22 ms/step`
+
+The important policy read is:
+
+- `layer:7` key strictness was not the right CUDA lever once the native Qwen3.5 fast path was active
+- values at `19` and `23` are the main fidelity anchors on CUDA
+- the best next step is still attention-subset fidelity and hybrid-state integration, but it should now start from the CUDA third-pass profile rather than the older Mac second pass
+
+## 2026-03-28 17:10 UTC - Qwen3.5 hybrid-state partition on CUDA
+
+I turned the earlier byte accounting into an explicit adapter-level hybrid-state partition for Qwen3.5:
+
+- fixed resident state:
+  - `linear_attention` conv state
+  - `linear_attention` recurrent state
+- token-growing state:
+  - `full_attention` key/value cache only
+
+The implementation now exposes that split through the Qwen3.5 adapter and the hybrid inspect bench, rather than leaving it as an implicit interpretation of raw cache bytes.
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_hybrid_inspect.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py`
+  - result: `17 passed`
+
+Live CUDA check:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_hybrid_inspect.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --target-prompt-lengths 64 \
+  --max-new-tokens 2
+```
+
+Useful result at exact `64`, after `2` decode steps:
+
+- prefill fixed resident bytes: `19,759,104`
+- prefill token-growing bytes: `86,016`
+- final fixed resident bytes: `19,759,104`
+- final token-growing bytes: `110,592`
+- fixed resident growth: `0`
+- token-growing growth: `24,576`
+
+Layer split on the live model:
+
+- fixed resident layers:
+  - `[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22]`
+- token-growing layers:
+  - `[3, 7, 11, 15, 19, 23]`
+
+So the next Qwen3.5 abstraction step is now concrete:
+
+- keep linear-attention state as a fixed resident object
+- only let the six full-attention subset layers participate in token-growing DotCache KV
+
+## 2026-03-28 17:35 UTC - Qwen3.5 attention-subset runtime now carries an explicit native hybrid split
+
+I moved the fixed-resident vs token-growing split from the inspect-only path into the actual attention-subset DotCache runtime.
+
+The Qwen3.5 adapter now captures the post-handoff native hybrid partition at prefill time:
+
+- fixed resident:
+  - all `linear_attention` conv/recurrent state
+- token growing:
+  - only the `full_attention` subset layers, after their native KV has been replaced by placeholders and handed off to DotCache
+
+That means the runtime contract is now explicit:
+
+- native hybrid state keeps the linear-attention resident state alive across decode
+- DotCache owns the token-growing KV for layers `[3, 7, 11, 15, 19, 23]`
+
+Validation:
+
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
+  - result: `6 passed`
+
+Live CUDA check:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml \
+  --target-prompt-lengths 64 \
+  --max-new-tokens 2
+```
+
+Useful runtime fields on that run:
+
+- `native_hybrid_fixed_resident_layer_ids`:
+  - `[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22]`
+- `native_hybrid_token_growing_layer_ids`:
+  - `[3, 7, 11, 15, 19, 23]`
+- `native_hybrid_prefill_fixed_resident_bytes`:
+  - `19,759,104`
+- `native_hybrid_final_fixed_resident_bytes`:
+  - `19,759,104`
+- `native_hybrid_fixed_resident_growth_bytes`:
+  - `0`
+- `native_hybrid_prefill_token_growing_bytes`:
+  - `0`
+- `native_hybrid_final_token_growing_bytes`:
+  - `0`
+
+The fidelity result stayed on the same CUDA third-pass checkpoint:
+
+- replay context max abs error: `0.2076`
+- replay output max abs error: `0.0314`
+- teacher-forced logit max abs error: `0.7148`
+
+So the next implementation step is no longer “discover the split.” It is to exploit it: build any later Qwen3.5 hybrid caching around a resident linear-attention state object plus the existing attention-subset DotCache KV path.
