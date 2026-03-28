@@ -16,6 +16,7 @@ from dotcache.backends.torch_mps import (
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
+from dotcache.modes.m4_key_project import fit_shared_project_basis
 from dotcache.integrations.vllm_adapter import (
     VLLM_V1_MULTIPROCESSING_ENV,
     VllmAdapterConfig,
@@ -530,6 +531,163 @@ def test_grouped_prepared_chunk_cache_builds_m4_cuda_view() -> None:
         len(pages_by_group[0]),
         config.head_dim // config.group_size,
     )
+
+
+def test_grouped_prepared_chunk_cache_builds_m4_svd_cuda_view() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M4",
+        quant_scheme_k="project",
+        m4_project_basis_k="svd",
+    )
+    rng = np.random.default_rng(1211)
+
+    def _prepared_page(*, kv_head_id: int, token_start: int, cache_uid: int) -> PreparedPageTorch:
+        encoded = encode_page(
+            rng.normal(size=(4, config.head_dim)).astype(np.float32),
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            mode="M4",
+            quant_scheme="project",
+            build_runtime_metadata=False,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            m2_sketch=torch.from_numpy(encoded.m2_sketch.copy()),
+            m2_basis=torch.from_numpy(encoded.m2_basis.copy()),
+            m2_mean=torch.from_numpy(encoded.m2_mean.copy()),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=341),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=342),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=343),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=344),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=351),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=352),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=353),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=354),
+        ],
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.m2_sketch_groups is not None
+    assert first.m2_basis_groups is not None
+    assert first.m2_mean_groups is not None
+    assert first.m2_sketch_tensor is not None
+    assert first.m2_basis_tensor is not None
+    assert first.m2_mean_tensor is not None
+
+
+def test_grouped_prepared_chunk_cache_builds_m4_svd_shared_cuda_view() -> None:
+    clear_prepared_chunk_cache()
+    config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M4",
+        quant_scheme_k="project",
+        m4_project_basis_k="svd_shared",
+    )
+    rng = np.random.default_rng(1212)
+    dense_pages_a = [rng.normal(size=(4, config.head_dim)).astype(np.float32) for _ in range(4)]
+    dense_pages_b = [rng.normal(size=(4, config.head_dim)).astype(np.float32) for _ in range(4)]
+    shared_basis_a = fit_shared_project_basis(
+        np.concatenate(dense_pages_a, axis=0),
+        group_size=config.group_size,
+        project_dim=config.m2_sketch_dim_k,
+        page_size=config.tokens_per_page,
+    ).astype(np.float16, copy=False)
+    shared_basis_b = fit_shared_project_basis(
+        np.concatenate(dense_pages_b, axis=0),
+        group_size=config.group_size,
+        project_dim=config.m2_sketch_dim_k,
+        page_size=config.tokens_per_page,
+    ).astype(np.float16, copy=False)
+
+    def _prepared_page(
+        *,
+        kv_head_id: int,
+        token_start: int,
+        cache_uid: int,
+        values: np.ndarray,
+        shared_basis: np.ndarray,
+    ) -> PreparedPageTorch:
+        encoded = encode_page(
+            values,
+            config,
+            kind="K",
+            layer_id=0,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            mode="M4",
+            quant_scheme="project",
+            build_runtime_metadata=False,
+            m4_basis_override=shared_basis,
+        )
+        return PreparedPageTorch(
+            device_type="cuda",
+            source_page=encoded,
+            header=encoded.header,
+            m2_sketch=torch.from_numpy(encoded.m2_sketch.copy()),
+            m2_basis=None,
+            m2_mean=torch.from_numpy(encoded.m2_mean.copy()),
+            cache_uid=cache_uid,
+        )
+
+    pages_by_group = [
+        [
+            _prepared_page(kv_head_id=0, token_start=0, cache_uid=361, values=dense_pages_a[0], shared_basis=shared_basis_a),
+            _prepared_page(kv_head_id=0, token_start=4, cache_uid=362, values=dense_pages_a[1], shared_basis=shared_basis_a),
+            _prepared_page(kv_head_id=0, token_start=8, cache_uid=363, values=dense_pages_a[2], shared_basis=shared_basis_a),
+            _prepared_page(kv_head_id=0, token_start=12, cache_uid=364, values=dense_pages_a[3], shared_basis=shared_basis_a),
+        ],
+        [
+            _prepared_page(kv_head_id=1, token_start=0, cache_uid=371, values=dense_pages_b[0], shared_basis=shared_basis_b),
+            _prepared_page(kv_head_id=1, token_start=4, cache_uid=372, values=dense_pages_b[1], shared_basis=shared_basis_b),
+            _prepared_page(kv_head_id=1, token_start=8, cache_uid=373, values=dense_pages_b[2], shared_basis=shared_basis_b),
+            _prepared_page(kv_head_id=1, token_start=12, cache_uid=374, values=dense_pages_b[3], shared_basis=shared_basis_b),
+        ],
+    ]
+
+    try:
+        first = _get_grouped_prepared_chunk_mps(pages_by_group)
+        second = _get_grouped_prepared_chunk_mps(pages_by_group)
+    finally:
+        clear_prepared_chunk_cache()
+
+    assert first is not None
+    assert second is first
+    assert first.m2_sketch_groups is not None
+    assert first.m2_basis_groups is not None
+    assert first.m2_mean_groups is not None
+    assert first.m2_basis_groups[0].dim() == 3
+    assert tuple(first.m2_basis_groups[0].shape[:2]) == (len(pages_by_group), config.m2_sketch_dim_k)
+    assert first.m2_basis_tensor is not None
+    assert first.m2_basis_tensor.dim() == 4
 
 
 torch = pytest.importorskip("torch")

@@ -12,6 +12,8 @@ exec .venv/bin/python benchmarks/bench_qwen2_compare.py \
   --default-mode-k M0 \
   --default-mode-v M0 \
   --key-policy-tier aggressive \
+  --prefer-m4-project-k \
+  --m4-project-basis-k svd_shared \
   --max-new-tokens 4 \
   --repeat-counts \
   --target-prompt-lengths 1024 2048 4096 \

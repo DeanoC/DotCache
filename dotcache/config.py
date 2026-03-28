@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 
+from .modes.m4_key_project import valid_m4_basis_families
 from .planner import LayerPolicy, PageModeSpec, make_explicit_policy, make_tier_candidates, parse_page_mode_token
 
 
 _VALID_KEY_MODES = ("M0", "M1", "M2", "M3", "M4", "T3")
 _VALID_VALUE_MODES = ("M0", "M1", "M3", "T3")
+_VALID_M4_BASIS_FAMILIES = valid_m4_basis_families()
 
 
 def _parse_mode_override_spec(spec: str, *, allowed_modes: tuple[str, ...], field_name: str) -> tuple[int, int | None, str]:
@@ -62,6 +64,19 @@ def _parse_layer_candidate_spec(spec: str, *, field_name: str) -> tuple[int, tup
     return int(parts[1]), candidates
 
 
+def _parse_layer_positive_int_spec(spec: str, *, field_name: str) -> tuple[int, int]:
+    if "=" not in spec:
+        raise ValueError(f"{field_name} entries must use layer:<id>=<positive_int>")
+    target, value = spec.split("=", 1)
+    parts = target.strip().split(":")
+    if len(parts) != 2 or parts[0] != "layer":
+        raise ValueError(f"{field_name} entries must use layer:<id>=<positive_int>")
+    parsed_value = int(value.strip())
+    if parsed_value <= 0:
+        raise ValueError(f"{field_name} values must be positive integers")
+    return int(parts[1]), parsed_value
+
+
 @dataclass(frozen=True, slots=True)
 class DotCacheConfig:
     head_dim: int
@@ -82,6 +97,9 @@ class DotCacheConfig:
     escape_dtype: str = "float16"
     recent_page_escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
+    m4_project_basis_k: str = "hadamard"
+    m4_project_basis_k_overrides: tuple[str, ...] = ()
+    m4_project_dim_k_overrides: tuple[str, ...] = ()
     m2_center_k: bool = False
     m2_segment_count_k: int = 1
     m2_adaptive_segments_k: bool = False
@@ -138,6 +156,17 @@ class DotCacheConfig:
             raise ValueError("recent_page_escape_dtype must be float16, float32, or int8")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
+        if self.m4_project_basis_k not in _VALID_M4_BASIS_FAMILIES:
+            allowed = ", ".join(_VALID_M4_BASIS_FAMILIES)
+            raise ValueError(f"m4_project_basis_k must be one of {allowed}")
+        for spec in self.m4_project_basis_k_overrides:
+            _parse_layer_value_spec(
+                spec,
+                field_name="m4_project_basis_k_overrides",
+                allowed_values=_VALID_M4_BASIS_FAMILIES,
+            )
+        for spec in self.m4_project_dim_k_overrides:
+            _parse_layer_positive_int_spec(spec, field_name="m4_project_dim_k_overrides")
         if not isinstance(self.m2_center_k, bool):
             raise ValueError("m2_center_k must be a bool")
         if self.m2_segment_count_k <= 0:
@@ -252,6 +281,29 @@ class DotCacheConfig:
             if override_kv_head_id is not None and override_kv_head_id != int(kv_head_id):
                 continue
             resolved = override_mode
+        return resolved
+
+    def resolve_m4_project_dim_k(self, *, layer_id: int) -> int:
+        resolved = int(self.m2_sketch_dim_k)
+        for spec in self.m4_project_dim_k_overrides:
+            override_layer_id, override_dim = _parse_layer_positive_int_spec(
+                spec,
+                field_name="m4_project_dim_k_overrides",
+            )
+            if override_layer_id == int(layer_id):
+                resolved = int(override_dim)
+        return resolved
+
+    def resolve_m4_project_basis_k(self, *, layer_id: int) -> str:
+        resolved = self.m4_project_basis_k
+        for spec in self.m4_project_basis_k_overrides:
+            override_layer_id, override_basis = _parse_layer_value_spec(
+                spec,
+                field_name="m4_project_basis_k_overrides",
+                allowed_values=_VALID_M4_BASIS_FAMILIES,
+            )
+            if override_layer_id == int(layer_id):
+                resolved = override_basis
         return resolved
 
     def resolve_layer_policy(self, *, kind: str, layer_id: int, kv_head_id: int) -> LayerPolicy:

@@ -37,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-page-escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
+    parser.add_argument("--m4-project-basis-k", choices=["hadamard", "dct", "svd", "svd_shared"], default="hadamard")
+    parser.add_argument("--m4-project-basis-k-override", action="append", default=[])
+    parser.add_argument("--m4-project-dim-k-override", action="append", default=[])
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
     parser.add_argument("--m2-adaptive-segments-k", action=argparse.BooleanOptionalAction, default=False)
@@ -169,6 +172,9 @@ def main() -> None:
         escape_dtype=args.escape_dtype,
         recent_page_escape_dtype=args.recent_page_escape_dtype,
         m2_sketch_dim_k=args.m2_sketch_dim_k,
+        m4_project_basis_k=args.m4_project_basis_k,
+        m4_project_basis_k_overrides=tuple(args.m4_project_basis_k_override),
+        m4_project_dim_k_overrides=tuple(args.m4_project_dim_k_override),
         m2_center_k=args.m2_center_k,
         m2_segment_count_k=args.m2_segment_count_k,
         m2_adaptive_segments_k=args.m2_adaptive_segments_k,
@@ -234,6 +240,9 @@ def main() -> None:
                 "escape_dtype": args.escape_dtype,
                 "recent_page_escape_dtype": args.recent_page_escape_dtype,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
+                "m4_project_basis_k": args.m4_project_basis_k,
+                "m4_project_basis_k_overrides": list(args.m4_project_basis_k_override),
+                "m4_project_dim_k_overrides": list(args.m4_project_dim_k_override),
                 "m2_center_k": args.m2_center_k,
                 "m2_segment_count_k": args.m2_segment_count_k,
                 "m2_adaptive_segments_k": args.m2_adaptive_segments_k,
@@ -294,6 +303,9 @@ def main() -> None:
                 "escape_dtype": args.escape_dtype,
                 "recent_page_escape_dtype": args.recent_page_escape_dtype,
                 "m2_sketch_dim_k": args.m2_sketch_dim_k,
+                "m4_project_basis_k": args.m4_project_basis_k,
+                "m4_project_basis_k_overrides": list(args.m4_project_basis_k_override),
+                "m4_project_dim_k_overrides": list(args.m4_project_dim_k_override),
                 "m2_center_k": args.m2_center_k,
                 "m2_segment_count_k": args.m2_segment_count_k,
                 "m2_adaptive_segments_k": args.m2_adaptive_segments_k,

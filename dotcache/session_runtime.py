@@ -70,6 +70,8 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
                 source_page.m2_sketch[:, group_index, :],
                 mean=source_page.m2_mean[group_index],
                 group_size=header.group_size,
+                basis_family=header.project_basis,
+                basis=None if source_page.m2_basis is None else source_page.m2_basis[group_index],
             )
         return dense[:, : header.head_dim]
 

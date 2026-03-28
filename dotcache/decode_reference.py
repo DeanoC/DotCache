@@ -39,6 +39,8 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
             page.m2_sketch[:, group_index, :],
             mean=page.m2_mean[group_index],
             group_size=header.group_size,
+            basis_family=header.project_basis,
+            basis=None if page.m2_basis is None else page.m2_basis[group_index],
         )
 
     words = load_group_words(page, group_index)

@@ -33,6 +33,7 @@ class PageHeader:
     fallback_reason: str = ""
     age_bucket: str = "aged"
     escape_dtype: str = "float16"
+    project_basis: str = "hadamard"
 
     def to_dict(self) -> dict[str, int | str]:
         return asdict(self)
