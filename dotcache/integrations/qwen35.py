@@ -9,6 +9,7 @@ from ..config import DotCacheConfig
 from ..decode_reference import decode_page
 from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
+from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
 from .llama import (
     _default_model_device,
     _ensure_attention_mask,
@@ -364,6 +365,92 @@ def summarize_qwen35_dotcache_fit(model_or_config: Any) -> dict[str, Any]:
     }
 
 
+@dataclass(slots=True)
+class Qwen35DeltaNetStateRecord:
+    step_index: int
+    layer_id: int
+    token_index: int
+    hidden_states: torch.Tensor
+    output_states: torch.Tensor
+    pre_conv_state: torch.Tensor | None
+    post_conv_state: torch.Tensor | None
+    pre_recurrent_state: torch.Tensor | None
+    post_recurrent_state: torch.Tensor | None
+
+
+@dataclass(slots=True)
+class _Qwen35DeltaNetCacheStub:
+    layer_count: int
+    target_layer_id: int
+    conv_state: torch.Tensor | None
+    recurrent_state: torch.Tensor | None
+    has_previous_state: bool = True
+    conv_states: list[torch.Tensor | None] = field(init=False)
+    recurrent_states: list[torch.Tensor | None] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.conv_states = [None] * self.layer_count
+        self.recurrent_states = [None] * self.layer_count
+        self.conv_states[self.target_layer_id] = self.conv_state
+        self.recurrent_states[self.target_layer_id] = self.recurrent_state
+
+
+def _clone_state_tensor(tensor: torch.Tensor | None) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    return tensor.detach().to(dtype=torch.float32).cpu().clone()
+
+
+def _tensor_rms(tensor: torch.Tensor | None) -> float:
+    if tensor is None or tensor.numel() == 0:
+        return 0.0
+    value = tensor.detach().to(dtype=torch.float32)
+    return float(torch.sqrt(torch.mean(value * value)).item())
+
+
+def _tensor_max_abs(tensor: torch.Tensor | None) -> float:
+    if tensor is None or tensor.numel() == 0:
+        return 0.0
+    return float(tensor.detach().to(dtype=torch.float32).abs().max().item())
+
+
+def _max_abs_error(lhs: torch.Tensor | None, rhs: torch.Tensor | None) -> float:
+    if lhs is None or rhs is None:
+        return 0.0
+    return float((lhs.detach().to(dtype=torch.float32) - rhs.detach().to(dtype=torch.float32)).abs().max().item())
+
+
+def _max_rel_error(lhs: torch.Tensor | None, rhs: torch.Tensor | None) -> float:
+    if lhs is None or rhs is None:
+        return 0.0
+    lhs_f = lhs.detach().to(dtype=torch.float32)
+    rhs_f = rhs.detach().to(dtype=torch.float32)
+    denom = torch.maximum(rhs_f.abs(), torch.full_like(rhs_f, 1e-8))
+    return float(((lhs_f - rhs_f).abs() / denom).max().item())
+
+
+def _quantize_state_tensor(
+    tensor: torch.Tensor | None,
+    *,
+    bits: int,
+    group_size: int,
+    mode: str,
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    if mode == "M3":
+        return tensor.detach().clone()
+    spec = StateTileSpec(
+        state_rows=int(np.prod(tensor.shape[:-1])) if tensor.ndim > 1 else 1,
+        state_cols=int(tensor.shape[-1]),
+        group_size=int(max(min(group_size, int(tensor.shape[-1])), 1)),
+        bits=int(bits),
+        mode="M0",
+    )
+    decoded, _, _ = simulate_state_codec(tensor.detach().to(dtype=torch.float32).cpu().numpy(), spec)
+    return torch.as_tensor(decoded, dtype=tensor.dtype, device=tensor.device)
+
+
 def _decode_text(tokenizer: Any | None, token_ids: list[int]) -> str | None:
     if tokenizer is None:
         return None
@@ -418,6 +505,111 @@ class Qwen35TextModelAdapter:
 
     def hybrid_fit_summary(self) -> dict[str, Any]:
         return summarize_qwen35_dotcache_fit(self.model)
+
+
+class CaptureQwen35DeltaNet(nn.Module):
+    def __init__(self, base_linear_attn: nn.Module, adapter: "Qwen35DeltaNetStateModelAdapter") -> None:
+        super().__init__()
+        self.base_linear_attn = base_linear_attn
+        self.adapter = adapter
+        self.layer_idx = int(base_linear_attn.layer_idx)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_params=None,
+        cache_position: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ):
+        if not self.adapter.capture_enabled or tuple(hidden_states.shape[:2]) != (1, 1) or cache_params is None:
+            return self.base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            )
+
+        pre_conv_state = _clone_state_tensor(cache_params.conv_states[self.layer_idx])
+        pre_recurrent_state = _clone_state_tensor(cache_params.recurrent_states[self.layer_idx])
+        output = self.base_linear_attn(
+            hidden_states=hidden_states,
+            cache_params=cache_params,
+            cache_position=cache_position,
+            attention_mask=attention_mask,
+        )
+        token_index = self.adapter.current_token_index(cache_position)
+        self.adapter.record_state(
+            Qwen35DeltaNetStateRecord(
+                step_index=self.adapter.capture_step_index,
+                layer_id=self.layer_idx,
+                token_index=token_index,
+                hidden_states=hidden_states.detach().to(dtype=torch.float32).cpu().clone(),
+                output_states=output.detach().to(dtype=torch.float32).cpu().clone(),
+                pre_conv_state=pre_conv_state,
+                post_conv_state=_clone_state_tensor(cache_params.conv_states[self.layer_idx]),
+                pre_recurrent_state=pre_recurrent_state,
+                post_recurrent_state=_clone_state_tensor(cache_params.recurrent_states[self.layer_idx]),
+            )
+        )
+        return output
+
+
+@dataclass(slots=True)
+class Qwen35DeltaNetStateModelAdapter(Qwen35TextModelAdapter):
+    capture_enabled: bool = False
+    capture_step_index: int = -1
+    _pending_records: list[Qwen35DeltaNetStateRecord] = field(default_factory=list, init=False, repr=False)
+    _wrappers: list[CaptureQwen35DeltaNet] = field(default_factory=list, init=False, repr=False)
+    _current_token_index_override: int | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._install_wrappers()
+
+    def _install_wrappers(self) -> None:
+        text_model = _qwen35_text_model(self.model)
+        layers = getattr(text_model, "layers", None)
+        if layers is None:
+            return
+        layer_types = _hybrid_layer_types(self.model)
+        for layer_id, layer in enumerate(layers[: len(layer_types)]):
+            if layer_types[layer_id] != "linear_attention" or not hasattr(layer, "linear_attn"):
+                continue
+            wrapper = CaptureQwen35DeltaNet(layer.linear_attn, self)
+            layer.linear_attn = wrapper
+            self._wrappers.append(wrapper)
+
+    def begin_capture_step(self, step_index: int) -> None:
+        self.capture_step_index = int(step_index)
+        self.capture_enabled = True
+        self._pending_records = []
+
+    def end_capture_step(self) -> list[Qwen35DeltaNetStateRecord]:
+        records = list(self._pending_records)
+        self.capture_step_index = -1
+        self.capture_enabled = False
+        self._pending_records = []
+        return records
+
+    def record_state(self, record: Qwen35DeltaNetStateRecord) -> None:
+        if self.capture_step_index < 0:
+            return
+        self._pending_records.append(record)
+
+    def current_token_index(self, cache_position) -> int:
+        if self._current_token_index_override is not None:
+            return self._current_token_index_override
+        if cache_position is None:
+            raise ValueError("cache_position is required for Qwen3.5 DeltaNet capture")
+        token_positions = cache_position.reshape(-1)
+        if token_positions.numel() != 1:
+            raise ValueError("Qwen3.5 DeltaNet capture requires a single cache_position per decode step")
+        return int(token_positions.item())
+
+    def set_current_token_index(self, token_index: int | None) -> None:
+        self._current_token_index_override = None if token_index is None else int(token_index)
+
+    def deltanet_layer_ids(self) -> list[int]:
+        return [record["layer_id"] for record in self.hybrid_layer_summary() if record["layer_type"] == "linear_attention"]
 
 
 class DotCacheQwen35AttentionSubset(nn.Module):
@@ -852,6 +1044,82 @@ class Qwen35TextHarness:
 
 
 @dataclass(slots=True)
+class Qwen35DeltaNetStateHarness:
+    model: Any
+    tokenizer: Any | None
+    adapter: Qwen35DeltaNetStateModelAdapter
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_id: str,
+        *,
+        device: str | None = None,
+        torch_dtype: str = "float16",
+    ) -> "Qwen35DeltaNetStateHarness":
+        model, tokenizer = load_qwen35_text_only_from_pretrained(
+            model_id,
+            device=device,
+            torch_dtype=torch_dtype,
+        )
+        adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+        return cls(model=model, tokenizer=tokenizer, adapter=adapter)
+
+    def tokenize_prompt(
+        self,
+        prompt: str,
+        *,
+        multimodal_inputs: Any | None = None,
+    ) -> tuple[Any, Any]:
+        helper = Qwen35TextHarness(model=self.model, tokenizer=self.tokenizer, adapter=self.adapter)
+        return helper.tokenize_prompt(prompt, multimodal_inputs=multimodal_inputs)
+
+    def inspect_deltanet_state(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return inspect_qwen35_deltanet_state(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_deltanet_ablation(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        group_size: int = 32,
+        bits: tuple[int, ...] = (8, 4),
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_deltanet_state_ablation_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            group_size=group_size,
+            bits=bits,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+
+@dataclass(slots=True)
 class Qwen35AttentionSubsetHarness:
     model: Any
     tokenizer: Any | None
@@ -1210,6 +1478,335 @@ def run_qwen35_text_loss_harness(
     return result
 
 
+def _run_qwen35_deltanet_dense_capture(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    input_ids,
+    attention_mask,
+    decode_steps: int,
+) -> dict[str, Any]:
+    prefill_outputs, prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+        device=input_ids.device,
+    )
+    per_step_records: list[list[Qwen35DeltaNetStateRecord]] = []
+    dense_decode_ms_total = 0.0
+
+    if decode_steps > 0:
+        current_input_ids = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+        past_key_values = prefill_outputs.past_key_values
+
+        for step_index in range(decode_steps):
+            adapter.begin_capture_step(step_index)
+            adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+            try:
+                outputs, step_ms = _timed_call(
+                    lambda: _run_dense_decode_step(
+                        model,
+                        decode_input_ids=current_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=past_key_values,
+                        cache_position=cache_position,
+                    ),
+                    device=input_ids.device,
+                )
+            finally:
+                adapter.set_current_token_index(None)
+            dense_decode_ms_total += step_ms
+            per_step_records.append(adapter.end_capture_step())
+            past_key_values = outputs.past_key_values
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+
+    return {
+        "prefill_outputs": prefill_outputs,
+        "prefill_ms": float(prefill_ms),
+        "capture_records": per_step_records,
+        "decode_ms_total": float(dense_decode_ms_total),
+    }
+
+
+def _summarize_deltanet_state_capture(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    input_ids,
+    decode_steps: int,
+    prefill_outputs,
+    prefill_ms: float,
+    dense_decode_ms_total: float,
+    per_step_records: list[list[Qwen35DeltaNetStateRecord]],
+) -> dict[str, Any]:
+    hybrid_summary = summarize_qwen35_hybrid_state(prefill_outputs.past_key_values, model)
+    linear_records = [record for record in hybrid_summary["hybrid_state_layers"] if record["layer_type"] == "linear_attention"]
+    record_map: dict[int, list[Qwen35DeltaNetStateRecord]] = {int(record["layer_id"]): [] for record in linear_records}
+    for step_records in per_step_records:
+        for record in step_records:
+            record_map.setdefault(int(record.layer_id), []).append(record)
+
+    deltanet_layers: list[dict[str, Any]] = []
+    for layer_record in linear_records:
+        layer_id = int(layer_record["layer_id"])
+        captured = record_map.get(layer_id, [])
+        state_shapes: dict[str, list[int]] = {}
+        if captured:
+            first = captured[0]
+            if first.pre_conv_state is not None:
+                state_shapes["conv_state"] = list(first.pre_conv_state.shape)
+            if first.pre_recurrent_state is not None:
+                state_shapes["recurrent_state"] = list(first.pre_recurrent_state.shape)
+            state_shapes["hidden_states"] = list(first.hidden_states.shape)
+            state_shapes["output_states"] = list(first.output_states.shape)
+
+        step_delta_norms: list[dict[str, float | int]] = []
+        for record in captured:
+            conv_delta = None
+            if record.pre_conv_state is not None and record.post_conv_state is not None:
+                conv_delta = record.post_conv_state - record.pre_conv_state
+            recurrent_delta = None
+            if record.pre_recurrent_state is not None and record.post_recurrent_state is not None:
+                recurrent_delta = record.post_recurrent_state - record.pre_recurrent_state
+            step_delta_norms.append(
+                {
+                    "step_index": int(record.step_index),
+                    "token_index": int(record.token_index),
+                    "conv_state_before_rms": _tensor_rms(record.pre_conv_state),
+                    "conv_state_after_rms": _tensor_rms(record.post_conv_state),
+                    "conv_state_delta_rms": _tensor_rms(conv_delta),
+                    "conv_state_delta_max_abs": _tensor_max_abs(conv_delta),
+                    "recurrent_state_before_rms": _tensor_rms(record.pre_recurrent_state),
+                    "recurrent_state_after_rms": _tensor_rms(record.post_recurrent_state),
+                    "recurrent_state_delta_rms": _tensor_rms(recurrent_delta),
+                    "recurrent_state_delta_max_abs": _tensor_max_abs(recurrent_delta),
+                    "output_state_rms": _tensor_rms(record.output_states),
+                    "output_state_max_abs": _tensor_max_abs(record.output_states),
+                }
+            )
+
+        deltanet_layers.append(
+            StateLayerRecord(
+                layer_id=layer_id,
+                layer_type=str(layer_record["layer_type"]),
+                state_family="linear_recurrent",
+                conv_state_bytes=int(layer_record["conv_state_bytes"]),
+                recurrent_state_bytes=int(layer_record["recurrent_state_bytes"]),
+                layer_state_bytes=int(layer_record["conv_state_bytes"] + layer_record["recurrent_state_bytes"]),
+                state_shapes=state_shapes,
+                state_delta_norms=step_delta_norms,
+            ).to_dict()
+        )
+
+    deltanet_conv_bytes = int(sum(layer["conv_state_bytes"] for layer in linear_records))
+    deltanet_recurrent_bytes = int(sum(layer["recurrent_state_bytes"] for layer in linear_records))
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "prefill_ms": float(prefill_ms),
+        "dense_decode_ms_per_step": float(dense_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "text_only": True,
+        "dotcache_ready": False,
+        "deltanet_state_ready": True,
+        "runtime_mode": "dense_deltanet_state_capture",
+        "uses_native_qwen35_class": True,
+        "deltanet_conv_state_bytes": deltanet_conv_bytes,
+        "deltanet_recurrent_state_bytes": deltanet_recurrent_bytes,
+        "deltanet_total_state_bytes": int(deltanet_conv_bytes + deltanet_recurrent_bytes),
+        "deltanet_state_layers": deltanet_layers,
+    }
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    result.update(hybrid_summary)
+    return result
+
+
+def _replay_deltanet_linear_step(
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    record: Qwen35DeltaNetStateRecord,
+    *,
+    conv_state: torch.Tensor | None,
+    recurrent_state: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    layer_count = int(_qwen35_text_config(adapter.model).num_hidden_layers)
+    module = None
+    for wrapper in adapter._wrappers:
+        if wrapper.layer_idx == int(record.layer_id):
+            module = wrapper.base_linear_attn
+            break
+    if module is None:
+        raise ValueError(f"missing DeltaNet module for layer {record.layer_id}")
+    hidden_states = record.hidden_states.to(device=adapter.device, dtype=next(module.parameters()).dtype)
+    conv_state_input = None
+    if conv_state is not None:
+        conv_state_input = conv_state.detach().to(device=adapter.device, dtype=next(module.parameters()).dtype).clone()
+    recurrent_state_input = None
+    if recurrent_state is not None:
+        recurrent_state_input = recurrent_state.detach().to(device=adapter.device, dtype=next(module.parameters()).dtype).clone()
+    cache_stub = _Qwen35DeltaNetCacheStub(
+        layer_count=layer_count,
+        target_layer_id=int(record.layer_id),
+        conv_state=conv_state_input,
+        recurrent_state=recurrent_state_input,
+        has_previous_state=True,
+    )
+    cache_position = torch.tensor([int(record.token_index)], dtype=torch.long, device=adapter.device)
+    with torch.no_grad():
+        output = module(
+            hidden_states=hidden_states,
+            cache_params=cache_stub,
+            cache_position=cache_position,
+            attention_mask=None,
+        )
+    post_conv_state = cache_stub.conv_states[int(record.layer_id)]
+    post_recurrent_state = cache_stub.recurrent_states[int(record.layer_id)]
+    return (
+        output.detach().to(dtype=torch.float32).cpu().clone(),
+        _clone_state_tensor(post_conv_state),
+        _clone_state_tensor(post_recurrent_state),
+    )
+
+
+def _run_deltanet_ablation_stage(
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    records_by_layer: dict[int, list[Qwen35DeltaNetStateRecord]],
+    stage_name: str,
+    bits: int | None,
+    group_size: int,
+) -> StateAblationResult:
+    per_layer_max_abs_error: dict[str, float] = {}
+    per_layer_max_rel_error: dict[str, float] = {}
+    per_layer_output_max_abs_error: dict[str, float] = {}
+    per_step_output_max_abs_error: list[float] = []
+
+    for layer_id, records in sorted(records_by_layer.items()):
+        carried_conv: torch.Tensor | None = None
+        carried_recurrent: torch.Tensor | None = None
+        layer_step_output_errors: list[float] = []
+        layer_max_abs = 0.0
+        layer_max_rel = 0.0
+        layer_output_max = 0.0
+
+        for step_index, record in enumerate(records):
+            dense_pre_conv = record.pre_conv_state
+            dense_pre_recurrent = record.pre_recurrent_state
+            dense_post_conv = record.post_conv_state
+            dense_post_recurrent = record.post_recurrent_state
+            dense_output = record.output_states
+
+            if stage_name == "dense_baseline":
+                replay_output = dense_output
+                replay_post_conv = dense_post_conv
+                replay_post_recurrent = dense_post_recurrent
+            elif stage_name == "escape_m3":
+                replay_output, replay_post_conv, replay_post_recurrent = _replay_deltanet_linear_step(
+                    adapter,
+                    record,
+                    conv_state=dense_pre_conv,
+                    recurrent_state=dense_pre_recurrent,
+                )
+            elif stage_name == "readout_only_m0":
+                replay_output, replay_post_conv, replay_post_recurrent = _replay_deltanet_linear_step(
+                    adapter,
+                    record,
+                    conv_state=dense_pre_conv,
+                    recurrent_state=_quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode="M0"),
+                )
+            elif stage_name == "pre_update_m0":
+                replay_output, replay_post_conv, replay_post_recurrent = _replay_deltanet_linear_step(
+                    adapter,
+                    record,
+                    conv_state=_quantize_state_tensor(dense_pre_conv, bits=int(bits or 8), group_size=group_size, mode="M0"),
+                    recurrent_state=_quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode="M0"),
+                )
+            elif stage_name == "post_update_m0":
+                replay_output = dense_output
+                replay_post_conv = _quantize_state_tensor(dense_post_conv, bits=int(bits or 8), group_size=group_size, mode="M0")
+                replay_post_recurrent = _quantize_state_tensor(dense_post_recurrent, bits=int(bits or 8), group_size=group_size, mode="M0")
+                if step_index > 0:
+                    replay_output, replay_post_conv_dense, replay_post_recurrent_dense = _replay_deltanet_linear_step(
+                        adapter,
+                        record,
+                        conv_state=carried_conv,
+                        recurrent_state=carried_recurrent,
+                    )
+                    replay_post_conv = _quantize_state_tensor(replay_post_conv_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
+                    replay_post_recurrent = _quantize_state_tensor(replay_post_recurrent_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
+                carried_conv = replay_post_conv
+                carried_recurrent = replay_post_recurrent
+            elif stage_name == "full_state_path_m0":
+                input_conv = (
+                    _quantize_state_tensor(dense_pre_conv, bits=int(bits or 8), group_size=group_size, mode="M0")
+                    if carried_conv is None
+                    else carried_conv
+                )
+                input_recurrent = (
+                    _quantize_state_tensor(dense_pre_recurrent, bits=int(bits or 8), group_size=group_size, mode="M0")
+                    if carried_recurrent is None
+                    else carried_recurrent
+                )
+                replay_output, replay_post_conv_dense, replay_post_recurrent_dense = _replay_deltanet_linear_step(
+                    adapter,
+                    record,
+                    conv_state=input_conv,
+                    recurrent_state=input_recurrent,
+                )
+                replay_post_conv = _quantize_state_tensor(replay_post_conv_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
+                replay_post_recurrent = _quantize_state_tensor(replay_post_recurrent_dense, bits=int(bits or 8), group_size=group_size, mode="M0")
+                carried_conv = replay_post_conv
+                carried_recurrent = replay_post_recurrent
+            else:
+                raise ValueError(f"unsupported DeltaNet ablation stage {stage_name!r}")
+
+            state_abs_error = max(
+                _max_abs_error(replay_post_conv, dense_post_conv),
+                _max_abs_error(replay_post_recurrent, dense_post_recurrent),
+            )
+            state_rel_error = max(
+                _max_rel_error(replay_post_conv, dense_post_conv),
+                _max_rel_error(replay_post_recurrent, dense_post_recurrent),
+            )
+            output_abs_error = _max_abs_error(replay_output, dense_output)
+            layer_max_abs = max(layer_max_abs, state_abs_error)
+            layer_max_rel = max(layer_max_rel, state_rel_error)
+            layer_output_max = max(layer_output_max, output_abs_error)
+            layer_step_output_errors.append(output_abs_error)
+
+        per_layer_max_abs_error[str(layer_id)] = layer_max_abs
+        per_layer_max_rel_error[str(layer_id)] = layer_max_rel
+        per_layer_output_max_abs_error[str(layer_id)] = layer_output_max
+        if len(per_step_output_max_abs_error) < len(layer_step_output_errors):
+            per_step_output_max_abs_error.extend([0.0] * (len(layer_step_output_errors) - len(per_step_output_max_abs_error)))
+        for step_index, value in enumerate(layer_step_output_errors):
+            per_step_output_max_abs_error[step_index] = max(per_step_output_max_abs_error[step_index], value)
+
+    error_grows = False
+    if per_step_output_max_abs_error:
+        error_grows = per_step_output_max_abs_error[-1] > (per_step_output_max_abs_error[0] + 1e-6)
+
+    return StateAblationResult(
+        stage_name=stage_name,
+        bits=bits,
+        max_abs_error=max(per_layer_max_abs_error.values(), default=0.0),
+        max_rel_error=max(per_layer_max_rel_error.values(), default=0.0),
+        output_max_abs_error=max(per_layer_output_max_abs_error.values(), default=0.0),
+        error_grows_step_to_step=bool(error_grows),
+        per_layer_max_abs_error=per_layer_max_abs_error,
+        per_layer_max_rel_error=per_layer_max_rel_error,
+        per_layer_output_max_abs_error=per_layer_output_max_abs_error,
+        per_step_output_max_abs_error=per_step_output_max_abs_error,
+    )
+
+
 def inspect_qwen35_hybrid_state(
     model,
     adapter: Qwen35TextModelAdapter,
@@ -1246,6 +1843,130 @@ def inspect_qwen35_hybrid_state(
     result.update(adapter.hybrid_block_summary())
     result.update(summarize_qwen35_hybrid_state(cache, model))
     result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def inspect_qwen35_deltanet_state(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_deltanet_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    return _summarize_deltanet_state_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_outputs=dense_capture["prefill_outputs"],
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+
+
+def run_qwen35_deltanet_state_ablation_harness(
+    model,
+    adapter: Qwen35DeltaNetStateModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    group_size: int = 32,
+    bits: tuple[int, ...] = (8, 4),
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_deltanet_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    linear_records = [
+        record
+        for step_records in dense_capture["capture_records"]
+        for record in step_records
+    ]
+    records_by_layer: dict[int, list[Qwen35DeltaNetStateRecord]] = {}
+    for record in linear_records:
+        records_by_layer.setdefault(int(record.layer_id), []).append(record)
+
+    stage_runs: list[dict[str, Any]] = []
+    dominant_failure_stage = "dense_baseline"
+    dominant_failure_error = -1.0
+    for bit_width in bits:
+        for stage_name in ("dense_baseline", "readout_only_m0", "post_update_m0", "pre_update_m0", "full_state_path_m0", "escape_m3"):
+            stage_result = _run_deltanet_ablation_stage(
+                adapter,
+                records_by_layer=records_by_layer,
+                stage_name=stage_name,
+                bits=None if stage_name in {"dense_baseline", "escape_m3"} else int(bit_width),
+                group_size=int(group_size),
+            )
+            stage_runs.append(stage_result.to_dict())
+            if stage_name in {"readout_only_m0", "post_update_m0", "pre_update_m0", "full_state_path_m0"}:
+                if stage_result.output_max_abs_error > dominant_failure_error:
+                    dominant_failure_error = float(stage_result.output_max_abs_error)
+                    dominant_failure_stage = stage_name
+
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "prefill_ms": float(dense_capture["prefill_ms"]),
+        "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "text_only": True,
+        "dotcache_ready": False,
+        "deltanet_state_ready": True,
+        "deltanet_state_ablation_ready": True,
+        "runtime_mode": "dense_deltanet_state_ablation",
+        "uses_native_qwen35_class": True,
+        "deltanet_ablation_group_size": int(group_size),
+        "deltanet_ablation_bits": [int(bit) for bit in bits],
+        "deltanet_ablation_results": stage_runs,
+        "deltanet_dominant_failure_stage": dominant_failure_stage,
+    }
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    hybrid_summary = summarize_qwen35_hybrid_state(dense_capture["prefill_outputs"].past_key_values, model)
+    result.update(hybrid_summary)
+    result["deltanet_conv_state_bytes"] = int(sum(record["conv_state_bytes"] for record in hybrid_summary["hybrid_state_layers"] if record["layer_type"] == "linear_attention"))
+    result["deltanet_recurrent_state_bytes"] = int(sum(record["recurrent_state_bytes"] for record in hybrid_summary["hybrid_state_layers"] if record["layer_type"] == "linear_attention"))
+    result["deltanet_total_state_bytes"] = int(result["deltanet_conv_state_bytes"] + result["deltanet_recurrent_state_bytes"])
+    result["deltanet_state_layers"] = [record for record in hybrid_summary["hybrid_state_layers"] if record["layer_type"] == "linear_attention"]
     return result
 
 
@@ -1724,13 +2445,17 @@ __all__ = [
     "Qwen35AttentionSubsetDotCacheModelAdapter",
     "Qwen35AttentionSubsetHarness",
     "Qwen35AttentionSubsetModelAdapter",
+    "Qwen35DeltaNetStateHarness",
+    "Qwen35DeltaNetStateModelAdapter",
     "Qwen35TextHarness",
     "Qwen35TextModelAdapter",
+    "inspect_qwen35_deltanet_state",
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",
+    "run_qwen35_deltanet_state_ablation_harness",
     "run_qwen35_text_generation_harness",
     "run_qwen35_text_loss_harness",
     "summarize_qwen35_dotcache_fit",
