@@ -1743,6 +1743,166 @@ Validation:
 - `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'dotcache_harness or hybrid_state'`
   - result: `6 passed`
 
+## 2026-03-28 19:45 UTC - Qwen3.5 now has a runnable 8-bit readout-only StateCache prototype
+
+I turned the earlier DeltaNet ablation result into a real harness mode instead of leaving it as a journal-only conclusion.
+
+New surface:
+
+- [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py)
+  - `run_qwen35_deltanet_statecache_readout_harness(...)`
+  - `Qwen35DeltaNetStateHarness.run_deltanet_statecache_readout(...)`
+- [bench_qwen35_deltanet_statecache_readout.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_readout.py)
+
+This prototype intentionally does one narrow thing:
+
+- keep the native DeltaNet update path dense
+- quantize only the recurrent-state readout input with `M0`
+- report compressed fixed-resident bytes against the real native resident-state footprint
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_deltanet_statecache_readout.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout'`
+  - result: `6 passed`
+
+Live CUDA prototype on `Qwen/Qwen3.5-0.8B`, exact `64`, `4` decode steps:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --continue-on-error`
+- `deltanet_dense_fixed_resident_bytes = 19,759,104`
+- `deltanet_statecache_fixed_resident_bytes = 6,782,976`
+- `deltanet_recurrent_state_bytes = 18,874,368`
+- `deltanet_statecache_recurrent_state_bytes = 5,898,240`
+- recurrent compression ratio: `3.2x`
+- fixed-resident compression ratio: `2.91x`
+- `deltanet_statecache_output_max_abs_error = 0.0060`
+- `deltanet_statecache_max_abs_error = 0.0256`
+- `error_grows_step_to_step = false`
+
+So the first real StateCache result is good enough to keep:
+
+- `8-bit readout-only M0` is now a real runnable Qwen3.5 prototype
+- it materially reduces resident-state bytes
+- it stays in the same low-error band the earlier DeltaNet ablation predicted
+
+The next StateCache step is now narrower:
+
+- compare readout-only `8-bit` against a true generated-token quality metric, not just layer/output drift
+- only after that, decide whether to try `post_update` or a mixed `readout_only + M3 escape` policy
+
+## 2026-03-28 20:05 UTC - Readout-only StateCache keeps token quality but is still a Python-level prototype
+
+I extended the readout-only harness to run a true model-level decode by feeding quantized DeltaNet recurrent state back into native `past_key_values` before each decode step.
+
+That makes the result materially stronger than the earlier ablation-only checkpoint: it now reports generated-token agreement, not just layer/output drift.
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_deltanet_statecache_readout.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout'`
+  - result: `6 passed`
+
+Live CUDA run on `Qwen/Qwen3.5-0.8B`, exact `64`, `4` generated tokens:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --continue-on-error`
+- dense generated ids:
+  - `[65789, 12482, 364, 4778]`
+- StateCache generated ids:
+  - `[65789, 12482, 364, 4778]`
+- `deltanet_statecache_greedy_token_agreement_rate = 1.0`
+- `deltanet_statecache_output_max_abs_error = 0.0060`
+- `deltanet_statecache_max_abs_error = 0.0256`
+- `deltanet_statecache_effective_recurrent_compression_ratio = 3.2`
+- `deltanet_statecache_effective_fixed_resident_compression_ratio = 2.91`
+
+After replacing the CPU/Numpy codec loop with a torch-native grouped affine quant/dequant path, the prototype runtime moved substantially:
+
+- earlier Python-loop checkpoint:
+  - `deltanet_statecache_decode_ms_per_step = 1162.74`
+- current torch-native checkpoint:
+  - `dense_decode_ms_per_step = 134.31`
+  - `deltanet_statecache_decode_ms_per_step = 37.97`
+
+So the quality question is answered for this narrow case:
+
+- `8-bit` readout-only DeltaNet StateCache can preserve generated-token output at exact `64`
+- the implementation is no longer bottlenecked by Python-side quantization
+
+That changes the next StateCache priority again:
+
+- keep this torch-native path as the working baseline
+- validate it on longer prompts and a teacher-forced or generation-quality surface beyond exact `64`
+- only after that decide whether to add a resident packed representation or move to `post_update` / mixed-escape policies
+
+## 2026-03-28 20:25 UTC - Longer-prompt StateCache checks are mostly clean, with a narrow greedy drift at exact 256
+
+I validated the same `8-bit` readout-only DeltaNet StateCache lane beyond exact `64` and added a teacher-forced surface for the same recurrent-state replay path.
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_loss.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout or statecache_loss'`
+  - result: `7 passed`
+
+Teacher-forced CUDA check on `Qwen/Qwen3.5-0.8B`, `prefix_length=256`, `eval_steps=16`:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_loss.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --sequence-length 272 --prefix-length 256 --eval-steps 16 --group-size 32 --bits 8`
+- `dense_teacher_forced_loss = 0.0764`
+- `deltanet_statecache_teacher_forced_loss = 0.0852`
+- `teacher_forced_loss_delta = 0.0088`
+- `dense_teacher_forced_perplexity = 1.0794`
+- `deltanet_statecache_teacher_forced_perplexity = 1.0890`
+- `teacher_forced_perplexity_ratio = 1.0088`
+- `teacher_forced_token_agreement_rate = 1.0`
+- `deltanet_statecache_teacher_forced_target_match_rate = 1.0`
+- runtime is close to dense on this surface:
+  - `dense_decode_ms_per_step = 21.16`
+  - `deltanet_statecache_decode_ms_per_step = 22.76`
+
+Generated-token CUDA checks:
+
+- exact `256`, `4` generated tokens:
+  - command:
+    - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 256 --max-new-tokens 4 --bits 8 --continue-on-error`
+  - dense ids:
+    - `[4778, 45543, 13, 7976]`
+  - StateCache ids:
+    - `[4778, 45543, 13, 198]`
+  - `deltanet_statecache_greedy_token_agreement_rate = 0.75`
+  - `deltanet_statecache_output_max_abs_error = 0.0084`
+  - `deltanet_statecache_max_abs_error = 0.0256`
+  - runtime:
+    - `dense_decode_ms_per_step = 115.61`
+    - `deltanet_statecache_decode_ms_per_step = 38.50`
+
+- exact `512`, `4` generated tokens:
+  - command:
+    - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 512 --max-new-tokens 4 --bits 8 --continue-on-error`
+  - dense ids:
+    - `[65789, 12482, 364, 4778]`
+  - StateCache ids:
+    - `[65789, 12482, 364, 4778]`
+  - `deltanet_statecache_greedy_token_agreement_rate = 1.0`
+  - `deltanet_statecache_output_max_abs_error = 0.0057`
+  - `deltanet_statecache_max_abs_error = 0.0255`
+  - runtime:
+    - `dense_decode_ms_per_step = 129.33`
+    - `deltanet_statecache_decode_ms_per_step = 37.58`
+
+So the current picture is:
+
+- the readout-only `8-bit` StateCache lane is still numerically tight at longer prefixes
+- teacher-forced quality at `256` is essentially flat
+- exact generation is not uniformly perfect yet, but the observed failure is narrow: a single-token divergence at exact `256`, while exact `512` still matches fully
+
+That makes the next StateCache step narrower:
+
+- treat this as a greedy-stability issue, not a broad recurrent-state corruption issue
+- inspect the exact `256` divergence step rather than redesigning the whole `8-bit` replay path
+
 ## 2026-03-28 20:05 UTC - Captured DeltaNet StateCache sweeps now bridge real Qwen3.5 state into the simulator
 
 I added a small bridge from the dense Qwen3.5 DeltaNet inspection lane into the StateCache simulator:
@@ -1814,6 +1974,244 @@ That suggests the CUDA implementation should probably start with:
 
 - recurrent-state `8b`
 - optional renorm, but measured per layer family rather than assumed globally
+
+## 2026-03-28 22:55 UTC - Readout harness needed a fresh prefill before StateCache decode
+
+The exact-`256` CUDA readout miss turned out to be a harness issue, not a new StateCache quality boundary.
+
+Root cause:
+
+- `run_qwen35_deltanet_statecache_readout_harness(...)` was starting StateCache generation from the same model execution used for dense DeltaNet capture
+- the native Qwen3.5 linear-attention stack is not behaving as a purely stateless function of `past_key_values` across that extra capture path
+- teacher-forced loss stayed clean because the loss harness already does a fresh prefill before its replay loop
+
+Fix:
+
+- the readout harness now runs a fresh dense prefill for the StateCache generation path
+- the ablation summary is still reported, but it is no longer part of the benchmarked decode setup
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_loss.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout or statecache_loss'`
+  - result: `8 passed`
+
+Recheck on `Qwen/Qwen3.5-0.8B`, exact `256`, `4` generated tokens:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 256 --max-new-tokens 4 --bits 8 --continue-on-error`
+- dense ids:
+  - `[4778, 45543, 13, 7976]`
+- StateCache ids:
+  - `[4778, 45543, 13, 7976]`
+- `deltanet_statecache_greedy_token_agreement_rate = 1.0`
+- `deltanet_statecache_output_max_abs_error = 0.0084`
+- `deltanet_statecache_max_abs_error = 0.0256`
+
+So the narrow exact-`256` miss is gone. The current `8-bit` readout-only lane is back to:
+
+- exact `64`: clean
+- exact `256`: clean
+- exact `512`: clean
+- teacher-forced `256`: clean
+
+## 2026-03-28 23:20 UTC - First real resident recurrent-state lane is keepable on CUDA
+
+I extended the Qwen3.5 DeltaNet StateCache harnesses so they can run two explicit runtime stages:
+
+- `readout_only_m0`
+- `post_update_m0`
+
+The new path also supports an optional `renorm_interval`, but the first CUDA checks show that renorm should remain off by default for now.
+
+Code surface:
+
+- [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py)
+  - `Qwen35DeltaNetStateHarness.run_deltanet_statecache_readout(...)`
+  - `Qwen35DeltaNetStateHarness.evaluate_deltanet_statecache_loss(...)`
+  - `run_qwen35_deltanet_statecache_readout_harness(...)`
+  - `run_qwen35_deltanet_statecache_loss_harness(...)`
+- [bench_qwen35_deltanet_statecache_readout.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_readout.py)
+- [bench_qwen35_deltanet_statecache_loss.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_loss.py)
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py benchmarks/bench_qwen35_deltanet_statecache_readout.py benchmarks/bench_qwen35_deltanet_statecache_loss.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state or statecache_readout or statecache_loss'`
+  - result: `9 passed`
+
+Exact `64`, `4` generated tokens:
+
+- `readout_only_m0`, `8b`, no renorm:
+  - agreement `1.0`
+  - output max abs error `0.0060`
+  - state max abs error `0.0256`
+- `post_update_m0`, `8b`, no renorm:
+  - agreement `1.0`
+  - output max abs error `0.0089`
+  - state max abs error `0.0396`
+- `post_update_m0`, `8b`, `renorm_interval=2`:
+  - agreement `0.75`
+  - last token diverged
+
+Teacher-forced `256` (`prefix_length=256`, `eval_steps=16`):
+
+- `readout_only_m0`, `8b`, no renorm:
+  - `teacher_forced_loss_delta = 0.0088`
+  - `teacher_forced_perplexity_ratio = 1.0088`
+  - token agreement `1.0`
+- `post_update_m0`, `8b`, no renorm:
+  - `teacher_forced_loss_delta = 0.0088`
+  - `teacher_forced_perplexity_ratio = 1.0088`
+  - token agreement `1.0`
+
+Exact generation with the real resident recurrent-state path:
+
+- exact `256`, `4` generated tokens, `post_update_m0`, `8b`, no renorm:
+  - dense ids `[4778, 45543, 13, 7976]`
+  - StateCache ids `[4778, 45543, 13, 7976]`
+  - agreement `1.0`
+  - output max abs error `0.0095`
+  - state max abs error `0.0492`
+- exact `512`, `4` generated tokens, `post_update_m0`, `8b`, no renorm:
+  - dense ids `[65789, 12482, 364, 4778]`
+  - StateCache ids `[65789, 12482, 364, 4778]`
+  - agreement `1.0`
+  - output max abs error `0.0107`
+  - state max abs error `0.0547`
+
+So the current DeltaNet StateCache conclusion is:
+
+- `post_update_m0` at `8-bit` is the first keepable resident recurrent-state runtime on CUDA
+- it holds on exact `64`, `256`, and `512`, and on teacher-forced `256`
+- `renorm_interval=2` is already harmful on the short exact lane, so renorm should stay off by default until we have a better layer-aware policy
+
+## 2026-03-28 23:35 UTC - `post_update_m0` also holds at exact 1024 and teacher-forced 1024
+
+I pushed the first resident recurrent-state lane to the next obvious boundary before treating it as more than a prototype.
+
+Exact `1024`, `4` generated tokens, `post_update_m0`, `8b`, no renorm:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 1024 --max-new-tokens 4 --bits 8 --state-stage post_update_m0 --renorm-interval 0 --continue-on-error`
+- dense ids:
+  - `[12482, 364, 4778, 45543]`
+- StateCache ids:
+  - `[12482, 364, 4778, 45543]`
+- `deltanet_statecache_greedy_token_agreement_rate = 1.0`
+- `deltanet_statecache_output_max_abs_error = 0.0098`
+- `deltanet_statecache_max_abs_error = 0.0505`
+- runtime:
+  - `dense_decode_ms_per_step = 136.97`
+  - `deltanet_statecache_decode_ms_per_step = 16.47`
+
+Teacher-forced `1024` (`prefix_length=1024`, `eval_steps=32`), `post_update_m0`, `8b`, no renorm:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_loss.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --sequence-length 1056 --prefix-length 1024 --eval-steps 32 --group-size 32 --bits 8 --state-stage post_update_m0 --renorm-interval 0`
+- `teacher_forced_loss_delta = 0.0003`
+- `teacher_forced_perplexity_ratio = 1.0003`
+- `teacher_forced_token_agreement_rate = 1.0`
+- `deltanet_statecache_teacher_forced_target_match_rate = 1.0`
+- recurrent compression ratio stayed `3.2x`
+
+So the current productization read is stronger now:
+
+- `post_update_m0` at `8-bit` is not just a short-context curiosity
+- it stays clean through exact `1024` and teacher-forced `1024`
+- this is strong enough to treat as the default CUDA StateCache candidate, with renorm still off by default
+
+## 2026-03-28 23:55 UTC - Productized Qwen3.5 CUDA StateCache lane and compared it against the other native paths
+
+I promoted the `Qwen/Qwen3.5-0.8B` CUDA StateCache path into the normal repo surfaces instead of leaving it as a prototype-only bench.
+
+Surface changes:
+
+- [scripts/run_qwen35_0p8b_statecache_cuda.sh](/workspace/DotCache/scripts/run_qwen35_0p8b_statecache_cuda.sh)
+  - first-class CUDA runner for the default StateCache lane
+- [bench_model_matrix.py](/workspace/DotCache/benchmarks/bench_model_matrix.py)
+  - `qwen35_0p8b_hf` now emits the StateCache runner on `torch_cuda`
+  - it still emits the dense text runner on non-CUDA backends
+- [model_registry.py](/workspace/DotCache/dotcache/model_registry.py)
+  - updated the `qwen35_0p8b_hf` note to reflect the current recommended CUDA lane
+
+Shared exact `64`, `4` generated tokens, CUDA comparison:
+
+- dense text lane:
+  - command:
+    - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_text.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --continue-on-error`
+  - `dense_decode_ms_per_step = 57.26`
+- attention-subset DotCache lane with the CUDA third-pass profile:
+  - command:
+    - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --continue-on-error`
+  - `dotcache_decode_ms_per_step = 77.80`
+  - `teacher_forced_logit_max_abs_error = 2.2676`
+- DeltaNet StateCache lane (`post_update_m0`, `8b`, no renorm):
+  - command:
+    - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --state-stage post_update_m0 --renorm-interval 0 --continue-on-error`
+  - `deltanet_statecache_decode_ms_per_step = 17.09`
+  - `deltanet_statecache_greedy_token_agreement_rate = 1.0`
+  - `deltanet_statecache_output_max_abs_error = 0.0089`
+  - `deltanet_statecache_effective_recurrent_compression_ratio = 3.2`
+
+So the current Qwen3.5 CUDA read is:
+
+- dense remains the accuracy/performance ceiling
+- attention-subset DotCache is still the exploratory KV-compression lane and remains fidelity-limited
+- DeltaNet StateCache `post_update_m0` is now the first productizable compressed native lane because it stays very close to dense while cutting resident recurrent state materially
+
+## 2026-03-28 19:10 UTC - Qwen3.5 DeltaNet probes now run on CUDA and point at an 8-bit StateCache path
+
+I fixed two real integration issues in the DeltaNet state-capture path in [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py):
+
+- `CaptureQwen35DeltaNet` now retries the underlying `Qwen3_5GatedDeltaNet` call without `cache_position` when the installed Transformers build does not accept that kwarg.
+- `Qwen35DeltaNetStateModelAdapter.__post_init__` now runs the shared Qwen3.5 linear-attention runtime configuration before installing the capture wrappers, so CPU/tiny test models still downgrade off the CUDA-only fast path cleanly.
+- the ablation replay helper now uses the same compatibility shim instead of calling the raw DeltaNet module directly.
+
+Validation:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=/workspace/DotCache .venv/bin/pytest -q tests/test_qwen35_integration.py -k 'deltanet_state'`
+  - result: `4 passed`
+
+Live CUDA DeltaNet inspection on `Qwen/Qwen3.5-0.8B`:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_state_inspect.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --target-prompt-lengths 64 256 --max-new-tokens 4 --continue-on-error`
+- exact `64`:
+  - `hybrid_state_total_bytes = 20,594,688`
+  - `deltanet_conv_state_bytes = 884,736`
+  - `deltanet_recurrent_state_bytes = 18,874,368`
+  - `hybrid_token_growing_bytes = 835,584`
+- exact `256`:
+  - `hybrid_state_total_bytes = 22,953,984`
+  - `hybrid_token_growing_bytes = 3,194,880`
+
+That confirms the structural split:
+
+- most hybrid bytes are fixed resident DeltaNet state
+- only the six full-attention layers `[3, 7, 11, 15, 19, 23]` are token-growing
+
+Live CUDA DeltaNet ablation on exact `64`:
+
+- command:
+  - `source scripts/env_cuda.sh && .venv/bin/python benchmarks/bench_qwen35_deltanet_state_ablation.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 4 --continue-on-error`
+- `8-bit`:
+  - `readout_only_m0`: `max_abs_error = 0.0256`, `output_max_abs_error = 0.0060`
+  - `pre_update_m0`: `max_abs_error = 0.0625`, `output_max_abs_error = 0.0062`
+  - `post_update_m0`: `max_abs_error = 0.0674`, `output_max_abs_error = 0.0088`
+  - `full_state_path_m0`: `max_abs_error = 0.0712`, `output_max_abs_error = 0.0085`
+- `4-bit`:
+  - `readout_only_m0`: `max_abs_error = 0.4253`, `output_max_abs_error = 0.1289`
+  - `pre_update_m0`: `max_abs_error = 0.9844`, `output_max_abs_error = 0.1318`
+  - `post_update_m0`: `max_abs_error = 1.9896`, `output_max_abs_error = 0.1414`
+  - `full_state_path_m0`: `max_abs_error = 1.9896`, `output_max_abs_error = 0.1318`
+
+The useful conclusion is clear:
+
+- a first StateCache experiment should target an `8-bit` DeltaNet state lane, not `4-bit`
+- `readout_only_m0` is the safest first compression target
+- `post_update` and full-path replay are materially more fragile than readout-only
 
 ## 2026-03-28 23:35 UTC - Combined conv and recurrent sweep points to `8b` first, with more renorm pressure on conv state
 

@@ -113,6 +113,37 @@ def test_matrix_record_for_qwen35_emits_dense_text_runner_even_without_dotcache(
     assert record["status"] == "runnable"
 
 
+def test_matrix_record_for_qwen35_emits_statecache_runner_on_cuda() -> None:
+    spec = get_model_spec("qwen35_0p8b_hf")
+    record = _matrix_record(
+        spec,
+        backend="torch_cuda",
+        device="cuda",
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        mount_hf_models=False,
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_qwen35_deltanet_statecache_readout.py" in " ".join(command)
+    assert "--model-id" in command
+    assert "Qwen/Qwen3.5-0.8B" in command
+    assert "--bits" in command
+    assert "8" in command
+    assert "--state-stage" in command
+    assert "post_update_m0" in command
+    assert "--renorm-interval" in command
+    assert "0" in command
+    assert "--continue-on-error" in command
+    assert "--device" in command
+    assert "cuda" in command
+    assert record["planned_prompt_lengths"] == (512, 1024)
+    assert record["status"] == "runnable"
+
+
 def test_matrix_record_for_qwen25_7b_emits_qwen2_runner_command() -> None:
     spec = get_model_spec("qwen25_7b_hf")
     record = _matrix_record(
