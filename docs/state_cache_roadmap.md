@@ -99,3 +99,20 @@ For repeated early/mid/late layer sweeps, use the wrapper:
 ```
 
 That wrapper now emits both detailed per-bit summaries and compact recommendation records for each sampled `(layer, state_kind)` pair, so the CUDA path can compare recurrent and conv compression candidates without post-processing.
+
+For selective recurrent-state probes on the resident CUDA/MPS lane, use the normal readout/loss harnesses with `--layer-bit-overrides`:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --repeat-counts \
+  --target-prompt-lengths 64 \
+  --max-new-tokens 4 \
+  --bits 8 \
+  --layer-bit-overrides 12:4 22:4 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0 \
+  --continue-on-error
+```

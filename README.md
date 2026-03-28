@@ -413,6 +413,12 @@ Those lanes are intentionally probe-only:
 - they are meant to guide the CUDA-side StateCache work, not replace the existing attention-side DotCache lane
 - the real-sweep wrapper now emits per-layer recommendation records so recurrent and conv state can be compared side by side
 
+For selective recurrent-state probes on top of the default `8b` lane, the StateCache readout and loss runners also accept per-layer bit overrides:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --layer-bit-overrides 12:4 22:4 --state-stage post_update_m0 --renorm-interval 0 --continue-on-error
+```
+
 That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
 
 For the external GGUF / `llama.cpp` reference lane, use:

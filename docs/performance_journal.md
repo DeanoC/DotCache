@@ -2256,6 +2256,39 @@ So the current local StateCache handoff gets a little sharper:
 - treat renorm as more important for conv state than for recurrent state
 - do not start the CUDA path from `4b` or `3b` on either state family
 
+## 2026-03-29 00:40 UTC - Short local selective `4b` recurrent overrides do not destabilize the `8b` resident lane
+
+After merging the first CUDA StateCache win path, I added per-layer recurrent-state bit overrides to the resident Qwen3.5 StateCache readout/loss harnesses and probed a few small local override pockets on this Mac.
+
+Exact `64`, `2` generated tokens, `post_update_m0`, default `8b`, no renorm:
+
+- baseline `8b` everywhere
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,898,240`
+  - recurrent compression ratio `3.20x`
+- layer `12 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,767,168`
+  - recurrent compression ratio `3.27x`
+- layer `22 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,767,168`
+  - recurrent compression ratio `3.27x`
+- layers `12,22 -> 4b`
+  - greedy agreement `1.0`
+  - output max abs error `0.00534`
+  - recurrent resident bytes `5,636,096`
+  - recurrent compression ratio `3.35x`
+
+So the honest local read is:
+
+- small selective `4b` recurrent pockets are compatible with the current `8b` resident path on this short exact slice
+- the local exact `64` probe is not yet long or hard enough to expose a failure boundary
+- the next useful selective probe should move to a longer exact or teacher-forced slice rather than adding more short `64 / 2` cases
+
 Live CUDA check:
 
 ```bash
