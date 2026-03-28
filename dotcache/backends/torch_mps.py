@@ -393,6 +393,36 @@ def _chunk_lengths_for_pages(pages: Sequence[PreparedPageTorch]) -> tuple[int, .
     return tuple(len(chunk) for chunk in _chunk_compatible_pages(pages))
 
 
+def _aligned_chunk_lengths_for_page_pairs(
+    key_pages: Sequence[PreparedPageTorch],
+    value_pages: Sequence[PreparedPageTorch],
+) -> tuple[int, ...]:
+    if len(key_pages) != len(value_pages):
+        raise ValueError("key/value page streams must have matching page counts")
+    if not key_pages:
+        return ()
+    lengths: list[int] = []
+    current_length = 0
+    current_key_signature: tuple[int | str, ...] | None = None
+    current_value_signature: tuple[int | str, ...] | None = None
+    for key_page, value_page in zip(key_pages, value_pages, strict=True):
+        key_signature = _batched_signature(key_page)
+        value_signature = _batched_signature(value_page)
+        if (
+            current_length > 0
+            and (key_signature != current_key_signature or value_signature != current_value_signature)
+        ):
+            lengths.append(current_length)
+            current_length = 0
+        if current_length == 0:
+            current_key_signature = key_signature
+            current_value_signature = value_signature
+        current_length += 1
+    if current_length > 0:
+        lengths.append(current_length)
+    return tuple(lengths)
+
+
 def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple[int, int], ...] | None:
     if not pages:
         return None
@@ -1348,6 +1378,22 @@ def _pad_queries(query_slices: np.ndarray | Any, padded_head_dim: int, *, device
     return padded
 
 
+def _coerce_m2_operands(query_groups, group_sketch, group_basis, group_mean):
+    torch = _load_torch()
+    work_dtype = torch.promote_types(query_groups.dtype, group_sketch.dtype)
+    work_dtype = torch.promote_types(work_dtype, group_basis.dtype)
+    work_dtype = torch.promote_types(work_dtype, group_mean.dtype)
+    if query_groups.dtype != work_dtype:
+        query_groups = query_groups.to(dtype=work_dtype)
+    if group_sketch.dtype != work_dtype:
+        group_sketch = group_sketch.to(dtype=work_dtype)
+    if group_basis.dtype != work_dtype:
+        group_basis = group_basis.to(dtype=work_dtype)
+    if group_mean.dtype != work_dtype:
+        group_mean = group_mean.to(dtype=work_dtype)
+    return query_groups, group_sketch, group_basis, group_mean
+
+
 def _prepare_output_accumulator(out_acc: np.ndarray | None, head_dim: int, padded_head_dim: int, *, device_type: TorchDevice):
     torch = _load_torch()
     output = torch.zeros(padded_head_dim, dtype=torch.float32, device=device_type)
@@ -1859,15 +1905,21 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
             group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
+                query_groups[group_index],
+                group_sketch,
+                group_basis,
+                group_mean,
+            )
             if group_basis.dim() == 3:
-                q_proj = torch.einsum("prg,g->pr", group_basis, query_groups[group_index])
+                q_proj = torch.einsum("prg,g->pr", group_basis, qg)
                 logits += torch.einsum("ptd,pd->pt", group_sketch, q_proj)
-                logits += torch.einsum("pg,g->p", group_mean, query_groups[group_index])[:, None]
+                logits += torch.einsum("pg,g->p", group_mean, qg)[:, None]
                 continue
             segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
-            q_proj = torch.einsum("psrg,g->psr", group_basis, query_groups[group_index])
+            q_proj = torch.einsum("psrg,g->psr", group_basis, qg)
             logits += torch.einsum("ptr,ptr->pt", group_sketch, q_proj[:, segment_ids, :])
-            logits += torch.einsum("ptg,g->pt", group_mean[:, segment_ids, :], query_groups[group_index])
+            logits += torch.einsum("ptg,g->pt", group_mean[:, segment_ids, :], qg)
         return logits.reshape(-1)
 
     if header.mode_default == "M1":
@@ -2269,15 +2321,21 @@ def _score_page_chunk_multiquery_torch(
             group_sketch = torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0)
             group_basis = torch.stack([page.m2_basis[group_index] for page in pages], dim=0)
             group_mean = torch.stack([page.m2_mean[group_index] for page in pages], dim=0)
+            qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
+                query_groups[:, group_index, :],
+                group_sketch,
+                group_basis,
+                group_mean,
+            )
             if group_basis.dim() == 3:
-                q_proj = torch.einsum("prg,qg->qpr", group_basis, query_groups[:, group_index, :])
+                q_proj = torch.einsum("prg,qg->qpr", group_basis, qg)
                 logits += torch.einsum("ptd,qpd->qpt", group_sketch, q_proj)
-                logits += torch.einsum("pg,qg->qp", group_mean, query_groups[:, group_index, :])[:, :, None]
+                logits += torch.einsum("pg,qg->qp", group_mean, qg)[:, :, None]
                 continue
             segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[1]))).to(device=device_type)
-            q_proj = torch.einsum("psrg,qg->qpsr", group_basis, query_groups[:, group_index, :])
+            q_proj = torch.einsum("psrg,qg->qpsr", group_basis, qg)
             logits += torch.einsum("ptr,qptr->qpt", group_sketch, q_proj[:, :, segment_ids, :])
-            logits += torch.einsum("ptg,qg->qpt", group_mean[:, segment_ids, :], query_groups[:, group_index, :])
+            logits += torch.einsum("ptg,qg->qpt", group_mean[:, segment_ids, :], qg)
         return logits.reshape(query_count, -1)
 
     if header.mode_default == "M1":
@@ -2607,15 +2665,21 @@ def _score_page_chunk_grouped_multiquery_torch(
                 [torch.stack([page.m2_mean[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
                 dim=0,
             )
+            qg, group_sketch, group_basis, group_mean = _coerce_m2_operands(
+                query_groups_tensor[:, :, group_index, :],
+                group_sketch,
+                group_basis,
+                group_mean,
+            )
             if group_basis.dim() == 4:
-                q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, query_groups_tensor[:, :, group_index, :])
+                q_proj = torch.einsum("bprg,bqg->bqpr", group_basis, qg)
                 logits += torch.einsum("bptd,bqpd->bqpt", group_sketch, q_proj)
-                logits += torch.einsum("bpg,bqg->bqp", group_mean, query_groups_tensor[:, :, group_index, :])[:, :, :, None]
+                logits += torch.einsum("bpg,bqg->bqp", group_mean, qg)[:, :, :, None]
                 continue
             segment_ids = torch.from_numpy(segment_ids_for_token_count(header.token_count, int(group_basis.shape[2]))).to(device=device_type)
-            q_proj = torch.einsum("bpsrg,bqg->bqpsr", group_basis, query_groups_tensor[:, :, group_index, :])
+            q_proj = torch.einsum("bpsrg,bqg->bqpsr", group_basis, qg)
             logits += torch.einsum("bptr,bqptr->bqpt", group_sketch, q_proj[:, :, :, segment_ids, :])
-            logits += torch.einsum("bptg,bqg->bqpt", group_mean[:, :, segment_ids, :], query_groups_tensor[:, :, group_index, :])
+            logits += torch.einsum("bptg,bqg->bqpt", group_mean[:, :, segment_ids, :], qg)
         return logits.reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M1":
@@ -3333,18 +3397,20 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
         ).reshape(group_count, query_count, first_header.num_groups, first_header.group_size),
     )
     query_group_sums = prepared_query_groups_tensor.sum(dim=-1)
+    aligned_chunk_lengths = _aligned_chunk_lengths_for_page_pairs(first_key_group, first_value_group)
     if key_chunk_lengths is None:
-        key_chunk_lengths = _chunk_lengths_for_pages(first_key_group)
+        key_chunk_lengths = aligned_chunk_lengths
     else:
         key_chunk_lengths = tuple(int(length) for length in key_chunk_lengths)
     if value_chunk_lengths is None:
-        value_chunk_lengths = _chunk_lengths_for_pages(first_value_group)
+        value_chunk_lengths = aligned_chunk_lengths
     else:
         value_chunk_lengths = tuple(int(length) for length in value_chunk_lengths)
     if sum(key_chunk_lengths) != len(first_key_group) or sum(value_chunk_lengths) != len(first_value_group):
         raise ValueError("grouped decode chunk lengths must cover all key/value pages exactly")
-    if len(key_chunk_lengths) != len(value_chunk_lengths):
-        raise ValueError("key and value chunk counts must align for grouped decode")
+    if key_chunk_lengths != value_chunk_lengths:
+        key_chunk_lengths = aligned_chunk_lengths
+        value_chunk_lengths = aligned_chunk_lengths
 
     logits_parts = []
     key_offset = 0
@@ -3472,18 +3538,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
         ).reshape(group_count, query_count, first_header.num_groups, first_header.group_size),
     )
     query_group_sums = prepared_query_groups_tensor.sum(dim=-1)
-    key_chunks = _chunk_compatible_pages(first_key_group)
-    value_chunks = _chunk_compatible_pages(first_value_group)
-    key_chunk_lengths = [len(chunk) for chunk in key_chunks]
-    value_chunk_lengths = [len(chunk) for chunk in value_chunks]
-    if key_chunk_lengths != value_chunk_lengths:
-        _, _, output = decode_grouped_multiquery_step_prepared_torch_tensor(
-            query_groups,
-            key_pages_by_group,
-            value_pages_by_group,
-            trace=trace,
-        )
-        return output
+    shared_chunk_lengths = _aligned_chunk_lengths_for_page_pairs(first_key_group, first_value_group)
 
     head_dim = first_value_group[0].header.head_dim
     padded_head_dim = first_value_group[0].header.padded_head_dim
@@ -3493,7 +3548,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
 
     key_offset = 0
     value_offset = 0
-    for chunk_index, chunk_length in enumerate(key_chunk_lengths):
+    for chunk_index, chunk_length in enumerate(shared_chunk_lengths):
         key_chunk_pages = _trace_timed_call(
             trace,
             "chunk_assembly",
@@ -3514,8 +3569,6 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 trace=trace,
             ),
         )
-        chunk_template = value_chunks[chunk_index]
-        chunk_token_count = chunk_template[0].header.token_count * chunk_length
         value_chunk_pages = _trace_timed_call(
             trace,
             "chunk_assembly",
@@ -3524,6 +3577,8 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 group_pages[value_offset : value_offset + chunk_length] for group_pages in value_pages_by_group
             ],
         )
+        chunk_template = value_chunk_pages[0]
+        chunk_token_count = chunk_template[0].header.token_count * chunk_length
 
         prev_max = running_max
         chunk_max = torch.amax(logits_chunk, dim=2)

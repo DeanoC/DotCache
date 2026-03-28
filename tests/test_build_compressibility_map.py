@@ -102,6 +102,16 @@ def test_build_compressibility_map_classifies_selective_model(monkeypatch) -> No
                 "kv_vs_dense": 0.21,
                 "k_exact_fraction": 0.0,
             }
+        if label == "layer:0=M3":
+            return {
+                "label": label,
+                "command": "cmd selective",
+                "status": "ok",
+                "agreement": 1.0,
+                "decode_ms_per_step": 200.0,
+                "kv_vs_dense": 0.23,
+                "k_exact_fraction": 0.0357,
+            }
         return {
             "label": label,
             "command": "cmd exact_k",

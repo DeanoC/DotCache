@@ -98,17 +98,25 @@ def _page_m2_prefilter_score_torch(queries, page: PageLike) -> float:
     for group_index in range(prepared.header.num_groups):
         group_basis = prepared.m2_basis[group_index]
         group_mean = prepared.m2_mean[group_index]
+        group_sketch = prepared.m2_sketch[:, group_index, :]
+        work_dtype = torch.promote_types(query_groups.dtype, group_basis.dtype)
+        work_dtype = torch.promote_types(work_dtype, group_sketch.dtype)
+        work_dtype = torch.promote_types(work_dtype, group_mean.dtype)
+        qg = query_groups[:, group_index, :].to(dtype=work_dtype)
+        group_basis = group_basis.to(dtype=work_dtype)
+        group_mean = group_mean.to(dtype=work_dtype)
+        group_sketch = group_sketch.to(dtype=work_dtype)
         if group_basis.dim() == 2:
-            q_proj = torch.einsum("qg,rg->qr", query_groups[:, group_index, :], group_basis)
-            logits += torch.einsum("tr,qr->qt", prepared.m2_sketch[:, group_index, :], q_proj)
-            logits += torch.einsum("g,qg->q", group_mean, query_groups[:, group_index, :])[:, None]
+            q_proj = torch.einsum("qg,rg->qr", qg, group_basis)
+            logits += torch.einsum("tr,qr->qt", group_sketch, q_proj)
+            logits += torch.einsum("g,qg->q", group_mean, qg)[:, None]
             continue
         segment_ids = torch.from_numpy(
             segment_ids_for_token_count(prepared.header.token_count, int(group_basis.shape[0]))
         ).to(device=queries.device)
-        q_proj = torch.einsum("srg,qg->qsr", group_basis, query_groups[:, group_index, :])
-        logits += torch.einsum("tr,qtr->qt", prepared.m2_sketch[:, group_index, :], q_proj[:, segment_ids, :])
-        logits += torch.einsum("tg,qg->qt", group_mean[segment_ids], query_groups[:, group_index, :])
+        q_proj = torch.einsum("srg,qg->qsr", group_basis, qg)
+        logits += torch.einsum("tr,qtr->qt", group_sketch, q_proj[:, segment_ids, :])
+        logits += torch.einsum("tg,qg->qt", group_mean[segment_ids], qg)
     return float(torch.max(logits).item())
 
 
@@ -186,9 +194,19 @@ def _page_m2_prefilter_scores_torch(queries, pages: Sequence[PageLike]) -> np.nd
     segment_ids = torch.from_numpy(segment_ids_for_token_count(first.header.token_count, int(basis.shape[2]))).to(device=queries.device)
     logits = torch.zeros((int(queries.shape[0]), len(pages), first.header.token_count), dtype=torch.float32, device=queries.device)
     for group_index in range(first.header.num_groups):
-        q_proj = torch.einsum("psrd,qg->qpsr", basis[:, group_index], query_groups[:, group_index, :])
-        logits += torch.einsum("ptr,qptr->qpt", sketch[:, :, group_index, :], q_proj[:, :, segment_ids, :])
-        logits += torch.einsum("ptg,qg->qpt", mean[:, group_index, segment_ids, :], query_groups[:, group_index, :])
+        group_basis = basis[:, group_index]
+        group_sketch = sketch[:, :, group_index, :]
+        group_mean = mean[:, group_index, segment_ids, :]
+        work_dtype = torch.promote_types(query_groups.dtype, group_basis.dtype)
+        work_dtype = torch.promote_types(work_dtype, group_sketch.dtype)
+        work_dtype = torch.promote_types(work_dtype, group_mean.dtype)
+        qg = query_groups[:, group_index, :].to(dtype=work_dtype)
+        group_basis = group_basis.to(dtype=work_dtype)
+        group_sketch = group_sketch.to(dtype=work_dtype)
+        group_mean = group_mean.to(dtype=work_dtype)
+        q_proj = torch.einsum("psrd,qg->qpsr", group_basis, qg)
+        logits += torch.einsum("ptr,qptr->qpt", group_sketch, q_proj[:, :, segment_ids, :])
+        logits += torch.einsum("ptg,qg->qpt", group_mean, qg)
     return torch.amax(logits, dim=(0, 2)).detach().cpu().numpy().astype(np.float32, copy=False)
 
 
@@ -392,6 +410,36 @@ def _prepared_page_chunk_lengths(pages: Sequence[PreparedPageTorch]) -> tuple[in
     return tuple(lengths)
 
 
+def _prepared_page_aligned_chunk_lengths(
+    key_pages: Sequence[PreparedPageTorch],
+    value_pages: Sequence[PreparedPageTorch],
+) -> tuple[int, ...]:
+    if len(key_pages) != len(value_pages):
+        return ()
+    if not key_pages:
+        return ()
+    lengths: list[int] = []
+    current_length = 0
+    current_key_signature: tuple[Any, ...] | None = None
+    current_value_signature: tuple[Any, ...] | None = None
+    for key_page, value_page in zip(key_pages, value_pages, strict=True):
+        key_signature = _prepared_page_group_signature(key_page)
+        value_signature = _prepared_page_group_signature(value_page)
+        if (
+            current_length > 0
+            and (key_signature != current_key_signature or value_signature != current_value_signature)
+        ):
+            lengths.append(current_length)
+            current_length = 0
+        if current_length == 0:
+            current_key_signature = key_signature
+            current_value_signature = value_signature
+        current_length += 1
+    if current_length > 0:
+        lengths.append(current_length)
+    return tuple(lengths)
+
+
 def _build_prepared_decode_view_layout(
     key_pages: Sequence[PageLike],
     value_pages: Sequence[PageLike],
@@ -404,13 +452,14 @@ def _build_prepared_decode_view_layout(
         return None
     prepared_key_pages = tuple(key_pages)
     prepared_value_pages = tuple(value_pages)
+    aligned_chunk_lengths = _prepared_page_aligned_chunk_lengths(prepared_key_pages, prepared_value_pages)
     return _PreparedDecodeViewLayout(
         grouped_batch_signature=tuple(
             (_prepared_page_group_signature(key_page), _prepared_page_group_signature(value_page))
             for key_page, value_page in zip(prepared_key_pages, prepared_value_pages, strict=True)
         ),
-        key_chunk_lengths=_prepared_page_chunk_lengths(prepared_key_pages),
-        value_chunk_lengths=_prepared_page_chunk_lengths(prepared_value_pages),
+        key_chunk_lengths=aligned_chunk_lengths,
+        value_chunk_lengths=aligned_chunk_lengths,
     )
 
 
