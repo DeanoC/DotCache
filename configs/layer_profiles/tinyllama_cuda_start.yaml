@@ -1,0 +1,39 @@
+model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+source:
+  benchmark: >
+    Local Apple MPS layer-policy probes plus short teacher-forced follow-up.
+  backend: torch_mps
+  prompt_length: 577
+  tokens_per_page: 256
+  notes: >
+    CUDA starter profile derived from the local first-pass TinyLlama profile.
+    This is the best local adaptive-policy checkpoint so far: conservative keys
+    through the middle of the stack, aggressive values, and no extra early-key
+    aggression. On CUDA, start by comparing this profile against exact M0 and
+    then against exact K=4b / V=3b plus recent-page M3 int8.
+
+key_policy_tier: balanced
+value_policy_tier: aggressive
+
+key_layer_sensitivity:
+  - layer:3=strict
+  - layer:4=strict
+  - layer:5=strict
+  - layer:6=strict
+  - layer:7=strict
+  - layer:8=strict
+  - layer:9=strict
+  - layer:10=strict
+  - layer:11=strict
+  - layer:12=strict
+  - layer:13=strict
+  - layer:14=strict
+  - layer:15=strict
+  - layer:16=strict
+  - layer:17=strict
+  - layer:18=strict
+  - layer:19=strict
+  - layer:20=strict
+  - layer:21=strict
+
+value_layer_sensitivity: []

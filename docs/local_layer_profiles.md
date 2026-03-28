@@ -11,9 +11,15 @@ The current profile artifacts live in:
 
 - [tinyllama_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_first_pass.yaml)
 - [tinyllama_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_local_second_pass.yaml)
+- [tinyllama_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_cuda_start.yaml)
 - [smollm2_360m_local_first_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_first_pass.yaml)
 - [smollm2_360m_local_second_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_second_pass.yaml)
 - [smollm2_360m_local_third_pass.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_local_third_pass.yaml)
+- [smollm2_360m_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_cuda_start.yaml)
+
+The CUDA handoff note for these profiles is:
+
+- [cuda_next_steps.md](/Users/deanocalver/Documents/Projects/DotCache/docs/cuda_next_steps.md)
 
 ## TinyLlama
 
@@ -43,6 +49,12 @@ Cheap one-token teacher-forced checks at `289` tokens were reassuring:
 - default aggressive values: perfect agreement
 
 These checks are intentionally weak, but they say the first-pass Tiny profile is at least sane.
+
+The CUDA starter profile for TinyLlama keeps this exact shape. It is still the best local adaptive checkpoint, and the next CUDA probes should compare it against:
+
+- exact `M0`
+- exact `K=4b, V=3b`
+- the same profile with recent-page `M3 int8`
 
 ### TinyLlama Second Pass
 
@@ -176,6 +188,18 @@ So the third pass is a small step in the right direction, but not a breakthrough
 - it confirms that reducing late-key `M2` pressure helps
 - it does **not** reduce the loss enough to make the current SmolLM2 adaptive policy look good
 - the main local conclusion remains that TinyLlama is the clean success case, while SmolLM2 still needs more conservative key-side planning or better key codecs
+
+That is why the CUDA starter profile is based on the safer second/third-pass family:
+
+- balanced values
+- an early strict key pocket
+- deepest key layers clamped back to strict
+- no forced late-value overrides
+
+Two additional local hints should also carry into CUDA:
+
+- `M0 3b` is now a plausible new intermediate tier, especially as `K=4b, V=3b`
+- recent-page `M3 int8` is now planner-selectable end to end and cuts recent-page residency materially on this Mac
 
 ## How To Use
 

@@ -35,6 +35,23 @@ What that changed in our read:
 - `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
 - Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
 
+### CUDA handoff from local policy work
+
+The latest local policy work produced a cleaner CUDA handoff package rather than another round of hand-tuned MPS thresholds.
+
+The practical local takeaways to carry forward are:
+
+- `M0 3b` is now a real intermediate tier, and `K=4b, V=3b` is the most plausible first CUDA probe.
+- `M3 int8` now works end to end, and the planner can emit recent sealed pages as `M3:int8`.
+- TinyLlama has one clearly useful local adaptive profile: conservative middle-layer keys plus aggressive values.
+- SmolLM2 still does not have a clearly good adaptive profile, but it does have a safer starting point: early strict keys, deepest keys clamped back to strict, and balanced values.
+
+The concrete handoff artifacts are:
+
+- [tinyllama_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_cuda_start.yaml)
+- [smollm2_360m_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_cuda_start.yaml)
+- [cuda_next_steps.md](/Users/deanocalver/Documents/Projects/DotCache/docs/cuda_next_steps.md)
+
 ### Turbo3 local lane on MPS
 
 Turbo3 now has its own repeatable local runner on this Mac through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The current implementation also shares device-resident Turbo3 centroids across prepared pages, and it now has a correct vectorized `3`-bit spill-unpack path in [torch_mps.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/backends/torch_mps.py) that uses advanced indexing instead of repeated-index `torch.gather(...)`.

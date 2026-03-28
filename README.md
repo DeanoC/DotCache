@@ -21,6 +21,8 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [docs/benchmark_report.md](./docs/benchmark_report.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
 - [docs/model_roadmap.md](./docs/model_roadmap.md)
+- [docs/local_layer_profiles.md](./docs/local_layer_profiles.md)
+- [docs/cuda_next_steps.md](./docs/cuda_next_steps.md)
 - [docs/turboquant_comparison_plan.md](./docs/turboquant_comparison_plan.md)
 
 ## Quick start on NVIDIA Linux / 5090-class CUDA pods
