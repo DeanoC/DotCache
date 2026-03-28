@@ -157,6 +157,23 @@ python scripts/report_qwen35_statecache_showcase.py \
   --input /path/to/serving.jsonl
 ```
 
+Checked-in showcase bundle:
+
+- [qwen35_0p8b_statecache_serving_bnb8_32768_65536_20260329.jsonl](/workspace/DotCache/benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_0p8b_statecache_serving_bnb8_32768_65536_20260329.jsonl)
+- [qwen35_4b_statecache_serving_bnb8_32768_65536_20260329.jsonl](/workspace/DotCache/benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_4b_statecache_serving_bnb8_32768_65536_20260329.jsonl)
+- [qwen35_9b_statecache_readout_bnb8_512_1024_20260329_persistent_retry.jsonl](/workspace/DotCache/benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_9b_statecache_readout_bnb8_512_1024_20260329_persistent_retry.jsonl)
+- [qwen35_9b_statecache_serving_bnb8_16384_32768_20260329.jsonl](/workspace/DotCache/benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_9b_statecache_serving_bnb8_16384_32768_20260329.jsonl)
+
+Example:
+
+```bash
+python scripts/report_qwen35_statecache_showcase.py \
+  --input benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_9b_statecache_readout_bnb8_512_1024_20260329_persistent_retry.jsonl \
+  --input benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_9b_statecache_serving_bnb8_16384_32768_20260329.jsonl \
+  --input benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_0p8b_statecache_serving_bnb8_32768_65536_20260329.jsonl \
+  --input benchmarks/results/qwen35_statecache_showcase_20260329/qwen35_4b_statecache_serving_bnb8_32768_65536_20260329.jsonl
+```
+
 ## How To Talk About External Systems
 
 If you want to compare this against:
