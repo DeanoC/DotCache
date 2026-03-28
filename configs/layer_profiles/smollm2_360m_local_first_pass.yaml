@@ -1,0 +1,44 @@
+model_id: HuggingFaceTB/SmolLM2-360M-Instruct
+source:
+  benchmark: inspect_policy_prefill
+  backend: torch_mps
+  prompt_length: 1024
+  tokens_per_page: 256
+  notes: >
+    First local handwritten profile from balanced-policy prefill inspection on the M4 Mac.
+    This profile intentionally uses coarse tiers only; it is meant to guide CUDA validation,
+    not replace it.
+
+key_policy_tier: balanced
+value_policy_tier: aggressive
+
+key_layer_sensitivity:
+  - layer:3=strict
+  - layer:4=strict
+  - layer:5=strict
+  - layer:16=aggressive
+  - layer:17=aggressive
+  - layer:18=aggressive
+  - layer:19=aggressive
+  - layer:20=aggressive
+  - layer:21=aggressive
+  - layer:22=aggressive
+  - layer:23=aggressive
+  - layer:24=aggressive
+  - layer:25=aggressive
+  - layer:26=aggressive
+  - layer:27=aggressive
+  - layer:28=aggressive
+  - layer:29=aggressive
+  - layer:30=aggressive
+  - layer:31=aggressive
+
+value_layer_sensitivity:
+  - layer:17=strict
+  - layer:24=strict
+  - layer:25=strict
+  - layer:26=strict
+  - layer:27=strict
+  - layer:28=strict
+  - layer:29=strict
+  - layer:30=strict

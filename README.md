@@ -99,6 +99,12 @@ To batch that validated search across the current public CUDA model set and emit
 
 That batch report validates `all M0`, validates the top selective candidates, and emits a compact per-model row with the chosen policy, exact-K fraction, KV-memory ratio, and decode throughput.
 
+For local Apple MPS investigation of the revised paper's layer/page policy idea, see the first-pass handwritten profiles and probe tools in:
+
+- [local_layer_profiles.md](/Users/deanocalver/Documents/Projects/DotCache/docs/local_layer_profiles.md)
+- [bench_layer_sensitivity.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_layer_sensitivity.py)
+- [inspect_policy_prefill.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/inspect_policy_prefill.py)
+
 For a narrow high-context CUDA slice that fits this pod cleanly, use:
 
 ```bash
