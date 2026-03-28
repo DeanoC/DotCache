@@ -134,6 +134,11 @@ def _timed_call(fn, *, device: Any) -> tuple[Any, float]:
     return result, (time.perf_counter() - start) * 1000.0
 
 
+def _run_inference(fn):
+    with torch.inference_mode():
+        return fn()
+
+
 def _prewarm_torch_decode_layers(adapter: "LlamaDotCacheModelAdapter", *, device: Any) -> None:
     device_type = _device_type(device)
     if device_type != "cuda" or not _torch_backend_matches_device(adapter.backend, device_type):
@@ -783,7 +788,7 @@ def _prefill_prompt(
 ):
     adapter.set_mode("dense")
     adapter.set_capture(False)
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+    outputs = _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
     if _torch_backend_matches_device(adapter.backend, input_ids.device.type):
         prefill_layers = extract_past_key_values_tensors(outputs.past_key_values)
     else:
@@ -849,13 +854,15 @@ def _run_dense_greedy_decode(
         adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
         try:
             outputs, step_ms = _timed_call(
-                lambda: model(
-                    input_ids=current_input_ids,
-                    attention_mask=current_attention_mask,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                    cache_position=cache_position,
-                    position_ids=cache_position.unsqueeze(0),
+                lambda: _run_inference(
+                    lambda: model(
+                        input_ids=current_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                        cache_position=cache_position,
+                        position_ids=cache_position.unsqueeze(0),
+                    )
                 ),
                 device=input_ids.device,
             )
@@ -917,12 +924,14 @@ def _run_dotcache_decode_inputs(
         adapter.set_current_token_index(int(input_ids.shape[1] + offset))
         try:
             outputs, step_ms = _timed_call(
-                lambda: model(
-                    input_ids=decode_input,
-                    attention_mask=current_attention_mask,
-                    use_cache=False,
-                    cache_position=cache_position,
-                    position_ids=cache_position.unsqueeze(0),
+                lambda: _run_inference(
+                    lambda: model(
+                        input_ids=decode_input,
+                        attention_mask=current_attention_mask,
+                        use_cache=False,
+                        cache_position=cache_position,
+                        position_ids=cache_position.unsqueeze(0),
+                    )
                 ),
                 device=input_ids.device,
             )
@@ -961,13 +970,15 @@ def _run_dense_decode_inputs(
 
     for decode_input in decode_inputs:
         start = time.perf_counter()
-        outputs = model(
-            input_ids=decode_input,
-            attention_mask=current_attention_mask,
-            past_key_values=past_key_values,
-            use_cache=True,
-            cache_position=cache_position,
-            position_ids=cache_position.unsqueeze(0),
+        outputs = _run_inference(
+            lambda: model(
+                input_ids=decode_input,
+                attention_mask=current_attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+                cache_position=cache_position,
+                position_ids=cache_position.unsqueeze(0),
+            )
         )
         decode_ms_total += (time.perf_counter() - start) * 1000.0
         step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
@@ -1036,12 +1047,14 @@ def _run_dotcache_greedy_decode(
         adapter.set_current_token_index(current_token_index)
         try:
             outputs, step_ms = _timed_call(
-                lambda: model(
-                    input_ids=current_input_ids,
-                    attention_mask=current_attention_mask,
-                    use_cache=False,
-                    cache_position=cache_position,
-                    position_ids=cache_position.unsqueeze(0),
+                lambda: _run_inference(
+                    lambda: model(
+                        input_ids=current_input_ids,
+                        attention_mask=current_attention_mask,
+                        use_cache=False,
+                        cache_position=cache_position,
+                        position_ids=cache_position.unsqueeze(0),
+                    )
                 ),
                 device=input_ids.device,
             )
