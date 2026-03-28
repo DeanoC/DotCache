@@ -128,6 +128,17 @@ def _default_compare_command(
             "--target-prompt-lengths",
             *[str(length) for length in prompt_lengths],
         ]
+        if spec.key == "qwen35_4b_hf":
+            command.extend(
+                [
+                    "--recurrent-mode-override",
+                    "layer:0=M3",
+                    "--recurrent-mode-override",
+                    "layer:1=M3",
+                    "--recurrent-mode-override",
+                    "layer:2=M3",
+                ]
+            )
         if continue_on_error:
             command.append("--continue-on-error")
         if device is not None:
