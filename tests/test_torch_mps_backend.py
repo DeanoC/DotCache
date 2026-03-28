@@ -12,7 +12,11 @@ from dotcache.attention_runtime import (
     score_pages,
 )
 from dotcache.backends import mps_available
-from dotcache.backends.torch_mps import _get_prepared_chunk_mps, prepare_m0_affine_pages_from_tensor_torch
+from dotcache.backends.torch_mps import (
+    _build_grouped_prepared_chunk_mps,
+    _get_prepared_chunk_mps,
+    prepare_m0_affine_pages_from_tensor_torch,
+)
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.page_cache import PreparedPageCache
@@ -459,6 +463,30 @@ def test_direct_m0_3bit_preparation_from_tensor_matches_cpu_reference() -> None:
     np.testing.assert_allclose(mps_logits, cpu_logits, atol=1e-2, rtol=1e-3)
     np.testing.assert_allclose(mps_weights, cpu_weights, atol=1e-4, rtol=1e-4)
     np.testing.assert_allclose(mps_output, cpu_output, atol=1e-2, rtol=1e-3)
+
+
+@requires_mps
+def test_grouped_prepared_chunk_uses_fused_only_cache_for_m0_3bit_pages() -> None:
+    rng = np.random.default_rng(2127)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=3, bits_v=3, tokens_per_page=16)
+    context_length = 64
+
+    key_group0 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        _encode_paged(rng.normal(size=(context_length, config.head_dim)).astype(np.float32), config, kind="K"),
+        backend="torch_mps",
+    )
+
+    grouped_chunk = _build_grouped_prepared_chunk_mps([key_group0, key_group1])
+
+    assert grouped_chunk is not None
+    assert grouped_chunk.fused_scaled_codes is not None
+    assert grouped_chunk.codes_groups is None
+    assert grouped_chunk.scales_groups is None
+    assert grouped_chunk.bias_groups is not None
 
 
 @requires_mps

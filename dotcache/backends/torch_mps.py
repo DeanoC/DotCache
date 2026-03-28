@@ -180,6 +180,12 @@ def _supports_fused_m0_3bit(header: PageHeader, *, device_type: TorchDevice) -> 
     )
 
 
+def _supports_grouped_fused_only_cache(header: PageHeader, *, device_type: TorchDevice) -> bool:
+    if _supports_fused_m0_3bit(header, device_type=device_type):
+        return True
+    return _supports_fused_two_group64(header) and device_type == "cuda"
+
+
 def _supports_packed_four_group128_cuda(header: PageHeader, *, device_type: TorchDevice) -> bool:
     return bool(
         device_type == "cuda"
@@ -625,12 +631,11 @@ def _build_grouped_prepared_chunk_mps(
     prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
     if any(chunk is None for chunk in prepared_chunks):
         return None
-    if _supports_fused_two_group64(header) and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks):
-        if device_type != "cuda":
-            # On MPS, avoid caching a second grouped fused copy. The per-group prepared
-            # chunks already hold the fused tensors, and grouped decode can stack them
-            # on demand to preserve the existing memory-first behavior.
-            return None
+    if (
+        _supports_grouped_fused_only_cache(header, device_type=device_type)
+        and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks)
+        and all(chunk.bias_groups is not None for chunk in prepared_chunks)
+    ):
         fused_scaled_codes = torch.stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0).contiguous()
         bias_groups = tuple(
             torch.stack([chunk.bias_groups[group_index] for chunk in prepared_chunks], dim=0).contiguous()
