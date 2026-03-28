@@ -655,6 +655,14 @@ def _build_grouped_prepared_chunk_mps(
             fused_scaled_codes=fused_scaled_codes,
             resident_nbytes=resident_nbytes,
         )
+    if (
+        device_type != "cuda"
+        and _supports_fused_two_group64(header)
+        and all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks)
+    ):
+        # On MPS, keep the grouped-64 path memory-first. The per-group chunks already
+        # hold the fused tensors and grouped decode can stack them on demand.
+        return None
     # Grouped decode uses unpacked codes/scales/bias directly, so duplicating stacked
     # payload tensors here only burns memory without helping the hot path.
     payload_groups: tuple[Any, ...] = ()

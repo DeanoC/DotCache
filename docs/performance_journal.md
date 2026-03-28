@@ -971,6 +971,22 @@ The latest local pass also makes `3b` eligible for the direct torch prefill path
 
 That does not make `M0 3b` a real end-to-end model-path win yet, but it is a much stronger directional result for both MPS and CUDA: once low-bit static pages are sealed, a fused pre-scaled chunk representation is a better hot decode shape, and direct device-side spill packing is a much better prefill shape than bouncing `3b` pages back through host encode.
 
+The next local follow-up tightened the grouped cached-decode shape too. On a synthetic grouped multi-query MPS microbench (`2` KV groups, `2` queries/group, `4` pages, `16` tokens/page, `head_dim=64`):
+
+- `M0 3b`
+  - grouped decode `8.43 ms`
+  - prepared chunk cache resident bytes `135,168`
+- `M0 4b`
+  - grouped decode `13.09 ms`
+  - prepared chunk cache resident bytes `67,584`
+
+So the current local read is nuanced:
+
+- in this grouped cached synthetic shape, `3b` is actually faster than `4b`
+- but it currently pays more chunk-cache memory because `3b` now keeps an explicit grouped fused cache while grouped `4b` on MPS still follows the memory-first on-demand assembly path
+
+That is a useful CUDA hint rather than a direct product claim: low-bit grouped fused caches can be worth it for decode, but the cache policy itself matters almost as much as the codec.
+
 ## Local M3 int8 Probe
 
 `M3` now supports an `int8` escape path with per-row scales on the local MPS runtime. This keeps the `M3` live-tail semantics the same while reducing resident bytes for recent pages.
