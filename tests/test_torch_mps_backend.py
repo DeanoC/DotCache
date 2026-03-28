@@ -370,10 +370,11 @@ def test_decode_step_mps_matches_cpu_reference_across_pages() -> None:
 
 
 @requires_mps
-def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages() -> None:
+@pytest.mark.parametrize("bits", [4, 3])
+def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages(bits: int) -> None:
     rng = np.random.default_rng(125)
-    config = DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=64)
-    context_length = 192
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=bits, bits_v=bits, tokens_per_page=64)
+    context_length = 256
     keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
     values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
     query = rng.normal(size=(config.head_dim,)).astype(np.float32)
