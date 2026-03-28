@@ -144,6 +144,31 @@ def test_matrix_record_for_qwen35_emits_statecache_runner_on_cuda() -> None:
     assert record["status"] == "runnable"
 
 
+def test_matrix_record_for_qwen35_4b_emits_statecache_runner_with_head_m3_escapes() -> None:
+    spec = get_model_spec("qwen35_4b_hf")
+    record = _matrix_record(
+        spec,
+        backend="torch_cuda",
+        device="cuda",
+        torch_dtype="float16",
+        tokens_per_page=256,
+        max_new_tokens=4,
+        prompt_lengths_override=[],
+        mount_hf_models=False,
+        continue_on_error=True,
+    )
+    command = record["command"]
+    assert isinstance(command, list)
+    assert "bench_qwen35_deltanet_statecache_readout.py" in " ".join(command)
+    assert "Qwen/Qwen3.5-4B" in command
+    assert command.count("--recurrent-mode-override") == 3
+    assert "layer:0=M3" in command
+    assert "layer:1=M3" in command
+    assert "layer:2=M3" in command
+    assert record["planned_prompt_lengths"] == (512, 1024)
+    assert record["status"] == "runnable"
+
+
 def test_matrix_record_for_qwen25_7b_emits_qwen2_runner_command() -> None:
     spec = get_model_spec("qwen25_7b_hf")
     record = _matrix_record(

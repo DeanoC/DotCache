@@ -7,7 +7,11 @@ import torch
 from transformers import AutoConfig
 
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
-from dotcache.integrations.qwen35 import Qwen35DeltaNetStateHarness, transformers_available
+from dotcache.integrations.qwen35 import (
+    Qwen35DeltaNetStateHarness,
+    parse_qwen35_deltanet_statecache_mode_overrides,
+    transformers_available,
+)
 
 
 def _parse_layer_bit_overrides(values: list[str]) -> dict[int, int]:
@@ -32,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-bit-overrides", nargs="*", default=[])
     parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="readout_only_m0")
     parser.add_argument("--renorm-interval", type=int, default=0)
+    parser.add_argument("--recurrent-mode-override", action="append", default=[])
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
@@ -142,6 +147,11 @@ def main() -> None:
         "deltanet_statecache_stage_name": args.state_stage,
         "deltanet_statecache_renorm_interval": args.renorm_interval,
     }
+    recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.recurrent_mode_override)
+    if recurrent_mode_overrides:
+        common_record["deltanet_statecache_recurrent_mode_overrides"] = {
+            str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())
+        }
 
     for repeat_count in args.repeat_counts:
         prompt = " ".join([args.prompt_unit] * repeat_count)
@@ -156,6 +166,7 @@ def main() -> None:
             layer_bits_overrides=layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
             base_record={**common_record, "prompt_mode": "repeat_count", "repeat_count": repeat_count},
             continue_on_error=args.continue_on_error,
         )
@@ -176,6 +187,7 @@ def main() -> None:
             layer_bits_overrides=layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
+            recurrent_mode_overrides=recurrent_mode_overrides,
             base_record={**common_record, "prompt_mode": "exact_length", "prompt_length": prompt_length},
             continue_on_error=args.continue_on_error,
         )

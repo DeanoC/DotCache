@@ -501,7 +501,6 @@ def test_qwen35_deltanet_statecache_post_update_stage_reports_stage_metadata() -
     assert result["deltanet_statecache_renorm_interval"] == 2
     assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
 
-
 def test_qwen35_deltanet_statecache_readout_accepts_layer_bit_overrides() -> None:
     model = _tiny_deltanet_qwen35_model()
     adapter = Qwen35DeltaNetStateModelAdapter(model=model)
@@ -557,6 +556,47 @@ def test_qwen35_deltanet_statecache_loss_accepts_layer_bit_overrides() -> None:
     )
     assert result["deltanet_statecache_layer_bits"]["0"] == 4
     assert result["deltanet_statecache_layer_bits"]["1"] == 8
+
+
+def test_qwen35_deltanet_statecache_loss_accepts_recurrent_mode_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_recurrent_state_bytes"] > 0
+
+
+def test_qwen35_deltanet_statecache_readout_reports_per_layer_recurrent_modes() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_per_layer_recurrent_mode"]["0"] == "M3"
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:
