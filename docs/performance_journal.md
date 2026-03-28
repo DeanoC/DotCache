@@ -3047,3 +3047,46 @@ That means the next comparison work should stay narrow:
 
 - finish the JSONL/reporter path for the working TinyLlama slice
 - treat SmolLM2 as a documented negative-compatibility data point until the external fork fixes the Turbo3 CUDA assert
+
+## 2026-03-28 20:30 UTC - Llama 3.2 3B is the next clean Turbo3-compatible comparison model
+
+I switched the external comparison set to Turbo3-compatible models only instead of trying to force SmolLM2 into the headline table.
+
+The next local candidate from the persistent GGUF cache was:
+
+- `/workspace/models/gguf/llama32_3b/Llama-3.2-3B-Instruct-Q4_K_M.gguf`
+
+On the same `repeat_count = 64` prompt family, the raw TurboQuant CUDA runs are clean:
+
+- external `q8_0`:
+  - prompt `7929.7 tok/s`
+  - generation `123.0 tok/s`
+- external `turbo3 uniform`:
+  - prompt `6206.2 tok/s`
+  - generation `153.8 tok/s`
+- external `turbo3 LA-1`:
+  - prompt `10208.6 tok/s`
+  - generation `205.7 tok/s`
+
+The matching HF / DotCache baseline on `meta-llama/Llama-3.2-3B-Instruct` is:
+
+- prompt length `449`
+- HF dense:
+  - `dense_decode_ms_per_step = 37.90`
+  - `26.39 tok/s`
+- HF DotCache exact `M0/M0`:
+  - `decode_ms_per_step = 98.39`
+  - `10.16 tok/s`
+  - greedy agreement `1.0`
+
+So the external comparison set should now be framed as:
+
+- TinyLlama `1.1B`: first fully clean Turbo3 slice
+- Llama `3.2 3B`: second clean Turbo3 slice, and a better “real model” comparison than TinyLlama alone
+- SmolLM2 `360M`: compatibility-failure note for the current CUDA fork, not a primary Turbo3 benchmark
+
+This is enough to make the external story credible without overstating support:
+
+- Turbo3 works on at least two Llama-style models on this CUDA fork
+- it is substantially faster than the current HF DotCache path on both
+- model compatibility is still runtime-dependent, so the comparison section should explicitly separate “supported models” from “known failing models”
