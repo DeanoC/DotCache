@@ -26,6 +26,8 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
     run_qwen35_deltanet_state_ablation_harness,
+    run_qwen35_deltanet_statecache_readout_harness,
+    run_qwen35_deltanet_statecache_loss_harness,
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
@@ -369,7 +371,6 @@ def test_qwen35_deltanet_state_ablation_reports_stages() -> None:
     assert dense_stage["output_max_abs_error"] <= 1e-6
     assert escape_stage["output_max_abs_error"] <= 1e-4
 
-
 def test_qwen35_build_deltanet_state_sample_from_records() -> None:
     pre_state = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8)
     post_state = pre_state + 1.0
@@ -391,6 +392,114 @@ def test_qwen35_build_deltanet_state_sample_from_records() -> None:
     assert sample["token_indices"] == [17]
     assert sample["initial_state"].shape == (1, 3, 8)
     assert sample["update_deltas"].shape == (1, 1, 3, 8)
+
+
+def test_qwen35_deltanet_statecache_readout_reports_compressed_recurrent_bytes() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+    )
+    assert result["deltanet_statecache_ready"] is True
+    assert result["deltanet_statecache_stage_name"] == "readout_only_m0"
+    assert result["deltanet_statecache_bits"] == 8
+    assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
+    assert result["deltanet_dense_fixed_resident_bytes"] > result["deltanet_statecache_fixed_resident_bytes"]
+    assert result["deltanet_statecache_output_max_abs_error"] >= 0.0
+    assert result["deltanet_statecache_effective_recurrent_compression_ratio"] > 1.0
+    assert len(result["deltanet_dense_generated_ids"]) == 1
+    assert len(result["deltanet_statecache_generated_ids"]) == 1
+    assert 0.0 <= result["deltanet_statecache_greedy_token_agreement_rate"] <= 1.0
+
+
+def test_qwen35_deltanet_statecache_readout_uses_fresh_prefill_for_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    import dotcache.integrations.qwen35 as qwen35_mod
+
+    original_prefill = qwen35_mod._run_dense_prefill
+    prefill_call_count = 0
+
+    def _counting_prefill(*args, **kwargs):
+        nonlocal prefill_call_count
+        prefill_call_count += 1
+        return original_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(qwen35_mod, "_run_dense_prefill", _counting_prefill)
+
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+    )
+
+    assert result["deltanet_statecache_ready"] is True
+    assert prefill_call_count == 2
+
+
+def test_qwen35_deltanet_statecache_loss_reports_teacher_forced_metrics() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+    )
+    assert result["deltanet_statecache_ready"] is True
+    assert result["deltanet_statecache_teacher_forced_loss"] >= 0.0
+    assert result["deltanet_statecache_teacher_forced_perplexity"] >= 1.0
+    assert 0.0 <= result["deltanet_statecache_teacher_forced_target_match_rate"] <= 1.0
+    assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
+
+
+def test_qwen35_deltanet_statecache_post_update_stage_reports_stage_metadata() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        renorm_interval=2,
+    )
+    assert result["deltanet_statecache_ready"] is True
+    assert result["deltanet_statecache_stage_name"] == "post_update_m0"
+    assert result["deltanet_statecache_renorm_interval"] == 2
+    assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:

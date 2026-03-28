@@ -164,7 +164,7 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         dotcache_ready=False,
         benchmark_harness="qwen35_text",
         prompt_lengths=(512, 1024),
-        notes="Text-only dense smoke lane for the hybrid Qwen3.5 stack. Runnable locally, but DotCache attention/state interception is not implemented yet.",
+        notes="Dense text lane on non-CUDA backends and the default CUDA StateCache lane on this pod. The current recommended CUDA runtime is DeltaNet StateCache post_update_m0 at 8-bit with renorm disabled.",
     ),
     "llama32_3b_gguf": ModelSpec(
         key="llama32_3b_gguf",
