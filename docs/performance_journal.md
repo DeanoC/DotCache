@@ -993,3 +993,54 @@ A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also staye
 - target match `1.0`
 
 That makes `M3 int8` a plausible memory-first live-tail option. It is not yet a speed win on this Mac, but it is the first quantized `M3` path worth carrying forward into later planner and CUDA work.
+
+## CUDA Supported Matrix Baseline
+
+Current CUDA-supported baseline on this pod was recorded from:
+
+```bash
+source scripts/env_cuda.sh
+.venv/bin/python benchmarks/bench_model_matrix.py \
+  --run-supported \
+  --backend torch_cuda \
+  --device cuda \
+  --max-new-tokens 2 \
+  --output-format jsonl
+```
+
+Raw artifacts:
+
+- `benchmarks/results/cuda_supported_baseline_20260328.jsonl`
+- `benchmarks/results/cuda_supported_baseline_20260328.log`
+
+All successful exact-length HF runs kept greedy token agreement at `1.0`.
+
+| Model | Exact prompt | Decode ms/step | KV resident bytes | Total resident bytes | Status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `TinyLlama 1.1B Chat` | `289` | `108.87` | `7,557,120` | `11,206,656` | pass |
+| `TinyLlama 1.1B Chat` | `577` | `173.71` | `9,340,032` | `13,935,744` | pass |
+| `TinyLlama 1.1B Chat` | `1536` | `207.45` | `16,479,872` | `24,589,952` | pass |
+| `SmolLM2 360M Instruct` | `1024` | `337.94` | `23,044,288` | `32,776,384` | pass |
+| `SmolLM2 360M Instruct` | `2048` | `417.39` | `35,377,984` | `53,017,408` | pass |
+| `Llama 3.2 3B Instruct` | `1024` | `257.85` | `73,400,320` | `109,576,192` | pass |
+| `Llama 3.2 3B Instruct` | `2048` | `332.64` | `117,440,512` | `175,636,480` | pass |
+| `Llama 3.2 3B Instruct` | `4096` | `477.14` | `205,520,896` | `271,581,184` | pass |
+| `Qwen2.5 1.5B Instruct` | `1024` | `109.59` | `18,677,760` | `27,918,336` | pass |
+| `Qwen2.5 1.5B Instruct` | `2048` | `123.83` | `30,015,488` | `44,957,696` | pass |
+| `Qwen2.5 3B Instruct` | `1024` | `149.90` | `24,084,480` | `35,979,264` | pass |
+| `Qwen2.5 3B Instruct` | `2048` | `163.80` | `38,731,776` | `57,802,752` | pass |
+| `Qwen2.5 3B Instruct` | `4096` | `220.35` | `68,026,368` | `101,449,728` | pass |
+| `Qwen2.5 7B Instruct` | `1024` | `150.41` | `37,519,360` | `56,033,280` | pass |
+| `Qwen2.5 7B Instruct` | `2048` | `210.03` | `60,358,656` | `90,308,608` | pass |
+
+Current limits from the same matrix:
+
+- `SmolLM2 1.7B Instruct` OOMed at exact `1024` and `2048`
+- `Qwen2.5 7B Instruct` OOMed at exact `4096`
+- GGUF external lanes were not runnable here because the required executable was missing
+
+The practical read is:
+
+- the strongest current CUDA lanes are `Qwen2.5 1.5B`, `Qwen2.5 3B`, and `Llama 3.2 3B`
+- `TinyLlama` still works as the smallest exact regression lane, but it is no longer the most representative performance target
+- the next frontier issues are memory pressure on `SmolLM2 1.7B` and the `4096`-token `Qwen2.5 7B` lane rather than basic correctness on the already-supported models
