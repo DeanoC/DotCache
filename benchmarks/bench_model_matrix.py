@@ -95,6 +95,26 @@ def _default_compare_command(
     continue_on_error: bool,
 ) -> list[str] | None:
     root = Path(__file__).resolve().parent.parent
+    if spec.benchmark_harness == "qwen35_text":
+        command = [
+            str(root / ".venv" / "bin" / "python"),
+            str(root / "benchmarks" / "bench_qwen35_text.py"),
+            "--model-id",
+            spec.model_id,
+            "--backend",
+            backend,
+            "--torch-dtype",
+            torch_dtype,
+            "--max-new-tokens",
+            str(max_new_tokens),
+            "--target-prompt-lengths",
+            *[str(length) for length in prompt_lengths],
+        ]
+        if continue_on_error:
+            command.append("--continue-on-error")
+        if device is not None:
+            command.extend(["--device", device])
+        return command
     if spec.benchmark_harness in {"llama_compare", "qwen2_compare"} and spec.dotcache_ready and mount_hf_models:
         command = [
             str(root / ".venv" / "bin" / "python"),

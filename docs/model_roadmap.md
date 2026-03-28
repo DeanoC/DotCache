@@ -12,15 +12,16 @@ This document is the scaffold for "proper model" work beyond the current TinyLla
   - External reference lane for memory, latency, and TurboQuant-style comparisons.
   - Useful for comparison, not the primary integration surface.
 - `Qwen3.5 hybrid`
-  - Reference-only for now.
-  - Not a next-step target because it is not a plain Llama-style decoder path.
+  - `Qwen/Qwen3.5-0.8B` is now runnable locally as a text-only dense smoke lane.
+  - DotCache is not ready for the hybrid attention/delta state path yet.
+  - Larger Qwen3.5 lanes remain reference-only until the hybrid-state abstraction exists.
 
 ## Recommended Order
 
 1. `Qwen/Qwen2.5-3B-Instruct` on CUDA
 2. `Qwen/Qwen2.5-7B-Instruct` on CUDA
 3. `meta-llama/Llama-3.2-3B-Instruct` on CUDA when access exists
-4. `Qwen/Qwen3.5-*` only after a non-Llama DotCache abstraction exists
+4. `Qwen/Qwen3.5-*` text-only dense smoke first, then hybrid-state design before any DotCache interception
 
 ## Shared Matrix
 
@@ -33,6 +34,7 @@ Use the matrix CLI to:
 
 - list all planned model targets
 - emit runnable compare commands for models already supported by the HF DotCache path
+- emit runnable dense-only smoke commands for supported non-DotCache lanes such as `qwen35_0p8b_hf`
 - keep HF native and GGUF reference lanes in one place even before every runtime path exists
 
 Example:
@@ -41,6 +43,7 @@ Example:
 .venv/bin/python benchmarks/bench_model_matrix.py --output-format pretty
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys tinyllama_hf smollm2_360m_hf --run-supported --backend torch_mps --device mps
 .venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen25_3b_hf qwen25_7b_hf --run-supported --backend torch_cuda --device cuda
+.venv/bin/python benchmarks/bench_model_matrix.py --model-keys qwen35_0p8b_hf --run-supported --backend torch_mps --device mps
 ```
 
 The matrix now also emits runnable external GGUF reference commands for `llama.cpp` lanes:
@@ -86,6 +89,7 @@ Use the unlabeled wrapper defaults for the recommended path. Add the explicit `-
   - Qwen2.5 7B HF second
   - Llama 3.2 3B HF when access exists
 - GGUF should be treated as an external baseline lane, not as a replacement for the native-weight DotCache path.
+- `Qwen/Qwen3.5-0.8B` is now the first runnable hybrid-family smoke lane, but only in dense text-only mode.
 
 ## CUDA Pod Lane
 
