@@ -1,0 +1,29 @@
+model_id: HuggingFaceTB/SmolLM2-360M-Instruct
+source:
+  benchmark: >
+    Second-pass local profile plus follow-up exact-prompt and teacher-forced loss checks on the M4 Mac.
+  backend: torch_mps
+  prompt_length: 1024
+  tokens_per_page: 256
+  notes: >
+    Third local handwritten profile for SmolLM2. This keeps the safe balanced-value path from
+    the second pass, but additionally clamps the deepest key layers back to strict in order to
+    reduce late K:M2 pressure without reverting the whole model to exact M0.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+
+key_layer_sensitivity:
+  - layer:3=strict
+  - layer:4=strict
+  - layer:5=strict
+  - layer:24=strict
+  - layer:25=strict
+  - layer:26=strict
+  - layer:27=strict
+  - layer:28=strict
+  - layer:29=strict
+  - layer:30=strict
+  - layer:31=strict
+
+value_layer_sensitivity: []

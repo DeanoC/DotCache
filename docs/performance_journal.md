@@ -35,6 +35,23 @@ What that changed in our read:
 - `V`-only `M1` remains the better asymmetric approximate mode than `K`-only `M2` on the tested SmolLM2 slice, but neither is strong enough to replace exact `M0` on the main model path.
 - Greedy agreement by itself is not a sufficient quality gate for these modes. Teacher-forced loss/perplexity is now the local quality metric to trust first.
 
+### CUDA handoff from local policy work
+
+The latest local policy work produced a cleaner CUDA handoff package rather than another round of hand-tuned MPS thresholds.
+
+The practical local takeaways to carry forward are:
+
+- `M0 3b` is now a real intermediate tier, and `K=4b, V=3b` is the most plausible first CUDA probe.
+- `M3 int8` now works end to end, and the planner can emit recent sealed pages as `M3:int8`.
+- TinyLlama has one clearly useful local adaptive profile: conservative middle-layer keys plus aggressive values.
+- SmolLM2 still does not have a clearly good adaptive profile, but it does have a safer starting point: early strict keys, deepest keys clamped back to strict, and balanced values.
+
+The concrete handoff artifacts are:
+
+- [tinyllama_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/tinyllama_cuda_start.yaml)
+- [smollm2_360m_cuda_start.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/smollm2_360m_cuda_start.yaml)
+- [cuda_next_steps.md](/Users/deanocalver/Documents/Projects/DotCache/docs/cuda_next_steps.md)
+
 ### Turbo3 local lane on MPS
 
 Turbo3 now has its own repeatable local runner on this Mac through [run_turbo3_mps_suite.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_turbo3_mps_suite.sh). The current implementation also shares device-resident Turbo3 centroids across prepared pages, and it now has a correct vectorized `3`-bit spill-unpack path in [torch_mps.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/backends/torch_mps.py) that uses advanced indexing instead of repeated-index `torch.gather(...)`.
@@ -783,3 +800,80 @@ Qwen2.5 3B is now confirmed runnable on this M4 through the native HF path, but 
   - DotCache KV ratio `1.71x`
 
 The `1024` dense point is clearly noisy and should not be treated as a clean crossover claim. The trustworthy takeaway is simpler: this Mac can host and run Qwen2.5 3B for smoke tests and frontier checks up to at least exact `1024` prompt tokens, but it is near the limit of what is useful for sustained 3B-class optimization work.
+
+## Local M0 3-bit Probe
+
+`M0 3b` now works on the local MPS path through the general encode/prepare/decode path. It is not yet part of the direct full-prefill torch fast path, so these numbers are best read as planning hints rather than a polished systems result.
+
+- TinyLlama exact `577`, `K=3b, V=3b`
+  - dense decode `1438.08 ms/step`
+  - DotCache decode `14415.48 ms/step`
+  - KV ratio `0.360x`
+  - greedy agreement `1.0`
+- TinyLlama exact `577`, `K=3b, V=4b`
+  - dense decode `653.61 ms/step`
+  - DotCache decode `9554.66 ms/step`
+  - KV ratio `0.374x`
+  - greedy agreement `1.0`
+- TinyLlama exact `577`, `K=4b, V=3b`
+  - dense decode `731.19 ms/step`
+  - DotCache decode `8488.08 ms/step`
+  - KV ratio `0.374x`
+  - greedy agreement `1.0`
+
+Short teacher-forced TinyLlama checks (`304 / 288 / 4`) also stayed clean:
+
+- `K=3b, V=4b`
+  - loss delta `-0.00317`
+  - token agreement `1.0`
+- `K=4b, V=3b`
+  - loss delta `-0.00250`
+  - token agreement `1.0`
+
+The local hint is that `3b` looks more plausible as a value-side tier than a key-side one. `K=4b, V=3b` was the best asymmetric TinyLlama run on both runtime and logit drift, while `K=3b, V=4b` was still viable but slightly worse.
+
+One SmolLM2 360M exact `1024` probe on the more promising asymmetric split showed the same direction:
+
+- `K=4b, V=3b`
+  - dense decode `878.59 ms/step`
+  - DotCache decode `12189.15 ms/step`
+  - KV ratio `0.297x`
+  - greedy agreement `1.0`
+
+So the honest local conclusion is:
+
+- `M0 3b` is a real new planning tier now
+- it appears quality-viable on TinyLlama and plausible on SmolLM2
+- the current MPS implementation is still much too slow to promote it as a runtime win
+- if we use `3b` in policy work, the best first guess is `K=4b, V=3b`, not `3b` everywhere
+
+## Local M3 int8 Probe
+
+`M3` now supports an `int8` escape path with per-row scales on the local MPS runtime. This keeps the `M3` live-tail semantics the same while reducing resident bytes for recent pages.
+
+TinyLlama exact `10` prompt tokens is a clean local isolation point because the whole KV lives in the tail:
+
+- `M3 float16`
+  - dense decode `691.90 ms/step`
+  - DotCache decode `3292.46 ms/step`
+  - tail resident bytes `5.77 MB`
+  - greedy agreement `1.0`
+- `M3 int8`
+  - dense decode `733.08 ms/step`
+  - DotCache decode `3743.42 ms/step`
+  - tail resident bytes `2.97 MB`
+  - greedy agreement `1.0`
+
+So the first-order trade is straightforward:
+
+- resident tail memory dropped by about `48%`
+- runtime got a bit worse on this MPS implementation
+- short-prompt greedy behavior stayed unchanged
+
+A short TinyLlama teacher-forced check (`40 / 32 / 8`) with `M3 int8` also stayed clean enough to keep exploring:
+
+- loss delta `-0.01082`
+- token agreement `1.0`
+- target match `1.0`
+
+That makes `M3 int8` a plausible memory-first live-tail option. It is not yet a speed win on this Mac, but it is the first quantized `M3` path worth carrying forward into later planner and CUDA work.

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 
+from .planner import LayerPolicy, PageModeSpec, make_explicit_policy, make_tier_candidates, parse_page_mode_token
+
 
 _VALID_KEY_MODES = ("M0", "M1", "M2", "M3", "T3")
 _VALID_VALUE_MODES = ("M0", "M1", "M3", "T3")
@@ -24,6 +26,42 @@ def _parse_mode_override_spec(spec: str, *, allowed_modes: tuple[str, ...], fiel
     raise ValueError(f"{field_name} entries must use layer:<id>=<mode> or layer:<id>:kv:<id>=<mode>")
 
 
+def _parse_layer_value_spec(
+    spec: str,
+    *,
+    field_name: str,
+    allowed_values: tuple[str, ...],
+) -> tuple[int, str]:
+    if "=" not in spec:
+        raise ValueError(f"{field_name} entries must use layer:<id>=<value>")
+    target, value = spec.split("=", 1)
+    parts = target.strip().split(":")
+    if len(parts) != 2 or parts[0] != "layer":
+        raise ValueError(f"{field_name} entries must use layer:<id>=<value>")
+    value = value.strip()
+    if value not in allowed_values:
+        allowed = ", ".join(allowed_values)
+        raise ValueError(f"{field_name} values must be one of {allowed}")
+    return int(parts[1]), value
+
+
+def _parse_layer_candidate_spec(spec: str, *, field_name: str) -> tuple[int, tuple[PageModeSpec, ...]]:
+    if "=" not in spec:
+        raise ValueError(f"{field_name} entries must use layer:<id>=MODE/SCHEME/BITS[,MODE/SCHEME/BITS...]")
+    target, raw_candidates = spec.split("=", 1)
+    parts = target.strip().split(":")
+    if len(parts) != 2 or parts[0] != "layer":
+        raise ValueError(f"{field_name} entries must use layer:<id>=MODE/SCHEME/BITS[,MODE/SCHEME/BITS...]")
+    candidates = tuple(
+        parse_page_mode_token(token.strip())
+        for token in raw_candidates.split(",")
+        if token.strip()
+    )
+    if not candidates:
+        raise ValueError(f"{field_name} entries must include at least one candidate")
+    return int(parts[1]), candidates
+
+
 @dataclass(frozen=True, slots=True)
 class DotCacheConfig:
     head_dim: int
@@ -42,6 +80,7 @@ class DotCacheConfig:
     quant_scheme_k: str = "affine"
     quant_scheme_v: str = "affine"
     escape_dtype: str = "float16"
+    recent_page_escape_dtype: str = "float16"
     m2_sketch_dim_k: int = 8
     m2_center_k: bool = False
     m2_segment_count_k: int = 1
@@ -62,16 +101,22 @@ class DotCacheConfig:
     prepared_chunk_cache_max_bytes: int = 64 * 1024 * 1024
     key_mode_overrides: tuple[str, ...] = ()
     value_mode_overrides: tuple[str, ...] = ()
+    key_policy_tier: str = "exact"
+    value_policy_tier: str = "exact"
+    key_layer_sensitivity: tuple[str, ...] = ()
+    value_layer_sensitivity: tuple[str, ...] = ()
+    key_policy_overrides: tuple[str, ...] = ()
+    value_policy_overrides: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
             raise ValueError("head_dim must be positive")
         if self.group_size <= 0:
             raise ValueError("group_size must be positive")
-        if self.bits_k not in (2, 4):
-            raise ValueError("bits_k must be 2 or 4 for the MVP")
-        if self.bits_v not in (2, 4):
-            raise ValueError("bits_v must be 2 or 4 for the MVP")
+        if self.bits_k not in (2, 3, 4):
+            raise ValueError("bits_k must be 2, 3, or 4 for the current runtime")
+        if self.bits_v not in (2, 3, 4):
+            raise ValueError("bits_v must be 2, 3, or 4 for the current runtime")
         if self.tokens_per_page <= 0:
             raise ValueError("tokens_per_page must be positive")
         if self.payload_layout_k not in ("group_major", "token_major"):
@@ -86,6 +131,10 @@ class DotCacheConfig:
             raise ValueError("quant_scheme_k must be affine, symmetric, lut, sketch, or turbo3")
         if self.quant_scheme_v not in ("affine", "symmetric", "lut", "turbo3"):
             raise ValueError("quant_scheme_v must be affine, symmetric, lut, or turbo3")
+        if self.escape_dtype not in ("float16", "float32", "int8"):
+            raise ValueError("escape_dtype must be float16, float32, or int8")
+        if self.recent_page_escape_dtype not in ("float16", "float32", "int8"):
+            raise ValueError("recent_page_escape_dtype must be float16, float32, or int8")
         if self.m2_sketch_dim_k <= 0:
             raise ValueError("m2_sketch_dim_k must be positive")
         if not isinstance(self.m2_center_k, bool):
@@ -129,6 +178,25 @@ class DotCacheConfig:
             _parse_mode_override_spec(spec, allowed_modes=_VALID_KEY_MODES, field_name="key_mode_overrides")
         for spec in self.value_mode_overrides:
             _parse_mode_override_spec(spec, allowed_modes=_VALID_VALUE_MODES, field_name="value_mode_overrides")
+        for field_name, tier in (("key_policy_tier", self.key_policy_tier), ("value_policy_tier", self.value_policy_tier)):
+            if tier not in ("exact", "strict", "balanced", "aggressive"):
+                raise ValueError(f"{field_name} must be exact, strict, balanced, or aggressive")
+        for spec in self.key_layer_sensitivity:
+            _parse_layer_value_spec(
+                spec,
+                field_name="key_layer_sensitivity",
+                allowed_values=("strict", "balanced", "aggressive"),
+            )
+        for spec in self.value_layer_sensitivity:
+            _parse_layer_value_spec(
+                spec,
+                field_name="value_layer_sensitivity",
+                allowed_values=("strict", "balanced", "aggressive"),
+            )
+        for spec in self.key_policy_overrides:
+            _parse_layer_candidate_spec(spec, field_name="key_policy_overrides")
+        for spec in self.value_policy_overrides:
+            _parse_layer_candidate_spec(spec, field_name="value_policy_overrides")
 
     @property
     def num_groups(self) -> int:
@@ -144,6 +212,20 @@ class DotCacheConfig:
         if kind == "V":
             return bool(self.value_mode_overrides)
         return bool(self.key_mode_overrides or self.value_mode_overrides)
+
+    def has_policy_overrides(self, *, kind: str | None = None) -> bool:
+        if kind == "K":
+            return bool(self.key_layer_sensitivity or self.key_policy_overrides or self.key_policy_tier != "exact")
+        if kind == "V":
+            return bool(self.value_layer_sensitivity or self.value_policy_overrides or self.value_policy_tier != "exact")
+        return bool(
+            self.key_layer_sensitivity
+            or self.value_layer_sensitivity
+            or self.key_policy_overrides
+            or self.value_policy_overrides
+            or self.key_policy_tier != "exact"
+            or self.value_policy_tier != "exact"
+        )
 
     def resolve_page_mode(self, *, kind: str, layer_id: int, kv_head_id: int) -> str:
         if kind == "K":
@@ -170,3 +252,71 @@ class DotCacheConfig:
                 continue
             resolved = override_mode
         return resolved
+
+    def resolve_layer_policy(self, *, kind: str, layer_id: int, kv_head_id: int) -> LayerPolicy:
+        if kind == "K":
+            default_mode = self.default_mode_k
+            default_bits = self.bits_k
+            default_quant_scheme = self.quant_scheme_k
+            default_tier = self.key_policy_tier
+            sensitivity_specs = self.key_layer_sensitivity
+            explicit_specs = self.key_policy_overrides
+            mode_overrides = self.key_mode_overrides
+        elif kind == "V":
+            default_mode = self.default_mode_v
+            default_bits = self.bits_v
+            default_quant_scheme = self.quant_scheme_v
+            default_tier = self.value_policy_tier
+            sensitivity_specs = self.value_layer_sensitivity
+            explicit_specs = self.value_policy_overrides
+            mode_overrides = self.value_mode_overrides
+        else:
+            raise ValueError("kind must be K or V")
+
+        resolved_mode = self.resolve_page_mode(kind=kind, layer_id=layer_id, kv_head_id=kv_head_id)
+        if resolved_mode != default_mode:
+            override_scheme = (
+                "lut" if resolved_mode == "M1"
+                else "sketch" if resolved_mode == "M2"
+                else "turbo3" if resolved_mode == "T3"
+                else default_quant_scheme
+            )
+            return make_explicit_policy(
+                kind=kind,
+                policy_id=f"{kind.lower()}_mode_override_layer_{int(layer_id)}",
+                sensitivity_tier="exact",
+                candidates=(PageModeSpec(mode=resolved_mode, bits=default_bits, quant_scheme=override_scheme),),
+                recent_escape_dtype=self.recent_page_escape_dtype,
+                recent_window=0,
+            )
+
+        for spec in explicit_specs:
+            override_layer_id, candidates = _parse_layer_candidate_spec(spec, field_name="key_policy_overrides" if kind == "K" else "value_policy_overrides")
+            if override_layer_id == int(layer_id):
+                return make_explicit_policy(
+                    kind=kind,
+                    policy_id=f"{kind.lower()}_policy_override_layer_{int(layer_id)}",
+                    sensitivity_tier="balanced",
+                    candidates=candidates,
+                    recent_escape_dtype=self.recent_page_escape_dtype,
+                    recent_window=self.recent_window,
+                )
+
+        tier = default_tier
+        for spec in sensitivity_specs:
+            override_layer_id, override_tier = _parse_layer_value_spec(
+                spec,
+                field_name="key_layer_sensitivity" if kind == "K" else "value_layer_sensitivity",
+                allowed_values=("strict", "balanced", "aggressive"),
+            )
+            if override_layer_id == int(layer_id):
+                tier = override_tier
+        return make_tier_candidates(
+            kind=kind,
+            sensitivity_tier=tier,
+            default_bits=default_bits,
+            default_quant_scheme=default_quant_scheme,
+            default_mode=default_mode,
+            recent_escape_dtype=self.recent_page_escape_dtype,
+            recent_window=self.recent_window,
+        )

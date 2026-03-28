@@ -227,10 +227,10 @@ def test_prepare_pages_mps_batches_upload_without_widening_affine_metadata() -> 
 
 
 @requires_mps
-@pytest.mark.parametrize(("token_count", "head_dim"), [(8, 48), (64, 128)])
-def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int) -> None:
-    rng = np.random.default_rng(token_count + head_dim)
-    config = DotCacheConfig(head_dim=head_dim, group_size=32, bits_k=4, tokens_per_page=64)
+@pytest.mark.parametrize(("token_count", "head_dim", "bits"), [(8, 48, 4), (64, 128, 4), (64, 128, 3)])
+def test_score_page_mps_matches_cpu_reference(token_count: int, head_dim: int, bits: int) -> None:
+    rng = np.random.default_rng(token_count + head_dim + bits)
+    config = DotCacheConfig(head_dim=head_dim, group_size=32, bits_k=bits, tokens_per_page=64)
     keys = rng.normal(size=(token_count, head_dim)).astype(np.float32)
     query = rng.normal(size=(head_dim,)).astype(np.float32)
     page = encode_page(keys, config, kind="K", mode="M0")
@@ -403,9 +403,10 @@ def test_decode_step_mps_matches_cpu_reference_for_uniform_batched_pages() -> No
 
 
 @requires_mps
-def test_m3_pages_work_on_mps() -> None:
+@pytest.mark.parametrize("escape_dtype", ["float16", "int8"])
+def test_m3_pages_work_on_mps(escape_dtype: str) -> None:
     rng = np.random.default_rng(26)
-    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4)
+    config = DotCacheConfig(head_dim=64, group_size=32, bits_k=4, bits_v=4, escape_dtype=escape_dtype)
     keys = rng.normal(size=(16, config.head_dim)).astype(np.float32)
     values = rng.normal(size=(16, config.head_dim)).astype(np.float32)
     query = rng.normal(size=(config.head_dim,)).astype(np.float32)
@@ -419,14 +420,14 @@ def test_m3_pages_work_on_mps() -> None:
     np.testing.assert_allclose(
         score_page(query, prepared_key_page, backend="torch_mps"),
         score_page(query, key_page, backend="cpu_ref"),
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.12 if escape_dtype == "int8" else 1e-3,
+        rtol=0.12 if escape_dtype == "int8" else 1e-3,
     )
     np.testing.assert_allclose(
         mix_page(attn, prepared_value_page, backend="torch_mps"),
         mix_page(attn, value_page, backend="cpu_ref"),
-        atol=1e-3,
-        rtol=1e-3,
+        atol=0.12 if escape_dtype == "int8" else 1e-3,
+        rtol=0.12 if escape_dtype == "int8" else 1e-3,
     )
 
 

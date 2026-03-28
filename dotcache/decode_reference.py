@@ -21,7 +21,7 @@ def decode_group_ref(page: EncodedPage, group_index: int) -> np.ndarray:
             raise ValueError("escape payload is missing")
         start = group_index * header.group_size
         end = start + header.group_size
-        return decode_escape_payload(page.escape_payload)[:, start:end]
+        return decode_escape_payload(page.escape_payload, scales=page.escape_scales)[:, start:end]
 
     if header.mode_default == "M2":
         if page.m2_sketch is None or page.m2_basis is None:
@@ -70,7 +70,7 @@ def decode_page(page: EncodedPage) -> np.ndarray:
     if header.mode_default == "M3":
         if page.escape_payload is None:
             raise ValueError("escape payload is missing")
-        return decode_escape_payload(page.escape_payload, head_dim=header.head_dim)
+        return decode_escape_payload(page.escape_payload, head_dim=header.head_dim, scales=page.escape_scales)
 
     groups = [decode_group_ref(page, group_index) for group_index in range(header.num_groups)]
     full = np.concatenate(groups, axis=-1)

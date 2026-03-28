@@ -3,10 +3,11 @@ from __future__ import annotations
 import numpy as np
 
 from .config import DotCacheConfig
+from .planner import PageModeSpec
 from .modes.m0_affine import quantize_tensor
 from .modes.m1_lut import quantize_tensor_lut
 from .modes.m2_key_sketch import quantize_tensor_m2, reconstruct_group_m2
-from .modes.m3_escape import encode_escape_payload
+from .modes.m3_escape import encode_escape_storage
 from .modes.turbo3 import quantize_tensor_turbo3
 from .page_format import build_payload
 from .packing import words_per_group
@@ -112,6 +113,7 @@ def encode_page(
     kv_head_id: int = 0,
     token_start: int = 0,
     mode: str | None = None,
+    page_mode: PageModeSpec | None = None,
     layout: str | None = None,
     quant_scheme: str | None = None,
     build_runtime_metadata: bool = True,
@@ -125,11 +127,18 @@ def encode_page(
 
     bits = config.bits_k if kind == "K" else config.bits_v
     default_mode = config.default_mode_k if kind == "K" else config.default_mode_v
-    page_mode = mode or default_mode
+    selected_page_mode = page_mode
+    page_mode_name = selected_page_mode.mode if selected_page_mode is not None else (mode or default_mode)
+    if selected_page_mode is not None:
+        bits = int(selected_page_mode.bits)
     page_layout = layout or (config.payload_layout_k if kind == "K" else config.payload_layout_v)
-    scheme = quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
+    scheme = (
+        selected_page_mode.quant_scheme
+        if selected_page_mode is not None
+        else quant_scheme or (config.quant_scheme_k if kind == "K" else config.quant_scheme_v)
+    )
     token_count = values.shape[0]
-    requested_mode = page_mode
+    requested_mode = page_mode_name
     trial_quant_error = None
     runtime_page_mean = None
     runtime_page_sketch = None
@@ -150,7 +159,19 @@ def encode_page(
             mean.astype(np.float16, copy=False),
         )
 
-    if page_mode == "M3":
+    header_kwargs = {
+        "policy_id": selected_page_mode.policy_id if selected_page_mode is not None else "exact_baseline",
+        "sensitivity_tier": selected_page_mode.sensitivity_tier if selected_page_mode is not None else "exact",
+        "fallback_reason": selected_page_mode.fallback_reason if selected_page_mode is not None else "",
+        "age_bucket": selected_page_mode.age_bucket if selected_page_mode is not None else "aged",
+    }
+
+    if page_mode_name == "M3":
+        escape_dtype = (
+            selected_page_mode.escape_dtype
+            if selected_page_mode is not None and selected_page_mode.escape_dtype is not None
+            else config.escape_dtype
+        )
         header = PageHeader(
             layer_id=layer_id,
             kv_head_id=kv_head_id,
@@ -166,12 +187,14 @@ def encode_page(
             mode_default="M3",
             layout=page_layout,
             quant_scheme=scheme,
-            escape_dtype=config.escape_dtype,
+            **header_kwargs,
+            escape_dtype=escape_dtype,
         )
-        escape_payload = encode_escape_payload(values, dtype=config.escape_dtype)
+        escape_payload, escape_scales = encode_escape_storage(values, dtype=escape_dtype)
         return EncodedPage(
             header=header,
             escape_payload=escape_payload,
+            escape_scales=escape_scales,
             requested_mode=page_mode,
             runtime_page_mean=runtime_page_mean,
             runtime_page_sketch=runtime_page_sketch,
@@ -181,7 +204,7 @@ def encode_page(
 
     trial_token_p95_error = None
 
-    if page_mode == "M2":
+    if page_mode_name == "M2":
         if kind != "K":
             raise ValueError("M2 is only supported for K pages in this phase")
         coeffs, basis, mean, padded_head_dim = _encode_m2_tensor(values, config)
@@ -200,6 +223,7 @@ def encode_page(
             mode_default="M2",
             layout=page_layout,
             quant_scheme="sketch",
+            **header_kwargs,
             escape_dtype=config.escape_dtype,
         )
         return EncodedPage(
@@ -214,7 +238,7 @@ def encode_page(
             runtime_page_max=runtime_page_max,
         )
 
-    if page_mode == "M1":
+    if page_mode_name == "M1":
         codes, codebooks, padded_head_dim = quantize_tensor_lut(
             values,
             group_size=config.group_size,
@@ -235,9 +259,9 @@ def encode_page(
                 trial_quant_error > config.m1_error_threshold
                 or trial_token_p95_error > config.m1_token_p95_error_threshold
             ):
-                page_mode = "M0"
+                page_mode_name = "M0"
                 scheme = "affine"
-        if page_mode == "M1":
+        if page_mode_name == "M1":
             sidecar_sketch, sidecar_basis, sidecar_mean = _build_m2_sidecar()
             payload = build_payload(codes, bits, page_layout)
             header = PageHeader(
@@ -255,6 +279,7 @@ def encode_page(
                 mode_default="M1",
                 layout=page_layout,
                 quant_scheme="lut",
+                **header_kwargs,
                 escape_dtype=config.escape_dtype,
             )
             return EncodedPage(
@@ -274,7 +299,7 @@ def encode_page(
                 runtime_page_max=runtime_page_max,
         )
 
-    if page_mode == "T3":
+    if page_mode_name == "T3":
         codes, correction, centroids, padded_head_dim = quantize_tensor_turbo3(
             values,
             group_size=config.group_size,
@@ -296,6 +321,7 @@ def encode_page(
             mode_default="T3",
             layout=page_layout,
             quant_scheme="turbo3",
+            **header_kwargs,
             escape_dtype=config.escape_dtype,
         )
         return EncodedPage(
@@ -313,7 +339,7 @@ def encode_page(
             runtime_page_max=runtime_page_max,
         )
 
-    if page_mode != "M0":
+    if page_mode_name != "M0":
         raise ValueError("only M0, M1, M2, M3, and T3 are supported in this bootstrap")
 
     codes, scales, bias, padded_head_dim = quantize_tensor(
@@ -338,6 +364,7 @@ def encode_page(
         mode_default="M0",
         layout=page_layout,
         quant_scheme=scheme,
+        **header_kwargs,
         escape_dtype=config.escape_dtype,
     )
     stored_scales = scales.astype(np.float16)

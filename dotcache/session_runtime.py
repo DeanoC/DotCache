@@ -15,6 +15,7 @@ from .attention_runtime import (
 from .modes.m0_affine import dequantize_group
 from .modes.m1_lut import dequantize_group_lut
 from .modes.m2_key_sketch import reconstruct_group_m2
+from .modes.m3_escape import decode_escape_payload
 from .modes.turbo3 import dequantize_group_turbo3
 from .page_cache import PreparedPageCache
 from .page_format import load_group_words
@@ -34,7 +35,14 @@ def _decode_page_dense(page: PageLike) -> np.ndarray:
     if header.mode_default == "M3":
         if source_page.escape_payload is None:
             raise ValueError("escape payload is missing")
-        return np.asarray(source_page.escape_payload[:, : header.head_dim], dtype=np.float32)
+        return np.asarray(
+            decode_escape_payload(
+                source_page.escape_payload,
+                head_dim=header.head_dim,
+                scales=source_page.escape_scales,
+            ),
+            dtype=np.float32,
+        )
 
     if header.mode_default == "M2":
         if source_page.m2_sketch is None or source_page.m2_basis is None:

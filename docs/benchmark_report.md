@@ -362,6 +362,8 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - CUDA is currently a correctness/parity backend, not a performance-leading one.
 - Prefill ingest and page preparation are still expensive at longer contexts, especially before warmup and caching effects settle.
 - Qwen2.5 3B can run on this Mac for small exact-length smokes, but it is not a good box for sustained 3B-class optimization work.
+- New local `M0 3b` probes show a plausible new quality tier, especially for `K=4b, V=3b`, but the current MPS implementation is still far too slow to treat `3b` as an optimization win.
+- New local `M3 int8` probes cut live-tail resident bytes roughly in half on TinyLlama short prompts while keeping short teacher-forced behavior intact, but they are still slower than the existing `M3 float16` path on MPS.
 
 ### Likely causes
 
@@ -378,6 +380,8 @@ Adding a stable explicit-dequant end-to-end latency column would be a good follo
 - continue exact decode optimization in the midrange SmolLM2 `512-1536` region where memory wins exist but speed wins are mixed
 - run the new Phase 6 vLLM offline benchmark on the CUDA cloud instance and add the first dense-vs-shadow-vs-active records
 - use the teacher-forced loss harness as the default local quality gate for any future `M1/M2` codec changes before promoting them into the main model path
+- decide whether `M0 3b`, likely as `K=4b, V=3b`, is worth promoting into adaptive planner candidate sets once CUDA can test it on a less punitive runtime path
+- decide whether `M3 int8` is worth making a planner/runtime option for recent pages once CUDA can test whether the live-tail memory win survives with less Apple-specific overhead
 
 ## Phase 6 Status
 

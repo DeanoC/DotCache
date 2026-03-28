@@ -1,6 +1,6 @@
 import numpy as np
 
-from dotcache.attention_runtime import decode_step
+from dotcache.attention_runtime import decode_step, prepare_pages
 from dotcache.backends import (
     clear_prepared_chunk_cache,
     configure_prepared_chunk_cache,
@@ -9,7 +9,7 @@ from dotcache.backends import (
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
-from dotcache.model_kv_cache import ModelPagedKVCache, default_q_head_to_kv_head
+from dotcache.model_kv_cache import ModelPagedKVCache, _grouped_pages_can_batch, default_q_head_to_kv_head
 from dotcache.tracing import ExecutionTrace
 
 
@@ -224,6 +224,29 @@ def test_dotcache_config_resolves_specific_mode_overrides() -> None:
     assert config.resolve_page_mode(kind="V", layer_id=1, kv_head_id=0) == "M0"
 
 
+def test_dotcache_config_resolves_layer_policy_tiers_and_explicit_candidates() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        key_policy_tier="balanced",
+        value_policy_tier="strict",
+        key_layer_sensitivity=("layer:1=aggressive",),
+        value_policy_overrides=("layer:0=M3/affine/4/int8,M1/lut/4,M0/affine/4",),
+        recent_page_escape_dtype="int8",
+    )
+
+    key_policy_l0 = config.resolve_layer_policy(kind="K", layer_id=0, kv_head_id=0)
+    key_policy_l1 = config.resolve_layer_policy(kind="K", layer_id=1, kv_head_id=0)
+    value_policy_l0 = config.resolve_layer_policy(kind="V", layer_id=0, kv_head_id=0)
+
+    assert key_policy_l0.sensitivity_tier == "balanced"
+    assert key_policy_l1.sensitivity_tier == "aggressive"
+    assert len(value_policy_l0.candidates) == 3
+    assert value_policy_l0.candidates[0].mode == "M3"
+    assert value_policy_l0.candidates[0].escape_dtype == "int8"
+    assert value_policy_l0.recent_candidate is not None
+    assert value_policy_l0.recent_candidate.escape_dtype == "int8"
+
+
 def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head() -> None:
     rng = np.random.default_rng(30415)
     config = DotCacheConfig(
@@ -254,6 +277,81 @@ def test_model_paged_kv_cache_applies_key_mode_overrides_per_layer_and_kv_head()
     kv1_page = cache._states[(0, 1)].session.key_pages[0]
     assert kv0_page.header.mode_default == "M1"
     assert kv1_page.header.mode_default == "M3"
+
+
+def test_model_paged_kv_cache_records_policy_metadata_and_fragmentation() -> None:
+    rng = np.random.default_rng(30416)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        key_policy_tier="balanced",
+        value_policy_tier="strict",
+        key_layer_sensitivity=("layer:0=aggressive",),
+        value_policy_overrides=("layer:0=M1/lut/4,M0/affine/4",),
+        recent_window=0,
+        m1_fallback_to_m0=False,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(loc=0.05, scale=0.01, size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(loc=0.05, scale=0.01, size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+    first_key_page = cache._states[(0, 0)].session.key_pages[0]
+    first_value_page = cache._states[(0, 0)].session.value_pages[0]
+
+    assert first_key_page.header.policy_id.startswith("k_")
+    assert first_value_page.header.policy_id.startswith("v_")
+    assert first_key_page.header.sensitivity_tier == "aggressive"
+    assert first_value_page.header.sensitivity_tier in {"strict", "balanced"}
+    assert int(summary["fragmentation_total_buckets"]) >= 1
+    assert "policy_tier_counts" in summary
+    assert "mode_signature_counts" in summary
+
+
+def test_model_paged_kv_cache_recent_policy_can_emit_m3_int8_pages() -> None:
+    rng = np.random.default_rng(30417)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        key_policy_tier="balanced",
+        value_policy_tier="balanced",
+        recent_window=1024,
+        recent_page_escape_dtype="int8",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+    first_key_page = cache._states[(0, 0)].session.key_pages[0]
+    first_value_page = cache._states[(0, 0)].session.value_pages[0]
+
+    assert first_key_page.header.mode_default == "M3"
+    assert first_value_page.header.mode_default == "M3"
+    assert first_key_page.header.escape_dtype == "int8"
+    assert first_value_page.header.escape_dtype == "int8"
+    assert "K:M3:affine:4:int8" in summary["mode_signature_counts"]
+    assert "V:M3:affine:4:int8" in summary["mode_signature_counts"]
 
 
 def test_model_paged_kv_cache_reports_m2_sidecar_and_prefilter_stats() -> None:
@@ -663,3 +761,54 @@ def test_model_paged_kv_cache_static_chunk_cache_can_disable_value_chunks() -> N
     )
     assert resident_after_first_decode > 0
     assert resident_after_second_decode == resident_after_first_decode
+
+
+def test_grouped_pages_can_batch_rejects_misaligned_key_value_chunks_on_mps() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(313)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    head_dim = 32
+    group_size = 32
+    token_count = 4
+
+    key_group0 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=4, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=0, token_start=8, mode="M2", quant_scheme="sketch"),
+        ],
+        backend="torch_mps",
+    )
+    key_group1 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=4, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=8, mode="M2", quant_scheme="sketch"),
+        ],
+        backend="torch_mps",
+    )
+    value_group0 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=4, mode="M1", quant_scheme="lut"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=0, token_start=8, mode="M1", quant_scheme="lut"),
+        ],
+        backend="torch_mps",
+    )
+    value_group1 = prepare_pages(
+        [
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=0, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=4, mode="M1", quant_scheme="lut"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="V", kv_head_id=1, token_start=8, mode="M1", quant_scheme="lut"),
+        ],
+        backend="torch_mps",
+    )
+    queries = [
+        torch.from_numpy(rng.normal(size=(2, head_dim)).astype(np.float32)).to(device="mps"),
+        torch.from_numpy(rng.normal(size=(2, head_dim)).astype(np.float32)).to(device="mps"),
+    ]
+
+    assert not _grouped_pages_can_batch([key_group0, key_group1], [value_group0, value_group1], queries)

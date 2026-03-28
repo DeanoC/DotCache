@@ -99,6 +99,7 @@ class PreparedPageTorch:
     m2_basis: Any | None = None
     m2_mean: Any | None = None
     escape_payload: Any | None = None
+    escape_scales: Any | None = None
     unpack_shifts: Any | None = None
     unpack_mask: Any | None = None
     host_to_device_nbytes: int = 0
@@ -358,6 +359,8 @@ def _chunk_compatible_pages(pages: Sequence[PreparedPageTorch]) -> list[list[Pre
 def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple[int, int], ...] | None:
     if not pages:
         return None
+    if len(_chunk_compatible_pages(pages)) != 1:
+        return None
     if pages[0].header.mode_default not in ("M0", "T3"):
         return None
     return tuple((int(page.cache_uid), int(page.header.token_count)) for page in pages)
@@ -481,7 +484,17 @@ def _build_grouped_prepared_chunk_mps(
     if not pages_by_group or not pages_by_group[0]:
         return None
     torch = _load_torch()
-    prepared_chunks = [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+
+    def _get_or_build_group_chunk(group_pages: Sequence[PreparedPageTorch]) -> PreparedChunkMPS | None:
+        prepared_chunk = _get_prepared_chunk_mps(group_pages)
+        if prepared_chunk is not None:
+            return prepared_chunk
+        cache_key = _prepared_chunk_cache_key(group_pages)
+        if cache_key is None:
+            return None
+        return _build_prepared_chunk_mps(group_pages)
+
+    prepared_chunks = [_get_or_build_group_chunk(group_pages) for group_pages in pages_by_group]
     if any(chunk is None for chunk in prepared_chunks):
         return None
     header = pages_by_group[0][0].header
@@ -489,9 +502,13 @@ def _build_grouped_prepared_chunk_mps(
         # Avoid caching a second grouped fused copy. The per-group prepared chunks
         # already hold the fused tensors, and grouped decode can stack them on demand.
         return None
-    # Grouped decode uses unpacked codes/scales/bias directly, so duplicating stacked
-    # payload tensors here only burns memory without helping the hot path.
-    payload_groups: tuple[Any, ...] = ()
+    payload_groups = tuple(
+        torch.stack(
+            [torch.stack([page.payload[group_index] for page in group_pages], dim=0) for group_pages in pages_by_group],
+            dim=0,
+        )
+        for group_index in range(header.num_groups)
+    )
     codes_groups = tuple(
         torch.stack([chunk.codes_groups[group_index] for chunk in prepared_chunks], dim=0)
         for group_index in range(header.num_groups)
@@ -507,7 +524,8 @@ def _build_grouped_prepared_chunk_mps(
     fused_scaled_codes = None
     if all(chunk.fused_scaled_codes is not None for chunk in prepared_chunks):
         fused_scaled_codes = torch.stack([chunk.fused_scaled_codes for chunk in prepared_chunks], dim=0)
-    resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
+    resident_nbytes = sum(int(tensor.numel() * tensor.element_size()) for tensor in payload_groups)
+    resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in codes_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in scales_groups)
     resident_nbytes += sum(int(tensor.numel() * tensor.element_size()) for tensor in bias_groups)
     if fused_scaled_codes is not None:
@@ -559,7 +577,8 @@ def _get_grouped_prepared_chunk_mps(
         return None
     if pages_by_group[0][0].header.kind not in _PREPARED_CHUNK_CACHE_KINDS:
         return None
-    if len(pages_by_group[0]) < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
+    total_page_count = sum(len(group_pages) for group_pages in pages_by_group)
+    if total_page_count < _MIN_PREPARED_CHUNK_CACHE_PAGE_COUNT:
         return None
     cached_chunk = _PREPARED_GROUPED_CHUNK_CACHE.get(cache_key)
     if cached_chunk is not None:
@@ -589,7 +608,11 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
     if header.layout != "group_major":
         return False
     if header.mode_default == "M3":
-        return source_page.escape_payload is not None
+        if source_page.escape_payload is None:
+            return False
+        if header.escape_dtype == "int8":
+            return source_page.escape_scales is not None
+        return True
     if header.mode_default == "M2":
         return (
             header.kind == "K"
@@ -608,19 +631,19 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and source_page.codebooks is not None
         )
     return (
-        header.mode_default in ("M0", "M1")
-        and header.bits in (2, 4)
-        and header.group_size in (32, 64)
+        header.group_size in (32, 64)
         and source_page.payload is not None
         and (
             (
                 header.mode_default == "M0"
+                and header.bits in (2, 3, 4)
                 and header.quant_scheme == "affine"
                 and source_page.scales is not None
                 and source_page.bias is not None
             )
             or (
                 header.mode_default == "M1"
+                and header.bits in (2, 4)
                 and header.quant_scheme == "lut"
                 and source_page.codebooks is not None
             )
@@ -746,7 +769,23 @@ def _prepared_page_host_nbytes(page: EncodedPage) -> int:
         total += int(page.m2_mean.nbytes)
     if page.escape_payload is not None:
         total += int(page.escape_payload.nbytes)
+    if page.escape_scales is not None:
+        total += int(page.escape_scales.nbytes)
     return total
+
+
+def _decode_escape_batch_torch(
+    pages: Sequence[PreparedPageTorch],
+    *,
+    token_count: int,
+    head_dim: int,
+):
+    torch = _load_torch()
+    payload = torch.stack([page.escape_payload[:token_count, :head_dim] for page in pages], dim=0)
+    if pages[0].header.escape_dtype == "int8":
+        scales = torch.stack([page.escape_scales[:token_count] for page in pages], dim=0).to(dtype=torch.float32)
+        return payload.to(dtype=torch.float32) * scales[..., None]
+    return payload.to(dtype=torch.float32)
 
 
 def _optional_m2_sidecar_batches(
@@ -785,16 +824,28 @@ def _prepare_page_chunk_torch(
     total_host_to_device_nbytes = 0
 
     if header.mode_default == "M3":
-        escape_batch = _device_tensor(np.stack([np.asarray(page.escape_payload) for page in pages], axis=0), device=device_type)
+        escape_array = np.stack([np.asarray(page.escape_payload) for page in pages], axis=0)
+        escape_batch = _device_tensor(escape_array, device=device_type)
         total_host_to_device_nbytes += int(escape_batch.numel() * escape_batch.element_size())
+        escape_scale_batch = None
+        if header.escape_dtype == "int8":
+            escape_scale_array = np.stack([np.asarray(page.escape_scales) for page in pages], axis=0)
+            escape_scale_batch = _device_tensor(escape_scale_array, device=device_type)
+            total_host_to_device_nbytes += int(escape_scale_batch.numel() * escape_scale_batch.element_size())
         prepared_pages = [
             PreparedPageTorch(
                 device_type=device_type,
                 source_page=page,
                 header=page.header,
                 escape_payload=escape_batch[index],
+                escape_scales=None if escape_scale_batch is None else escape_scale_batch[index],
                 host_to_device_nbytes=_prepared_page_host_nbytes(page),
-                resident_nbytes=int(escape_batch[index].numel() * escape_batch[index].element_size()),
+                resident_nbytes=int(escape_batch[index].numel() * escape_batch[index].element_size())
+                + (
+                    0
+                    if escape_scale_batch is None
+                    else int(escape_scale_batch[index].numel() * escape_scale_batch[index].element_size())
+                ),
                 cache_uid=_next_prepared_page_uid(),
             )
             for index, page in enumerate(pages)
@@ -1471,10 +1522,7 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         )
 
     if header.mode_default == "M3":
-        dense = torch.stack(
-            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
-            dim=0,
-        )
+        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
         query = _pad_query(query_slice, header.head_dim, device_type=device_type)
         return torch.matmul(dense, query).reshape(-1)
 
@@ -1623,10 +1671,7 @@ def _mix_page_chunk_torch(
         raise ValueError("attn_weights chunk must have shape [page_count, token_count]")
 
     if header.mode_default == "M3":
-        dense = torch.stack(
-            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
-            dim=0,
-        )
+        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
         output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
 
@@ -1862,10 +1907,7 @@ def _score_page_chunk_multiquery_torch(
         )
 
     if header.mode_default == "M3":
-        dense = torch.stack(
-            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
-            dim=0,
-        )
+        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
         queries = _pad_queries(query_slices, header.head_dim, device_type=device_type)
         return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
 
@@ -2032,10 +2074,7 @@ def _mix_page_chunk_multiquery_torch(
     output = torch.zeros((query_count, header.padded_head_dim), dtype=torch.float32, device=device_type)
 
     if header.mode_default == "M3":
-        dense = torch.stack(
-            [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in pages],
-            dim=0,
-        )
+        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
         output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
         return output
 
@@ -2189,10 +2228,7 @@ def _score_page_chunk_grouped_multiquery_torch(
     if header.mode_default == "M3":
         dense = torch.stack(
             [
-                torch.stack(
-                    [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in group_pages],
-                    dim=0,
-                )
+                _decode_escape_batch_torch(group_pages, token_count=header.token_count, head_dim=header.head_dim)
                 for group_pages in pages_by_group
             ],
             dim=0,
@@ -2329,7 +2365,12 @@ def _score_page_chunk_grouped_multiquery_torch(
     query_group_sums_tensor = query_group_sums if query_group_sums is not None else query_groups_tensor.sum(dim=-1)
     logits = torch.zeros((batch_size, query_count, page_count * header.token_count), dtype=torch.float32, device=device_type)
     grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
-    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    prepared_chunks = None if grouped_prepared_chunk is not None else [
+        _get_prepared_chunk_mps(group_pages) or (
+            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        )
+        for group_pages in pages_by_group
+    ]
     if (
         grouped_prepared_chunk is not None
         and grouped_prepared_chunk.fused_scaled_codes is not None
@@ -2473,10 +2514,7 @@ def _mix_page_chunk_grouped_multiquery_torch(
     if header.mode_default == "M3":
         dense = torch.stack(
             [
-                torch.stack(
-                    [page.escape_payload[: header.token_count, : header.head_dim].to(torch.float32) for page in group_pages],
-                    dim=0,
-                )
+                _decode_escape_batch_torch(group_pages, token_count=header.token_count, head_dim=header.head_dim)
                 for group_pages in pages_by_group
             ],
             dim=0,
@@ -2556,7 +2594,12 @@ def _mix_page_chunk_grouped_multiquery_torch(
         return output
 
     grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
-    prepared_chunks = None if grouped_prepared_chunk is not None else [_get_prepared_chunk_mps(group_pages) for group_pages in pages_by_group]
+    prepared_chunks = None if grouped_prepared_chunk is not None else [
+        _get_prepared_chunk_mps(group_pages) or (
+            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        )
+        for group_pages in pages_by_group
+    ]
     if (
         grouped_prepared_chunk is not None
         and grouped_prepared_chunk.fused_scaled_codes is not None
