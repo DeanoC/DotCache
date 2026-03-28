@@ -1815,6 +1815,49 @@ That suggests the CUDA implementation should probably start with:
 - recurrent-state `8b`
 - optional renorm, but measured per layer family rather than assumed globally
 
+## 2026-03-28 23:35 UTC - Combined conv and recurrent sweep points to `8b` first, with more renorm pressure on conv state
+
+I extended the real-state sweep to run both DeltaNet state families on the same Qwen3.5 slice:
+
+- prompt length `32`
+- decode steps `4`
+- layers `0`, `12`, `22`
+- state kinds `recurrent` and `conv`
+
+The combined recommendation output was simple and consistent:
+
+- recurrent layers `0`, `12`, `22`
+  - all three recommend `M0 8b`
+  - renorm intervals: `0`, `2`, `0`
+- conv layers `0`, `12`, `22`
+  - all three also recommend `M0 8b`
+  - renorm intervals: `2`, `2`, `2`
+
+The important detail is that conv state is clearly noisier than recurrent state at the same bitwidths on this captured slice. Representative readout errors:
+
+- recurrent, `8b`
+  - layer `0`: `0.0435`
+  - layer `12`: `0.0746`
+  - layer `22`: `0.1128`
+- conv, `8b`
+  - layer `0`: `0.1314`
+  - layer `12`: `0.0796`
+  - layer `22`: `0.0878`
+
+And the lower-bit picture stayed negative for both families:
+
+- recurrent `4b`
+  - readout drift ranged from `0.7565` to `1.1857`
+- conv `4b`
+  - readout drift ranged from `0.8630` to `1.2947`
+- `3b` was materially worse still for both
+
+So the current local StateCache handoff gets a little sharper:
+
+- start with `8b` for both recurrent and conv state
+- treat renorm as more important for conv state than for recurrent state
+- do not start the CUDA path from `4b` or `3b` on either state family
+
 Live CUDA check:
 
 ```bash

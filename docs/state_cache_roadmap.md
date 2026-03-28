@@ -94,5 +94,8 @@ For repeated early/mid/late layer sweeps, use the wrapper:
   --device mps \
   --prompt-length 32 \
   --max-new-tokens 4 \
-  --layers 0 12 22
+  --layers 0 12 22 \
+  --state-kinds recurrent conv
 ```
+
+That wrapper now emits both detailed per-bit summaries and compact recommendation records for each sampled `(layer, state_kind)` pair, so the CUDA path can compare recurrent and conv compression candidates without post-processing.

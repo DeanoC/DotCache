@@ -402,7 +402,7 @@ For the parallel DeltaNet-side probe lane, use the new StateCache inspection and
 To bridge real Qwen3.5 state into the simulator and sweep early/mid/late layers in one pass, use:
 
 ```bash
-.venv/bin/python benchmarks/bench_qwen35_statecache_real_sweep.py --backend torch_mps --device mps --prompt-length 32 --max-new-tokens 4 --layers 0 12 22
+.venv/bin/python benchmarks/bench_qwen35_statecache_real_sweep.py --backend torch_mps --device mps --prompt-length 32 --max-new-tokens 4 --layers 0 12 22 --state-kinds recurrent conv
 ```
 
 Those lanes are intentionally probe-only:
@@ -411,6 +411,7 @@ Those lanes are intentionally probe-only:
 - they do not implement a compressed recurrent-state runtime
 - they use `M0` low-bit and `M3` escape as the first codec pair
 - they are meant to guide the CUDA-side StateCache work, not replace the existing attention-side DotCache lane
+- the real-sweep wrapper now emits per-layer recommendation records so recurrent and conv state can be compared side by side
 
 That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
 
