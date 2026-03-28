@@ -71,6 +71,7 @@ Canonical 5090-era Qwen CUDA labels:
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda -- bash scripts/run_qwen25_7b_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-k-exact -- bash scripts/run_qwen25_7b_compare_cuda.sh
 .venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-selective -- bash scripts/run_qwen25_7b_compare_cuda_selective.sh
+.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-planner-aggressive -- bash scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh
 ```
 
 Use the unlabeled wrapper defaults for the recommended path. Add the explicit `--default-mode-k M0 --default-mode-v M0` override only when you want the Qwen CUDA baseline lane for comparison.
@@ -94,6 +95,7 @@ The first pod-oriented HF scale-up lane should use the existing compare harnesse
 - selective 3B wrapper: [scripts/run_qwen25_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_selective.sh)
 - public 7B wrapper: [scripts/run_qwen25_7b_compare_cuda.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda.sh)
 - selective 7B wrapper: [scripts/run_qwen25_7b_compare_cuda_selective.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_selective.sh)
+- planner-aggressive 7B wrapper: [scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh)
 - Qwen key-exact research wrappers:
   - [scripts/run_qwen25_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_compare_cuda_k_exact.sh)
   - [scripts/run_qwen25_7b_compare_cuda_k_exact.sh](/workspace/DotCache/scripts/run_qwen25_7b_compare_cuda_k_exact.sh)
@@ -199,6 +201,7 @@ Current 5090-era research note:
 - Qwen2.5 3B on CUDA is materially more stable with `K=M3 / V=M0` than with default `M0/M0`.
 - Qwen2.5 7B on CUDA shows the same pattern at `1024/2048`.
 - The repo now treats `K=M3 / V=M0` as the recommended Qwen CUDA default, while keeping `M0/M0` as the baseline comparison lane.
+- The best current low-memory adaptive 7B lane is now the planner-driven aggressive policy, not the older fixed selective override wrapper.
 
 ## Selective Key Precision
 
@@ -238,6 +241,18 @@ The same lightweight policy already transfers to Qwen2.5 7B at `1024/2048`:
 - `layer:0=M3`
 - `layer:27:kv:1=M3`
 - greedy agreement returns to `1.0`
+
+That is no longer the most useful low-memory 7B lane on this pod. The current better adaptive wrapper is the true per-page planner path:
+
+```bash
+bash scripts/run_qwen25_7b_compare_cuda_planner_aggressive.sh
+```
+
+At exact `4096` on CUDA this planner-aggressive lane currently:
+
+- keeps greedy agreement at `1.0`
+- reduces KV resident bytes below the fixed selective wrapper
+- stays slower than exact-K, so it should be treated as the memory-first 7B lane rather than the default runtime lane
 - KV ratio stays near the all-`M0` lane rather than the full exact-K lane
 
 ## GGUF Reference Lane

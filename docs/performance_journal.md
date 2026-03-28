@@ -1048,3 +1048,34 @@ The practical read is:
 - the strongest current larger-model CUDA lane is `Qwen2.5 7B` on the recommended `K=M3 / V=M0` path
 - `TinyLlama` still works as the smallest exact regression lane, but it is no longer the most representative performance target
 - the next frontier issue is no longer basic CUDA viability; it is performance work on the heaviest exact lanes, especially `SmolLM2 1.7B` and the larger-context `Llama 3.2 3B` / `Qwen2.5 7B` paths
+
+## 2026-03-28 - Qwen2.5 7B per-page planner policy on CUDA
+
+I checked whether the current `Qwen2.5 7B` CUDA lane was already using the newer per-page selectable policy machinery. It was not. The existing selective wrapper still uses fixed layer and KV-group overrides:
+
+- `layer:0=M3`
+- `layer:27:kv:1=M3`
+
+The real planner-driven benchmark path is the same `bench_qwen2_compare.py` harness with `--key-policy-tier ...` and no hardcoded `--key-mode-override` flags.
+
+Exact `4096` comparison on CUDA with `--max-new-tokens 2`:
+
+| Policy | Agreement | Decode ms/step | KV resident bytes | Total resident bytes | Key page mix |
+| --- | ---: | ---: | ---: | ---: | --- |
+| exact K (`K=M3 / V=M0`) | `1.00` | `150.22` | `176,160,768` | `220,200,960` | `1792` `K:M3` |
+| fixed selective overrides | `1.00` | `266.84` | `106,037,248` | `158,072,832` | `80` `K:M3`, `1712` `K:M0` |
+| planner `strict` | `0.50` | `324.38` | `102,760,448` | `153,092,096` | `1792` `K:M0` |
+| planner `balanced` | `1.00` | `499.95` | `95,701,504` | `143,174,144` | `1178` `K:M2`, `599` `K:M0:4`, `15` `K:M0:2` |
+| planner `aggressive` | `1.00` | `307.50` | `91,995,136` | `137,968,640` | `1692` `K:M2`, `98` `K:M0:2`, `2` `K:M0:4` |
+
+The useful result is:
+
+- plain planner `strict` is not enough for `Qwen2.5 7B`; it effectively collapses to all-`M0` and loses agreement
+- planner `balanced` and `aggressive` both keep `1.0` agreement with true per-page adaptive key selection
+- planner `aggressive` is the best current low-memory planner tier on this pod: it beats the fixed selective wrapper on KV bytes while staying materially faster than planner `balanced`
+- the recommended default runtime lane does not change; exact-K remains much faster than any current adaptive planner policy at `4096`
+
+So the repo now has two distinct `Qwen2.5 7B` CUDA stories:
+
+- best runtime lane: `K=M3 / V=M0`
+- best low-memory adaptive lane: planner `aggressive` per-page keys on top of `K=M0 / V=M0`
