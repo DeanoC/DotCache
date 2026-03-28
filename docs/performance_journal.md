@@ -1003,8 +1003,27 @@ The remaining honest read is:
 
 - `K=4b, V=3b` is now a much more credible local lane on TinyLlama
 - the write-path fix materially improved prefill ingest
-- we still need a post-fix SmolLM2 rerun before claiming the same improvement there
+- the same write-path win also shows up on SmolLM2
 - the next likely bottleneck after payload packing is the remaining encode/quantize work, not grouped decode
+
+The post-fix SmolLM2 one-load rerun says the same thing more clearly:
+
+| Model | Prompt | Split | DotCache Decode ms/step | Prefill Ingest ms | Resident Bytes | Agreement | Max Abs Logit Drift |
+|---|---:|---|---:|---:|---:|---:|---:|
+| `SmolLM2 360M` | `1024` | `K=4b, V=4b` | `47037.17` | `1802.12` | `39,190,528` | `1.00` | `0.9612` |
+| `SmolLM2 360M` | `1024` | `K=4b, V=3b` | `37030.24` | `3203.19` | `37,339,136` | `1.00` | `2.1914` |
+
+Compared with the earlier pre-fix one-load SmolLM2 mixed-bits probe:
+
+- `K=4b, V=3b` prefill ingest improved from `13848.80 ms` to `3203.19 ms`, about `4.3x` better
+- `K=4b, V=4b` prefill ingest also improved slightly, from `2083.56 ms` to `1802.12 ms`
+- decode did not become a clear win; it only moved from roughly `37179.83` to `37030.24 ms/step`
+
+So the updated cross-model read is:
+
+- the vectorized `3b` payload builder fixed a real write-path bottleneck on both TinyLlama and SmolLM2
+- `K=4b, V=3b` is now much more plausible as a systems experiment than it was before
+- but on SmolLM2 the remaining question is no longer “can we write it fast enough?” so much as “is the extra quality loss worth the modest KV-memory reduction without a decode win?”
 
 One backend-focused optimization pass did move the local `3b` decode shape in the right direction. Static `M0 3b` pages on MPS now build a fused pre-scaled prepared chunk, not just cached unpacked per-group codes. On a synthetic cached static-page decode microbench (`4` pages, `head_dim=64`, `tokens_per_page=16`):
 
