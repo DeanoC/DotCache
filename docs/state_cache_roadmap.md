@@ -123,3 +123,25 @@ For selective resident-state probes on the local CUDA/MPS lane, use the normal r
 ```
 
 Those conv-aware resident ablations are still local debugging support only. They are useful for failure localization and family-level byte accounting, but they are not yet promoted as the default CUDA runtime design.
+
+For a repeatable StateCache-first regression snapshot without the paused Qwen3.5 DotCache attention path, use the regression suite:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_statecache_regression_suite.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --cases 64:8 128:16 256:16 \
+  --statecache-scopes recurrent_only conv_only conv_plus_recurrent \
+  --localization-scopes recurrent_only conv_plus_recurrent \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0
+```
+
+That suite emits one structured record per case with:
+
+- dense teacher-forced loss/perplexity
+- StateCache loss deltas for each selected scope
+- compressed conv and recurrent resident bytes
+- first divergence and first failure hints for the selected localization scopes
