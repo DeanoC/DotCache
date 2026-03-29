@@ -1408,15 +1408,14 @@ class ModelPagedKVCache:
         return int(layer_id) in {int(value) for value in self.config.execution_exact_refine_layers}
 
     def _execution_exact_promote_enabled(self, *, layer_id: int, context_length: int | None = None) -> bool:
-        enabled, _ = self._execution_exact_promote_status(layer_id=layer_id, context_length=context_length)
+        enabled, _ = self._execution_exact_promote_policy_status(layer_id=layer_id, context_length=context_length)
         return enabled
 
-    def _execution_exact_promote_status(
+    def _execution_exact_promote_policy_status(
         self,
         *,
         layer_id: int,
         context_length: int | None = None,
-        boundary_margin_normalized: float | None = None,
     ) -> tuple[bool, str | None]:
         if self.config.execution_exact_promote_top_k <= 0:
             return False, "top_k_disabled"
@@ -1430,6 +1429,21 @@ class ModelPagedKVCache:
             and int(context_length) > int(self.config.execution_exact_promote_max_context)
         ):
             return False, "context_exceeds_max_context"
+        return True, None
+
+    def _execution_exact_promote_status(
+        self,
+        *,
+        layer_id: int,
+        context_length: int | None = None,
+        boundary_margin_normalized: float | None = None,
+    ) -> tuple[bool, str | None]:
+        enabled, reason = self._execution_exact_promote_policy_status(
+            layer_id=layer_id,
+            context_length=context_length,
+        )
+        if not enabled:
+            return False, reason
         if (
             float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
             and (
@@ -3129,7 +3143,7 @@ class ModelPagedKVCache:
                 and secondary_primary_top_recall < float(self.config.execution_secondary_relevance_min_overlap)
             )
             exact_promote_candidate_expansion_enabled, exact_promote_candidate_expansion_reason = (
-                self._execution_exact_promote_status(layer_id=layer_id, context_length=context_length)
+                self._execution_exact_promote_policy_status(layer_id=layer_id, context_length=context_length)
             )
             exact_promote_enabled, exact_promote_disable_reason = self._execution_exact_promote_status(
                 layer_id=layer_id,

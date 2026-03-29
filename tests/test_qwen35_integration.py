@@ -1119,6 +1119,29 @@ def test_execution_exact_promote_max_context_disables_promotion_before_candidate
     assert cache._execution_exact_promote_enabled(layer_id=11, context_length=8192) is False
 
 
+def test_execution_exact_promote_candidate_expansion_ignores_margin_threshold() -> None:
+    cache = ModelPagedKVCache.__new__(ModelPagedKVCache)
+    cache.config = DotCacheConfig(
+        head_dim=16,
+        group_size=16,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=2,
+        execution_exact_promote_top_k=2,
+        execution_exact_promote_layers=(23,),
+        execution_exact_promote_min_margin_threshold=0.5,
+    )
+
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=8192) is True
+    enabled, reason = cache._execution_exact_promote_status(
+        layer_id=23,
+        context_length=8192,
+        boundary_margin_normalized=0.25,
+    )
+    assert enabled is False
+    assert reason == "below_min_margin_threshold"
+
+
 def test_qwen35_attention_subset_dotcache_loss_harness_reports_teacher_forced_metrics() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
