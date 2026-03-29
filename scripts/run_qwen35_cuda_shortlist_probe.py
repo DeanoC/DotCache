@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-dtype", default="float16")
     parser.add_argument(
         "--layer-profile",
-        default=str(REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_third_pass.yaml"),
+        default=str(REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml"),
     )
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096, 8192, 16384])
     parser.add_argument(

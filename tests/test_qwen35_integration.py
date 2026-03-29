@@ -1489,7 +1489,7 @@ def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkey
         repo_root
         / "configs"
         / "layer_profiles"
-        / "qwen35_0p8b_attention_subset_cuda_shortlist_context_aware.yaml"
+        / "qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml"
     )
 
     monkeypatch.setattr(
@@ -1507,6 +1507,9 @@ def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkey
     assert serving_args.execution_relevance_top_k == 4
     assert serving_args.execution_relevance_mode == "envelope"
     assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]
+    assert serving_args.execution_exact_promote_top_k == 0
+    assert serving_args.execution_exact_promote_margin_threshold == 0.0
+    assert serving_args.execution_exact_promote_layer == []
 
     monkeypatch.setattr(
         "sys.argv",
@@ -1523,3 +1526,182 @@ def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkey
     assert loss_args.execution_relevance_top_k == 4
     assert loss_args.execution_relevance_mode == "envelope"
     assert loss_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]
+    assert loss_args.execution_exact_promote_top_k == 0
+    assert loss_args.execution_exact_promote_margin_threshold == 0.0
+    assert loss_args.execution_exact_promote_layer == []
+
+
+def test_qwen35_cuda_layer_profile_loads_shortlist_quality_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    serving_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
+    )
+    assert serving_spec is not None and serving_spec.loader is not None
+    serving_module = importlib.util.module_from_spec(serving_spec)
+    serving_spec.loader.exec_module(serving_module)
+
+    loss_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_loss",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_loss.py",
+    )
+    assert loss_spec is not None and loss_spec.loader is not None
+    loss_module = importlib.util.module_from_spec(loss_spec)
+    loss_spec.loader.exec_module(loss_module)
+
+    profile_path = (
+        repo_root
+        / "configs"
+        / "layer_profiles"
+        / "qwen35_0p8b_attention_subset_cuda_shortlist_quality.yaml"
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_serving.py",
+            "--layer-profile",
+            str(profile_path),
+        ],
+    )
+    serving_args = serving_module.parse_args()
+    serving_module._resolve_args_from_layer_profile(serving_args)
+    assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]
+    assert serving_args.execution_exact_promote_top_k == 2
+    assert serving_args.execution_exact_promote_margin_threshold == 0.0558
+    assert serving_args.execution_exact_promote_layer == [23]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_loss.py",
+            "--layer-profile",
+            str(profile_path),
+        ],
+    )
+    loss_args = loss_module.parse_args()
+    loss_module._resolve_args_from_layer_profile(loss_args)
+    assert loss_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]
+    assert loss_args.execution_exact_promote_top_k == 2
+    assert loss_args.execution_exact_promote_margin_threshold == 0.0558
+    assert loss_args.execution_exact_promote_layer == [23]
+
+
+def test_qwen35_cuda_profile_bakeoff_cli_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "run_qwen35_cuda_profile_bakeoff",
+        repo_root / "scripts" / "run_qwen35_cuda_profile_bakeoff.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_cuda_profile_bakeoff.py",
+            "--profiles",
+            "configs/layer_profiles/a.yaml",
+            "configs/layer_profiles/b.yaml",
+            "--modes",
+            "quality",
+            "scorer",
+            "--contexts",
+            "16384",
+            "32768",
+            "--timeout-seconds",
+            "300",
+            "--output-dir",
+            "benchmarks/results/test_bakeoff",
+        ],
+    )
+    args = module.parse_args()
+    assert args.profiles == ["configs/layer_profiles/a.yaml", "configs/layer_profiles/b.yaml"]
+    assert args.modes == ["quality", "scorer"]
+    assert args.contexts == [16384, 32768]
+    assert args.timeout_seconds == 300
+    assert args.output_dir == "benchmarks/results/test_bakeoff"
+
+
+def test_qwen35_scorer_report_summarizes_layer23(tmp_path: Path) -> None:
+    import json
+    import importlib.util
+    from io import StringIO
+    from pathlib import Path
+    from contextlib import redirect_stdout
+
+    repo_root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "report_qwen35_scorer_diagnostic",
+        repo_root / "scripts" / "report_qwen35_scorer_diagnostic.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    sample = {
+        "prompt_length": 32768,
+        "scorer_diagnostic": True,
+        "scorer_worst_layer_id": "11",
+        "scorer_layer_records": [
+            {
+                "layer_id": 23,
+                "groups": [
+                    {
+                        "exact_top_recall": 0.8,
+                        "approx_boundary_margin_normalized": 0.02,
+                        "score_rank_correlation": 0.95,
+                        "score_value_correlation": 0.96,
+                    },
+                    {
+                        "exact_top_recall": 0.7,
+                        "approx_boundary_margin_normalized": 0.01,
+                        "score_rank_correlation": 0.94,
+                        "score_value_correlation": 0.97,
+                    },
+                ],
+            },
+            {
+                "layer_id": 11,
+                "groups": [
+                    {
+                        "exact_top_recall": 0.5,
+                        "score_rank_correlation": 0.49,
+                        "score_value_correlation": 0.46,
+                    }
+                ],
+            },
+        ],
+    }
+    input_path = tmp_path / "sample.jsonl"
+    input_path.write_text(json.dumps(sample) + "\n", encoding="utf-8")
+
+    monkeypatch_args = [
+        "report_qwen35_scorer_diagnostic.py",
+        "--input",
+        str(input_path),
+    ]
+    import sys
+
+    old_argv = sys.argv
+    sys.argv = monkeypatch_args
+    try:
+        buf = StringIO()
+        with redirect_stdout(buf):
+            module.main()
+    finally:
+        sys.argv = old_argv
+    output = buf.getvalue()
+    assert "sample.jsonl" in output
+    assert "32768" in output
+    assert "23" in output
+    assert "0.750" in output
+    assert "0.945" in output
