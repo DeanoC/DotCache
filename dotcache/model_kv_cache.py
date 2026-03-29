@@ -1659,6 +1659,13 @@ class ModelPagedKVCache:
                 and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
             ):
                 promote_enabled = False
+            if (
+                promote_enabled
+                and int(self.config.execution_exact_promote_max_context) > 0
+                and context_length is not None
+                and int(context_length) > int(self.config.execution_exact_promote_max_context)
+            ):
+                promote_enabled = False
             if not promote_enabled:
                 return stage1_indices
             candidate_indices = [index for index in stage1_indices if index not in base_indices]

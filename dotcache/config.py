@@ -125,6 +125,7 @@ class DotCacheConfig:
     execution_recent_neighbor_rescue_layers: tuple[int, ...] = ()
     execution_exact_promote_top_k: int = 0
     execution_exact_promote_min_margin_threshold: float = 0.0
+    execution_exact_promote_max_context: int = 0
     execution_exact_promote_margin_threshold: float = 0.0
     execution_exact_promote_layers: tuple[int, ...] = ()
     execution_exact_refine_top_k: int = 0
@@ -232,6 +233,8 @@ class DotCacheConfig:
             raise ValueError("execution_exact_promote_top_k must be non-negative")
         if self.execution_exact_promote_min_margin_threshold < 0:
             raise ValueError("execution_exact_promote_min_margin_threshold must be non-negative")
+        if self.execution_exact_promote_max_context < 0:
+            raise ValueError("execution_exact_promote_max_context must be non-negative")
         if self.execution_exact_promote_margin_threshold < 0:
             raise ValueError("execution_exact_promote_margin_threshold must be non-negative")
         for layer_id in self.execution_exact_promote_layers:
