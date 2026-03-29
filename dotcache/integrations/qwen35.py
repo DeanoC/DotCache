@@ -239,6 +239,29 @@ def _default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: in
     return (np.arange(num_attention_heads, dtype=np.int32) // heads_per_kv).astype(np.int32, copy=False)
 
 
+def _qwen35_mps_serving_shortlist_heuristic(
+    config: DotCacheConfig,
+    *,
+    backend: str,
+    prompt_length: int,
+) -> tuple[DotCacheConfig, bool]:
+    if backend != "torch_mps":
+        return config, False
+    if int(prompt_length) < 4096:
+        return config, False
+    if config.execution_shortlist_enabled():
+        return config, False
+    updated = replace(
+        config,
+        execution_recent_window=1024,
+        execution_sink_window=256,
+        execution_relevance_top_k=4,
+        execution_relevance_mode="envelope",
+        execution_relevance_top_k_context_overrides=("layer:23:min_ctx:8192=8",),
+    )
+    return updated, True
+
+
 def _reconstruct_prefill_history(
     tensor_4d,
     *,
@@ -569,6 +592,7 @@ class Qwen35HybridDotCacheRuntimeState:
         )
         result.update(self.model_kv_cache.resident_byte_summary())
         result.update(self.model_kv_cache.page_mode_summary())
+        result.update(self.model_kv_cache.execution_shortlist_summary())
         return result
 
 
@@ -1482,6 +1506,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         key_step = key_states[0].detach().to(dtype=torch.float32)
         value_step = value_states[0].detach().to(dtype=torch.float32)
         self.adapter.qkv_projection_ms_total += qkv_ms
+        self.adapter._record_layer_timing(self.adapter.qkv_projection_ms_total_by_layer, self.layer_idx, qkv_ms)
 
         _, append_ms = _timed_call(
             lambda: self.adapter.model_kv_cache.append_step_torch(
@@ -1500,6 +1525,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             device=hidden_states.device,
         )
         self.adapter.append_runtime_ms_total += append_ms
+        self.adapter._record_layer_timing(self.adapter.append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
 
         decode_trace = ExecutionTrace(capture_timings=self.adapter.profile_backend) if self.adapter.profile_backend else None
         context_states, decode_ms = _timed_call(
@@ -1525,6 +1551,8 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             device=hidden_states.device,
         )
         self.adapter.decode_runtime_ms_total += decode_ms
+        self.adapter._record_layer_timing(self.adapter.decode_runtime_ms_total_by_layer, self.layer_idx, decode_ms)
+        self.adapter.decode_call_count_by_layer[self.layer_idx] = self.adapter.decode_call_count_by_layer.get(self.layer_idx, 0) + 1
         if decode_trace is not None:
             self.adapter.decode_backend_trace.merge(decode_trace)
 
@@ -1538,6 +1566,11 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             device=hidden_states.device,
         )
         self.adapter.output_projection_ms_total += output_projection_ms
+        self.adapter._record_layer_timing(
+            self.adapter.output_projection_ms_total_by_layer,
+            self.layer_idx,
+            output_projection_ms,
+        )
 
         _advance_attention_subset_cache_placeholder(past_key_values, self.layer_idx)
 
@@ -1633,8 +1666,14 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     profile_backend: bool = field(default=False, init=False, repr=False)
     decode_backend_trace: ExecutionTrace = field(default_factory=ExecutionTrace, init=False, repr=False)
+    qkv_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    decode_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    output_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    decode_call_count_by_layer: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     native_hybrid_runtime_state: Qwen35NativeHybridRuntimeState | None = field(default=None, init=False, repr=False)
     hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
+    serving_shortlist_heuristic_applied: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35AttentionSubsetModelAdapter.__post_init__(self)
@@ -1642,6 +1681,10 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         expected_head_dim = _qwen35_attention_head_dim(self.model)
         if self.dotcache_config.head_dim != expected_head_dim:
             self.dotcache_config = replace(self.dotcache_config, head_dim=expected_head_dim)
+        self._rebuild_model_kv_cache()
+
+    def _rebuild_model_kv_cache(self) -> None:
+        text_config = _qwen35_text_config(self.model)
         self.model_kv_cache = ModelPagedKVCache(
             config=self.dotcache_config,
             num_hidden_layers=int(text_config.num_hidden_layers),
@@ -1651,6 +1694,27 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             cache=self.cache,
         )
         self.q_head_to_kv_head = self.model_kv_cache.default_q_head_to_kv_head.copy()
+
+    def maybe_apply_mps_serving_shortlist_heuristic(self, *, prompt_length: int) -> bool:
+        updated_config, applied = _qwen35_mps_serving_shortlist_heuristic(
+            self.dotcache_config,
+            backend=self.backend,
+            prompt_length=int(prompt_length),
+        )
+        if applied:
+            self.dotcache_config = updated_config
+            self._rebuild_model_kv_cache()
+        self.serving_shortlist_heuristic_applied = bool(
+            self.backend == "torch_mps"
+            and int(prompt_length) >= 4096
+            and int(self.dotcache_config.execution_recent_window) == 1024
+            and int(self.dotcache_config.execution_sink_window) == 256
+            and int(self.dotcache_config.execution_relevance_top_k) == 4
+            and str(self.dotcache_config.execution_relevance_mode) == "envelope"
+            and tuple(self.dotcache_config.execution_relevance_top_k_overrides) == ()
+            and tuple(self.dotcache_config.execution_relevance_top_k_context_overrides) == ("layer:23:min_ctx:8192=8",)
+        )
+        return bool(applied)
 
     def set_mode(self, mode: str) -> None:
         if mode not in {"dense", "dotcache_attention_subset"}:
@@ -1668,12 +1732,39 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
         self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
+        self.qkv_projection_ms_total_by_layer = {}
+        self.append_runtime_ms_total_by_layer = {}
+        self.decode_runtime_ms_total_by_layer = {}
+        self.output_projection_ms_total_by_layer = {}
+        self.decode_call_count_by_layer = {}
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
 
     def set_backend_profiling(self, enabled: bool) -> None:
         self.profile_backend = bool(enabled)
         self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
+
+    def _record_layer_timing(self, store: dict[int, float], layer_id: int, ms: float) -> None:
+        store[int(layer_id)] = float(store.get(int(layer_id), 0.0) + float(ms))
+
+    def per_layer_runtime_summary(self) -> dict[str, Any]:
+        return {
+            "dotcache_decode_call_count_by_layer": {
+                str(layer_id): int(count) for layer_id, count in sorted(self.decode_call_count_by_layer.items())
+            },
+            "dotcache_qkv_projection_ms_total_by_layer": {
+                str(layer_id): float(total) for layer_id, total in sorted(self.qkv_projection_ms_total_by_layer.items())
+            },
+            "dotcache_append_runtime_ms_total_by_layer": {
+                str(layer_id): float(total) for layer_id, total in sorted(self.append_runtime_ms_total_by_layer.items())
+            },
+            "dotcache_decode_runtime_ms_total_by_layer": {
+                str(layer_id): float(total) for layer_id, total in sorted(self.decode_runtime_ms_total_by_layer.items())
+            },
+            "dotcache_output_projection_ms_total_by_layer": {
+                str(layer_id): float(total) for layer_id, total in sorted(self.output_projection_ms_total_by_layer.items())
+            },
+        }
 
     def token_growing_layer_ids(self) -> list[int]:
         if self.native_hybrid_runtime_state is not None:
@@ -2197,6 +2288,28 @@ class Qwen35AttentionSubsetDotCacheHarness:
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_attention_subset_dotcache_serving_quality(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_dotcache_serving_quality_harness(
             self.model,
             self.adapter,
             prompt=prompt,
@@ -5282,6 +5395,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         tokenizer=tokenizer,
         multimodal_inputs=multimodal_inputs,
     )
+    adapter.maybe_apply_mps_serving_shortlist_heuristic(prompt_length=int(input_ids.shape[1]))
     device = input_ids.device
     dotcache_prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
     dotcache_prefill_outputs, dotcache_prefill_ms = _timed_call(
@@ -5300,6 +5414,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         "dotcache_prefill_ms": float(dotcache_prefill_ms),
         "dotcache_prefill_cuda_memory": dotcache_prefill_cuda_memory,
         "runtime_state": runtime_state,
+        "serving_shortlist_heuristic_applied": bool(adapter.serving_shortlist_heuristic_applied),
     }
 
 
@@ -5331,6 +5446,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
     dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
     runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
     device = input_ids.device
 
     generated_ids: list[int] = []
@@ -5387,6 +5503,13 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         "num_groups": int(adapter.dotcache_config.num_groups),
         "padded_head_dim": int(adapter.dotcache_config.padded_head_dim),
         "tokens_per_page": int(adapter.dotcache_config.tokens_per_page),
+        "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+        "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+        "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+        "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+        "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+        "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+        "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
         "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
@@ -5396,6 +5519,211 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
     if profile_backend:
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_dotcache_serving_quality_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    device = input_ids.device
+
+    dotcache_step_logits: list[np.ndarray] = []
+    dotcache_records: list[list[LlamaReplayRecord]] = []
+    dotcache_decode_ms_total = 0.0
+    dotcache_decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+            adapter.begin_capture_step(step_index)
+            adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+            try:
+                outputs, step_ms = _timed_call(
+                    lambda: _run_dense_decode_step(
+                        model,
+                        decode_input_ids=decode_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=runtime_state.model_past_key_values,
+                        cache_position=cache_position,
+                    ),
+                    device=device,
+                )
+            finally:
+                adapter.set_current_token_index(None)
+            dotcache_decode_ms_total += step_ms
+            dotcache_records.append(adapter.end_capture_step())
+            dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+            runtime_state.advance(outputs.past_key_values)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+
+    dense_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in dense_capture["capture_records"]
+        for record in step_records
+    }
+    dotcache_record_map = {
+        (record.step_index, record.layer_id): record
+        for step_records in dotcache_records
+        for record in step_records
+    }
+    replay_context_max_abs = 0.0
+    replay_context_max_rel = 0.0
+    replay_output_max_abs = 0.0
+    replay_output_max_rel = 0.0
+    per_layer_context_max_abs: dict[str, float] = {}
+    per_layer_output_max_abs: dict[str, float] = {}
+    for replay_key, dense_record in dense_record_map.items():
+        dotcache_record = dotcache_record_map.get(replay_key)
+        if dotcache_record is None:
+            raise ValueError(f"missing DotCache serving replay record for step/layer {replay_key}")
+        context_delta = np.abs(dotcache_record.context_states - dense_record.context_states)
+        context_denom = np.maximum(np.abs(dense_record.context_states), 1e-8)
+        replay_context_max_abs = max(replay_context_max_abs, float(np.max(context_delta)))
+        replay_context_max_rel = max(replay_context_max_rel, float(np.max(context_delta / context_denom)))
+        layer_key = str(dense_record.layer_id)
+        per_layer_context_max_abs[layer_key] = max(
+            per_layer_context_max_abs.get(layer_key, 0.0),
+            float(np.max(context_delta)),
+        )
+        output_delta = np.abs(dotcache_record.output_states - dense_record.output_states)
+        output_denom = np.maximum(np.abs(dense_record.output_states), 1e-8)
+        replay_output_max_abs = max(replay_output_max_abs, float(np.max(output_delta)))
+        replay_output_max_rel = max(replay_output_max_rel, float(np.max(output_delta / output_denom)))
+        per_layer_output_max_abs[layer_key] = max(
+            per_layer_output_max_abs.get(layer_key, 0.0),
+            float(np.max(output_delta)),
+        )
+
+    dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
+    dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
+    if dense_logits.size == 0:
+        teacher_forced_max_abs = 0.0
+        teacher_forced_max_rel = 0.0
+        teacher_forced_mean_abs = 0.0
+        teacher_forced_rmse = 0.0
+        teacher_forced_token_agreement = 1.0
+        teacher_forced_per_step_max_abs: list[float] = []
+    else:
+        logit_delta = np.abs(dotcache_logits - dense_logits)
+        logit_denom = np.maximum(np.abs(dense_logits), 1e-8)
+        teacher_forced_max_abs = float(np.max(logit_delta))
+        teacher_forced_max_rel = float(np.max(logit_delta / logit_denom))
+        teacher_forced_mean_abs = float(np.mean(logit_delta))
+        teacher_forced_rmse = float(np.sqrt(np.mean(np.square(dotcache_logits - dense_logits))))
+        teacher_forced_token_agreement = float(
+            np.mean(
+                (
+                    np.argmax(dotcache_logits, axis=-1).astype(np.int64, copy=False)
+                    == np.argmax(dense_logits, axis=-1).astype(np.int64, copy=False)
+                ).astype(np.float32)
+            )
+        )
+        teacher_forced_per_step_max_abs = [
+            float(np.max(np.abs(dotcache_step - dense_step)))
+            for dense_step, dotcache_step in zip(dense_logits, dotcache_logits, strict=True)
+        ]
+
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        {
+            "dotcache_attention_subset_ready": True,
+            "dotcache_ready": False,
+            "runtime_mode": "dotcache_attention_subset_serving_quality",
+            "dotcache_prefill_ms": float(dotcache_prefill_ms),
+            "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "replay_context_max_abs_error": replay_context_max_abs,
+            "replay_context_max_rel_error": replay_context_max_rel,
+            "replay_output_max_abs_error": replay_output_max_abs,
+            "replay_output_max_rel_error": replay_output_max_rel,
+            "replay_context_max_abs_error_by_layer": dict(sorted(per_layer_context_max_abs.items())),
+            "replay_output_max_abs_error_by_layer": dict(sorted(per_layer_output_max_abs.items())),
+            "teacher_forced_logit_max_abs_error": teacher_forced_max_abs,
+            "teacher_forced_logit_max_rel_error": teacher_forced_max_rel,
+            "teacher_forced_logit_mean_abs_error": teacher_forced_mean_abs,
+            "teacher_forced_logit_rmse": teacher_forced_rmse,
+            "teacher_forced_token_agreement_rate": teacher_forced_token_agreement,
+            "teacher_forced_per_step_logit_max_abs_error": teacher_forced_per_step_max_abs,
+            "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+            "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+            "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+            "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+            "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+            "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+            "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
+            "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+            "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+            "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+            "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+        }
+    )
+    result.update({f"dotcache_prefill_{key}": value for key, value in dotcache_prefill_cuda_memory.items()})
+    result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -5845,6 +6173,7 @@ __all__ = [
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_dotcache_serving_harness",
+    "run_qwen35_attention_subset_dotcache_serving_quality_harness",
     "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",

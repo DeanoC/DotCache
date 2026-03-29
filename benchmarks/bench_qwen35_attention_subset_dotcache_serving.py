@@ -37,6 +37,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-page-escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-window", type=int, default=128)
+    parser.add_argument("--execution-recent-window", type=int, default=0)
+    parser.add_argument("--execution-sink-window", type=int, default=0)
+    parser.add_argument("--execution-relevance-top-k", type=int, default=0)
+    parser.add_argument("--execution-relevance-top-k-layer", action="append", default=[])
+    parser.add_argument("--execution-relevance-top-k-context-layer", action="append", default=[])
+    parser.add_argument("--execution-relevance-mode", choices=["sketch", "envelope"], default="envelope")
+    parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
@@ -58,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--profile-backend", action="store_true")
+    parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--tokens-per-page", type=int, default=16)
     return parser.parse_args()
@@ -102,16 +111,41 @@ def _run_case(
     continue_on_error: bool,
 ) -> None:
     try:
-        record = harness.run_attention_subset_dotcache_serving(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            decode_steps=max_new_tokens,
-            profile_backend=bool(base_record.get("profile_backend", False)),
-        )
+        if bool(base_record.get("quality_check", False)):
+            record = harness.run_attention_subset_dotcache_serving_quality(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+                profile_backend=bool(base_record.get("profile_backend", False)),
+            )
+        else:
+            record = harness.run_attention_subset_dotcache_serving(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+                profile_backend=bool(base_record.get("profile_backend", False)),
+            )
     except Exception as exc:  # pragma: no cover - benchmark failure path
         if not continue_on_error:
             raise
         error_record = dict(base_record)
+        effective_config = getattr(getattr(harness, "adapter", None), "dotcache_config", None)
+        if effective_config is not None:
+            error_record.update(
+                {
+                    "execution_recent_window": int(effective_config.execution_recent_window),
+                    "execution_sink_window": int(effective_config.execution_sink_window),
+                    "execution_relevance_top_k": int(effective_config.execution_relevance_top_k),
+                    "execution_relevance_top_k_overrides": list(effective_config.execution_relevance_top_k_overrides),
+                    "execution_relevance_top_k_context_overrides": list(
+                        effective_config.execution_relevance_top_k_context_overrides
+                    ),
+                    "execution_relevance_mode": str(effective_config.execution_relevance_mode),
+                    "serving_shortlist_heuristic_applied": bool(
+                        getattr(getattr(harness, "adapter", None), "serving_shortlist_heuristic_applied", False)
+                    ),
+                }
+            )
         error_record.update(
             {
                 "benchmark": "qwen35_attention_subset_dotcache_serving",
@@ -124,8 +158,9 @@ def _run_case(
         print(json.dumps(error_record, sort_keys=True), flush=True)
         return
 
-    record.update(base_record)
-    print(json.dumps(record, sort_keys=True), flush=True)
+    merged_record = dict(base_record)
+    merged_record.update(record)
+    print(json.dumps(merged_record, sort_keys=True), flush=True)
 
 
 def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
@@ -180,6 +215,14 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         escape_dtype=args.escape_dtype,
         recent_page_escape_dtype=args.recent_page_escape_dtype,
         recent_window=args.recent_window,
+        execution_recent_window=args.execution_recent_window,
+        execution_sink_window=args.execution_sink_window,
+        execution_relevance_top_k=args.execution_relevance_top_k,
+        execution_relevance_top_k_overrides=tuple(args.execution_relevance_top_k_layer),
+        execution_relevance_top_k_context_overrides=tuple(args.execution_relevance_top_k_context_layer),
+        execution_relevance_mode=args.execution_relevance_mode,
+        execution_exact_refine_top_k=args.execution_exact_refine_top_k,
+        execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
         m2_center_k=args.m2_center_k,
         m2_segment_count_k=args.m2_segment_count_k,
@@ -208,6 +251,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "device": args.device,
         "torch_dtype": args.torch_dtype,
         "tokens_per_page": args.tokens_per_page,
+        "quality_check": bool(args.quality_check),
         "default_mode_k": args.default_mode_k,
         "default_mode_v": args.default_mode_v,
         "key_policy_tier": args.key_policy_tier,
@@ -226,6 +270,14 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "escape_dtype": args.escape_dtype,
         "recent_page_escape_dtype": args.recent_page_escape_dtype,
         "recent_window": args.recent_window,
+        "execution_recent_window": args.execution_recent_window,
+        "execution_sink_window": args.execution_sink_window,
+        "execution_relevance_top_k": args.execution_relevance_top_k,
+        "execution_relevance_top_k_overrides": list(args.execution_relevance_top_k_layer),
+        "execution_relevance_top_k_context_overrides": list(args.execution_relevance_top_k_context_layer),
+        "execution_relevance_mode": args.execution_relevance_mode,
+        "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
+        "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,
         "m2_center_k": args.m2_center_k,
         "m2_segment_count_k": args.m2_segment_count_k,

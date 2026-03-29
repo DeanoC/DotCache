@@ -77,6 +77,22 @@ def _parse_layer_positive_int_spec(spec: str, *, field_name: str) -> tuple[int, 
     return int(parts[1]), parsed_value
 
 
+def _parse_layer_context_positive_int_spec(spec: str, *, field_name: str) -> tuple[int, int, int]:
+    if "=" not in spec:
+        raise ValueError(f"{field_name} entries must use layer:<id>:min_ctx:<non_negative_int>=<positive_int>")
+    target, value = spec.split("=", 1)
+    parts = target.strip().split(":")
+    if len(parts) != 4 or parts[0] != "layer" or parts[2] != "min_ctx":
+        raise ValueError(f"{field_name} entries must use layer:<id>:min_ctx:<non_negative_int>=<positive_int>")
+    min_context = int(parts[3])
+    if min_context < 0:
+        raise ValueError(f"{field_name} min_ctx must be non-negative")
+    parsed_value = int(value.strip())
+    if parsed_value <= 0:
+        raise ValueError(f"{field_name} values must be positive integers")
+    return int(parts[1]), min_context, parsed_value
+
+
 @dataclass(frozen=True, slots=True)
 class DotCacheConfig:
     head_dim: int
@@ -86,6 +102,14 @@ class DotCacheConfig:
     tokens_per_page: int = 64
     recent_window: int = 128
     sink_window: int = 0
+    execution_recent_window: int = 0
+    execution_sink_window: int = 0
+    execution_relevance_top_k: int = 0
+    execution_relevance_mode: str = "envelope"
+    execution_relevance_top_k_overrides: tuple[str, ...] = ()
+    execution_relevance_top_k_context_overrides: tuple[str, ...] = ()
+    execution_exact_refine_top_k: int = 0
+    execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"
     store_bias_dtype: str = "float16"
     payload_layout_k: str = "group_major"
@@ -138,6 +162,23 @@ class DotCacheConfig:
             raise ValueError("bits_v must be 2, 3, or 4 for the current runtime")
         if self.tokens_per_page <= 0:
             raise ValueError("tokens_per_page must be positive")
+        if self.execution_recent_window < 0:
+            raise ValueError("execution_recent_window must be non-negative")
+        if self.execution_sink_window < 0:
+            raise ValueError("execution_sink_window must be non-negative")
+        if self.execution_relevance_top_k < 0:
+            raise ValueError("execution_relevance_top_k must be non-negative")
+        if self.execution_relevance_mode not in ("sketch", "envelope"):
+            raise ValueError("execution_relevance_mode must be sketch or envelope")
+        for spec in self.execution_relevance_top_k_overrides:
+            _parse_layer_positive_int_spec(spec, field_name="execution_relevance_top_k_overrides")
+        for spec in self.execution_relevance_top_k_context_overrides:
+            _parse_layer_context_positive_int_spec(spec, field_name="execution_relevance_top_k_context_overrides")
+        if self.execution_exact_refine_top_k < 0:
+            raise ValueError("execution_exact_refine_top_k must be non-negative")
+        for layer_id in self.execution_exact_refine_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_exact_refine_layers must be non-negative")
         if self.payload_layout_k not in ("group_major", "token_major"):
             raise ValueError("payload_layout_k must be group_major or token_major")
         if self.payload_layout_v not in ("group_major", "token_major"):
@@ -292,6 +333,44 @@ class DotCacheConfig:
             )
             if override_layer_id == int(layer_id):
                 resolved = int(override_dim)
+        return resolved
+
+    def resolve_execution_relevance_top_k(self, *, layer_id: int) -> int:
+        resolved = int(self.execution_relevance_top_k)
+        for spec in self.execution_relevance_top_k_overrides:
+            override_layer_id, override_value = _parse_layer_positive_int_spec(
+                spec,
+                field_name="execution_relevance_top_k_overrides",
+            )
+            if override_layer_id == int(layer_id):
+                resolved = int(override_value)
+        return resolved
+
+    def execution_shortlist_enabled(self) -> bool:
+        return (
+            self.execution_recent_window > 0
+            or self.execution_sink_window > 0
+            or self.execution_relevance_top_k > 0
+            or bool(self.execution_relevance_top_k_overrides)
+            or bool(self.execution_relevance_top_k_context_overrides)
+        )
+
+    def resolve_execution_relevance_top_k_for_context(self, *, layer_id: int, context_length: int | None = None) -> int:
+        resolved = self.resolve_execution_relevance_top_k(layer_id=layer_id)
+        if context_length is None:
+            return resolved
+        best_min_context = -1
+        for spec in self.execution_relevance_top_k_context_overrides:
+            override_layer_id, min_context, override_value = _parse_layer_context_positive_int_spec(
+                spec,
+                field_name="execution_relevance_top_k_context_overrides",
+            )
+            if override_layer_id != int(layer_id):
+                continue
+            if int(context_length) < int(min_context) or int(min_context) < best_min_context:
+                continue
+            resolved = int(override_value)
+            best_min_context = int(min_context)
         return resolved
 
     def resolve_m4_project_basis_k(self, *, layer_id: int) -> str:
