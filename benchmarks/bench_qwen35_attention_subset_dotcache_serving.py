@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-recent-neighbor-rescue-min-anchor-pages", type=int, default=0)
     parser.add_argument("--execution-recent-neighbor-rescue-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-exact-promote-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-promote-min-margin-threshold", type=float, default=0.0)
     parser.add_argument("--execution-exact-promote-margin-threshold", type=float, default=0.0)
     parser.add_argument("--execution-exact-promote-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
@@ -202,6 +203,9 @@ def _run_case(
                         effective_config.execution_recent_neighbor_rescue_layers
                     ),
                     "execution_exact_promote_top_k": int(effective_config.execution_exact_promote_top_k),
+                    "execution_exact_promote_min_margin_threshold": float(
+                        effective_config.execution_exact_promote_min_margin_threshold
+                    ),
                     "execution_exact_promote_margin_threshold": float(
                         effective_config.execution_exact_promote_margin_threshold
                     ),
@@ -330,6 +334,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_recent_neighbor_rescue_min_anchor_pages=args.execution_recent_neighbor_rescue_min_anchor_pages,
         execution_recent_neighbor_rescue_layers=tuple(args.execution_recent_neighbor_rescue_layer),
         execution_exact_promote_top_k=args.execution_exact_promote_top_k,
+        execution_exact_promote_min_margin_threshold=args.execution_exact_promote_min_margin_threshold,
         execution_exact_promote_margin_threshold=args.execution_exact_promote_margin_threshold,
         execution_exact_promote_layers=tuple(args.execution_exact_promote_layer),
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
@@ -405,6 +410,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "execution_recent_neighbor_rescue_min_anchor_pages": args.execution_recent_neighbor_rescue_min_anchor_pages,
         "execution_recent_neighbor_rescue_layers": list(args.execution_recent_neighbor_rescue_layer),
         "execution_exact_promote_top_k": args.execution_exact_promote_top_k,
+        "execution_exact_promote_min_margin_threshold": args.execution_exact_promote_min_margin_threshold,
         "execution_exact_promote_margin_threshold": args.execution_exact_promote_margin_threshold,
         "execution_exact_promote_layers": list(args.execution_exact_promote_layer),
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,

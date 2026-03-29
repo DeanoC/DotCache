@@ -1645,6 +1645,15 @@ class ModelPagedKVCache:
             promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id)
             if (
                 promote_enabled
+                and float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
+                and (
+                    boundary_margin_normalized is None
+                    or boundary_margin_normalized < float(self.config.execution_exact_promote_min_margin_threshold)
+                )
+            ):
+                promote_enabled = False
+            if (
+                promote_enabled
                 and float(self.config.execution_exact_promote_margin_threshold) > 0.0
                 and boundary_margin_normalized is not None
                 and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)

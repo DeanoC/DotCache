@@ -5584,6 +5584,9 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         ),
         "execution_recent_neighbor_rescue_layers": list(adapter.dotcache_config.execution_recent_neighbor_rescue_layers),
         "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+        "execution_exact_promote_min_margin_threshold": float(
+            adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+        ),
         "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
         "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
@@ -5818,6 +5821,9 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
@@ -6058,6 +6064,9 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
@@ -6362,6 +6371,9 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),

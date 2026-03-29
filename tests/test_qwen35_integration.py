@@ -884,6 +884,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
     assert len(result["dotcache_generated_ids"]) == 2
@@ -936,6 +937,7 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
 
@@ -992,6 +994,7 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
 
@@ -1043,6 +1046,7 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
 
@@ -1337,6 +1341,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "23",
             "--execution-exact-promote-top-k",
             "2",
+            "--execution-exact-promote-min-margin-threshold",
+            "0.0558",
             "--execution-exact-promote-margin-threshold",
             "0.25",
             "--execution-exact-promote-layer",
@@ -1393,6 +1399,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_recent_neighbor_rescue_min_anchor_pages == 4
     assert serving_args.execution_recent_neighbor_rescue_layer == [23]
     assert serving_args.execution_exact_promote_top_k == 2
+    assert serving_args.execution_exact_promote_min_margin_threshold == 0.0558
     assert serving_args.execution_exact_promote_margin_threshold == 0.25
     assert serving_args.execution_exact_promote_layer == [23]
     assert serving_args.scorer_diagnostic is True
