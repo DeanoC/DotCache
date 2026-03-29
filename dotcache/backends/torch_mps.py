@@ -2412,6 +2412,8 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         and prepared_chunk.fused_scaled_codes is not None
         and prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="score", variant="fused_generic")
         fused_query = query.reshape(1, header.padded_head_dim).contiguous()
         fused_query_group_sums = query_group_sums.reshape(1, header.num_groups).contiguous()
         return _score_m0_logits_fused_torch(
@@ -2420,6 +2422,8 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
             prepared_chunk.bias_groups,
             fused_query_group_sums,
         ).reshape(-1)
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="score", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -2548,6 +2552,8 @@ def _mix_page_chunk_torch(
         and prepared_chunk.fused_scaled_codes is not None
         and prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="mix", variant="fused_generic")
         output[: header.padded_head_dim] += _mix_m0_contribution_fused_torch(
             weights.reshape(1, page_count, token_count),
             prepared_chunk.fused_scaled_codes,
@@ -2555,6 +2561,8 @@ def _mix_page_chunk_torch(
             group_size=header.group_size,
         ).reshape(-1)
         return output
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="mix", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -2902,6 +2910,8 @@ def _score_page_chunk_multiquery_torch(
         and prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="score", variant="fused_two_group64")
         fused_queries = query_groups.reshape(query_count, header.padded_head_dim).contiguous()
         return _score_m0_logits_two_group64_torch(
             prepared_chunk.fused_scaled_codes,
@@ -2909,6 +2919,8 @@ def _score_page_chunk_multiquery_torch(
             prepared_chunk.bias_groups,
             query_group_sums,
         )
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="score", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3043,12 +3055,16 @@ def _mix_page_chunk_multiquery_torch(
         and prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="mix", variant="fused_two_group64")
         output[:, : header.padded_head_dim] += _mix_m0_contribution_two_group64_torch(
             weights,
             prepared_chunk.fused_scaled_codes,
             prepared_chunk.bias_groups,
         )
         return output
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="mix", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3985,9 +4001,21 @@ def decode_multi_query_step_torch_tensor(
     prepared_value_pages = prepare_pages_torch(value_pages, device_type=device_type, trace=trace)
     if not prepared_key_pages:
         raise ValueError(f"decode_multi_query_step_{device_type} requires at least one page")
+    if trace is not None:
+        trace.record_per_kv_decode_call()
 
     logits_parts = []
+    if torch.is_tensor(query_slices):
+        query_count = int(query_slices.shape[0])
+    else:
+        query_count = int(np.asarray(query_slices).shape[0])
     for page_chunk in _chunk_compatible_pages(prepared_key_pages):
+        if trace is not None:
+            trace.record_per_kv_score_chunk(
+                query_count=query_count,
+                page_count=len(page_chunk),
+                token_count=page_chunk[0].header.token_count,
+            )
         logits_parts.append(
             _trace_timed_call(
                 trace,
@@ -4003,11 +4031,6 @@ def decode_multi_query_step_torch_tensor(
         device_type=device_type,
         fn=lambda: torch.softmax(logits, dim=1),
     )
-
-    if torch.is_tensor(query_slices):
-        query_count = int(query_slices.shape[0])
-    else:
-        query_count = int(np.asarray(query_slices).shape[0])
     output = torch.zeros(
         (query_count, prepared_value_pages[0].header.padded_head_dim),
         dtype=torch.float32,
@@ -4029,6 +4052,13 @@ def decode_multi_query_step_torch_tensor(
                 page_chunk[0].header.token_count,
             ),
         )
+        if trace is not None:
+            trace.record_per_kv_mix_chunk(
+                query_count=query_count,
+                page_count=len(page_chunk),
+                token_count=page_chunk[0].header.token_count,
+                head_dim=prepared_value_pages[0].header.padded_head_dim,
+            )
         output += _trace_timed_call(
             trace,
             "mix",

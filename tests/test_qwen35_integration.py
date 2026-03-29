@@ -905,6 +905,14 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "grouped_output_elements_total" in trace
     assert "grouped_score_packed_cuda_calls" in trace
     assert "grouped_mix_packed_cuda_calls" in trace
+    assert "per_kv_decode_calls" in trace
+    assert "per_kv_score_chunk_count" in trace
+    assert "per_kv_mix_chunk_count" in trace
+    assert "per_kv_logits_elements_total" in trace
+    assert "per_kv_weights_elements_total" in trace
+    assert "per_kv_output_elements_total" in trace
+    assert "per_kv_score_generic_calls" in trace
+    assert "per_kv_mix_generic_calls" in trace
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 

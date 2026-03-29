@@ -49,6 +49,22 @@ class ExecutionTrace:
     grouped_mix_fused_two_group64_calls: int = 0
     grouped_mix_fused_generic_calls: int = 0
     grouped_mix_generic_calls: int = 0
+    per_kv_decode_calls: int = 0
+    per_kv_score_chunk_count: int = 0
+    per_kv_mix_chunk_count: int = 0
+    per_kv_score_chunk_pages_total: int = 0
+    per_kv_mix_chunk_pages_total: int = 0
+    per_kv_score_chunk_pages_max: int = 0
+    per_kv_mix_chunk_pages_max: int = 0
+    per_kv_logits_elements_total: int = 0
+    per_kv_weights_elements_total: int = 0
+    per_kv_output_elements_total: int = 0
+    per_kv_score_fused_two_group64_calls: int = 0
+    per_kv_score_fused_generic_calls: int = 0
+    per_kv_score_generic_calls: int = 0
+    per_kv_mix_fused_two_group64_calls: int = 0
+    per_kv_mix_fused_generic_calls: int = 0
+    per_kv_mix_generic_calls: int = 0
 
     def record_page_read(self, payload_bytes: int, metadata_bytes: int) -> None:
         self.payload_bytes_read += int(payload_bytes)
@@ -82,6 +98,9 @@ class ExecutionTrace:
             return
         self.grouped_decode_calls += 1
 
+    def record_per_kv_decode_call(self) -> None:
+        self.per_kv_decode_calls += 1
+
     def record_grouped_score_chunk(
         self,
         *,
@@ -109,6 +128,32 @@ class ExecutionTrace:
         self.grouped_mix_chunk_pages_max = max(self.grouped_mix_chunk_pages_max, int(page_count))
         self.grouped_weights_elements_total += int(batch_size) * int(query_count) * int(page_count) * int(token_count)
         self.grouped_output_elements_total += int(batch_size) * int(query_count) * int(head_dim)
+
+    def record_per_kv_score_chunk(
+        self,
+        *,
+        query_count: int,
+        page_count: int,
+        token_count: int,
+    ) -> None:
+        self.per_kv_score_chunk_count += 1
+        self.per_kv_score_chunk_pages_total += int(page_count)
+        self.per_kv_score_chunk_pages_max = max(self.per_kv_score_chunk_pages_max, int(page_count))
+        self.per_kv_logits_elements_total += int(query_count) * int(page_count) * int(token_count)
+
+    def record_per_kv_mix_chunk(
+        self,
+        *,
+        query_count: int,
+        page_count: int,
+        token_count: int,
+        head_dim: int,
+    ) -> None:
+        self.per_kv_mix_chunk_count += 1
+        self.per_kv_mix_chunk_pages_total += int(page_count)
+        self.per_kv_mix_chunk_pages_max = max(self.per_kv_mix_chunk_pages_max, int(page_count))
+        self.per_kv_weights_elements_total += int(query_count) * int(page_count) * int(token_count)
+        self.per_kv_output_elements_total += int(query_count) * int(head_dim)
 
     def record_grouped_kernel_variant(self, *, section: str, variant: str) -> None:
         if section == "score":
@@ -138,6 +183,29 @@ class ExecutionTrace:
                 self.grouped_mix_generic_calls += 1
                 return
         raise ValueError(f"unknown grouped kernel variant: {section}/{variant}")
+
+    def record_per_kv_kernel_variant(self, *, section: str, variant: str) -> None:
+        if section == "score":
+            if variant == "fused_two_group64":
+                self.per_kv_score_fused_two_group64_calls += 1
+                return
+            if variant == "fused_generic":
+                self.per_kv_score_fused_generic_calls += 1
+                return
+            if variant == "generic":
+                self.per_kv_score_generic_calls += 1
+                return
+        if section == "mix":
+            if variant == "fused_two_group64":
+                self.per_kv_mix_fused_two_group64_calls += 1
+                return
+            if variant == "fused_generic":
+                self.per_kv_mix_fused_generic_calls += 1
+                return
+            if variant == "generic":
+                self.per_kv_mix_generic_calls += 1
+                return
+        raise ValueError(f"unknown per_kv kernel variant: {section}/{variant}")
 
     def record_timing(self, section: str, ms: float, count: int = 1) -> None:
         if section == "prepare":
@@ -214,6 +282,22 @@ class ExecutionTrace:
         self.grouped_mix_fused_two_group64_calls += other.grouped_mix_fused_two_group64_calls
         self.grouped_mix_fused_generic_calls += other.grouped_mix_fused_generic_calls
         self.grouped_mix_generic_calls += other.grouped_mix_generic_calls
+        self.per_kv_decode_calls += other.per_kv_decode_calls
+        self.per_kv_score_chunk_count += other.per_kv_score_chunk_count
+        self.per_kv_mix_chunk_count += other.per_kv_mix_chunk_count
+        self.per_kv_score_chunk_pages_total += other.per_kv_score_chunk_pages_total
+        self.per_kv_mix_chunk_pages_total += other.per_kv_mix_chunk_pages_total
+        self.per_kv_score_chunk_pages_max = max(self.per_kv_score_chunk_pages_max, other.per_kv_score_chunk_pages_max)
+        self.per_kv_mix_chunk_pages_max = max(self.per_kv_mix_chunk_pages_max, other.per_kv_mix_chunk_pages_max)
+        self.per_kv_logits_elements_total += other.per_kv_logits_elements_total
+        self.per_kv_weights_elements_total += other.per_kv_weights_elements_total
+        self.per_kv_output_elements_total += other.per_kv_output_elements_total
+        self.per_kv_score_fused_two_group64_calls += other.per_kv_score_fused_two_group64_calls
+        self.per_kv_score_fused_generic_calls += other.per_kv_score_fused_generic_calls
+        self.per_kv_score_generic_calls += other.per_kv_score_generic_calls
+        self.per_kv_mix_fused_two_group64_calls += other.per_kv_mix_fused_two_group64_calls
+        self.per_kv_mix_fused_generic_calls += other.per_kv_mix_fused_generic_calls
+        self.per_kv_mix_generic_calls += other.per_kv_mix_generic_calls
 
     def to_dict(self) -> dict[str, int | float]:
         return {
@@ -260,4 +344,20 @@ class ExecutionTrace:
             "grouped_mix_fused_two_group64_calls": self.grouped_mix_fused_two_group64_calls,
             "grouped_mix_fused_generic_calls": self.grouped_mix_fused_generic_calls,
             "grouped_mix_generic_calls": self.grouped_mix_generic_calls,
+            "per_kv_decode_calls": self.per_kv_decode_calls,
+            "per_kv_score_chunk_count": self.per_kv_score_chunk_count,
+            "per_kv_mix_chunk_count": self.per_kv_mix_chunk_count,
+            "per_kv_score_chunk_pages_total": self.per_kv_score_chunk_pages_total,
+            "per_kv_mix_chunk_pages_total": self.per_kv_mix_chunk_pages_total,
+            "per_kv_score_chunk_pages_max": self.per_kv_score_chunk_pages_max,
+            "per_kv_mix_chunk_pages_max": self.per_kv_mix_chunk_pages_max,
+            "per_kv_logits_elements_total": self.per_kv_logits_elements_total,
+            "per_kv_weights_elements_total": self.per_kv_weights_elements_total,
+            "per_kv_output_elements_total": self.per_kv_output_elements_total,
+            "per_kv_score_fused_two_group64_calls": self.per_kv_score_fused_two_group64_calls,
+            "per_kv_score_fused_generic_calls": self.per_kv_score_fused_generic_calls,
+            "per_kv_score_generic_calls": self.per_kv_score_generic_calls,
+            "per_kv_mix_fused_two_group64_calls": self.per_kv_mix_fused_two_group64_calls,
+            "per_kv_mix_fused_generic_calls": self.per_kv_mix_fused_generic_calls,
+            "per_kv_mix_generic_calls": self.per_kv_mix_generic_calls,
         }
