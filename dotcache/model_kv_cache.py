@@ -498,6 +498,14 @@ class _PreparedDecodeViewLayout:
     value_chunk_lengths: tuple[int, ...]
 
 
+@dataclass(slots=True)
+class _ExecutionBuiltinSelectorCache:
+    page_signature: tuple[tuple[int, int, int], ...] = ()
+    sketch_matrix: np.ndarray | None = None
+    minima_matrix: np.ndarray | None = None
+    maxima_matrix: np.ndarray | None = None
+
+
 def _prepared_page_group_signature(page: PreparedPageTorch) -> tuple[Any, ...]:
     basis = getattr(page, "m2_basis", None)
     if basis is None:
@@ -1176,6 +1184,7 @@ class _HeadSessionState:
     decode_key_pages_with_tail: list[PageLike] | None = None
     decode_value_pages_with_tail: list[PageLike] | None = None
     decode_view_layout: _PreparedDecodeViewLayout | None = None
+    execution_builtin_selector_cache: _ExecutionBuiltinSelectorCache | None = None
     sequence_length: int = 0
     tracked_direct_prepared_pages: dict[int, int] = field(default_factory=dict)
     tracked_tail_resident_bytes: int = 0
@@ -1184,6 +1193,7 @@ class _HeadSessionState:
         self.decode_key_pages_with_tail = None
         self.decode_value_pages_with_tail = None
         self.decode_view_layout = None
+        self.execution_builtin_selector_cache = None
 
     def clear(self, *, clear_prepared_cache: bool) -> None:
         self.session.key_pages.clear()
@@ -1568,6 +1578,129 @@ class ModelPagedKVCache:
             _decode_stage_summary_key(stage): float(self._decode_stage_timings.get(stage, 0.0))
             for stage in _DECODE_STAGE_TIMING_STAGES
         }
+
+    def _execution_builtin_selector_cache_for_state(
+        self,
+        state: _HeadSessionState,
+        *,
+        relevance_mode: str,
+    ) -> _ExecutionBuiltinSelectorCache | None:
+        direct_key_pages = state.session.key_pages
+        if not direct_key_pages:
+            return None
+        page_signature = tuple(
+            (
+                id(page.source_page if isinstance(page, PreparedPageTorch) else page),
+                int(_page_header(page).token_start),
+                int(_page_header(page).token_count),
+            )
+            for page in direct_key_pages
+        )
+        cache = state.execution_builtin_selector_cache
+        if cache is not None and cache.page_signature == page_signature:
+            if relevance_mode == "sketch" and cache.sketch_matrix is not None:
+                return cache
+            if relevance_mode == "envelope" and cache.minima_matrix is not None and cache.maxima_matrix is not None:
+                return cache
+        if relevance_mode == "sketch":
+            sketches = []
+            for page in direct_key_pages:
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if source_page.runtime_page_sketch is None:
+                    return None
+                sketches.append(np.asarray(source_page.runtime_page_sketch, dtype=np.float32))
+            cache = _ExecutionBuiltinSelectorCache(
+                page_signature=page_signature,
+                sketch_matrix=np.stack(sketches, axis=0),
+            )
+        elif relevance_mode == "envelope":
+            minima = []
+            maxima = []
+            for page in direct_key_pages:
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if source_page.runtime_page_min is None or source_page.runtime_page_max is None:
+                    return None
+                minima.append(np.asarray(source_page.runtime_page_min, dtype=np.float32))
+                maxima.append(np.asarray(source_page.runtime_page_max, dtype=np.float32))
+            cache = _ExecutionBuiltinSelectorCache(
+                page_signature=page_signature,
+                minima_matrix=np.stack(minima, axis=0),
+                maxima_matrix=np.stack(maxima, axis=0),
+            )
+        else:
+            return None
+        state.execution_builtin_selector_cache = cache
+        return cache
+
+    def _execution_builtin_selector_matrices(
+        self,
+        *,
+        layer_id: int,
+        kv_head_id: int | None,
+        key_pages: Sequence[PageLike],
+        relevance_mode: str,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+        if not self.config.execution_builtin_selector_cache or kv_head_id is None:
+            return None, None, None
+        state = self._state(layer_id, kv_head_id)
+        cache = self._execution_builtin_selector_cache_for_state(state, relevance_mode=relevance_mode)
+        if cache is None:
+            return None, None, None
+        direct_key_pages = state.session.key_pages
+        direct_count = len(direct_key_pages)
+        if len(key_pages) not in (direct_count, direct_count + 1):
+            return None, None, None
+        if any(key_pages[index] is not direct_key_pages[index] for index in range(direct_count)):
+            return None, None, None
+
+        def _tail_source_page() -> EncodedPage | None:
+            if len(key_pages) != direct_count + 1:
+                return None
+            tail_page = key_pages[-1]
+            return tail_page.source_page if isinstance(tail_page, PreparedPageTorch) else tail_page
+
+        tail_source_page = _tail_source_page()
+        if relevance_mode == "sketch":
+            if cache.sketch_matrix is None:
+                return None, None, None
+            if tail_source_page is None:
+                return cache.sketch_matrix, None, None
+            if tail_source_page.runtime_page_sketch is None:
+                return None, None, None
+            return (
+                np.concatenate(
+                    [
+                        cache.sketch_matrix,
+                        np.asarray(tail_source_page.runtime_page_sketch, dtype=np.float32)[None, ...],
+                    ],
+                    axis=0,
+                ),
+                None,
+                None,
+            )
+        if cache.minima_matrix is None or cache.maxima_matrix is None:
+            return None, None, None
+        if tail_source_page is None:
+            return None, cache.minima_matrix, cache.maxima_matrix
+        if tail_source_page.runtime_page_min is None or tail_source_page.runtime_page_max is None:
+            return None, None, None
+        return (
+            None,
+            np.concatenate(
+                [
+                    cache.minima_matrix,
+                    np.asarray(tail_source_page.runtime_page_min, dtype=np.float32)[None, :],
+                ],
+                axis=0,
+            ),
+            np.concatenate(
+                [
+                    cache.maxima_matrix,
+                    np.asarray(tail_source_page.runtime_page_max, dtype=np.float32)[None, :],
+                ],
+                axis=0,
+            ),
+        )
 
     def decode_stage_summary(self) -> dict[str, object]:
         summary: dict[str, object] = self.decode_stage_runtime_totals()
@@ -2201,6 +2334,27 @@ class ModelPagedKVCache:
             else:
                 stage1_indices = sorted(base_indices)
         else:
+            builtin_sketch_matrix = None
+            builtin_minima_matrix = None
+            builtin_maxima_matrix = None
+            builtin_matrix_prepare_started_at = _stage_start()
+            if self.config.execution_builtin_selector_cache:
+                (
+                    builtin_sketch_matrix,
+                    builtin_minima_matrix,
+                    builtin_maxima_matrix,
+                ) = self._execution_builtin_selector_matrices(
+                    layer_id=int(layer_id),
+                    kv_head_id=kv_head_id,
+                    key_pages=key_pages,
+                    relevance_mode=self.config.execution_relevance_mode,
+                )
+            if (
+                builtin_sketch_matrix is not None
+                or builtin_minima_matrix is not None
+                or builtin_maxima_matrix is not None
+            ):
+                _stage_finish("shortlist_candidate_builtin_sidecar_stack", builtin_matrix_prepare_started_at)
             shortlist_candidate_builtin_selection_started_at = _stage_start()
             stage1_indices = select_execution_page_indices(
                 key_pages,
@@ -2208,8 +2362,11 @@ class ModelPagedKVCache:
                 sink_window_tokens=int(self.config.execution_sink_window),
                 query_slice=np.asarray(query_slice, dtype=np.float32),
                 key_page_sketches=key_page_sketches if key_page_sketches else None,
+                key_page_sketch_matrix=builtin_sketch_matrix,
                 key_page_minima=key_page_minima if key_page_minima else None,
+                key_page_minima_matrix=builtin_minima_matrix,
                 key_page_maxima=key_page_maxima if key_page_maxima else None,
+                key_page_maxima_matrix=builtin_maxima_matrix,
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
                 stage_recorder=lambda stage, ms: self._record_decode_stage_timing(

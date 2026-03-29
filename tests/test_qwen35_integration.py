@@ -895,6 +895,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
     assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
     assert "decode_backend_trace" in result
     trace = result["decode_backend_trace"]
     assert "grouped_decode_calls" in trace
@@ -973,6 +974,7 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
     assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
     assert "dotcache_step_runtime_breakdown" in result
     assert len(result["dotcache_step_runtime_breakdown"]) == 2
     assert "dotcache_backend_decode_ms_total_from_trace" in result
@@ -1068,6 +1070,7 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
     assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
@@ -1126,6 +1129,7 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
     assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
     assert "dotcache_step_runtime_breakdown" in result
     assert len(result["dotcache_step_runtime_breakdown"]) == 2
     assert "dotcache_backend_decode_ms_total_from_trace" in result
@@ -1524,6 +1528,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-grouped-mix-compact",
             "--execution-grouped-mix-disable-packed-cuda",
             "--execution-freeze-chunk-budget-during-decode",
+            "--execution-builtin-selector-cache",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1585,6 +1590,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_grouped_mix_compact is True
     assert serving_args.execution_grouped_mix_disable_packed_cuda is True
     assert serving_args.execution_freeze_chunk_budget_during_decode is True
+    assert serving_args.execution_builtin_selector_cache is True
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]

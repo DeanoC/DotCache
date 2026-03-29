@@ -223,8 +223,11 @@ def select_execution_page_indices(
     sink_window_tokens: int = 0,
     query_slice: np.ndarray | None = None,
     key_page_sketches: Sequence[np.ndarray] | None = None,
+    key_page_sketch_matrix: np.ndarray | None = None,
     key_page_minima: Sequence[np.ndarray] | None = None,
+    key_page_minima_matrix: np.ndarray | None = None,
     key_page_maxima: Sequence[np.ndarray] | None = None,
+    key_page_maxima_matrix: np.ndarray | None = None,
     relevance_top_k: int = 0,
     relevance_mode: RelevanceMode = "sketch",
     stage_recorder: Callable[[str, float], None] | None = None,
@@ -253,36 +256,47 @@ def select_execution_page_indices(
         if candidate_indices:
             query = np.asarray(query_slice, dtype=np.float32)
             if relevance_mode == "sketch":
-                if key_page_sketches is None:
-                    raise ValueError("sketch relevance gating requires key_page_sketches")
-                if len(key_page_sketches) != len(key_pages):
-                    raise ValueError("key_page_sketches must align with key_pages")
-                sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
-                candidate_sketches = np.stack(
-                    [np.asarray(key_page_sketches[index], dtype=np.float32) for index in candidate_indices],
-                    axis=0,
-                )
-                _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
+                if key_page_sketch_matrix is not None:
+                    if int(key_page_sketch_matrix.shape[0]) != len(key_pages):
+                        raise ValueError("key_page_sketch_matrix must align with key_pages")
+                    candidate_sketches = np.asarray(key_page_sketch_matrix[candidate_indices], dtype=np.float32)
+                else:
+                    if key_page_sketches is None:
+                        raise ValueError("sketch relevance gating requires key_page_sketches")
+                    if len(key_page_sketches) != len(key_pages):
+                        raise ValueError("key_page_sketches must align with key_pages")
+                    sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
+                    candidate_sketches = np.stack(
+                        [np.asarray(key_page_sketches[index], dtype=np.float32) for index in candidate_indices],
+                        axis=0,
+                    )
+                    _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
                 score_compute_started_at = perf_counter() if stage_recorder is not None else None
                 scores = np.max(candidate_sketches @ query, axis=1).astype(np.float32, copy=False)
                 _record_stage("shortlist_candidate_builtin_score_compute", score_compute_started_at)
             elif relevance_mode == "envelope":
-                if key_page_minima is None or key_page_maxima is None:
-                    raise ValueError("envelope relevance gating requires page minima and maxima")
-                if len(key_page_minima) != len(key_pages) or len(key_page_maxima) != len(key_pages):
-                    raise ValueError("page minima and maxima must align with key_pages")
                 positive_query = np.maximum(query, 0.0)
                 negative_query = np.minimum(query, 0.0)
-                sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
-                candidate_minima = np.stack(
-                    [np.asarray(key_page_minima[index], dtype=np.float32) for index in candidate_indices],
-                    axis=0,
-                )
-                candidate_maxima = np.stack(
-                    [np.asarray(key_page_maxima[index], dtype=np.float32) for index in candidate_indices],
-                    axis=0,
-                )
-                _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
+                if key_page_minima_matrix is not None and key_page_maxima_matrix is not None:
+                    if int(key_page_minima_matrix.shape[0]) != len(key_pages) or int(key_page_maxima_matrix.shape[0]) != len(key_pages):
+                        raise ValueError("page minima and maxima matrices must align with key_pages")
+                    candidate_minima = np.asarray(key_page_minima_matrix[candidate_indices], dtype=np.float32)
+                    candidate_maxima = np.asarray(key_page_maxima_matrix[candidate_indices], dtype=np.float32)
+                else:
+                    if key_page_minima is None or key_page_maxima is None:
+                        raise ValueError("envelope relevance gating requires page minima and maxima")
+                    if len(key_page_minima) != len(key_pages) or len(key_page_maxima) != len(key_pages):
+                        raise ValueError("page minima and maxima must align with key_pages")
+                    sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
+                    candidate_minima = np.stack(
+                        [np.asarray(key_page_minima[index], dtype=np.float32) for index in candidate_indices],
+                        axis=0,
+                    )
+                    candidate_maxima = np.stack(
+                        [np.asarray(key_page_maxima[index], dtype=np.float32) for index in candidate_indices],
+                        axis=0,
+                    )
+                    _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
                 score_compute_started_at = perf_counter() if stage_recorder is not None else None
                 scores = (candidate_maxima @ positive_query + candidate_minima @ negative_query).astype(
                     np.float32,
