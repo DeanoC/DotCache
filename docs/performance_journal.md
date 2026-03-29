@@ -3361,3 +3361,16 @@ So the repo can now say something more precise than before:
 - the serving-style sweep is the tighter native-vs-external comparison surface
 - on that tighter surface, native `StateCache` is not currently beating plain dense on throughput or on total peak device memory
 - TurboQuant is still clearly the fastest deployment stack here, but the result remains cross-runtime rather than a pure codec-only proof
+
+I also did the first useful CUDA probe on the new Qwen3.5 shortlist work and wrote it up in [qwen35_cuda_shortlist_probe_20260329.md](/workspace/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md).
+
+The important read is simple:
+
+- shortlist helps on CUDA too
+- through `16384`, the base shortlist cut the Qwen attention-subset serving decode from `416.82 -> 205.96 ms/step` at `4096`, `759.04 -> 203.75 ms/step` at `8192`, and `1496.27 -> 251.53 ms/step` at `16384`
+- those gains happened without switching decode paths; the CUDA runs stayed on `per_kv_fallback`
+- the layer-`23` context-aware budget expansion also looked plausible at `16384`
+
+I intentionally did not promote `32768` into the table yet. The current ad hoc CUDA wrappers for that long-context probe left orphaned benchmark processes behind and polluted later runs, so `32768` still needs a cleaner single-shot runner before it should be treated as benchmark-quality evidence.
+
+I then added that runner as [run_qwen35_cuda_shortlist_probe.py](/workspace/DotCache/scripts/run_qwen35_cuda_shortlist_probe.py). It launches one context and one shortlist config per subprocess, forces exact-length-only probes, and kills the whole process group on timeout. A clean `4096` shortlist smoke run produced a single normalized JSON row, and a forced `5s` timeout at `32768` returned a timeout record with no leaked CUDA children afterward.
