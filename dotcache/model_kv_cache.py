@@ -1434,12 +1434,13 @@ class ModelPagedKVCache:
         *,
         layer_id: int,
         query_slice: np.ndarray,
+        context_length_override: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> list[int] | None:
         if self.config.execution_shortlist_disabled_for_layer(layer_id=layer_id):
             return None
-        context_length = None
-        if key_pages:
+        context_length = int(context_length_override) if context_length_override is not None else None
+        if context_length is None and key_pages:
             context_length = max(
                 int((page.source_page if isinstance(page, PreparedPageTorch) else page).header.token_start)
                 + int((page.source_page if isinstance(page, PreparedPageTorch) else page).header.token_count)
@@ -2874,6 +2875,7 @@ class ModelPagedKVCache:
             key_pages, value_pages, _ = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            state = self._state(layer_id, kv_head_id)
             kv_queries = scaled_queries[list(q_head_ids)]
             key_pages, _ = self._m2_prefilter_pages_numpy(kv_queries, key_pages, value_pages)
             representative_query = kv_queries.mean(axis=0).astype(np.float32, copy=False)
@@ -2894,6 +2896,7 @@ class ModelPagedKVCache:
                     key_pages,
                     layer_id=layer_id,
                     query_slice=representative_query,
+                    context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
                     trace=trace,
                 )
             selected_indices = (
@@ -3298,6 +3301,7 @@ class ModelPagedKVCache:
             key_pages, value_pages, decode_layout = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            state = self._state(layer_id, kv_head_id)
             kv_queries = scaled_queries[list(q_head_ids)]
             key_pages, value_pages = self._m2_prefilter_pages_torch(kv_queries, key_pages, value_pages)
             selected_indices = None
@@ -3307,6 +3311,7 @@ class ModelPagedKVCache:
                     key_pages,
                     layer_id=layer_id,
                     query_slice=representative_query,
+                    context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
                     trace=trace,
                 )
             active_q_head_ids.append(q_head_ids)
