@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Sequence
 
 import numpy as np
@@ -29,6 +30,40 @@ from .modes.m2_key_sketch import segment_ids_for_token_count
 from .modes.m4_key_project import fit_shared_project_basis
 
 PageLike = EncodedPage | PreparedPageTorch
+
+
+_DECODE_STAGE_TIMING_STAGES = (
+    "prepare_pages_with_tail",
+    "m2_prefilter",
+    "shortlist_selection",
+    "shortlist_union_rescue",
+    "shortlist_materialization",
+    "grouping_validation",
+    "backend_call_wall",
+    "backend_call_non_backend",
+)
+
+
+def _empty_decode_stage_timing_totals() -> dict[str, float]:
+    return {stage: 0.0 for stage in _DECODE_STAGE_TIMING_STAGES}
+
+
+def _decode_stage_summary_key(stage: str) -> str:
+    return f"execution_decode_{stage}_ms_total"
+
+
+def _backend_trace_ms_total(trace: ExecutionTrace | None) -> float:
+    if trace is None:
+        return 0.0
+    return float(
+        trace.prepare_ms_total
+        + trace.score_ms_total
+        + trace.mix_ms_total
+        + trace.softmax_ms_total
+        + trace.unpack_ms_total
+        + trace.fwht_ms_total
+        + trace.chunk_assembly_ms_total
+    )
 
 
 def default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: int) -> np.ndarray:
@@ -1201,6 +1236,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer: dict[int, int] = {}
         self._execution_exact_refine_candidate_pages_by_layer: dict[int, int] = {}
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
         self._prepared_chunk_cache_budget_dirty = True
 
     @property
@@ -1351,6 +1388,29 @@ class ModelPagedKVCache:
         self._execution_exact_refine_selected_pages_by_layer[int(layer_id)] = (
             self._execution_exact_refine_selected_pages_by_layer.get(int(layer_id), 0) + int(selected_pages)
         )
+
+    def _record_decode_stage_timing(self, *, layer_id: int, stage: str, ms: float) -> None:
+        if stage not in _DECODE_STAGE_TIMING_STAGES:
+            raise ValueError(f"unknown decode stage timing: {stage}")
+        self._decode_stage_timings[stage] += float(ms)
+        layer_timings = self._decode_stage_timings_by_layer.setdefault(int(layer_id), {})
+        layer_timings[stage] = float(layer_timings.get(stage, 0.0) + float(ms))
+
+    def decode_stage_runtime_totals(self) -> dict[str, float]:
+        return {
+            _decode_stage_summary_key(stage): float(self._decode_stage_timings.get(stage, 0.0))
+            for stage in _DECODE_STAGE_TIMING_STAGES
+        }
+
+    def decode_stage_summary(self) -> dict[str, object]:
+        summary: dict[str, object] = self.decode_stage_runtime_totals()
+        for stage in _DECODE_STAGE_TIMING_STAGES:
+            summary[f"{_decode_stage_summary_key(stage)}_by_layer"] = {
+                str(layer_id): float(layer_timings.get(stage, 0.0))
+                for layer_id, layer_timings in sorted(self._decode_stage_timings_by_layer.items())
+                if float(layer_timings.get(stage, 0.0)) != 0.0
+            }
+        return summary
 
     def execution_shortlist_summary(self) -> dict[str, object]:
         return {
@@ -2135,6 +2195,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer = {}
         self._execution_exact_refine_candidate_pages_by_layer = {}
         self._execution_exact_refine_selected_pages_by_layer = {}
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        self._decode_stage_timings_by_layer = {}
         self._prepared_chunk_cache_budget_dirty = True
 
     def clear_layer(self, layer_id: int) -> None:
@@ -2164,6 +2226,7 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_candidate_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_selected_pages_by_layer.pop(int(layer_id), None)
+        self._decode_stage_timings_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_invocations = sum(self._execution_shortlist_invocations_by_layer.values())
         self._execution_shortlist_applied = sum(self._execution_shortlist_applied_by_layer.values())
         self._execution_shortlist_group_union_applied = sum(self._execution_shortlist_group_union_applied_by_layer.values())
@@ -2173,6 +2236,11 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations = sum(self._execution_exact_refine_invocations_by_layer.values())
         self._execution_exact_refine_candidate_pages = sum(self._execution_exact_refine_candidate_pages_by_layer.values())
         self._execution_exact_refine_selected_pages = sum(self._execution_exact_refine_selected_pages_by_layer.values())
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        for layer_timings in self._decode_stage_timings_by_layer.values():
+            for stage, value in layer_timings.items():
+                if stage in self._decode_stage_timings:
+                    self._decode_stage_timings[stage] += float(value)
         self._prepared_chunk_cache_budget_dirty = True
 
     def _grouped_query_heads_for_mapping(self, q_head_to_kv_head: Sequence[int] | np.ndarray) -> tuple[tuple[int, ...], ...]:
@@ -3705,6 +3773,19 @@ class ModelPagedKVCache:
             bool(prefer_grouped_batching)
             and not self.config.execution_grouped_batching_disabled_for_layer(layer_id=layer_id)
         )
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _stage_start() -> float | None:
+            return perf_counter() if capture_stage_timings else None
+
+        def _stage_finish(stage: str, started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage=stage,
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
 
         outputs = torch.zeros(
             (self.num_attention_heads, self.config.head_dim),
@@ -3724,17 +3805,22 @@ class ModelPagedKVCache:
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
+            prepare_started_at = _stage_start()
             key_pages, value_pages, decode_layout = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            _stage_finish("prepare_pages_with_tail", prepare_started_at)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
             state = self._state(layer_id, kv_head_id)
             kv_queries = scaled_queries[list(q_head_ids)]
+            m2_prefilter_started_at = _stage_start()
             key_pages, value_pages = self._m2_prefilter_pages_torch(kv_queries, key_pages, value_pages)
+            _stage_finish("m2_prefilter", m2_prefilter_started_at)
             selected_indices = None
             shortlist_trace_record = None
             if self.config.execution_shortlist_enabled():
                 representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
                 trace_record_count = len(self._execution_shortlist_trace_records)
+                shortlist_started_at = _stage_start()
                 selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
@@ -3745,6 +3831,7 @@ class ModelPagedKVCache:
                 )
                 if len(self._execution_shortlist_trace_records) > trace_record_count:
                     shortlist_trace_record = dict(self._execution_shortlist_trace_records[-1])
+                _stage_finish("shortlist_selection", shortlist_started_at)
             active_q_head_ids.append(q_head_ids)
             active_queries.append(kv_queries)
             original_key_pages_by_group.append(key_pages)
@@ -3765,6 +3852,7 @@ class ModelPagedKVCache:
             total_pages_per_group = [len(pages) for pages in original_key_pages_by_group]
             shortlist_total_pages = int(sum(total_pages_per_group))
             if len(active_queries) > 1 and layer_prefer_grouped_batching:
+                union_rescue_started_at = _stage_start()
                 shortlist_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
                     layer_id=layer_id,
                     selected_indices_by_group=shortlist_selected_indices_by_group,
@@ -3777,6 +3865,8 @@ class ModelPagedKVCache:
                     trace=trace,
                 )
                 self._execution_shortlist_trace_records.extend(union_rescue_records)
+                _stage_finish("shortlist_union_rescue", union_rescue_started_at)
+            shortlist_materialization_started_at = _stage_start()
             union_indices = sorted(
                 {
                     index
@@ -3824,9 +3914,11 @@ class ModelPagedKVCache:
                 active_key_pages = shortlisted_key_pages
                 active_value_pages = shortlisted_value_pages
                 active_layouts = shortlisted_layouts
+            _stage_finish("shortlist_materialization", shortlist_materialization_started_at)
 
         self._sync_prepared_chunk_cache_budget()
 
+        grouping_validation_started_at = _stage_start()
         if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:
             shortlisted_can_batch = _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
             if not shortlisted_can_batch:
@@ -3858,14 +3950,18 @@ class ModelPagedKVCache:
                 applied=shortlist_applied,
                 group_union_applied=shortlist_group_union_applied,
             )
-
         cached_group_layout = layer_prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
-        if cached_group_layout or (
+        grouped_path_ready = cached_group_layout or (
             layer_prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
-        ):
+        )
+        _stage_finish("grouping_validation", grouping_validation_started_at)
+
+        if grouped_path_ready:
             self._record_decode_path(layer_id, "grouped_batched")
             key_chunk_lengths = active_layouts[0].key_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
             value_chunk_lengths = active_layouts[0].value_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
+            backend_started_at = _stage_start()
+            backend_trace_before = _backend_trace_ms_total(trace) if capture_stage_timings else 0.0
             _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_torch_tensor(
                 active_queries,
                 active_key_pages,
@@ -3877,6 +3973,20 @@ class ModelPagedKVCache:
                 disable_packed_grouped_cuda_mix=bool(self.config.execution_grouped_mix_disable_packed_cuda),
                 trace=trace,
             )
+            backend_call_ms = 0.0
+            if backend_started_at is not None:
+                backend_call_ms = (perf_counter() - backend_started_at) * 1000.0
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_wall",
+                    ms=backend_call_ms,
+                )
+                backend_trace_after = _backend_trace_ms_total(trace)
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_non_backend",
+                    ms=backend_call_ms - float(backend_trace_after - backend_trace_before),
+                )
             for q_head_ids, kv_outputs in zip(active_q_head_ids, grouped_outputs, strict=True):
                 outputs[list(q_head_ids)] = kv_outputs
             return outputs
@@ -3889,6 +3999,8 @@ class ModelPagedKVCache:
             active_value_pages,
             strict=True,
         ):
+            backend_started_at = _stage_start()
+            backend_trace_before = _backend_trace_ms_total(trace) if capture_stage_timings else 0.0
             _, _, kv_outputs = decode_multi_query_step_torch_tensor(
                 kv_queries,
                 key_pages,
@@ -3896,5 +4008,18 @@ class ModelPagedKVCache:
                 device_type=self._torch_device_type,
                 trace=trace,
             )
+            if backend_started_at is not None:
+                backend_call_ms = (perf_counter() - backend_started_at) * 1000.0
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_wall",
+                    ms=backend_call_ms,
+                )
+                backend_trace_after = _backend_trace_ms_total(trace)
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_non_backend",
+                    ms=backend_call_ms - float(backend_trace_after - backend_trace_before),
+                )
             outputs[list(q_head_ids)] = kv_outputs
         return outputs

@@ -5608,6 +5608,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -5624,14 +5625,27 @@ _BACKEND_TRACE_TIMING_KEYS = (
     "chunk_assembly_ms_total",
 )
 
+_MODEL_KV_CACHE_DECODE_STAGE_KEYS = (
+    "execution_decode_prepare_pages_with_tail_ms_total",
+    "execution_decode_m2_prefilter_ms_total",
+    "execution_decode_shortlist_selection_ms_total",
+    "execution_decode_shortlist_union_rescue_ms_total",
+    "execution_decode_shortlist_materialization_ms_total",
+    "execution_decode_grouping_validation_ms_total",
+    "execution_decode_backend_call_wall_ms_total",
+    "execution_decode_backend_call_non_backend_ms_total",
+)
+
 
 def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
-    return {
+    snapshot = {
         "qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
         "append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
         "output_projection_ms_total": float(adapter.output_projection_ms_total),
     }
+    snapshot.update(adapter.model_kv_cache.decode_stage_runtime_totals())
+    return snapshot
 
 
 def _backend_trace_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, int | float]:
@@ -5671,6 +5685,19 @@ def _summarize_step_runtime_breakdown(
         + decode_runtime_ms
         + adapter_delta["output_projection_ms_total"]
     )
+    stage_totals = {
+        key: float(adapter_delta.get(key, 0.0))
+        for key in _MODEL_KV_CACHE_DECODE_STAGE_KEYS
+    }
+    decode_non_backend_ms_total = float(decode_runtime_ms - backend_ms_total)
+    decode_pre_backend_ms_total = float(
+        stage_totals["execution_decode_prepare_pages_with_tail_ms_total"]
+        + stage_totals["execution_decode_m2_prefilter_ms_total"]
+        + stage_totals["execution_decode_shortlist_selection_ms_total"]
+        + stage_totals["execution_decode_shortlist_union_rescue_ms_total"]
+        + stage_totals["execution_decode_shortlist_materialization_ms_total"]
+        + stage_totals["execution_decode_grouping_validation_ms_total"]
+    )
     return {
         "step_index": int(step_index),
         "step_ms_total": float(step_ms),
@@ -5686,7 +5713,20 @@ def _summarize_step_runtime_breakdown(
         "backend_fwht_ms_total": float(trace_delta.get("fwht_ms_total", 0.0)),
         "backend_chunk_assembly_ms_total": float(trace_delta.get("chunk_assembly_ms_total", 0.0)),
         "backend_decode_ms_total": backend_ms_total,
-        "decode_non_backend_ms_total": float(decode_runtime_ms - backend_ms_total),
+        "decode_non_backend_ms_total": decode_non_backend_ms_total,
+        "decode_prepare_pages_with_tail_ms_total": stage_totals["execution_decode_prepare_pages_with_tail_ms_total"],
+        "decode_m2_prefilter_ms_total": stage_totals["execution_decode_m2_prefilter_ms_total"],
+        "decode_shortlist_selection_ms_total": stage_totals["execution_decode_shortlist_selection_ms_total"],
+        "decode_shortlist_union_rescue_ms_total": stage_totals["execution_decode_shortlist_union_rescue_ms_total"],
+        "decode_shortlist_materialization_ms_total": stage_totals["execution_decode_shortlist_materialization_ms_total"],
+        "decode_grouping_validation_ms_total": stage_totals["execution_decode_grouping_validation_ms_total"],
+        "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
+        "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],
+        "decode_non_backend_unattributed_ms_total": float(
+            decode_non_backend_ms_total
+            - decode_pre_backend_ms_total
+            - stage_totals["execution_decode_backend_call_non_backend_ms_total"]
+        ),
         "model_step_accounted_ms_total": accounted_model_ms,
         "model_step_non_adapter_ms_total": float(step_ms - accounted_model_ms),
     }
@@ -5958,6 +5998,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6208,6 +6249,7 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6547,6 +6589,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
