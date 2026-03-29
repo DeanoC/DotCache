@@ -1408,19 +1408,43 @@ class ModelPagedKVCache:
         return int(layer_id) in {int(value) for value in self.config.execution_exact_refine_layers}
 
     def _execution_exact_promote_enabled(self, *, layer_id: int, context_length: int | None = None) -> bool:
+        enabled, _ = self._execution_exact_promote_status(layer_id=layer_id, context_length=context_length)
+        return enabled
+
+    def _execution_exact_promote_status(
+        self,
+        *,
+        layer_id: int,
+        context_length: int | None = None,
+        boundary_margin_normalized: float | None = None,
+    ) -> tuple[bool, str | None]:
         if self.config.execution_exact_promote_top_k <= 0:
-            return False
+            return False, "top_k_disabled"
         if not self.config.execution_exact_promote_layers:
-            return False
+            return False, "no_layers_configured"
         if int(layer_id) not in {int(value) for value in self.config.execution_exact_promote_layers}:
-            return False
+            return False, "layer_not_selected"
         if (
             int(self.config.execution_exact_promote_max_context) > 0
             and context_length is not None
             and int(context_length) > int(self.config.execution_exact_promote_max_context)
         ):
-            return False
-        return True
+            return False, "context_exceeds_max_context"
+        if (
+            float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
+            and (
+                boundary_margin_normalized is None
+                or boundary_margin_normalized < float(self.config.execution_exact_promote_min_margin_threshold)
+            )
+        ):
+            return False, "below_min_margin_threshold"
+        if (
+            float(self.config.execution_exact_promote_margin_threshold) > 0.0
+            and boundary_margin_normalized is not None
+            and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
+        ):
+            return False, "above_max_margin_threshold"
+        return True, None
 
     def _execution_secondary_relevance_enabled(self, *, layer_id: int) -> bool:
         return self.config.execution_secondary_relevance_enabled_for_layer(layer_id=layer_id)
@@ -2880,11 +2904,12 @@ class ModelPagedKVCache:
             key_pages, _ = self._m2_prefilter_pages_numpy(kv_queries, key_pages, value_pages)
             representative_query = kv_queries.mean(axis=0).astype(np.float32, copy=False)
             raw_selected_indices = None
-            context_length = (
+            page_max_context_length = (
                 max(_page_header(page).token_start + _page_header(page).token_count for page in key_pages)
                 if key_pages
                 else 0
             )
+            context_length = int(state.sequence_length) if int(state.sequence_length) > 0 else int(page_max_context_length)
             layer_recent_window = int(
                 self.config.resolve_execution_recent_window_for_context(
                     layer_id=layer_id,
@@ -2896,7 +2921,7 @@ class ModelPagedKVCache:
                     key_pages,
                     layer_id=layer_id,
                     query_slice=representative_query,
-                    context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
+                    context_length_override=int(context_length) if int(context_length) > 0 else None,
                     trace=trace,
                 )
             selected_indices = (
@@ -2914,6 +2939,9 @@ class ModelPagedKVCache:
                     "kv_head_id": int(kv_head_id),
                     "query_head_ids": list(q_head_ids),
                     "layer_recent_window": int(layer_recent_window),
+                    "context_length_page_max": int(page_max_context_length),
+                    "context_length_effective": int(context_length),
+                    "context_length_override_applied": bool(int(state.sequence_length) > 0),
                 }
             )
             raw_selected_indices_by_group.append(raw_selected_indices)
@@ -3100,6 +3128,14 @@ class ModelPagedKVCache:
                 secondary_top_indices
                 and secondary_primary_top_recall < float(self.config.execution_secondary_relevance_min_overlap)
             )
+            exact_promote_candidate_expansion_enabled, exact_promote_candidate_expansion_reason = (
+                self._execution_exact_promote_status(layer_id=layer_id, context_length=context_length)
+            )
+            exact_promote_enabled, exact_promote_disable_reason = self._execution_exact_promote_status(
+                layer_id=layer_id,
+                context_length=context_length,
+                boundary_margin_normalized=approx_boundary_margin_normalized,
+            )
             recent_neighbor_rescue_triggered = bool(
                 self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
                 and recent_neighbor_anchor_pages >= int(self.config.execution_recent_neighbor_rescue_min_anchor_pages)
@@ -3194,6 +3230,10 @@ class ModelPagedKVCache:
                     "secondary_exact_top_overlap": int(secondary_exact_top_overlap),
                     "secondary_exact_top_recall": float(secondary_exact_top_recall),
                     "secondary_triggered": bool(secondary_triggered),
+                    "exact_promote_candidate_expansion_enabled": bool(exact_promote_candidate_expansion_enabled),
+                    "exact_promote_candidate_expansion_disable_reason": exact_promote_candidate_expansion_reason,
+                    "exact_promote_enabled": bool(exact_promote_enabled),
+                    "exact_promote_disable_reason": exact_promote_disable_reason,
                     "recent_neighbor_anchor_pages": int(recent_neighbor_anchor_pages),
                     "recent_neighbor_recent_old_pages": int(recent_neighbor_recent_old_pages),
                     "recent_neighbor_rescue_triggered": bool(recent_neighbor_rescue_triggered),

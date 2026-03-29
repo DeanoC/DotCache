@@ -1054,6 +1054,15 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    first_record = result["scorer_layer_records"][0]
+    first_group = first_record["groups"][0]
+    assert "context_length_page_max" in first_group
+    assert "context_length_effective" in first_group
+    assert "context_length_override_applied" in first_group
+    assert "exact_promote_candidate_expansion_enabled" in first_group
+    assert "exact_promote_candidate_expansion_disable_reason" in first_group
+    assert "exact_promote_enabled" in first_group
+    assert "exact_promote_disable_reason" in first_group
 
 
 def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
