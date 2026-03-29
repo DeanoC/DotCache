@@ -1494,6 +1494,7 @@ class ModelPagedKVCache:
         ]
         rescue_records: list[dict[str, object]] = []
         union_rescue_top_k = int(self.config.execution_exact_promote_union_rescue_top_k)
+        eligible_group_records: list[dict[str, object]] = []
 
         for group_index, (indices, key_pages, query_slice, shortlist_trace) in enumerate(
             zip(
@@ -1574,24 +1575,53 @@ class ModelPagedKVCache:
                 )
                 continue
 
-            selected_novel_count = min(union_rescue_top_k, len(novel_candidate_indices))
+            eligible_group_records.append(
+                {
+                    "group_index": int(group_index),
+                    "kv_head_id": shortlist_trace.get("kv_head_id"),
+                    "indices": indices,
+                    "key_pages": key_pages,
+                    "query_slice": np.asarray(query_slice, dtype=np.float32),
+                    "base_indices": base_indices,
+                    "selected_index_set": selected_index_set,
+                    "novel_candidate_indices": novel_candidate_indices,
+                }
+            )
+
+        if not eligible_group_records:
+            return adjusted_indices_by_group, rescue_records
+
+        scored_union_candidates: list[tuple[float, int, int]] = []
+        for eligible_group_record in eligible_group_records:
+            novel_candidate_indices = list(eligible_group_record["novel_candidate_indices"])
             novel_candidate_logits = score_pages(
-                np.asarray(query_slice, dtype=np.float32),
-                [key_pages[index] for index in novel_candidate_indices],
+                eligible_group_record["query_slice"],
+                [eligible_group_record["key_pages"][index] for index in novel_candidate_indices],
                 backend=self.backend,
                 trace=trace,
             )
-            chosen_novel_indices = [
-                index
-                for _, index in sorted(
+            for index, logits in zip(novel_candidate_indices, novel_candidate_logits, strict=True):
+                scored_union_candidates.append(
                     (
-                        (float(np.max(np.asarray(logits, dtype=np.float32))), index)
-                        for index, logits in zip(novel_candidate_indices, novel_candidate_logits, strict=True)
-                    ),
-                    key=lambda item: item[0],
-                    reverse=True,
-                )[:selected_novel_count]
-            ]
+                        float(np.max(np.asarray(logits, dtype=np.float32))),
+                        int(eligible_group_record["group_index"]),
+                        int(index),
+                    )
+                )
+
+        selected_by_group: dict[int, list[int]] = {}
+        seen_indices: set[int] = set()
+        for _, group_index, index in sorted(scored_union_candidates, key=lambda item: item[0], reverse=True):
+            if int(index) in seen_indices:
+                continue
+            selected_by_group.setdefault(int(group_index), []).append(int(index))
+            seen_indices.add(int(index))
+            if len(seen_indices) >= union_rescue_top_k:
+                break
+
+        for eligible_group_record in eligible_group_records:
+            group_index = int(eligible_group_record["group_index"])
+            chosen_novel_indices = selected_by_group.get(group_index, [])
             if not chosen_novel_indices:
                 rescue_records.append(
                     {
@@ -1600,29 +1630,33 @@ class ModelPagedKVCache:
                         "group_index": int(group_index),
                         "applied": False,
                         "disable_reason": "novel_candidates_not_selected",
-                        "base_count": int(len(base_indices)),
-                        "selected_count": int(len(selected_index_set)),
-                        "novel_candidate_count": int(len(novel_candidate_indices)),
+                        "base_count": int(len(eligible_group_record["base_indices"])),
+                        "selected_count": int(len(eligible_group_record["selected_index_set"])),
+                        "novel_candidate_count": int(len(eligible_group_record["novel_candidate_indices"])),
                     }
                 )
                 continue
 
-            adjusted_indices_by_group[group_index] = sorted(set(indices).union(chosen_novel_indices))
+            group_indices = eligible_group_record["indices"]
+            group_key_pages = eligible_group_record["key_pages"]
+            adjusted_indices_by_group[group_index] = sorted(
+                set(group_indices).union(chosen_novel_indices)
+            )
             rescue_records.append(
                 {
                     "record_type": "union_rescue",
                     "layer_id": int(layer_id),
                     "group_index": int(group_index),
-                    "kv_head_id": shortlist_trace.get("kv_head_id"),
+                    "kv_head_id": eligible_group_record["kv_head_id"],
                     "applied": True,
                     "disable_reason": None,
-                    "base_count": int(len(base_indices)),
-                    "selected_count": int(len(selected_index_set)),
-                    "novel_candidate_count": int(len(novel_candidate_indices)),
+                    "base_count": int(len(eligible_group_record["base_indices"])),
+                    "selected_count": int(len(eligible_group_record["selected_index_set"])),
+                    "novel_candidate_count": int(len(eligible_group_record["novel_candidate_indices"])),
                     "selected_novel_count": int(len(chosen_novel_indices)),
                     "selected_novel_indices": [int(index) for index in chosen_novel_indices],
                     "selected_novel_page_ranges": [
-                        f"{int(index)}:{int(_page_header(key_pages[index]).token_start)}-{int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)}"
+                        f"{int(index)}:{int(_page_header(group_key_pages[index]).token_start)}-{int(_page_header(group_key_pages[index]).token_start + _page_header(group_key_pages[index]).token_count)}"
                         for index in chosen_novel_indices
                     ],
                 }
