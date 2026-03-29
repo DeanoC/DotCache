@@ -3090,3 +3090,172 @@ This is enough to make the external story credible without overstating support:
 - Turbo3 works on at least two Llama-style models on this CUDA fork
 - it is substantially faster than the current HF DotCache path on both
 - model compatibility is still runtime-dependent, so the comparison section should explicitly separate “supported models” from “known failing models”
+
+## 2026-03-28 20:40 UTC - First real Qwen3.5 external comparison: TurboQuant runs on a DeltaNet model, but it is not the same trade as StateCache
+
+The external comparison needed to move onto a Qwen3.5 model so it could be meaningfully discussed beside StateCache. I downloaded:
+
+- `unsloth/Qwen3.5-0.8B-GGUF`
+- file: `Qwen3.5-0.8B-Q4_K_M.gguf`
+
+and ran raw TurboQuant CUDA slices on the same `repeat_count = 64` prompt family used in the native bench lane.
+
+Raw artifacts:
+
+- [qwen35_0p8b_turboquant_firstpass_20260328.jsonl](/workspace/DotCache/benchmarks/results/turboquant_comparison_20260328/qwen35_0p8b_turboquant_firstpass_20260328.jsonl)
+- [qwen35_0p8b_statecache_repeat64_20260328.jsonl](/workspace/DotCache/benchmarks/results/turboquant_comparison_20260328/qwen35_0p8b_statecache_repeat64_20260328.jsonl)
+- [qwen35_0p8b_hybrid_dotcache_statecache_repeat64_20260328.jsonl](/workspace/DotCache/benchmarks/results/turboquant_comparison_20260328/qwen35_0p8b_hybrid_dotcache_statecache_repeat64_20260328.jsonl)
+
+Raw external `Qwen3.5-0.8B` results:
+
+- `q8_0` KV:
+  - prompt `7555.6 tok/s`
+  - generation `325.4 tok/s`
+- `turbo3 uniform`:
+  - prompt `8189.0 tok/s`
+  - generation `290.9 tok/s`
+- `turbo3 LA-1`:
+  - prompt `7942.0 tok/s`
+  - generation `295.1 tok/s`
+
+The matching native HF StateCache checkpoint on `Qwen/Qwen3.5-0.8B` with `post_update_m0`, `8-bit`, `renorm=0`, same `repeat_count = 64` prompt family is:
+
+- prompt length `448`
+- dense decode:
+  - `141.82 ms/step`
+  - `7.05 tok/s`
+- StateCache decode:
+  - `17.25 ms/step`
+  - `57.98 tok/s`
+  - speedup `8.22x`
+  - greedy agreement `1.0`
+- resident-state savings:
+  - fixed resident bytes `18.84 MB -> 6.47 MB`
+  - fixed resident saving `65.67%`
+  - total tracked state bytes `24.14 MB -> 18.84 MB`
+  - total tracked state saving `21.94%`
+
+I also merged the experimental combined native hybrid-compression lane into the same comparison family:
+
+- attention subset:
+  - DotCache on full-attention layers `[3, 7, 11, 15, 19, 23]`
+- DeltaNet subset:
+  - StateCache on the eighteen `linear_attention` layers
+
+On the same `repeat_count = 64` prompt family with the CUDA third-pass attention profile plus `post_update_m0`, `8-bit`, `renorm=0` recurrent state:
+
+- dense baseline from the same hybrid harness:
+  - `139.18 ms/step`
+  - `7.18 tok/s`
+- combined DotCache + StateCache:
+  - `115.78 ms/step`
+  - `8.64 tok/s`
+  - teacher-forced logit max abs error `0.7422`
+  - replay context/output max abs error `0.1646 / 0.0469`
+
+That makes the native comparison more complete:
+
+- pure StateCache is still the strong native winner on this slice
+- the combined hybrid-compression lane is now a real measured data point, not just a branch-only experiment
+- but it is only a small win over its own dense baseline and remains far slower than the StateCache-only lane because the attention-subset DotCache half still dominates the cost
+
+This is finally the right comparison family:
+
+- same model architecture (`Qwen3.5`, including the DeltaNet / hybrid structure)
+- native HF StateCache on one side
+- external TurboQuant CUDA runtime on the other
+
+But it still needs to be framed carefully:
+
+- StateCache and TurboQuant are not compressing the same state
+- StateCache is compressing Qwen3.5 recurrent DeltaNet state inside the native HF runtime
+- TurboQuant is a llama.cpp KV-cache quantization runtime on GGUF weights
+
+So the fair conclusion is not “TurboQuant beats StateCache” or vice versa. The fair conclusion is:
+
+- both approaches now have a real `Qwen3.5-0.8B` proof point
+- StateCache gives a strong native-runtime win while preserving exact greedy behavior on this slice
+- TurboQuant gives a much faster external runtime on the same model family, but through a different serving stack and a different memory trade
+
+## 2026-03-28 21:05 UTC - Native HF `T3` is not viable yet on the Qwen3.5 full-attention subset
+
+To make the “Turbo3-style KV quant inside our native Qwen3.5 path” idea real, I validated local `T3` on the existing `Qwen/Qwen3.5-0.8B` attention-subset lane before doing any more external-comparison work.
+
+On the same `repeat_count = 64` prompt family, global native `T3/T3` on the full-attention subset is far outside the current keepable band:
+
+- dense decode:
+  - `37.28 ms/step`
+- native DotCache `T3/T3`:
+  - `166.48 ms/step`
+  - teacher-forced logit max abs error `16.38`
+  - replay context max abs error `3.73`
+  - replay output max abs error `1.05`
+
+The first asymmetric ablations show the failure is worse on the value side than the key side:
+
+- `K = T3`, `V = M0`:
+  - `167.17 ms/step`
+  - teacher-forced logit max abs error `10.58`
+  - replay context/output max abs error `2.32 / 0.87`
+- `K = M0`, `V = T3`:
+  - `169.00 ms/step`
+  - teacher-forced logit max abs error `16.80`
+  - replay context/output max abs error `3.67 / 0.80`
+
+I then swept single-layer `T3` placements on the six full-attention layers. Key-only `T3` is materially less bad than value-only `T3`, but it is still not close to the current tuned native subset lane.
+
+Key-only `T3` per layer:
+
+- `layer 3`: `129.18 ms/step`, teacher `1.85`, replay `0.35 / 0.13`
+- `layer 7`: `135.45 ms/step`, teacher `3.16`, replay `1.86 / 0.45`
+- `layer 11`: `132.06 ms/step`, teacher `1.86`, replay `0.37 / 0.13`
+- `layer 15`: `140.85 ms/step`, teacher `4.91`, replay `1.96 / 0.21`
+- `layer 19`: `141.68 ms/step`, teacher `3.42`, replay `0.78 / 0.14`
+- `layer 23`: `127.51 ms/step`, teacher `2.32`, replay `0.87 / 0.13`
+
+Value-only `T3` per layer:
+
+- `layer 3`: `165.94 ms/step`, teacher `3.74`, replay `1.00 / 0.24`
+- `layer 7`: `167.21 ms/step`, teacher `10.82`, replay `2.76 / 0.43`
+- `layer 11`: `165.48 ms/step`, teacher `4.43`, replay `0.85 / 0.25`
+- `layer 15`: `165.74 ms/step`, teacher `7.48`, replay `2.00 / 0.29`
+- `layer 19`: `176.29 ms/step`, teacher `6.88`, replay `1.97 / 0.48`
+- `layer 23`: `166.90 ms/step`, teacher `14.33`, replay `4.26 / 1.10`
+
+The least-bad native `T3` placement so far is a small key-only combo on layers `3` and `11`:
+
+- `K = T3` on `layers 3,11`; all other K/V remain `M0`
+  - `125.43 ms/step`
+  - teacher-forced logit max abs error `1.89`
+  - replay context/output max abs error `0.40 / 0.14`
+
+That is still nowhere near the current keepable Qwen3.5 native subset lane, so the practical conclusion is:
+
+- local native `T3` is not yet a fair apples-to-apples alternative for Qwen3.5
+- if we revisit this path, the first focus should be key-side only, not value-side
+- the current evidence does not support presenting native `T3` as a production or even near-production Qwen3.5 option
+
+## 2026-03-29 07:30 UTC - Full Qwen3.5 CUDA sweep now has a shared dense baseline and unit-labeled matrices
+
+I reran the full `Qwen/Qwen3.5-0.8B` CUDA comparison sweep into one checked-in directory with:
+
+- shared native dense baseline from `bench_qwen35_text.py`
+- native `StateCache M0 8-bit`
+- native hybrid `DotCache + StateCache`
+- external GGUF TurboQuant `q8_0`, `turbo3_uniform`, and `turbo3_la1`
+
+Artifacts:
+
+- [qwen35_turboquant_full_sweep_20260329.md](/workspace/DotCache/docs/qwen35_turboquant_full_sweep_20260329.md)
+- [qwen35_context_sweep_20260329_full](/workspace/DotCache/benchmarks/results/qwen35_context_sweep_20260329_full)
+
+The important correction is that the dense row is no longer coming from one of the capture-heavy harnesses. The matrix now prefers the shared plain-dense harness and labels units explicitly in the table body (`tok/s`, `MiB`), which removes the earlier misleading read from the two different dense-capture rows.
+
+Current practical read from the full sweep:
+
+- `StateCache M0 8-bit` is still the keepable native path through `16384`
+- the shared dense baseline survives `32768`, but StateCache and the hybrid lane both `OOM` there on this pod
+- the native hybrid lane is memory-cheaper than dense but throughput-collapsed by long context
+- TurboQuant stays dramatically faster and keeps running through `65536`
+
+That is the current benchmark appendix to use for Qwen3.5 until we either add comparable total-memory telemetry on the external lane or port a closer mechanism-equivalence path into `llama.cpp`.

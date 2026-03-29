@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 
@@ -22,6 +23,10 @@ _TIMING_PATTERN = re.compile(
     r"(?P<tps>[0-9]+(?:\.[0-9]+)?)\s*tokens per second\s*\))?"
 )
 _PPL_PATTERN = re.compile(r"PPL\s*=\s*([0-9]+(?:\.[0-9]+)?)")
+_SUMMARY_TPS_PATTERN = re.compile(
+    r"\[\s*Prompt:\s*(?P<prompt_tps>[0-9]+(?:\.[0-9]+)?)\s*t/s\s*\|\s*Generation:\s*"
+    r"(?P<generation_tps>[0-9]+(?:\.[0-9]+)?)\s*t/s\s*\]"
+)
 _DEFAULT_GGUF_MODELS_DIR = os.environ.get("GGUF_MODELS_DIR", "/workspace/models/gguf")
 _DEFAULT_TURBOQUANT_CLI = os.environ.get(
     "TURBOQUANT_LLAMA_CLI",
@@ -83,20 +88,92 @@ def _build_exact_prompt_text(
 ) -> tuple[str, int]:
     if prompt_length <= 0:
         raise ValueError("prompt_length must be positive")
-    unit_ids = tokenizer(prompt_unit, add_special_tokens=False)["input_ids"]
+    normalized_unit = prompt_unit.strip()
+    if not normalized_unit:
+        normalized_unit = prompt_unit
+    unit_ids = tokenizer(normalized_unit, add_special_tokens=False)["input_ids"]
     if not unit_ids:
         raise ValueError("prompt_unit tokenized to an empty sequence")
+    separator = " "
 
-    token_ids: list[int] = []
-    bos_token_id = getattr(tokenizer, "bos_token_id", None)
-    if bos_token_id is not None:
-        token_ids.append(int(bos_token_id))
-    while len(token_ids) < prompt_length:
-        token_ids.extend(int(token_id) for token_id in unit_ids)
-    token_ids = token_ids[:prompt_length]
-    prompt_text = tokenizer.decode(token_ids, skip_special_tokens=False)
-    retokenized_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    return prompt_text, len(retokenized_ids)
+    def token_length(text: str) -> int:
+        return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+    def build_repeat_text(repeat_count: int) -> str:
+        if repeat_count <= 0:
+            return ""
+        return separator.join([normalized_unit] * repeat_count)
+
+    low = 0
+    high = 1
+    while token_length(build_repeat_text(high)) < prompt_length:
+        low = high
+        high *= 2
+
+    while low + 1 < high:
+        mid = (low + high) // 2
+        if token_length(build_repeat_text(mid)) <= prompt_length:
+            low = mid
+        else:
+            high = mid
+
+    prompt_text = build_repeat_text(low)
+    current_length = token_length(prompt_text)
+    if current_length == prompt_length:
+        return prompt_text, current_length
+
+    extension = (separator + normalized_unit) * 16
+    if not prompt_text:
+        extension = normalized_unit * 16
+
+    best_text = prompt_text
+    best_length = current_length
+    while best_length < prompt_length:
+        left = 1
+        right = len(extension)
+        candidate_index = None
+        while left <= right:
+            mid = (left + right) // 2
+            candidate_text = prompt_text + extension[:mid]
+            candidate_length = token_length(candidate_text)
+            if candidate_length >= prompt_length:
+                candidate_index = mid
+                right = mid - 1
+            else:
+                if candidate_length > best_length:
+                    best_text = candidate_text
+                    best_length = candidate_length
+                left = mid + 1
+        if candidate_index is None:
+            extension += extension
+            continue
+
+        found_exact = False
+        scan_start = max(1, candidate_index - 64)
+        scan_stop = min(len(extension), candidate_index + 64)
+        for index in range(scan_start, scan_stop + 1):
+            candidate_text = prompt_text + extension[:index]
+            candidate_length = token_length(candidate_text)
+            if candidate_length == prompt_length:
+                return candidate_text, candidate_length
+            if candidate_length < prompt_length and candidate_length > best_length:
+                best_text = candidate_text
+                best_length = candidate_length
+        prompt_text = best_text
+        if prompt_text:
+            extension = separator + normalized_unit
+        else:
+            extension = normalized_unit
+        found_exact = True
+        if not found_exact:
+            extension += extension
+
+    final_length = token_length(best_text)
+    if final_length != prompt_length:
+        raise RuntimeError(
+            f"unable to build exact prompt text for requested length {prompt_length}; reached {final_length}"
+        )
+    return best_text, final_length
 
 
 def _resolve_local_gguf_path(
@@ -149,6 +226,14 @@ def _parse_timings(text: str) -> dict[str, float | int]:
         count = int(metrics["eval_time_count"])
         if count > 0:
             metrics["decode_ms_per_step"] = float(metrics["eval_time_ms"]) / count
+    summary_match = _SUMMARY_TPS_PATTERN.search(text)
+    if summary_match is not None:
+        prompt_tps = float(summary_match.group("prompt_tps"))
+        generation_tps = float(summary_match.group("generation_tps"))
+        metrics.setdefault("prompt_tokens_per_second", prompt_tps)
+        metrics.setdefault("generation_tokens_per_second", generation_tps)
+        metrics.setdefault("prompt_eval_time_tokens_per_second", prompt_tps)
+        metrics.setdefault("eval_time_tokens_per_second", generation_tps)
     return metrics
 
 
@@ -182,7 +267,7 @@ def _build_llama_cli_command(
     args: argparse.Namespace,
     *,
     config: TurboConfig,
-    prompt_text: str,
+    prompt_file: str,
 ) -> tuple[list[str], dict[str, str]]:
     command = [args.llama_cli, *_resolve_model_arg(args.model_id, hf_file=args.hf_file, gguf_models_dir=args.gguf_models_dir)]
     command.extend(
@@ -195,8 +280,8 @@ def _build_llama_cli_command(
             "on",
             "-n",
             str(args.max_new_tokens),
-            "-p",
-            prompt_text,
+            "-f",
+            prompt_file,
             "-no-cnv",
             "-st",
             "--simple-io",
@@ -265,18 +350,22 @@ def _run_decode_case(
     prompt_text: str,
     prompt_length: int,
     prompt_mode: str,
+    requested_prompt_length: int | None = None,
     repeat_count: int | None = None,
 ) -> None:
-    command, env = _build_llama_cli_command(args, config=config, prompt_text=prompt_text)
-    start = time.perf_counter()
-    completed = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".txt", delete=True) as prompt_handle:
+        prompt_handle.write(prompt_text)
+        prompt_handle.flush()
+        command, env = _build_llama_cli_command(args, config=config, prompt_file=prompt_handle.name)
+        start = time.perf_counter()
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     output_text = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part.strip())
     record: dict[str, object] = {
@@ -288,6 +377,7 @@ def _run_decode_case(
         "tokenizer_model_id": args.tokenizer_model_id,
         "prompt_length": prompt_length,
         "prompt_mode": prompt_mode,
+        "requested_prompt_length": requested_prompt_length,
         "repeat_count": repeat_count,
         "max_new_tokens": args.max_new_tokens,
         "weight_format": "gguf",
@@ -299,6 +389,19 @@ def _run_decode_case(
         "ctv": config.ctv,
     }
     record.update(_parse_timings(output_text))
+    prompt_tps = record.get("prompt_eval_time_tokens_per_second")
+    if prompt_tps not in (None, 0, 0.0):
+        prompt_tps_value = float(prompt_tps)
+        record.setdefault("prompt_eval_time_count", prompt_length)
+        record.setdefault("prompt_eval_time_ms_per_token", 1000.0 / prompt_tps_value)
+        record.setdefault("prompt_eval_time_ms", prompt_length * 1000.0 / prompt_tps_value)
+    decode_tps = record.get("eval_time_tokens_per_second")
+    if decode_tps not in (None, 0, 0.0):
+        decode_tps_value = float(decode_tps)
+        record.setdefault("eval_time_count", args.max_new_tokens)
+        record.setdefault("eval_time_ms_per_token", 1000.0 / decode_tps_value)
+        record.setdefault("eval_time_ms", args.max_new_tokens * 1000.0 / decode_tps_value)
+        record.setdefault("decode_ms_per_step", 1000.0 / decode_tps_value)
     if completed.returncode != 0:
         record["error_type"] = "RuntimeError"
         record["error_message"] = output_text[-2000:]
@@ -376,6 +479,7 @@ def main() -> None:
                         "runtime": "llama.cpp_turboquant",
                         "config": config.key,
                         "model_id": args.model_id,
+                        "tokenizer_model_id": args.tokenizer_model_id,
                         "status": "error",
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
@@ -396,6 +500,7 @@ def main() -> None:
                     prompt_text=prompt_text,
                     prompt_length=actual_prompt_length,
                     prompt_mode="exact_length",
+                    requested_prompt_length=prompt_length,
                 )
             except Exception as exc:
                 if not args.continue_on_error:
@@ -407,8 +512,10 @@ def main() -> None:
                         "runtime": "llama.cpp_turboquant",
                         "config": config.key,
                         "model_id": args.model_id,
+                        "tokenizer_model_id": args.tokenizer_model_id,
                         "prompt_length": actual_prompt_length,
                         "prompt_mode": "exact_length",
+                        "requested_prompt_length": prompt_length,
                         "status": "error",
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
@@ -438,6 +545,7 @@ def main() -> None:
                         "runtime": "llama.cpp_turboquant",
                         "config": config.key,
                         "model_id": args.model_id,
+                        "tokenizer_model_id": args.tokenizer_model_id,
                         "prompt_length": actual_prompt_length,
                         "prompt_mode": "repeat_count",
                         "repeat_count": repeat_count,
