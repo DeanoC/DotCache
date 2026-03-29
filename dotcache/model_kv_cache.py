@@ -1407,12 +1407,20 @@ class ModelPagedKVCache:
             return False
         return int(layer_id) in {int(value) for value in self.config.execution_exact_refine_layers}
 
-    def _execution_exact_promote_enabled(self, *, layer_id: int) -> bool:
+    def _execution_exact_promote_enabled(self, *, layer_id: int, context_length: int | None = None) -> bool:
         if self.config.execution_exact_promote_top_k <= 0:
             return False
         if not self.config.execution_exact_promote_layers:
             return False
-        return int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
+        if int(layer_id) not in {int(value) for value in self.config.execution_exact_promote_layers}:
+            return False
+        if (
+            int(self.config.execution_exact_promote_max_context) > 0
+            and context_length is not None
+            and int(context_length) > int(self.config.execution_exact_promote_max_context)
+        ):
+            return False
+        return True
 
     def _execution_secondary_relevance_enabled(self, *, layer_id: int) -> bool:
         return self.config.execution_secondary_relevance_enabled_for_layer(layer_id=layer_id)
@@ -1473,7 +1481,7 @@ class ModelPagedKVCache:
                 key_page_minima.append(np.asarray(page_min, dtype=np.float32))
                 key_page_maxima.append(np.asarray(page_max, dtype=np.float32))
         candidate_relevance_top_k = int(layer_relevance_top_k)
-        if self._execution_exact_promote_enabled(layer_id=layer_id):
+        if self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length):
             candidate_relevance_top_k = max(
                 candidate_relevance_top_k,
                 int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k) * 2,
@@ -1494,7 +1502,7 @@ class ModelPagedKVCache:
         use_secondary_relevance_rescue = self._execution_secondary_relevance_enabled(layer_id=layer_id)
         use_recent_neighbor_rescue = self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
         use_confidence_gated_exact_promote = (
-            self._execution_exact_promote_enabled(layer_id=layer_id)
+            self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length)
             and float(self.config.execution_exact_promote_margin_threshold) > 0.0
         )
         boundary_margin_normalized = None
@@ -1642,7 +1650,7 @@ class ModelPagedKVCache:
                 relevance_mode=self.config.execution_relevance_mode,
             )
         if not self._execution_exact_refine_enabled(layer_id=layer_id):
-            promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id)
+            promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length)
             if (
                 promote_enabled
                 and float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
@@ -1657,13 +1665,6 @@ class ModelPagedKVCache:
                 and float(self.config.execution_exact_promote_margin_threshold) > 0.0
                 and boundary_margin_normalized is not None
                 and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
-            ):
-                promote_enabled = False
-            if (
-                promote_enabled
-                and int(self.config.execution_exact_promote_max_context) > 0
-                and context_length is not None
-                and int(context_length) > int(self.config.execution_exact_promote_max_context)
             ):
                 promote_enabled = False
             if not promote_enabled:

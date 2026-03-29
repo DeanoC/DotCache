@@ -42,6 +42,7 @@ from dotcache.integrations.qwen35 import (
     summarize_qwen35_dotcache_fit,
     _qwen35_mps_serving_shortlist_heuristic,
 )
+from dotcache.model_kv_cache import ModelPagedKVCache
 
 
 class _TinyTokenizer:
@@ -1089,6 +1090,24 @@ def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overrid
     unchanged_cpu, applied_cpu = _qwen35_mps_serving_shortlist_heuristic(base, backend="cpu_ref", prompt_length=8192)
     assert applied_cpu is False
     assert unchanged_cpu == base
+
+
+def test_execution_exact_promote_max_context_disables_promotion_before_candidate_expansion() -> None:
+    cache = ModelPagedKVCache.__new__(ModelPagedKVCache)
+    cache.config = DotCacheConfig(
+        head_dim=16,
+        group_size=16,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=2,
+        execution_exact_promote_top_k=2,
+        execution_exact_promote_layers=(23,),
+        execution_exact_promote_max_context=16384,
+    )
+
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=16384) is True
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=32768) is False
+    assert cache._execution_exact_promote_enabled(layer_id=11, context_length=8192) is False
 
 
 def test_qwen35_attention_subset_dotcache_loss_harness_reports_teacher_forced_metrics() -> None:
