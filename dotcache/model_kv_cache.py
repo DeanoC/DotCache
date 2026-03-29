@@ -1244,6 +1244,7 @@ class ModelPagedKVCache:
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
+        self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
 
     @property
@@ -1297,9 +1298,18 @@ class ModelPagedKVCache:
         )
         return min(int(self.config.prepared_chunk_cache_max_bytes), adaptive_budget)
 
-    def _sync_prepared_chunk_cache_budget(self) -> None:
+    def _sync_prepared_chunk_cache_budget(self, *, freeze_during_decode: bool = False) -> None:
         if self._torch_device_type is None or not self._prepared_chunk_cache_budget_dirty:
             return
+        if bool(freeze_during_decode and self.config.execution_freeze_chunk_budget_during_decode):
+            if self._prepared_chunk_cache_frozen_budget_bytes is None:
+                self._prepared_chunk_cache_frozen_budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+                set_prepared_chunk_cache_budget_override(
+                    max_resident_bytes=self._prepared_chunk_cache_frozen_budget_bytes,
+                )
+            self._prepared_chunk_cache_budget_dirty = False
+            return
+        self._prepared_chunk_cache_frozen_budget_bytes = None
         set_prepared_chunk_cache_budget_override(
             max_resident_bytes=self._prepared_chunk_cache_budget_bytes(),
         )
@@ -2225,6 +2235,7 @@ class ModelPagedKVCache:
         self._execution_exact_refine_selected_pages_by_layer = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer = {}
+        self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
     def clear_layer(self, layer_id: int) -> None:
@@ -2269,6 +2280,7 @@ class ModelPagedKVCache:
             for stage, value in layer_timings.items():
                 if stage in self._decode_stage_timings:
                     self._decode_stage_timings[stage] += float(value)
+        self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
     def _grouped_query_heads_for_mapping(self, q_head_to_kv_head: Sequence[int] | np.ndarray) -> tuple[tuple[int, ...], ...]:
@@ -3970,7 +3982,9 @@ class ModelPagedKVCache:
             _stage_finish("shortlist_materialization", shortlist_materialization_started_at)
 
         chunk_budget_sync_started_at = _stage_start()
-        self._sync_prepared_chunk_cache_budget()
+        self._sync_prepared_chunk_cache_budget(
+            freeze_during_decode=bool(self.config.execution_freeze_chunk_budget_during_decode)
+        )
         _stage_finish("chunk_budget_sync", chunk_budget_sync_started_at)
 
         grouping_validation_started_at = _stage_start()

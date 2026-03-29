@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from dotcache.attention_runtime import decode_step, prepare_pages
 from dotcache.backends import (
@@ -728,6 +729,57 @@ def test_model_paged_kv_cache_adaptive_chunk_budget_tracks_kv_residency() -> Non
     )
     assert summary["prepared_chunk_cache_budget_bytes"] == expected_budget
     assert summary["prepared_chunk_resident_bytes"] <= expected_budget
+
+
+def test_model_paged_kv_cache_can_freeze_chunk_budget_sync_during_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not mps_available():
+        return
+
+    cache = ModelPagedKVCache(
+        config=DotCacheConfig(
+            head_dim=32,
+            group_size=32,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=4,
+            execution_freeze_chunk_budget_during_decode=True,
+        ),
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    budget_compute_calls: list[int] = []
+    budget_override_calls: list[int] = []
+
+    def _fake_budget_bytes(*, kv_resident_bytes: int | None = None) -> int:
+        del kv_resident_bytes
+        budget_compute_calls.append(1)
+        return 1234
+
+    def _fake_budget_override(*, max_resident_bytes: int | None) -> None:
+        budget_override_calls.append(-1 if max_resident_bytes is None else int(max_resident_bytes))
+
+    monkeypatch.setattr(cache, "_prepared_chunk_cache_budget_bytes", _fake_budget_bytes)
+    monkeypatch.setattr("dotcache.model_kv_cache.set_prepared_chunk_cache_budget_override", _fake_budget_override)
+
+    cache._prepared_chunk_cache_budget_dirty = True
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=True)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=True)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1, 1]
+    assert budget_override_calls == [1234, 1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
 
 
 def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:
