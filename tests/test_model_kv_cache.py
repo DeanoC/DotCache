@@ -778,11 +778,11 @@ def test_model_paged_kv_cache_can_freeze_chunk_budget_sync_during_decode(monkeyp
     cache._mark_prepared_chunk_cache_budget_dirty()
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
     assert budget_compute_calls == [1, 1]
-    assert budget_override_calls == [1234]
+    assert budget_override_calls == [1234, 1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
 
 
-def test_model_paged_kv_cache_skips_reapplying_unchanged_chunk_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     if not mps_available():
         return
 
@@ -822,7 +822,7 @@ def test_model_paged_kv_cache_skips_reapplying_unchanged_chunk_budget(monkeypatc
     cache._mark_prepared_chunk_cache_budget_dirty()
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
     assert budget_compute_calls == [1, 1]
-    assert budget_override_calls == [1234]
+    assert budget_override_calls == [1234, 1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
 
 

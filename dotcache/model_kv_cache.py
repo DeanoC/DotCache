@@ -1385,11 +1385,10 @@ class ModelPagedKVCache:
             return
         self._prepared_chunk_cache_frozen_budget_bytes = None
         budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
-        if self._prepared_chunk_cache_applied_budget_bytes != budget_bytes:
-            set_prepared_chunk_cache_budget_override(
-                max_resident_bytes=budget_bytes,
-            )
-            self._prepared_chunk_cache_applied_budget_bytes = budget_bytes
+        set_prepared_chunk_cache_budget_override(
+            max_resident_bytes=budget_bytes,
+        )
+        self._prepared_chunk_cache_applied_budget_bytes = budget_bytes
         self._prepared_chunk_cache_budget_dirty = False
 
     def _mark_prepared_chunk_cache_budget_dirty(self) -> None:
