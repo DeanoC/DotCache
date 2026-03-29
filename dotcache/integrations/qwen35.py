@@ -2332,14 +2332,18 @@ def run_qwen35_text_generation_harness(
         multimodal_inputs=multimodal_inputs,
     )
 
+    device = input_ids.device
+    prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
     prefill_outputs, prefill_ms = _timed_call(
         lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
-        device=input_ids.device,
+        device=device,
     )
+    prefill_cuda_memory = _end_cuda_memory_region(device, prefill_cuda_memory_baseline)
     prefill_cache_bytes = _hybrid_cache_nbytes(prefill_outputs.past_key_values)
     generated_ids: list[int] = []
     dense_decode_ms_total = 0.0
     final_past_key_values = prefill_outputs.past_key_values
+    decode_cuda_memory: dict[str, int] = {}
 
     if max_new_tokens > 0:
         current_input_ids = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
@@ -2348,8 +2352,9 @@ def run_qwen35_text_generation_harness(
             [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
             dim=1,
         )
-        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
         past_key_values = prefill_outputs.past_key_values
+        decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
 
         for _ in range(max(max_new_tokens - 1, 0)):
             outputs, step_ms = _timed_call(
@@ -2360,7 +2365,7 @@ def run_qwen35_text_generation_harness(
                     past_key_values=past_key_values,
                     cache_position=cache_position,
                 ),
-                device=input_ids.device,
+                device=device,
             )
             dense_decode_ms_total += step_ms
             past_key_values = outputs.past_key_values
@@ -2372,6 +2377,7 @@ def run_qwen35_text_generation_harness(
                 dim=1,
             )
             cache_position = cache_position + 1
+        decode_cuda_memory = _end_cuda_memory_region(device, decode_cuda_memory_baseline)
 
     result = {
         "prompt_length": int(input_ids.shape[1]),
@@ -2387,6 +2393,8 @@ def run_qwen35_text_generation_harness(
         "runtime_mode": "dense",
         "uses_native_qwen35_class": True,
     }
+    result.update({f"dense_prefill_{key}": value for key, value in prefill_cuda_memory.items()})
+    result.update({f"dense_decode_{key}": value for key, value in decode_cuda_memory.items()})
     result.update(adapter.hybrid_block_summary())
     decoded_text = _decode_text(tokenizer, generated_ids)
     if decoded_text is not None:
@@ -5234,6 +5242,8 @@ def run_qwen35_attention_subset_statecache_dotcache_harness(
         tokenizer=tokenizer,
         multimodal_inputs=multimodal_inputs,
     )
+    device = input_ids.device
+    dense_capture_cuda_memory_baseline = _begin_cuda_memory_region(device)
     dense_capture = _run_qwen35_attention_subset_dense_capture(
         model,
         adapter,
@@ -5241,11 +5251,14 @@ def run_qwen35_attention_subset_statecache_dotcache_harness(
         attention_mask=attention_mask,
         decode_steps=decode_steps,
     )
+    dense_capture_cuda_memory = _end_cuda_memory_region(device, dense_capture_cuda_memory_baseline)
 
+    hybrid_prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
     hybrid_prefill_outputs, hybrid_prefill_ms = _timed_call(
         lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
-        device=input_ids.device,
+        device=device,
     )
+    hybrid_prefill_cuda_memory = _end_cuda_memory_region(device, hybrid_prefill_cuda_memory_baseline)
     adapter.clear()
     adapter.load_attention_subset_prefill_cache(hybrid_prefill_outputs.past_key_values)
     adapter.set_mode("dotcache_attention_subset")
@@ -5300,11 +5313,13 @@ def run_qwen35_attention_subset_statecache_dotcache_harness(
     hybrid_step_logits: list[np.ndarray] = []
     hybrid_records: list[list[LlamaReplayRecord]] = []
     hybrid_decode_ms_total = 0.0
+    hybrid_decode_cuda_memory: dict[str, int] = {}
     current_attention_mask = torch.cat(
         [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
         dim=1,
     )
-    cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
+    cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+    hybrid_decode_cuda_memory_baseline = _begin_cuda_memory_region(device) if decode_steps > 0 else None
     for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
         adapter.begin_capture_step(step_index)
         adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
@@ -5352,6 +5367,8 @@ def run_qwen35_attention_subset_statecache_dotcache_harness(
             dim=1,
         )
         cache_position = cache_position + 1
+    if hybrid_decode_cuda_memory_baseline is not None:
+        hybrid_decode_cuda_memory = _end_cuda_memory_region(device, hybrid_decode_cuda_memory_baseline)
 
     dense_record_map = {
         (record.step_index, record.layer_id): record
@@ -5455,6 +5472,9 @@ def run_qwen35_attention_subset_statecache_dotcache_harness(
             "deltanet_statecache_per_layer_recurrent_mode": per_layer_statecache_modes,
         }
     )
+    result.update({f"dense_capture_{key}": value for key, value in dense_capture_cuda_memory.items()})
+    result.update({f"hybrid_prefill_{key}": value for key, value in hybrid_prefill_cuda_memory.items()})
+    result.update({f"hybrid_decode_{key}": value for key, value in hybrid_decode_cuda_memory.items()})
     if profile_backend:
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(runtime_state.summary())

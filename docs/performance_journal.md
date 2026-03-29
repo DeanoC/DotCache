@@ -3318,3 +3318,46 @@ The summary doc now splits memory into:
    - TurboQuant `llama.cpp` device `self` bytes
 
 That still does not make the memory comparison fully apples-to-apples, but it does stop pretending one mixed `MiB` table meant one thing.
+
+## 2026-03-29 12:05 UTC - Backfilled native peak CUDA memory and added a tighter serving-style deployment sweep
+
+I filled two gaps in the Qwen3.5 comparison surface:
+
+- reran the shared dense and hybrid native lanes so the checked-in full sweep now includes peak CUDA allocated memory for both
+- added a dedicated serving-style sweep that compares:
+  - shared dense
+  - serving-only native `StateCache`
+  - external TurboQuant `llama.cpp`
+
+Artifacts:
+
+- [qwen35_context_sweep_20260329_full](/workspace/DotCache/benchmarks/results/qwen35_context_sweep_20260329_full)
+- [qwen35_serving_sweep_20260329](/workspace/DotCache/benchmarks/results/qwen35_serving_sweep_20260329)
+- [qwen35_turboquant_full_sweep_20260329.md](/workspace/DotCache/docs/qwen35_turboquant_full_sweep_20260329.md)
+
+The corrected full-sweep total-device table is now populated for the native shared dense and hybrid rows:
+
+- dense peak CUDA allocation grows from `1902 MiB` at `448` to `17652 MiB` at `32768`
+- hybrid peak CUDA allocation grows from `2183 MiB` at `448` to `17839 MiB` at `16384` before `OOM`
+- compare/readout `StateCache` remains slightly below hybrid but still `OOM`s at `32768`
+
+The tighter serving-style comparison changes the honest native read:
+
+- dense shared harness:
+  - `59.62 tok/s` at `32768`
+  - `17651.56 MiB` peak device memory at `32768`
+  - first `OOM` at `65536`
+- serving-only `StateCache M0 8-bit`:
+  - `50.59 tok/s` at `32768`
+  - `18022.35 MiB` peak device memory at `32768`
+  - first `OOM` at `65536`
+- TurboQuant external:
+  - still much faster through the whole ladder
+  - still much lower total device memory on this box (`1972` to `2932 MiB`, depending on config)
+
+So the repo can now say something more precise than before:
+
+- the compare/readout sweep is useful for mechanism experiments, but it is not the cleanest deployment comparison
+- the serving-style sweep is the tighter native-vs-external comparison surface
+- on that tighter surface, native `StateCache` is not currently beating plain dense on throughput or on total peak device memory
+- TurboQuant is still clearly the fastest deployment stack here, but the result remains cross-runtime rather than a pure codec-only proof
