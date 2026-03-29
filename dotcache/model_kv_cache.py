@@ -1471,7 +1471,6 @@ class ModelPagedKVCache:
     def _execution_exact_promote_union_rescue_enabled(self, *, layer_id: int) -> bool:
         return (
             int(self.config.execution_exact_promote_union_rescue_top_k) > 0
-            and int(self.config.execution_exact_promote_top_k) > 0
             and int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
         )
 
@@ -1527,30 +1526,25 @@ class ModelPagedKVCache:
                     }
                 )
                 continue
-            if not bool(shortlist_trace.get("exact_promote_enabled", False)):
+            context_length = shortlist_trace.get("context_length")
+            policy_enabled, policy_disable_reason = self._execution_exact_promote_policy_status(
+                layer_id=layer_id,
+                context_length=None if context_length is None else int(context_length),
+            )
+            if not policy_enabled:
                 rescue_records.append(
                     {
                         "record_type": "union_rescue",
                         "layer_id": int(layer_id),
                         "group_index": int(group_index),
                         "applied": False,
-                        "disable_reason": str(shortlist_trace.get("exact_promote_disable_reason")),
+                        "disable_reason": policy_disable_reason,
                     }
                 )
                 continue
 
-            promote_candidate_indices = [int(index) for index in shortlist_trace.get("promote_candidate_indices", [])]
-            if not promote_candidate_indices:
-                rescue_records.append(
-                    {
-                        "record_type": "union_rescue",
-                        "layer_id": int(layer_id),
-                        "group_index": int(group_index),
-                        "applied": False,
-                        "disable_reason": "no_promote_candidates",
-                    }
-                )
-                continue
+            base_indices = {int(index) for index in shortlist_trace.get("base_indices", [])}
+            selected_index_set = baseline_selected_index_sets[group_index]
 
             other_selected_indices = set().union(
                 *[
@@ -1561,8 +1555,10 @@ class ModelPagedKVCache:
             )
             novel_candidate_indices = [
                 int(index)
-                for index in promote_candidate_indices
-                if int(index) not in other_selected_indices and int(index) not in baseline_selected_index_sets[group_index]
+                for index in range(len(key_pages))
+                if int(index) not in base_indices
+                and int(index) not in selected_index_set
+                and int(index) not in other_selected_indices
             ]
             if not novel_candidate_indices:
                 rescue_records.append(
@@ -1572,7 +1568,8 @@ class ModelPagedKVCache:
                         "group_index": int(group_index),
                         "applied": False,
                         "disable_reason": "no_novel_candidates",
-                        "promote_candidate_count": int(len(promote_candidate_indices)),
+                        "base_count": int(len(base_indices)),
+                        "selected_count": int(len(selected_index_set)),
                     }
                 )
                 continue
@@ -1603,7 +1600,8 @@ class ModelPagedKVCache:
                         "group_index": int(group_index),
                         "applied": False,
                         "disable_reason": "novel_candidates_not_selected",
-                        "promote_candidate_count": int(len(promote_candidate_indices)),
+                        "base_count": int(len(base_indices)),
+                        "selected_count": int(len(selected_index_set)),
                         "novel_candidate_count": int(len(novel_candidate_indices)),
                     }
                 )
@@ -1618,7 +1616,8 @@ class ModelPagedKVCache:
                     "kv_head_id": shortlist_trace.get("kv_head_id"),
                     "applied": True,
                     "disable_reason": None,
-                    "promote_candidate_count": int(len(promote_candidate_indices)),
+                    "base_count": int(len(base_indices)),
+                    "selected_count": int(len(selected_index_set)),
                     "novel_candidate_count": int(len(novel_candidate_indices)),
                     "selected_novel_count": int(len(chosen_novel_indices)),
                     "selected_novel_indices": [int(index) for index in chosen_novel_indices],
