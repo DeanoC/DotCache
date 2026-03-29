@@ -21,10 +21,11 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
 - CUDA has now validated the same core serving idea at higher context. The shortlist stays bounded at both `16384` and `32768`, so the long-context path is real and not a Mac-only artifact.
 - The remaining quality issue is narrow and stubborn: layer `23` is quality-sensitive, but most of the rescue strategies we tested did not buy enough quality back to justify their complexity or runtime cost.
 - The `32768` CUDA cliff is now very likely a grouped-decode locality / working-set problem, not a shortlist-size problem.
-- The first grouped-decode compaction probe is the first real systems win against that CUDA cliff:
-  - `16384`: basically flat
-  - `32768`: about `11%` faster decode on the same shortlist shape and flat quality
-  - the biggest movement is inside backend `mix`, not shortlist size or quality
+- The grouped-decode compaction probe is still interesting, but it is not stable enough yet to promote:
+  - one earlier `32768` run was about `11%` faster on the same shortlist shape and flat quality
+  - the fresh confirm run did not reproduce as a clean win across both long contexts
+  - `32768` compact was worse on quality decode and only trivially better on scorer decode
+  - `49152` compact was slightly better on quality decode but worse on scorer decode
 
 ### Positive Findings
 
@@ -44,11 +45,10 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
   - backend bytes and call counts stayed flat
   - resident/prepared working set grew substantially
   - decode time still jumped from `265.93 -> 1145.16 ms/step`
-- The first compact grouped-decode CUDA probe strengthens the locality diagnosis:
-  - baseline shortlist shape stayed fixed at both `16384` and `32768`
-  - quality stayed unchanged
-  - `32768` quality lane improved from `1338.65 -> 1191.86 ms/step`
-  - `32768` backend `mix` time improved sharply `387.38 -> 150.91 ms total`
+- The compact grouped-decode probe still supports the locality diagnosis directionally:
+  - shortlist shape stayed fixed in every compact-vs-baseline comparison
+  - quality stayed flat in the quality lanes
+  - the mixed results suggest we are touching a real systems effect, but not with a stable enough implementation yet
 
 ### Negative Findings
 
@@ -58,6 +58,13 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
   - decode moved slightly the wrong way: `486.31 -> 492.92 ms/step`
   - backend `mix` time worsened noticeably
   - this does not rule out the CUDA locality hypothesis, but it does mean the compaction idea is not a generic MPS improvement
+- The fresh CUDA compact confirmation is also mixed rather than clean:
+  - `32768` baseline quality/scorer: `1209.77 / 1233.19 ms/step`
+  - `32768` compact quality/scorer: `1442.60 / 1223.03 ms/step`
+  - `49152` baseline quality/scorer: `1302.58 / 1412.76 ms/step`
+  - `49152` compact quality/scorer: `1274.88 / 1492.25 ms/step`
+  - same shortlist shape, same resident bytes, same quality
+  - not good enough to promote compact grouped decode as the main CUDA branch
 - Layer-`23` rescue attempts that did not hold up as defaults:
   - exact rerank
   - broader recent-window expansion
@@ -86,7 +93,7 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
 
 ### Current Best Hypothesis
 
-The main remaining performance problem is in grouped decode under a larger resident/prepared working set. The strongest candidate is poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface. The new compact grouped-decode CUDA result makes that explanation materially stronger because it improves `32768` decode without changing shortlist size or quality.
+The main remaining performance problem is still in grouped decode under a larger resident/prepared working set. The strongest candidate remains poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface. The compact experiment touched that area, but the result is not stable enough yet to treat compaction itself as the fix.
 
 ### Next Investigation
 
