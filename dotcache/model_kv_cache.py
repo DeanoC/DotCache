@@ -3874,6 +3874,7 @@ class ModelPagedKVCache:
                 value_chunk_lengths=value_chunk_lengths,
                 compact_grouped_chunk=bool(self.config.execution_grouped_decode_compact),
                 compact_grouped_mix_chunk=bool(self.config.execution_grouped_mix_compact),
+                disable_packed_grouped_cuda_mix=bool(self.config.execution_grouped_mix_disable_packed_cuda),
                 trace=trace,
             )
             for q_head_ids, kv_outputs in zip(active_q_head_ids, grouped_outputs, strict=True):

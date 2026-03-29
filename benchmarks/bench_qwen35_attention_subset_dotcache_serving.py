@@ -66,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-exact-promote-union-rescue-top-k", type=int, default=0)
     parser.add_argument("--execution-grouped-decode-compact", action="store_true")
     parser.add_argument("--execution-grouped-mix-compact", action="store_true")
+    parser.add_argument("--execution-grouped-mix-disable-packed-cuda", action="store_true")
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -351,6 +352,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_exact_promote_union_rescue_top_k=args.execution_exact_promote_union_rescue_top_k,
         execution_grouped_decode_compact=args.execution_grouped_decode_compact,
         execution_grouped_mix_compact=args.execution_grouped_mix_compact,
+        execution_grouped_mix_disable_packed_cuda=args.execution_grouped_mix_disable_packed_cuda,
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -431,6 +433,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "execution_exact_promote_union_rescue_top_k": args.execution_exact_promote_union_rescue_top_k,
         "execution_grouped_decode_compact": args.execution_grouped_decode_compact,
         "execution_grouped_mix_compact": args.execution_grouped_mix_compact,
+        "execution_grouped_mix_disable_packed_cuda": args.execution_grouped_mix_disable_packed_cuda,
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
         "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,

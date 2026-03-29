@@ -3651,6 +3651,7 @@ def _mix_page_chunk_grouped_multiquery_torch(
     *,
     out_acc=None,
     compact_grouped_chunk: bool = False,
+    disable_packed_grouped_cuda: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -3789,6 +3790,7 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.scales_groups_tensor is not None
         and grouped_prepared_chunk.bias_groups_tensor is not None
         and _supports_packed_four_group128_cuda(header, device_type=device_type)
+        and not disable_packed_grouped_cuda
     ):
         unpack_shifts = pages_by_group[0][0].unpack_shifts
         unpack_mask = pages_by_group[0][0].unpack_mask
@@ -4057,6 +4059,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
     value_chunk_lengths: Sequence[int] | None = None,
     compact_grouped_chunk: bool = False,
     compact_grouped_mix_chunk: bool = False,
+    disable_packed_grouped_cuda_mix: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4186,6 +4189,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 chunk_pages,
                 out_acc=output,
                 compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
+                disable_packed_grouped_cuda=disable_packed_grouped_cuda_mix,
                 trace=trace,
             ),
         )
@@ -4202,6 +4206,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
     *,
     compact_grouped_chunk: bool = False,
     compact_grouped_mix_chunk: bool = False,
+    disable_packed_grouped_cuda_mix: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4322,6 +4327,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 value_chunk_pages,
                 out_acc=output,
                 compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
+                disable_packed_grouped_cuda=disable_packed_grouped_cuda_mix,
                 trace=trace,
             ),
         )
