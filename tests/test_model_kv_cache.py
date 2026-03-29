@@ -769,17 +769,21 @@ def test_model_paged_kv_cache_can_freeze_chunk_budget_sync_during_decode(monkeyp
     assert budget_override_calls == [1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
 
-    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=True)
     assert budget_compute_calls == [1]
     assert budget_override_calls == [1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
 
-    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
     assert budget_compute_calls == [1, 1]
     assert budget_override_calls == [1234, 1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
+    summary = cache.chunk_budget_summary()
+    assert summary["execution_chunk_budget_sync_invocations"] == 3
+    assert summary["execution_chunk_budget_override_calls"] == 2
+    assert summary["execution_chunk_budget_freeze_override_calls"] == 1
 
 
 def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -819,11 +823,15 @@ def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mo
     assert budget_override_calls == [1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
 
-    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
     assert budget_compute_calls == [1, 1]
     assert budget_override_calls == [1234, 1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
+    summary = cache.chunk_budget_summary()
+    assert summary["execution_chunk_budget_sync_invocations"] == 2
+    assert summary["execution_chunk_budget_override_calls"] == 2
+    assert summary["execution_chunk_budget_override_same_budget_calls"] == 1
 
 
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
@@ -855,6 +863,10 @@ def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_res
     assert cache._prepared_chunk_cache_budget_dirty is False
     assert summary_after_append["tail_resident_bytes"] == summary_before_append["tail_resident_bytes"]
     assert summary_after_append["kv_resident_bytes"] == summary_before_append["kv_resident_bytes"]
+    chunk_budget_summary = cache.chunk_budget_summary()
+    assert chunk_budget_summary["execution_chunk_budget_dirty_reason_counts"] == {
+        "ingest_prefill_cache_torch": 1
+    }
 
 
 def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:

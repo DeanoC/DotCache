@@ -1251,6 +1251,16 @@ class ModelPagedKVCache:
         self._direct_prepared_page_refcounts: dict[int, int] = {}
         self._direct_prepared_page_sizes: dict[int, int] = {}
         self._tail_resident_bytes = 0
+        self._chunk_budget_dirty_marks = 0
+        self._chunk_budget_dirty_transitions = 0
+        self._chunk_budget_dirty_reason_counts: dict[str, int] = {}
+        self._chunk_budget_sync_invocations = 0
+        self._chunk_budget_sync_clean_skips = 0
+        self._chunk_budget_sync_dirty_invocations = 0
+        self._chunk_budget_override_calls = 0
+        self._chunk_budget_override_budget_change_calls = 0
+        self._chunk_budget_override_same_budget_calls = 0
+        self._chunk_budget_freeze_override_calls = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -1345,6 +1355,18 @@ class ModelPagedKVCache:
         for state in self._states.values():
             self._refresh_state_resident_accounting(state)
 
+    def _reset_chunk_budget_tracking(self) -> None:
+        self._chunk_budget_dirty_marks = 0
+        self._chunk_budget_dirty_transitions = 0
+        self._chunk_budget_dirty_reason_counts = {}
+        self._chunk_budget_sync_invocations = 0
+        self._chunk_budget_sync_clean_skips = 0
+        self._chunk_budget_sync_dirty_invocations = 0
+        self._chunk_budget_override_calls = 0
+        self._chunk_budget_override_budget_change_calls = 0
+        self._chunk_budget_override_same_budget_calls = 0
+        self._chunk_budget_freeze_override_calls = 0
+
     def _kv_resident_byte_summary(self) -> dict[str, int]:
         static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
         tail_resident_bytes = int(self._tail_resident_bytes)
@@ -1371,30 +1393,74 @@ class ModelPagedKVCache:
         return min(int(self.config.prepared_chunk_cache_max_bytes), adaptive_budget)
 
     def _sync_prepared_chunk_cache_budget(self, *, freeze_during_decode: bool = False) -> None:
-        if self._torch_device_type is None or not self._prepared_chunk_cache_budget_dirty:
+        if self._torch_device_type is None:
             return
+        self._chunk_budget_sync_invocations += 1
+        if not self._prepared_chunk_cache_budget_dirty:
+            self._chunk_budget_sync_clean_skips += 1
+            return
+        self._chunk_budget_sync_dirty_invocations += 1
         if bool(freeze_during_decode and self.config.execution_freeze_chunk_budget_during_decode):
             if self._prepared_chunk_cache_frozen_budget_bytes is None:
                 self._prepared_chunk_cache_frozen_budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
             if self._prepared_chunk_cache_applied_budget_bytes != int(self._prepared_chunk_cache_frozen_budget_bytes):
+                applied_budget_bytes = self._prepared_chunk_cache_applied_budget_bytes
                 set_prepared_chunk_cache_budget_override(
                     max_resident_bytes=self._prepared_chunk_cache_frozen_budget_bytes,
                 )
+                self._chunk_budget_override_calls += 1
+                self._chunk_budget_freeze_override_calls += 1
+                if applied_budget_bytes == int(self._prepared_chunk_cache_frozen_budget_bytes):
+                    self._chunk_budget_override_same_budget_calls += 1
+                else:
+                    self._chunk_budget_override_budget_change_calls += 1
                 self._prepared_chunk_cache_applied_budget_bytes = int(self._prepared_chunk_cache_frozen_budget_bytes)
             self._prepared_chunk_cache_budget_dirty = False
             return
         self._prepared_chunk_cache_frozen_budget_bytes = None
         budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+        applied_budget_bytes = self._prepared_chunk_cache_applied_budget_bytes
         set_prepared_chunk_cache_budget_override(
             max_resident_bytes=budget_bytes,
         )
+        self._chunk_budget_override_calls += 1
+        if applied_budget_bytes == budget_bytes:
+            self._chunk_budget_override_same_budget_calls += 1
+        else:
+            self._chunk_budget_override_budget_change_calls += 1
         self._prepared_chunk_cache_applied_budget_bytes = budget_bytes
         self._prepared_chunk_cache_budget_dirty = False
 
-    def _mark_prepared_chunk_cache_budget_dirty(self) -> None:
+    def _mark_prepared_chunk_cache_budget_dirty(self, *, reason: str) -> None:
         if self._torch_device_type is None:
             return
+        self._chunk_budget_dirty_marks += 1
+        self._chunk_budget_dirty_reason_counts[str(reason)] = (
+            int(self._chunk_budget_dirty_reason_counts.get(str(reason), 0)) + 1
+        )
+        if not self._prepared_chunk_cache_budget_dirty:
+            self._chunk_budget_dirty_transitions += 1
         self._prepared_chunk_cache_budget_dirty = True
+
+    def chunk_budget_summary(self) -> dict[str, object]:
+        return {
+            "execution_chunk_budget_dirty_marks": int(self._chunk_budget_dirty_marks),
+            "execution_chunk_budget_dirty_transitions": int(self._chunk_budget_dirty_transitions),
+            "execution_chunk_budget_dirty_reason_counts": {
+                reason: int(count) for reason, count in sorted(self._chunk_budget_dirty_reason_counts.items())
+            },
+            "execution_chunk_budget_sync_invocations": int(self._chunk_budget_sync_invocations),
+            "execution_chunk_budget_sync_clean_skips": int(self._chunk_budget_sync_clean_skips),
+            "execution_chunk_budget_sync_dirty_invocations": int(self._chunk_budget_sync_dirty_invocations),
+            "execution_chunk_budget_override_calls": int(self._chunk_budget_override_calls),
+            "execution_chunk_budget_override_budget_change_calls": int(
+                self._chunk_budget_override_budget_change_calls
+            ),
+            "execution_chunk_budget_override_same_budget_calls": int(
+                self._chunk_budget_override_same_budget_calls
+            ),
+            "execution_chunk_budget_freeze_override_calls": int(self._chunk_budget_freeze_override_calls),
+        }
 
     def resident_byte_summary(self) -> dict[str, int]:
         summary = self._kv_resident_byte_summary()
@@ -2312,6 +2378,7 @@ class ModelPagedKVCache:
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer = {}
         self._reset_resident_accounting()
+        self._reset_chunk_budget_tracking()
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -2554,7 +2621,7 @@ class ModelPagedKVCache:
         if key_pages or value_pages:
             for state in touched_states.values():
                 self._refresh_state_resident_accounting(state)
-            self._mark_prepared_chunk_cache_budget_dirty()
+            self._mark_prepared_chunk_cache_budget_dirty(reason="prepare_static_pages")
 
     def _ensure_prepared_static_pages(
         self,
@@ -2585,7 +2652,7 @@ class ModelPagedKVCache:
             state_changed = True
         if state_changed:
             self._refresh_state_resident_accounting(state)
-            self._mark_prepared_chunk_cache_budget_dirty()
+            self._mark_prepared_chunk_cache_budget_dirty(reason="ensure_prepared_static_pages")
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
@@ -3007,7 +3074,7 @@ class ModelPagedKVCache:
                 trace=trace,
             )
         self._rebuild_resident_accounting()
-        self._mark_prepared_chunk_cache_budget_dirty()
+        self._mark_prepared_chunk_cache_budget_dirty(reason="ingest_prefill_cache")
 
     def ingest_prefill_cache_torch(
         self,
@@ -3134,7 +3201,7 @@ class ModelPagedKVCache:
                 token_start=full_tokens,
             )
         self._rebuild_resident_accounting()
-        self._mark_prepared_chunk_cache_budget_dirty()
+        self._mark_prepared_chunk_cache_budget_dirty(reason="ingest_prefill_cache_torch")
 
     def append_step(
         self,
@@ -3207,7 +3274,7 @@ class ModelPagedKVCache:
         if resident_bytes_changed:
             for kv_head_id in range(self.num_key_value_heads):
                 self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
-            self._mark_prepared_chunk_cache_budget_dirty()
+            self._mark_prepared_chunk_cache_budget_dirty(reason="append_step_tail_alloc")
         return
 
     def append_step_torch(
@@ -3331,7 +3398,7 @@ class ModelPagedKVCache:
         if resident_bytes_changed:
             for kv_head_id in range(self.num_key_value_heads):
                 self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
-            self._mark_prepared_chunk_cache_budget_dirty()
+            self._mark_prepared_chunk_cache_budget_dirty(reason="append_step_torch_tail_alloc")
 
     def _prepared_pages_with_tail(
         self,

@@ -5612,6 +5612,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -5645,6 +5646,18 @@ _MODEL_KV_CACHE_DECODE_STAGE_KEYS = (
     "execution_decode_backend_call_non_backend_ms_total",
 )
 
+_MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS = (
+    "execution_chunk_budget_dirty_marks",
+    "execution_chunk_budget_dirty_transitions",
+    "execution_chunk_budget_sync_invocations",
+    "execution_chunk_budget_sync_clean_skips",
+    "execution_chunk_budget_sync_dirty_invocations",
+    "execution_chunk_budget_override_calls",
+    "execution_chunk_budget_override_budget_change_calls",
+    "execution_chunk_budget_override_same_budget_calls",
+    "execution_chunk_budget_freeze_override_calls",
+)
+
 
 def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
     snapshot = {
@@ -5654,7 +5667,22 @@ def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter
         "output_projection_ms_total": float(adapter.output_projection_ms_total),
     }
     snapshot.update(adapter.model_kv_cache.decode_stage_runtime_totals())
+    chunk_budget_summary = adapter.model_kv_cache.chunk_budget_summary()
+    snapshot.update(
+        {
+            key: float(chunk_budget_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS
+        }
+    )
     return snapshot
+
+
+def _chunk_budget_reason_counts_snapshot(
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+) -> dict[str, int]:
+    return dict(
+        adapter.model_kv_cache.chunk_budget_summary().get("execution_chunk_budget_dirty_reason_counts", {})
+    )
 
 
 def _backend_trace_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, int | float]:
@@ -5675,17 +5703,35 @@ def _numeric_delta_dict(
     return delta
 
 
+def _reason_count_delta(
+    before: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, int]:
+    keys = sorted(set(before) | set(after))
+    return {
+        key: int(after.get(key, 0)) - int(before.get(key, 0))
+        for key in keys
+        if int(after.get(key, 0)) - int(before.get(key, 0)) != 0
+    }
+
+
 def _summarize_step_runtime_breakdown(
     *,
     step_index: int,
     step_ms: float,
     adapter_before: dict[str, float],
     adapter_after: dict[str, float],
+    chunk_budget_reason_counts_before: dict[str, int],
+    chunk_budget_reason_counts_after: dict[str, int],
     trace_before: dict[str, int | float],
     trace_after: dict[str, int | float],
 ) -> dict[str, Any]:
     adapter_delta = {key: float(value) for key, value in _numeric_delta_dict(adapter_before, adapter_after).items()}
     trace_delta = _numeric_delta_dict(trace_before, trace_after)
+    chunk_budget_reason_delta = _reason_count_delta(
+        chunk_budget_reason_counts_before,
+        chunk_budget_reason_counts_after,
+    )
     backend_ms_total = float(sum(float(trace_delta.get(key, 0.0)) for key in _BACKEND_TRACE_TIMING_KEYS))
     decode_runtime_ms = float(adapter_delta["decode_runtime_ms_total"])
     accounted_model_ms = float(
@@ -5737,6 +5783,32 @@ def _summarize_step_runtime_breakdown(
         "decode_shortlist_materialization_ms_total": stage_totals["execution_decode_shortlist_materialization_ms_total"],
         "decode_grouping_validation_ms_total": stage_totals["execution_decode_grouping_validation_ms_total"],
         "decode_chunk_budget_sync_ms_total": stage_totals["execution_decode_chunk_budget_sync_ms_total"],
+        "decode_chunk_budget_dirty_marks": int(adapter_delta.get("execution_chunk_budget_dirty_marks", 0.0)),
+        "decode_chunk_budget_dirty_transitions": int(
+            adapter_delta.get("execution_chunk_budget_dirty_transitions", 0.0)
+        ),
+        "decode_chunk_budget_dirty_reason_counts": chunk_budget_reason_delta,
+        "decode_chunk_budget_sync_invocations": int(
+            adapter_delta.get("execution_chunk_budget_sync_invocations", 0.0)
+        ),
+        "decode_chunk_budget_sync_clean_skips": int(
+            adapter_delta.get("execution_chunk_budget_sync_clean_skips", 0.0)
+        ),
+        "decode_chunk_budget_sync_dirty_invocations": int(
+            adapter_delta.get("execution_chunk_budget_sync_dirty_invocations", 0.0)
+        ),
+        "decode_chunk_budget_override_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_calls", 0.0)
+        ),
+        "decode_chunk_budget_override_budget_change_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_budget_change_calls", 0.0)
+        ),
+        "decode_chunk_budget_override_same_budget_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_same_budget_calls", 0.0)
+        ),
+        "decode_chunk_budget_freeze_override_calls": int(
+            adapter_delta.get("execution_chunk_budget_freeze_override_calls", 0.0)
+        ),
         "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
         "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],
         "decode_non_backend_unattributed_ms_total": float(
@@ -5810,6 +5882,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             adapter.begin_capture_step(step_index)
             adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
             adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+            chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
             trace_before = _backend_trace_snapshot(adapter)
             try:
                 outputs, step_ms = _timed_call(
@@ -5825,6 +5898,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             finally:
                 adapter.set_current_token_index(None)
             adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+            chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
             trace_after = _backend_trace_snapshot(adapter)
             dotcache_decode_ms_total += step_ms
             dotcache_step_runtime_breakdown.append(
@@ -5833,6 +5907,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                     step_ms=step_ms,
                     adapter_before=adapter_runtime_before,
                     adapter_after=adapter_runtime_after,
+                    chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                    chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
                     trace_before=trace_before,
                     trace_after=trace_after,
                 )
@@ -6019,6 +6095,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6273,6 +6350,7 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6353,6 +6431,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                     }
                 )
             adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+            chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
             trace_before = _backend_trace_snapshot(adapter)
             outputs, step_ms = _timed_call(
                 lambda: _run_dense_decode_step(
@@ -6365,6 +6444,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 device=device,
             )
             adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+            chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
             trace_after = _backend_trace_snapshot(adapter)
             dotcache_decode_ms_total += step_ms
             dotcache_step_runtime_breakdown.append(
@@ -6373,6 +6453,8 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                     step_ms=step_ms,
                     adapter_before=adapter_runtime_before,
                     adapter_after=adapter_runtime_after,
+                    chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                    chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
                     trace_before=trace_before,
                     trace_after=trace_after,
                 )
@@ -6616,6 +6698,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())

@@ -983,11 +983,16 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_decode_shortlist_selection_ms_total" in result
     assert "execution_decode_shortlist_materialization_ms_total" in result
     assert "execution_decode_backend_call_non_backend_ms_total" in result
+    assert "execution_chunk_budget_dirty_marks" in result
+    assert "execution_chunk_budget_dirty_reason_counts" in result
+    assert "execution_chunk_budget_override_calls" in result
     first_step = result["dotcache_step_runtime_breakdown"][0]
     assert "decode_prepare_pages_with_tail_ms_total" in first_step
     assert "decode_shortlist_materialization_ms_total" in first_step
     assert "decode_backend_call_non_backend_ms_total" in first_step
     assert "decode_non_backend_unattributed_ms_total" in first_step
+    assert "decode_chunk_budget_dirty_reason_counts" in first_step
+    assert "decode_chunk_budget_override_calls" in first_step
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -1119,11 +1124,16 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_decode_shortlist_selection_ms_total" in result
     assert "execution_decode_shortlist_materialization_ms_total" in result
     assert "execution_decode_backend_call_non_backend_ms_total" in result
+    assert "execution_chunk_budget_dirty_marks" in result
+    assert "execution_chunk_budget_dirty_reason_counts" in result
+    assert "execution_chunk_budget_override_calls" in result
     first_step = result["dotcache_step_runtime_breakdown"][0]
     assert "decode_prepare_pages_with_tail_ms_total" in first_step
     assert "decode_shortlist_materialization_ms_total" in first_step
     assert "decode_backend_call_non_backend_ms_total" in first_step
     assert "decode_non_backend_unattributed_ms_total" in first_step
+    assert "decode_chunk_budget_dirty_reason_counts" in first_step
+    assert "decode_chunk_budget_override_calls" in first_step
     first_record = result["scorer_layer_records"][0]
     first_group = first_record["groups"][0]
     assert "context_length_page_max" in first_group
