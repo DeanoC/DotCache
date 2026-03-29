@@ -20,7 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize DotCache vs TurboQuant comparison JSONL.")
     parser.add_argument("--input", action="append", required=True, help="JSONL input file. Can be repeated.")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    parser.add_argument("--layout", choices=["rows", "context_matrix", "memory_matrix"], default="rows")
+    parser.add_argument(
+        "--layout",
+        choices=["rows", "context_matrix", "memory_matrix", "cache_memory_matrix", "device_memory_matrix"],
+        default="rows",
+    )
     return parser.parse_args()
 
 
@@ -116,7 +120,11 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "status": record.get("status"),
                         "error_type": record.get("error_type"),
                         "error_message": record.get("error_message"),
-                        "total_memory_bytes": (
+                        "cache_memory_bytes": (
+                            _metric(record, "memory_breakdown_all_devices_context_bytes")
+                            or _metric(record, "memory_breakdown_device_context_bytes")
+                        ),
+                        "total_device_memory_bytes": (
                             _metric(record, "memory_breakdown_all_devices_self_bytes")
                             or _metric(record, "memory_breakdown_device_self_bytes")
                         ),
@@ -136,7 +144,11 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "status": record.get("status"),
                         "error_type": record.get("error_type"),
                         "error_message": record.get("error_message"),
-                        "total_memory_bytes": (
+                        "cache_memory_bytes": (
+                            _metric(record, "memory_breakdown_all_devices_context_bytes")
+                            or _metric(record, "memory_breakdown_device_context_bytes")
+                        ),
+                        "total_device_memory_bytes": (
                             _metric(record, "memory_breakdown_all_devices_self_bytes")
                             or _metric(record, "memory_breakdown_device_self_bytes")
                         ),
@@ -157,7 +169,8 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok"),
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": _metric(record, "dense_final_kv_cache_bytes"),
+                    "cache_memory_bytes": _metric(record, "dense_final_kv_cache_bytes"),
+                    "total_device_memory_bytes": None,
                 }
             )
             default_mode_k = record.get("default_mode_k")
@@ -179,7 +192,8 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok"),
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": _metric(record, "resident_bytes"),
+                    "cache_memory_bytes": _metric(record, "resident_bytes"),
+                    "total_device_memory_bytes": None,
                 }
             )
         elif benchmark == "qwen35_text":
@@ -197,7 +211,8 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok"),
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": _metric(record, "dense_final_cache_bytes"),
+                    "cache_memory_bytes": _metric(record, "dense_final_cache_bytes"),
+                    "total_device_memory_bytes": None,
                 }
             )
         elif benchmark == "qwen35_deltanet_statecache_readout":
@@ -216,7 +231,8 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok"),
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": hybrid_state_total_bytes,
+                    "cache_memory_bytes": hybrid_state_total_bytes,
+                    "total_device_memory_bytes": _metric(record, "deltanet_dense_capture_cuda_peak_memory_allocated_bytes"),
                 }
             )
             statecache_decode_ms = _metric(record, "deltanet_statecache_decode_ms_per_step")
@@ -240,11 +256,25 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok") if record.get("deltanet_statecache_ready") is not False else "error",
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": (
+                    "cache_memory_bytes": (
                         None
                         if statecache_fixed_resident_bytes is None or hybrid_token_growing_bytes is None
                         else statecache_fixed_resident_bytes + hybrid_token_growing_bytes
                     ),
+                    "total_device_memory_bytes": max(
+                        value
+                        for value in (
+                            _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
+                            _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
+                        )
+                        if value is not None
+                    ) if any(
+                        value is not None
+                        for value in (
+                            _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
+                            _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
+                        )
+                    ) else None,
                 }
             )
         elif benchmark == "qwen35_attention_subset_statecache_dotcache":
@@ -262,7 +292,8 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok"),
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": None,
+                    "cache_memory_bytes": None,
+                    "total_device_memory_bytes": None,
                 }
             )
             hybrid_decode_ms = _metric(record, "dotcache_decode_ms_per_step")
@@ -287,11 +318,12 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": record.get("status", "ok") if record.get("hybrid_dotcache_statecache_ready") is not False else "error",
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
-                    "total_memory_bytes": (
+                    "cache_memory_bytes": (
                         None
                         if hybrid_resident_bytes is None or hybrid_fixed_resident_bytes is None
                         else hybrid_resident_bytes + hybrid_fixed_resident_bytes
                     ),
+                    "total_device_memory_bytes": None,
                 }
             )
     return sorted(rows, key=lambda row: (str(row["model"]), str(row["runtime"]), int(row["context"]), str(row["config"])))
@@ -315,7 +347,7 @@ def _render_markdown(rows: list[dict[str, Any]]) -> str:
                     str(row.get("context") or "-"),
                     _fmt_num(row.get("decode_ms")),
                     _fmt_num(row.get("decode_tps")),
-                    _fmt_mib(row.get("total_memory_bytes")),
+                    _fmt_mib(row.get("cache_memory_bytes")),
                     _fmt_num(row.get("ppl"), 4),
                     _fmt_num(row.get("agreement")),
                     str(row.get("status") or "-"),
@@ -414,9 +446,31 @@ def main() -> None:
         print(
             _render_context_matrix(
                 rows,
-                metric_key="total_memory_bytes",
+                metric_key="cache_memory_bytes",
                 formatter=_fmt_mib,
-                title="# TurboQuant Memory Comparison",
+                title="# TurboQuant Cache/State Memory Comparison",
+                unit_label="MiB",
+            )
+        )
+        return
+    if args.layout == "cache_memory_matrix":
+        print(
+            _render_context_matrix(
+                rows,
+                metric_key="cache_memory_bytes",
+                formatter=_fmt_mib,
+                title="# TurboQuant Cache/State Memory Comparison",
+                unit_label="MiB",
+            )
+        )
+        return
+    if args.layout == "device_memory_matrix":
+        print(
+            _render_context_matrix(
+                rows,
+                metric_key="total_device_memory_bytes",
+                formatter=_fmt_mib,
+                title="# TurboQuant Total Device Memory Comparison",
                 unit_label="MiB",
             )
         )
