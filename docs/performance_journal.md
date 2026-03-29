@@ -3302,3 +3302,19 @@ The serving-only check changed the OOM interpretation:
 - serving-only `StateCache` first OOMs at `65536`
 
 So the first `32768` native failure in the full sweep is best understood as harness overhead from the dense-capture/readout path, not as the true serving limit of `StateCache` itself.
+
+One more correction matters for how to read the checked-in summary:
+
+- the throughput table is directionally honest, but it is still a cross-runtime deployment comparison
+- the old single memory table was not honest enough, because it mixed native cache/state bytes with TurboQuant total device bytes
+
+The summary doc now splits memory into:
+
+1. `Cache/state memory`
+   - native cache/state bytes
+   - TurboQuant `llama.cpp` context bytes
+2. `Total device memory`
+   - native peak CUDA allocated bytes where available
+   - TurboQuant `llama.cpp` device `self` bytes
+
+That still does not make the memory comparison fully apples-to-apples, but it does stop pretending one mixed `MiB` table meant one thing.
