@@ -12,6 +12,7 @@ BENCHMARKS = {
     "llama_compare",
     "qwen35_text",
     "qwen35_deltanet_statecache_readout",
+    "qwen35_deltanet_statecache_serving",
     "qwen35_attention_subset_statecache_dotcache",
 }
 
@@ -69,6 +70,13 @@ def _fmt_mib(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "-"
     return f"{value / (1024.0 * 1024.0):.{digits}f}"
+
+
+def _max_metric(*values: float | None) -> float | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    return max(present)
 
 
 def _error_label(error_type: str | None, error_message: str | None) -> str:
@@ -212,7 +220,10 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
                     "cache_memory_bytes": _metric(record, "dense_final_cache_bytes"),
-                    "total_device_memory_bytes": None,
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "dense_prefill_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "dense_decode_cuda_peak_memory_allocated_bytes"),
+                    ),
                 }
             )
         elif benchmark == "qwen35_deltanet_statecache_readout":
@@ -261,20 +272,37 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         if statecache_fixed_resident_bytes is None or hybrid_token_growing_bytes is None
                         else statecache_fixed_resident_bytes + hybrid_token_growing_bytes
                     ),
-                    "total_device_memory_bytes": max(
-                        value
-                        for value in (
-                            _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
-                            _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
-                        )
-                        if value is not None
-                    ) if any(
-                        value is not None
-                        for value in (
-                            _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
-                            _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
-                        )
-                    ) else None,
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
+                    ),
+                }
+            )
+        elif benchmark == "qwen35_deltanet_statecache_serving":
+            statecache_decode_ms = _metric(record, "deltanet_statecache_decode_ms_per_step")
+            bits = record.get("deltanet_statecache_bits")
+            mode = record.get("deltanet_statecache_mode")
+            config_label = "StateCache (serving)"
+            if mode is not None and bits is not None:
+                config_label = f"StateCache {mode} {bits}-bit (serving)"
+            rows.append(
+                {
+                    "model": record.get("model_id"),
+                    "runtime": "statecache_hf",
+                    "config": config_label,
+                    "context": int(record.get("prompt_length") or 0),
+                    "decode_ms": statecache_decode_ms,
+                    "decode_tps": None if statecache_decode_ms in (None, 0.0) else 1000.0 / statecache_decode_ms,
+                    "ppl": None,
+                    "agreement": None,
+                    "status": record.get("status", "ok") if record.get("deltanet_statecache_ready") is not False else "error",
+                    "error_type": record.get("error_type"),
+                    "error_message": record.get("error_message"),
+                    "cache_memory_bytes": _metric(record, "hybrid_state_total_bytes"),
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "deltanet_statecache_prefill_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "deltanet_statecache_decode_cuda_peak_memory_allocated_bytes"),
+                    ),
                 }
             )
         elif benchmark == "qwen35_attention_subset_statecache_dotcache":
@@ -293,7 +321,10 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "error_type": record.get("error_type"),
                     "error_message": record.get("error_message"),
                     "cache_memory_bytes": None,
-                    "total_device_memory_bytes": None,
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "dense_capture_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "hybrid_prefill_cuda_peak_memory_allocated_bytes"),
+                    ),
                 }
             )
             hybrid_decode_ms = _metric(record, "dotcache_decode_ms_per_step")
@@ -323,7 +354,11 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         if hybrid_resident_bytes is None or hybrid_fixed_resident_bytes is None
                         else hybrid_resident_bytes + hybrid_fixed_resident_bytes
                     ),
-                    "total_device_memory_bytes": None,
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "dense_capture_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "hybrid_prefill_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "hybrid_decode_cuda_peak_memory_allocated_bytes"),
+                    ),
                 }
             )
     return sorted(rows, key=lambda row: (str(row["model"]), str(row["runtime"]), int(row["context"]), str(row["config"])))
@@ -390,12 +425,12 @@ def _render_context_matrix(rows: list[dict[str, Any]], *, metric_key: str, forma
         grouped.pop(key, None)
 
     # Some error-only sweep records omit detailed config metadata and surface as a generic
-    # "StateCache" row. If there is exactly one specific StateCache config for the same model
+    # StateCache row. If there is exactly one specific StateCache config for the same model
     # and runtime, merge the generic contexts into that row instead of rendering a duplicate.
     generic_keys_to_remove: list[tuple[str, str, str]] = []
     for key, by_context in list(grouped.items()):
         model, runtime, config = key
-        if runtime != "statecache_hf" or config != "StateCache":
+        if runtime != "statecache_hf" or config not in {"StateCache", "StateCache (serving)"}:
             continue
         specific_candidates = [
             candidate_key
@@ -403,6 +438,7 @@ def _render_context_matrix(rows: list[dict[str, Any]], *, metric_key: str, forma
             if candidate_key[0] == model
             and candidate_key[1] == runtime
             and candidate_key[2].startswith("StateCache ")
+            and candidate_key[2] != config
         ]
         if len(specific_candidates) != 1:
             continue
