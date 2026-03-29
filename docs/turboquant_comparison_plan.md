@@ -208,6 +208,38 @@ For the first report, success means:
 
 It does **not** require DotCache to beat TurboQuant.
 
+## Checked-In Reporter Path
+
+The latest checked-in full-sweep summary is:
+
+- [qwen35_turboquant_full_sweep_20260329.md](/workspace/DotCache/docs/qwen35_turboquant_full_sweep_20260329.md)
+
+The repo now has a compact comparison reporter for the full Qwen3.5 sweep bundles:
+
+```bash
+python scripts/report_turboquant_comparison.py \
+  --layout context_matrix \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_dense_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_statecache_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_hybrid_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_turboquant_sweep.jsonl
+```
+
+```bash
+python scripts/report_turboquant_comparison.py \
+  --layout memory_matrix \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_dense_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_statecache_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_hybrid_sweep.jsonl \
+  --input benchmarks/results/qwen35_context_sweep_20260329_full/qwen35_0p8b_turboquant_sweep.jsonl
+```
+
+That full sweep uses the shared dense harness, adds explicit row units (`tok/s`, `MiB`), and is still intentionally a deployment-envelope appendix rather than a mechanism-equivalence claim:
+
+- `Qwen/Qwen3.5-0.8B` native HF dense vs native HF StateCache is the closest apples-to-apples runtime comparison in this repo
+- `Qwen/Qwen3.5-0.8B` native HF hybrid DotCache+StateCache is a branch-derived experimental native data point
+- `Qwen/Qwen3.5-0.8B` GGUF TurboQuant is the external-stack reference point on the same model family
+
 ## Expected Early Read
 
 Based on current evidence, the likely first outcome is:
