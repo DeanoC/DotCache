@@ -2186,6 +2186,52 @@ class Qwen35AttentionSubsetDotCacheHarness:
             multimodal_inputs=multimodal_inputs,
         )
 
+    def run_attention_subset_dotcache_serving(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_dotcache_serving_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def evaluate_attention_subset_dotcache_loss(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        prefix_length: int,
+        eval_steps: int,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_dotcache_loss_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            prefix_length=prefix_length,
+            eval_steps=eval_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
     def run_hybrid_combined_localization(
         self,
         *,
@@ -5213,6 +5259,304 @@ def run_qwen35_attention_subset_dotcache_harness(
     return result
 
 
+def _prepare_qwen35_attention_subset_dotcache_runtime(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_backend_profiling(profile_backend)
+    adapter.clear()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    device = input_ids.device
+    dotcache_prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
+    dotcache_prefill_outputs, dotcache_prefill_ms = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+        device=device,
+    )
+    adapter.clear()
+    adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
+    adapter.set_mode("dotcache_attention_subset")
+    dotcache_prefill_cuda_memory = _end_cuda_memory_region(device, dotcache_prefill_cuda_memory_baseline)
+    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "dotcache_prefill_outputs": dotcache_prefill_outputs,
+        "dotcache_prefill_ms": float(dotcache_prefill_ms),
+        "dotcache_prefill_cuda_memory": dotcache_prefill_cuda_memory,
+        "runtime_state": runtime_state,
+    }
+
+
+def run_qwen35_attention_subset_dotcache_serving_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+    )
+    input_ids = prepared["input_ids"]
+    attention_mask = prepared["attention_mask"]
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    device = input_ids.device
+
+    generated_ids: list[int] = []
+    dotcache_decode_ms_total = 0.0
+    dotcache_decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_input_ids = dotcache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for _ in range(decode_steps):
+            generated_ids.append(int(current_input_ids.item()))
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            dotcache_decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "dotcache_prefill_ms": float(dotcache_prefill_ms),
+        "dotcache_generated_ids": generated_ids,
+        "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "dotcache_attention_subset_ready": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dotcache_attention_subset_serving",
+        "uses_native_qwen35_class": True,
+        "text_only": True,
+        "attention_subset_layer_ids": adapter.attention_subset_layer_ids(),
+        "attention_subset_capture_layer_count": len(adapter.attention_subset_layer_ids()),
+        "num_attention_heads": int(adapter.model_kv_cache.num_attention_heads),
+        "num_key_value_heads": int(adapter.model_kv_cache.num_key_value_heads),
+        "query_heads_per_kv_head": int(adapter.model_kv_cache.num_attention_heads // max(adapter.model_kv_cache.num_key_value_heads, 1)),
+        "head_dim": int(adapter.dotcache_config.head_dim),
+        "group_size": int(adapter.dotcache_config.group_size),
+        "num_groups": int(adapter.dotcache_config.num_groups),
+        "padded_head_dim": int(adapter.dotcache_config.padded_head_dim),
+        "tokens_per_page": int(adapter.dotcache_config.tokens_per_page),
+        "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+        "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+        "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+        "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+    }
+    result.update({f"dotcache_prefill_{key}": value for key, value in dotcache_prefill_cuda_memory.items()})
+    result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_dotcache_loss_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    prefix_length: int,
+    eval_steps: int,
+    tokenizer=None,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_backend_profiling(profile_backend)
+    adapter.clear()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    if prefix_length <= 0 or prefix_length >= int(input_ids.shape[1]):
+        raise ValueError("prefix_length must be in [1, sequence_length)")
+    available_eval_steps = int(input_ids.shape[1]) - prefix_length
+    if eval_steps <= 0 or eval_steps > available_eval_steps:
+        raise ValueError("eval_steps must be positive and fit inside the provided sequence after prefix_length")
+
+    prefix_input_ids = input_ids[:, :prefix_length]
+    prefix_attention_mask = attention_mask[:, :prefix_length]
+    continuation_ids = input_ids[:, prefix_length : prefix_length + eval_steps]
+    dense_capture = _run_qwen35_attention_subset_dense_teacher_forced_capture(
+        model,
+        adapter,
+        prefix_input_ids=prefix_input_ids,
+        prefix_attention_mask=prefix_attention_mask,
+        continuation_ids=continuation_ids,
+    )
+
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        input_ids=prefix_input_ids,
+        attention_mask=prefix_attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    device = prefix_input_ids.device
+
+    dotcache_logits_list = [dotcache_prefill_outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy()]
+    dotcache_decode_ms_total = 0.0
+    dotcache_decode_cuda_memory: dict[str, int] = {}
+    if eval_steps > 1:
+        current_attention_mask = torch.cat(
+            [prefix_attention_mask, torch.ones((1, 1), dtype=prefix_attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([prefix_input_ids.shape[1]], dtype=torch.long, device=device)
+        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for step_index in range(eval_steps - 1):
+            decode_input_ids = continuation_ids[:, step_index : step_index + 1]
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            dotcache_decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            dotcache_logits_list.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+
+    dense_logits = np.concatenate(
+        [logits.astype(np.float32, copy=False) for logits in dense_capture["step_logits"]],
+        axis=0,
+    )
+    dotcache_logits = np.concatenate(
+        [logits.astype(np.float32, copy=False) for logits in dotcache_logits_list],
+        axis=0,
+    )
+    target_tokens = continuation_ids[0, : dense_logits.shape[0]].detach().cpu().numpy().astype(np.int64, copy=False)
+
+    def _loss_metrics(logits: np.ndarray) -> tuple[float, float, np.ndarray]:
+        max_logits = np.max(logits, axis=-1, keepdims=True)
+        stabilized = logits - max_logits
+        log_probs = stabilized - np.log(np.sum(np.exp(stabilized), axis=-1, keepdims=True))
+        token_losses = -log_probs[np.arange(target_tokens.shape[0]), target_tokens]
+        mean_loss = float(np.mean(token_losses))
+        perplexity = float(np.exp(min(mean_loss, 50.0)))
+        predictions = np.argmax(logits, axis=-1).astype(np.int64, copy=False)
+        return mean_loss, perplexity, predictions
+
+    dense_loss, dense_perplexity, dense_predictions = _loss_metrics(dense_logits)
+    dotcache_loss, dotcache_perplexity, dotcache_predictions = _loss_metrics(dotcache_logits)
+    token_agreement = float(np.mean((dense_predictions == dotcache_predictions).astype(np.float32)))
+    target_match = float(np.mean((dotcache_predictions == target_tokens).astype(np.float32)))
+    logit_delta = np.abs(dotcache_logits - dense_logits)
+    logit_denom = np.maximum(np.abs(dense_logits), 1e-8)
+
+    result = {
+        "sequence_length": int(input_ids.shape[1]),
+        "prefix_length": int(prefix_length),
+        "eval_steps": int(eval_steps),
+        "dotcache_prefill_ms": float(dotcache_prefill_ms),
+        "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
+        "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(eval_steps - 1, 1)) if eval_steps > 1 else 0.0,
+        "dense_teacher_forced_loss": dense_loss,
+        "dense_teacher_forced_perplexity": dense_perplexity,
+        "dotcache_teacher_forced_loss": dotcache_loss,
+        "dotcache_teacher_forced_perplexity": dotcache_perplexity,
+        "teacher_forced_loss_delta": float(dotcache_loss - dense_loss),
+        "teacher_forced_perplexity_ratio": float(dotcache_perplexity / max(dense_perplexity, 1e-8)),
+        "teacher_forced_token_agreement_rate": token_agreement,
+        "teacher_forced_target_match_rate": target_match,
+        "teacher_forced_logit_max_abs_error": float(np.max(logit_delta)),
+        "teacher_forced_logit_max_rel_error": float(np.max(logit_delta / logit_denom)),
+        "dotcache_attention_subset_ready": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dotcache_attention_subset_loss",
+        "uses_native_qwen35_class": True,
+        "text_only": True,
+        "attention_subset_layer_ids": adapter.attention_subset_layer_ids(),
+        "attention_subset_capture_layer_count": len(adapter.attention_subset_layer_ids()),
+        "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+        "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+        "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+        "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+    }
+    result.update({f"dotcache_prefill_{key}": value for key, value in dotcache_prefill_cuda_memory.items()})
+    result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
 def run_qwen35_attention_subset_statecache_dotcache_harness(
     model,
     adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -5500,6 +5844,8 @@ __all__ = [
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
+    "run_qwen35_attention_subset_dotcache_serving_harness",
+    "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",

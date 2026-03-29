@@ -24,13 +24,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contexts", type=int, nargs="+", default=[448, 1024, 2048, 4096, 8192, 16384, 32768, 65536])
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--dotcache-layer-profile",
+        default=str(REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_third_pass.yaml"),
+    )
     parser.add_argument("--state-stage", default="readout_only_m0")
     parser.add_argument("--state-bits", type=int, default=8)
     parser.add_argument("--state-renorm-interval", type=int, default=0)
     parser.add_argument("--dense-timeout-seconds", type=int, default=900)
+    parser.add_argument("--dotcache-timeout-seconds", type=int, default=900)
     parser.add_argument("--statecache-timeout-seconds", type=int, default=900)
     parser.add_argument("--turboquant-timeout-seconds", type=int, default=600)
     parser.add_argument("--turboquant-configs", nargs="+", default=["q8_0", "turbo3_uniform", "turbo3_la1"])
+    parser.add_argument("--skip-dense", action="store_true")
+    parser.add_argument("--skip-dotcache", action="store_true")
+    parser.add_argument("--skip-statecache", action="store_true")
+    parser.add_argument("--skip-turboquant", action="store_true")
+    parser.add_argument("--dotcache-profile-backend", action="store_true")
     return parser.parse_args()
 
 
@@ -122,141 +132,34 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dense_path = output_dir / "qwen35_0p8b_dense_serving_sweep.jsonl"
+    dotcache_path = output_dir / "qwen35_0p8b_dotcache_serving_sweep.jsonl"
     statecache_path = output_dir / "qwen35_0p8b_statecache_serving_sweep.jsonl"
     turboquant_path = output_dir / "qwen35_0p8b_turboquant_serving_sweep.jsonl"
-    for path in (dense_path, statecache_path, turboquant_path):
-        if path.exists():
+    for path, skip in (
+        (dense_path, args.skip_dense),
+        (dotcache_path, args.skip_dotcache),
+        (statecache_path, args.skip_statecache),
+        (turboquant_path, args.skip_turboquant),
+    ):
+        if not skip and path.exists():
             path.unlink()
 
     python_exe = sys.executable
     context_args = [str(context) for context in args.contexts]
 
-    dense_command = [
-        python_exe,
-        str(REPO_ROOT / "benchmarks" / "bench_qwen35_text.py"),
-        "--model-id",
-        args.model_id,
-        "--backend",
-        args.backend,
-        "--device",
-        args.device,
-        "--torch-dtype",
-        args.torch_dtype,
-        "--repeat-counts",
-        "--target-prompt-lengths",
-        *context_args,
-        "--max-new-tokens",
-        str(args.max_new_tokens),
-        "--continue-on-error",
-    ]
-    _run_jsonl_command(
-        command=dense_command,
-        output_path=dense_path,
-        timeout_seconds=args.dense_timeout_seconds,
-        timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None: {
-            "benchmark": "qwen35_text",
-            "model_id": args.model_id,
-            "backend": args.backend,
-            "device": args.device,
-            "torch_dtype": args.torch_dtype,
-            "prompt_mode": "exact_length",
-            "max_new_tokens": args.max_new_tokens,
-            "status": status,
-            "error_type": error_type,
-            "error_message": error_message or f"timed out after {args.dense_timeout_seconds}s",
-        },
-        missing_record_factories=[
-            (
-                lambda record, context=context: int(record.get("prompt_length") or -1),
-                lambda mode, context=context: context if mode == "key_only" else {
-                    "benchmark": "qwen35_text",
-                    "model_id": args.model_id,
-                    "backend": args.backend,
-                    "device": args.device,
-                    "torch_dtype": args.torch_dtype,
-                    "prompt_mode": "exact_length",
-                    "prompt_length": context,
-                    "max_new_tokens": args.max_new_tokens,
-                    "status": "error",
-                    "error_type": "TimeoutExpired",
-                    "error_message": f"timed out after {args.dense_timeout_seconds}s",
-                },
-            )
-            for context in args.contexts
-        ],
-    )
-
-    statecache_command = [
-        python_exe,
-        str(REPO_ROOT / "benchmarks" / "bench_qwen35_deltanet_statecache_serving.py"),
-        "--model-id",
-        args.model_id,
-        "--backend",
-        args.backend,
-        "--device",
-        args.device,
-        "--torch-dtype",
-        args.torch_dtype,
-        "--state-stage",
-        args.state_stage,
-        "--bits",
-        str(args.state_bits),
-        "--renorm-interval",
-        str(args.state_renorm_interval),
-        "--repeat-counts",
-        "--target-prompt-lengths",
-        *context_args,
-        "--max-new-tokens",
-        str(args.max_new_tokens),
-        "--continue-on-error",
-    ]
-    _run_jsonl_command(
-        command=statecache_command,
-        output_path=statecache_path,
-        timeout_seconds=args.statecache_timeout_seconds,
-        timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None: {
-            "benchmark": "qwen35_deltanet_statecache_serving",
-            "model_id": args.model_id,
-            "backend": args.backend,
-            "device": args.device,
-            "torch_dtype": args.torch_dtype,
-            "prompt_mode": "exact_length",
-            "max_new_tokens": args.max_new_tokens,
-            "status": status,
-            "error_type": error_type,
-            "error_message": error_message or f"timed out after {args.statecache_timeout_seconds}s",
-        },
-        missing_record_factories=[
-            (
-                lambda record, context=context: int(record.get("prompt_length") or -1),
-                lambda mode, context=context: context if mode == "key_only" else {
-                    "benchmark": "qwen35_deltanet_statecache_serving",
-                    "model_id": args.model_id,
-                    "backend": args.backend,
-                    "device": args.device,
-                    "torch_dtype": args.torch_dtype,
-                    "prompt_mode": "exact_length",
-                    "prompt_length": context,
-                    "max_new_tokens": args.max_new_tokens,
-                    "status": "error",
-                    "error_type": "TimeoutExpired",
-                    "error_message": f"timed out after {args.statecache_timeout_seconds}s",
-                },
-            )
-            for context in args.contexts
-        ],
-    )
-
-    for config in args.turboquant_configs:
-        turboquant_command = [
+    if not args.skip_dense:
+        dense_command = [
             python_exe,
-            str(REPO_ROOT / "benchmarks" / "bench_turboquant_external.py"),
+            str(REPO_ROOT / "benchmarks" / "bench_qwen35_text.py"),
             "--model-id",
-            args.gguf_model_path,
-            "--tokenizer-model-id",
             args.model_id,
-            "--configs",
-            config,
+            "--backend",
+            args.backend,
+            "--device",
+            args.device,
+            "--torch-dtype",
+            args.torch_dtype,
+            "--repeat-counts",
             "--target-prompt-lengths",
             *context_args,
             "--max-new-tokens",
@@ -264,52 +167,232 @@ def main() -> None:
             "--continue-on-error",
         ]
         _run_jsonl_command(
-            command=turboquant_command,
-            output_path=turboquant_path,
-            timeout_seconds=args.turboquant_timeout_seconds,
-            timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None, config=config: {
-                "benchmark": "turboquant_external",
-                "mode": "decode",
-                "runtime": "llama.cpp_turboquant",
-                "config": config,
-                "model_id": args.gguf_model_path,
-                "tokenizer_model_id": args.model_id,
+            command=dense_command,
+            output_path=dense_path,
+            timeout_seconds=args.dense_timeout_seconds,
+            timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None: {
+                "benchmark": "qwen35_text",
+                "model_id": args.model_id,
+                "backend": args.backend,
+                "device": args.device,
+                "torch_dtype": args.torch_dtype,
                 "prompt_mode": "exact_length",
                 "max_new_tokens": args.max_new_tokens,
                 "status": status,
                 "error_type": error_type,
-                "error_message": error_message or f"timed out after {args.turboquant_timeout_seconds}s",
+                "error_message": error_message or f"timed out after {args.dense_timeout_seconds}s",
             },
             missing_record_factories=[
                 (
-                    lambda record, context=context, config=config: (record.get("config"), int(record.get("prompt_length") or -1)),
-                    lambda mode, context=context, config=config: (config, context) if mode == "key_only" else {
-                        "benchmark": "turboquant_external",
-                        "mode": "decode",
-                        "runtime": "llama.cpp_turboquant",
-                        "config": config,
-                        "model_id": args.gguf_model_path,
-                        "tokenizer_model_id": args.model_id,
+                    lambda record, context=context: int(record.get("prompt_length") or -1),
+                    lambda mode, context=context: context if mode == "key_only" else {
+                        "benchmark": "qwen35_text",
+                        "model_id": args.model_id,
+                        "backend": args.backend,
+                        "device": args.device,
+                        "torch_dtype": args.torch_dtype,
                         "prompt_mode": "exact_length",
                         "prompt_length": context,
                         "max_new_tokens": args.max_new_tokens,
                         "status": "error",
                         "error_type": "TimeoutExpired",
-                        "error_message": f"timed out after {args.turboquant_timeout_seconds}s",
+                        "error_message": f"timed out after {args.dense_timeout_seconds}s",
                     },
                 )
                 for context in args.contexts
             ],
         )
 
+    if not args.skip_dotcache:
+        dotcache_command = [
+            python_exe,
+            str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py"),
+            "--model-id",
+            args.model_id,
+            "--backend",
+            args.backend,
+            "--device",
+            args.device,
+            "--torch-dtype",
+            args.torch_dtype,
+            "--layer-profile",
+            args.dotcache_layer_profile,
+            "--repeat-counts",
+            "--target-prompt-lengths",
+            *context_args,
+            "--max-new-tokens",
+            str(args.max_new_tokens),
+            "--continue-on-error",
+        ]
+        if args.dotcache_profile_backend:
+            dotcache_command.append("--profile-backend")
+        _run_jsonl_command(
+            command=dotcache_command,
+            output_path=dotcache_path,
+            timeout_seconds=args.dotcache_timeout_seconds,
+            timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None: {
+                "benchmark": "qwen35_attention_subset_dotcache_serving",
+                "model_id": args.model_id,
+                "backend": args.backend,
+                "device": args.device,
+                "torch_dtype": args.torch_dtype,
+                "layer_profile": args.dotcache_layer_profile,
+                "prompt_mode": "exact_length",
+                "max_new_tokens": args.max_new_tokens,
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message or f"timed out after {args.dotcache_timeout_seconds}s",
+            },
+            missing_record_factories=[
+                (
+                    lambda record, context=context: int(record.get("prompt_length") or -1),
+                    lambda mode, context=context: context if mode == "key_only" else {
+                        "benchmark": "qwen35_attention_subset_dotcache_serving",
+                        "model_id": args.model_id,
+                        "backend": args.backend,
+                        "device": args.device,
+                        "torch_dtype": args.torch_dtype,
+                        "layer_profile": args.dotcache_layer_profile,
+                        "prompt_mode": "exact_length",
+                        "prompt_length": context,
+                        "max_new_tokens": args.max_new_tokens,
+                        "status": "error",
+                        "error_type": "TimeoutExpired",
+                        "error_message": f"timed out after {args.dotcache_timeout_seconds}s",
+                    },
+                )
+                for context in args.contexts
+            ],
+        )
+
+    if not args.skip_statecache:
+        statecache_command = [
+            python_exe,
+            str(REPO_ROOT / "benchmarks" / "bench_qwen35_deltanet_statecache_serving.py"),
+            "--model-id",
+            args.model_id,
+            "--backend",
+            args.backend,
+            "--device",
+            args.device,
+            "--torch-dtype",
+            args.torch_dtype,
+            "--state-stage",
+            args.state_stage,
+            "--bits",
+            str(args.state_bits),
+            "--renorm-interval",
+            str(args.state_renorm_interval),
+            "--repeat-counts",
+            "--target-prompt-lengths",
+            *context_args,
+            "--max-new-tokens",
+            str(args.max_new_tokens),
+            "--continue-on-error",
+        ]
+        _run_jsonl_command(
+            command=statecache_command,
+            output_path=statecache_path,
+            timeout_seconds=args.statecache_timeout_seconds,
+            timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None: {
+                "benchmark": "qwen35_deltanet_statecache_serving",
+                "model_id": args.model_id,
+                "backend": args.backend,
+                "device": args.device,
+                "torch_dtype": args.torch_dtype,
+                "prompt_mode": "exact_length",
+                "max_new_tokens": args.max_new_tokens,
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message or f"timed out after {args.statecache_timeout_seconds}s",
+            },
+            missing_record_factories=[
+                (
+                    lambda record, context=context: int(record.get("prompt_length") or -1),
+                    lambda mode, context=context: context if mode == "key_only" else {
+                        "benchmark": "qwen35_deltanet_statecache_serving",
+                        "model_id": args.model_id,
+                        "backend": args.backend,
+                        "device": args.device,
+                        "torch_dtype": args.torch_dtype,
+                        "prompt_mode": "exact_length",
+                        "prompt_length": context,
+                        "max_new_tokens": args.max_new_tokens,
+                        "status": "error",
+                        "error_type": "TimeoutExpired",
+                        "error_message": f"timed out after {args.statecache_timeout_seconds}s",
+                    },
+                )
+                for context in args.contexts
+            ],
+        )
+
+    if not args.skip_turboquant:
+        for config in args.turboquant_configs:
+            turboquant_command = [
+                python_exe,
+                str(REPO_ROOT / "benchmarks" / "bench_turboquant_external.py"),
+                "--model-id",
+                args.gguf_model_path,
+                "--tokenizer-model-id",
+                args.model_id,
+                "--configs",
+                config,
+                "--target-prompt-lengths",
+                *context_args,
+                "--max-new-tokens",
+                str(args.max_new_tokens),
+                "--continue-on-error",
+            ]
+            _run_jsonl_command(
+                command=turboquant_command,
+                output_path=turboquant_path,
+                timeout_seconds=args.turboquant_timeout_seconds,
+                timeout_record_factory=lambda status="error", error_type="TimeoutExpired", error_message=None, config=config: {
+                    "benchmark": "turboquant_external",
+                    "mode": "decode",
+                    "runtime": "llama.cpp_turboquant",
+                    "config": config,
+                    "model_id": args.gguf_model_path,
+                    "tokenizer_model_id": args.model_id,
+                    "prompt_mode": "exact_length",
+                    "max_new_tokens": args.max_new_tokens,
+                    "status": status,
+                    "error_type": error_type,
+                    "error_message": error_message or f"timed out after {args.turboquant_timeout_seconds}s",
+                },
+                missing_record_factories=[
+                    (
+                        lambda record, context=context, config=config: (record.get("config"), int(record.get("prompt_length") or -1)),
+                        lambda mode, context=context, config=config: (config, context) if mode == "key_only" else {
+                            "benchmark": "turboquant_external",
+                            "mode": "decode",
+                            "runtime": "llama.cpp_turboquant",
+                            "config": config,
+                            "model_id": args.gguf_model_path,
+                            "tokenizer_model_id": args.model_id,
+                            "prompt_mode": "exact_length",
+                            "prompt_length": context,
+                            "max_new_tokens": args.max_new_tokens,
+                            "status": "error",
+                            "error_type": "TimeoutExpired",
+                            "error_message": f"timed out after {args.turboquant_timeout_seconds}s",
+                        },
+                    )
+                    for context in args.contexts
+                ],
+            )
+
     print(json.dumps(
         {
             "output_dir": str(output_dir),
             "dense_jsonl": str(dense_path),
+            "dotcache_jsonl": str(dotcache_path),
             "statecache_jsonl": str(statecache_path),
             "turboquant_jsonl": str(turboquant_path),
             "contexts": args.contexts,
             "max_new_tokens": args.max_new_tokens,
+            "dotcache_profile_backend": bool(args.dotcache_profile_backend),
         },
         indent=2,
         sort_keys=True,
