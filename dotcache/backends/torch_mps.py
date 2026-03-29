@@ -1578,6 +1578,7 @@ def prepare_m0_affine_pages_from_tensor_torch(
     kv_head_id: int,
     token_start: int,
     device_type: TorchDevice,
+    build_runtime_metadata: bool = False,
 ):
     torch = _load_torch()
     if not torch.is_tensor(values):
@@ -1648,6 +1649,13 @@ def prepare_m0_affine_pages_from_tensor_torch(
             bias=np.zeros((token_count, num_groups), dtype=np.float16),
             requested_mode="M0",
         )
+        if build_runtime_metadata:
+            page_values = values_work[page_index, :, : int(config.head_dim)].detach().cpu().numpy().astype(np.float32, copy=False)
+            runtime_page_mean = page_values.mean(axis=0).astype(np.float32, copy=False)
+            source_page.runtime_page_mean = runtime_page_mean
+            source_page.runtime_page_sketch = runtime_page_mean[None, :]
+            source_page.runtime_page_min = page_values.min(axis=0).astype(np.float32, copy=False)
+            source_page.runtime_page_max = page_values.max(axis=0).astype(np.float32, copy=False)
         payload_page = payload[page_index]
         scales_page = scales_device[page_index]
         bias_page = bias_device[page_index]

@@ -26,6 +26,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_dotcache_loss_harness,
     run_qwen35_attention_subset_dotcache_serving_harness,
+    run_qwen35_attention_subset_dotcache_serving_quality_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
@@ -37,6 +38,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
+    _qwen35_mps_serving_shortlist_heuristic,
 )
 
 
@@ -849,8 +851,91 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert result["num_groups"] == adapter.dotcache_config.num_groups
     assert result["padded_head_dim"] == adapter.dotcache_config.padded_head_dim
     assert result["tokens_per_page"] == adapter.dotcache_config.tokens_per_page
+    assert "decode_path_counts" in result
+    assert "decode_path_counts_by_layer" in result
+    assert "dotcache_decode_runtime_ms_total_by_layer" in result
+    assert "dotcache_append_runtime_ms_total_by_layer" in result
+    assert "dotcache_qkv_projection_ms_total_by_layer" in result
+    assert "dotcache_output_projection_ms_total_by_layer" in result
+    assert "execution_shortlist_invocations" in result
+    assert "execution_shortlist_applied" in result
+    assert "execution_exact_refine_invocations" in result
+    assert "execution_exact_refine_candidate_pages" in result
+    assert "serving_shortlist_heuristic_applied" in result
+    assert "execution_recent_window" in result
+    assert "execution_sink_window" in result
+    assert "execution_relevance_top_k" in result
+    assert "execution_relevance_top_k_context_overrides" in result
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
+
+
+def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay_metrics() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache serving quality", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_serving_quality_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_serving_quality"
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["dotcache_ready"] is False
+    assert result["hybrid_dotcache_runtime_ready"] is True
+    assert np.isfinite(result["replay_context_max_abs_error"])
+    assert np.isfinite(result["replay_output_max_abs_error"])
+    assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+    assert np.isfinite(result["teacher_forced_logit_mean_abs_error"])
+    assert np.isfinite(result["teacher_forced_logit_rmse"])
+    assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
+    assert len(result["teacher_forced_per_step_logit_max_abs_error"]) == 2
+    assert "serving_shortlist_heuristic_applied" in result
+    assert "execution_relevance_top_k_context_overrides" in result
+
+
+def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
+    base = DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16)
+    unchanged_short, applied_short = _qwen35_mps_serving_shortlist_heuristic(base, backend="torch_mps", prompt_length=2048)
+    assert applied_short is False
+    assert unchanged_short == base
+
+    updated, applied = _qwen35_mps_serving_shortlist_heuristic(base, backend="torch_mps", prompt_length=4096)
+    assert applied is True
+    assert updated.execution_recent_window == 1024
+    assert updated.execution_sink_window == 256
+    assert updated.execution_relevance_top_k == 4
+    assert updated.execution_relevance_mode == "envelope"
+    assert updated.execution_relevance_top_k_context_overrides == ("layer:23:min_ctx:8192=8",)
+
+    explicit = DotCacheConfig(
+        head_dim=256,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=16,
+        execution_recent_window=512,
+        execution_relevance_top_k=2,
+    )
+    unchanged_explicit, applied_explicit = _qwen35_mps_serving_shortlist_heuristic(
+        explicit,
+        backend="torch_mps",
+        prompt_length=8192,
+    )
+    assert applied_explicit is False
+    assert unchanged_explicit == explicit
+
+    unchanged_cpu, applied_cpu = _qwen35_mps_serving_shortlist_heuristic(base, backend="cpu_ref", prompt_length=8192)
+    assert applied_cpu is False
+    assert unchanged_cpu == base
 
 
 def test_qwen35_attention_subset_dotcache_loss_harness_reports_teacher_forced_metrics() -> None:
@@ -1081,11 +1166,37 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--profile-backend",
             "--tokens-per-page",
             "8",
+            "--execution-recent-window",
+            "64",
+            "--execution-sink-window",
+            "16",
+            "--execution-relevance-top-k",
+            "4",
+            "--execution-relevance-top-k-layer",
+            "layer:23=8",
+            "--execution-relevance-top-k-context-layer",
+            "layer:23:min_ctx:8192=8",
+            "--execution-relevance-mode",
+            "envelope",
+            "--execution-exact-refine-top-k",
+            "2",
+            "--execution-exact-refine-layer",
+            "23",
+            "--quality-check",
         ],
     )
     serving_args = serving_bench.parse_args()
     assert serving_args.profile_backend is True
     assert serving_args.tokens_per_page == 8
+    assert serving_args.execution_recent_window == 64
+    assert serving_args.execution_sink_window == 16
+    assert serving_args.execution_relevance_top_k == 4
+    assert serving_args.execution_relevance_top_k_layer == ["layer:23=8"]
+    assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:8192=8"]
+    assert serving_args.execution_relevance_mode == "envelope"
+    assert serving_args.execution_exact_refine_top_k == 2
+    assert serving_args.execution_exact_refine_layer == [23]
+    assert serving_args.quality_check is True
 
     monkeypatch.setattr(
         "sys.argv",
