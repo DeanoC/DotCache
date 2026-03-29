@@ -1444,6 +1444,10 @@ def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) 
             "90",
             "--profile-backend",
             "--quality-check",
+            "--quality-mode",
+            "loss_tail",
+            "--quality-eval-steps",
+            "8",
             "--output",
             "benchmarks/results/test_probe.jsonl",
         ],
@@ -1454,4 +1458,6 @@ def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) 
     assert args.timeout_seconds == 90
     assert args.profile_backend is True
     assert args.quality_check is True
+    assert args.quality_mode == "loss_tail"
+    assert args.quality_eval_steps == 8
     assert args.output == "benchmarks/results/test_probe.jsonl"

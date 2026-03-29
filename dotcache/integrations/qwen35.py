@@ -2490,8 +2490,15 @@ def _normalize_text_inputs(
     return input_ids, attention_mask
 
 
-def _run_dense_prefill(model, *, input_ids, attention_mask):
-    return _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
+def _run_dense_prefill(model, *, input_ids, attention_mask, logits_to_keep: int | torch.Tensor = 1):
+    return _run_inference(
+        lambda: model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+            logits_to_keep=logits_to_keep,
+        )
+    )
 
 
 def _run_dense_decode_step(

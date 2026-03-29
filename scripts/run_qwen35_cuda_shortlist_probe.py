@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
+    parser.add_argument("--quality-mode", choices=["serving", "loss_tail"], default="serving")
+    parser.add_argument("--quality-eval-steps", type=int, default=4)
     parser.add_argument("--output", default=None, help="Optional JSONL path. Defaults to stdout only.")
     return parser.parse_args()
 
@@ -80,30 +82,55 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
 
 
 def _benchmark_command(args: argparse.Namespace, *, context: int, case: str) -> list[str]:
-    command = [
-        sys.executable,
-        str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py"),
-        "--model-id",
-        args.model_id,
-        "--backend",
-        args.backend,
-        "--device",
-        args.device,
-        "--torch-dtype",
-        args.torch_dtype,
-        "--layer-profile",
-        args.layer_profile,
-        "--repeat-counts",
-        "--target-prompt-lengths",
-        str(context),
-        "--max-new-tokens",
-        str(args.max_new_tokens),
-        "--continue-on-error",
-    ]
-    if args.profile_backend:
+    loss_benchmark = str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_loss.py")
+    if args.quality_check and args.quality_mode == "loss_tail":
+        command = [
+            sys.executable,
+            loss_benchmark,
+            "--model-id",
+            args.model_id,
+            "--backend",
+            args.backend,
+            "--device",
+            args.device,
+            "--torch-dtype",
+            args.torch_dtype,
+            "--layer-profile",
+            args.layer_profile,
+            "--sequence-length",
+            str(context + args.quality_eval_steps),
+            "--prefix-length",
+            str(context),
+            "--eval-steps",
+            str(args.quality_eval_steps),
+        ]
+    else:
+        command = [
+            sys.executable,
+            str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py"),
+            "--model-id",
+            args.model_id,
+            "--backend",
+            args.backend,
+            "--device",
+            args.device,
+            "--torch-dtype",
+            args.torch_dtype,
+            "--layer-profile",
+            args.layer_profile,
+            "--repeat-counts",
+            "--target-prompt-lengths",
+            str(context),
+            "--max-new-tokens",
+            str(args.max_new_tokens),
+            "--continue-on-error",
+        ]
+        if args.profile_backend:
+            command.append("--profile-backend")
+        if args.quality_check:
+            command.append("--quality-check")
+    if args.profile_backend and loss_benchmark in command:
         command.append("--profile-backend")
-    if args.quality_check:
-        command.append("--quality-check")
     command.extend(_case_extra_args(case))
     return command
 
@@ -141,16 +168,21 @@ def _run_single_probe(args: argparse.Namespace, *, context: int, case: str) -> d
             candidate = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if (
-            isinstance(candidate, dict)
-            and candidate.get("prompt_mode") == "exact_length"
-            and int(candidate.get("prompt_length") or -1) == context
-        ):
+        if not isinstance(candidate, dict):
+            continue
+        prompt_mode = candidate.get("prompt_mode")
+        prompt_length = int(candidate.get("prompt_length") or -1)
+        prefix_length = int(candidate.get("prefix_length") or -1)
+        if prompt_mode == "exact_length" and (prompt_length == context or prefix_length == context):
             payload = candidate
 
     if payload is None:
         payload = {
-            "benchmark": "qwen35_attention_subset_dotcache_serving",
+            "benchmark": (
+                "qwen35_attention_subset_dotcache_loss"
+                if args.quality_check and args.quality_mode == "loss_tail"
+                else "qwen35_attention_subset_dotcache_serving"
+            ),
             "model_id": args.model_id,
             "backend": args.backend,
             "device": args.device,

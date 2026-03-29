@@ -37,6 +37,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-page-escape-dtype", choices=["float16", "float32", "int8"], default="float16")
     parser.add_argument("--recent-window", type=int, default=128)
+    parser.add_argument("--execution-recent-window", type=int, default=0)
+    parser.add_argument("--execution-sink-window", type=int, default=0)
+    parser.add_argument("--execution-relevance-top-k", type=int, default=0)
+    parser.add_argument("--execution-relevance-top-k-layer", action="append", default=[])
+    parser.add_argument("--execution-relevance-top-k-context-layer", action="append", default=[])
+    parser.add_argument("--execution-relevance-mode", choices=["sketch", "envelope"], default="envelope")
+    parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
@@ -58,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-steps", type=int, default=64)
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--tokens-per-page", type=int, default=16)
+    parser.add_argument("--profile-backend", action="store_true")
     return parser.parse_args()
 
 
@@ -142,6 +151,14 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         escape_dtype=args.escape_dtype,
         recent_page_escape_dtype=args.recent_page_escape_dtype,
         recent_window=args.recent_window,
+        execution_recent_window=args.execution_recent_window,
+        execution_sink_window=args.execution_sink_window,
+        execution_relevance_top_k=args.execution_relevance_top_k,
+        execution_relevance_top_k_overrides=tuple(args.execution_relevance_top_k_layer),
+        execution_relevance_top_k_context_overrides=tuple(args.execution_relevance_top_k_context_layer),
+        execution_relevance_mode=args.execution_relevance_mode,
+        execution_exact_refine_top_k=args.execution_exact_refine_top_k,
+        execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
         m2_center_k=args.m2_center_k,
         m2_segment_count_k=args.m2_segment_count_k,
@@ -193,6 +210,7 @@ def main() -> None:
         attention_mask=attention_mask,
         prefix_length=args.prefix_length,
         eval_steps=args.eval_steps,
+        profile_backend=args.profile_backend,
     )
     result.update(
         {
@@ -221,6 +239,14 @@ def main() -> None:
             "escape_dtype": args.escape_dtype,
             "recent_page_escape_dtype": args.recent_page_escape_dtype,
             "recent_window": args.recent_window,
+            "execution_recent_window": args.execution_recent_window,
+            "execution_sink_window": args.execution_sink_window,
+            "execution_relevance_top_k": args.execution_relevance_top_k,
+            "execution_relevance_top_k_overrides": list(args.execution_relevance_top_k_layer),
+            "execution_relevance_top_k_context_overrides": list(args.execution_relevance_top_k_context_layer),
+            "execution_relevance_mode": args.execution_relevance_mode,
+            "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
+            "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
             "m2_sketch_dim_k": args.m2_sketch_dim_k,
             "m2_center_k": args.m2_center_k,
             "m2_segment_count_k": args.m2_segment_count_k,
@@ -237,9 +263,12 @@ def main() -> None:
             "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
             "m1_error_threshold": args.m1_error_threshold,
             "m1_token_p95_error_threshold": args.m1_token_p95_error_threshold,
+            "prompt_mode": "exact_length",
+            "prompt_length": int(args.prefix_length),
             "text_only": True,
             "dotcache_ready": False,
             "hybrid_family": "qwen3_5",
+            "status": "ok",
         }
     )
     print(json.dumps(result, sort_keys=True), flush=True)
