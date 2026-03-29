@@ -130,6 +130,7 @@ class DotCacheConfig:
     execution_exact_promote_layers: tuple[int, ...] = ()
     execution_exact_promote_union_rescue_top_k: int = 0
     execution_grouped_decode_compact: bool = False
+    execution_grouped_mix_compact: bool = False
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"

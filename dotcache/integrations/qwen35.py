@@ -5594,6 +5594,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
             adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
         ),
         "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+        "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -5838,6 +5839,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
             ),
             "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6086,6 +6088,7 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
                 adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
             ),
             "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6398,6 +6401,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
             ),
             "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),

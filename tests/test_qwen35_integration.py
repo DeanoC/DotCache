@@ -891,6 +891,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_exact_promote_layers" in result
     assert "execution_exact_promote_union_rescue_top_k" in result
     assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
@@ -947,6 +948,7 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_exact_promote_layers" in result
     assert "execution_exact_promote_union_rescue_top_k" in result
     assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -1007,6 +1009,7 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_exact_promote_layers" in result
     assert "execution_exact_promote_union_rescue_top_k" in result
     assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
@@ -1062,6 +1065,7 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_exact_promote_layers" in result
     assert "execution_exact_promote_union_rescue_top_k" in result
     assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
     first_record = result["scorer_layer_records"][0]
     first_group = first_record["groups"][0]
     assert "context_length_page_max" in first_group
@@ -1425,6 +1429,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-exact-promote-union-rescue-top-k",
             "2",
             "--execution-grouped-decode-compact",
+            "--execution-grouped-mix-compact",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1483,6 +1488,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_exact_promote_layer == [23]
     assert serving_args.execution_exact_promote_union_rescue_top_k == 2
     assert serving_args.execution_grouped_decode_compact is True
+    assert serving_args.execution_grouped_mix_compact is True
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]

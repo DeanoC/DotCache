@@ -4056,6 +4056,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
     key_chunk_lengths: Sequence[int] | None = None,
     value_chunk_lengths: Sequence[int] | None = None,
     compact_grouped_chunk: bool = False,
+    compact_grouped_mix_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4184,7 +4185,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 chunk_weights,
                 chunk_pages,
                 out_acc=output,
-                compact_grouped_chunk=compact_grouped_chunk,
+                compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
                 trace=trace,
             ),
         )
@@ -4200,6 +4201,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
     value_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     *,
     compact_grouped_chunk: bool = False,
+    compact_grouped_mix_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4319,7 +4321,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 chunk_weights,
                 value_chunk_pages,
                 out_acc=output,
-                compact_grouped_chunk=compact_grouped_chunk,
+                compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
                 trace=trace,
             ),
         )
