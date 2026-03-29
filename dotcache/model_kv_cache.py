@@ -45,6 +45,10 @@ _DECODE_STAGE_TIMING_STAGES = (
     "shortlist_candidate_secondary_scoring",
     "shortlist_candidate_neighbor_rescue",
     "shortlist_candidate_builtin_selection",
+    "shortlist_candidate_builtin_candidate_index_build",
+    "shortlist_candidate_builtin_sidecar_stack",
+    "shortlist_candidate_builtin_score_compute",
+    "shortlist_candidate_builtin_ranking",
     "shortlist_exact_selection",
     "shortlist_union_rescue",
     "shortlist_materialization",
@@ -2208,6 +2212,11 @@ class ModelPagedKVCache:
                 key_page_maxima=key_page_maxima if key_page_maxima else None,
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
+                stage_recorder=lambda stage, ms: self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage=stage,
+                    ms=float(ms),
+                ),
             )
             _stage_finish("shortlist_candidate_builtin_selection", shortlist_candidate_builtin_selection_started_at)
         _stage_finish("shortlist_candidate_scoring", shortlist_candidate_scoring_started_at)

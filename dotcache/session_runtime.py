@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Sequence
+from time import perf_counter
+from typing import Callable, Literal, Sequence
 
 import numpy as np
 from .attention_runtime import (
@@ -226,7 +227,13 @@ def select_execution_page_indices(
     key_page_maxima: Sequence[np.ndarray] | None = None,
     relevance_top_k: int = 0,
     relevance_mode: RelevanceMode = "sketch",
+    stage_recorder: Callable[[str, float], None] | None = None,
 ) -> list[int]:
+    def _record_stage(stage: str, started_at: float | None) -> None:
+        if stage_recorder is None or started_at is None:
+            return
+        stage_recorder(stage, (perf_counter() - started_at) * 1000.0)
+
     if not key_pages:
         return []
     selected_indices = set(
@@ -240,7 +247,9 @@ def select_execution_page_indices(
     if relevance_top_k > 0:
         if query_slice is None:
             raise ValueError("relevance gating requires query_slice")
+        candidate_index_build_started_at = perf_counter() if stage_recorder is not None else None
         candidate_indices = [index for index in range(len(key_pages)) if index not in selected_indices]
+        _record_stage("shortlist_candidate_builtin_candidate_index_build", candidate_index_build_started_at)
         if candidate_indices:
             query = np.asarray(query_slice, dtype=np.float32)
             if relevance_mode == "sketch":
@@ -248,11 +257,15 @@ def select_execution_page_indices(
                     raise ValueError("sketch relevance gating requires key_page_sketches")
                 if len(key_page_sketches) != len(key_pages):
                     raise ValueError("key_page_sketches must align with key_pages")
+                sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
                 candidate_sketches = np.stack(
                     [np.asarray(key_page_sketches[index], dtype=np.float32) for index in candidate_indices],
                     axis=0,
                 )
+                _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
+                score_compute_started_at = perf_counter() if stage_recorder is not None else None
                 scores = np.max(candidate_sketches @ query, axis=1).astype(np.float32, copy=False)
+                _record_stage("shortlist_candidate_builtin_score_compute", score_compute_started_at)
             elif relevance_mode == "envelope":
                 if key_page_minima is None or key_page_maxima is None:
                     raise ValueError("envelope relevance gating requires page minima and maxima")
@@ -260,6 +273,7 @@ def select_execution_page_indices(
                     raise ValueError("page minima and maxima must align with key_pages")
                 positive_query = np.maximum(query, 0.0)
                 negative_query = np.minimum(query, 0.0)
+                sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
                 candidate_minima = np.stack(
                     [np.asarray(key_page_minima[index], dtype=np.float32) for index in candidate_indices],
                     axis=0,
@@ -268,12 +282,16 @@ def select_execution_page_indices(
                     [np.asarray(key_page_maxima[index], dtype=np.float32) for index in candidate_indices],
                     axis=0,
                 )
+                _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
+                score_compute_started_at = perf_counter() if stage_recorder is not None else None
                 scores = (candidate_maxima @ positive_query + candidate_minima @ negative_query).astype(
                     np.float32,
                     copy=False,
                 )
+                _record_stage("shortlist_candidate_builtin_score_compute", score_compute_started_at)
             else:
                 raise ValueError(f"unsupported relevance_mode: {relevance_mode}")
+            ranking_started_at = perf_counter() if stage_recorder is not None else None
             ranked_candidates = [
                 index
                 for _, index in sorted(
@@ -282,6 +300,7 @@ def select_execution_page_indices(
                     reverse=True,
                 )
             ]
+            _record_stage("shortlist_candidate_builtin_ranking", ranking_started_at)
             selected_indices.update(ranked_candidates[:relevance_top_k])
 
     if not selected_indices:

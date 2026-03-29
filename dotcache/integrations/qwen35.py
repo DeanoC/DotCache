@@ -5642,6 +5642,10 @@ _MODEL_KV_CACHE_DECODE_STAGE_KEYS = (
     "execution_decode_shortlist_candidate_secondary_scoring_ms_total",
     "execution_decode_shortlist_candidate_neighbor_rescue_ms_total",
     "execution_decode_shortlist_candidate_builtin_selection_ms_total",
+    "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total",
+    "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total",
+    "execution_decode_shortlist_candidate_builtin_score_compute_ms_total",
+    "execution_decode_shortlist_candidate_builtin_ranking_ms_total",
     "execution_decode_shortlist_exact_selection_ms_total",
     "execution_decode_shortlist_union_rescue_ms_total",
     "execution_decode_shortlist_materialization_ms_total",
@@ -5797,6 +5801,18 @@ def _summarize_step_runtime_breakdown(
         ],
         "decode_shortlist_candidate_builtin_selection_ms_total": stage_totals[
             "execution_decode_shortlist_candidate_builtin_selection_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_candidate_index_build_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_sidecar_stack_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_score_compute_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_score_compute_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_ranking_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_ranking_ms_total"
         ],
         "decode_shortlist_exact_selection_ms_total": stage_totals["execution_decode_shortlist_exact_selection_ms_total"],
         "decode_shortlist_union_rescue_ms_total": stage_totals["execution_decode_shortlist_union_rescue_ms_total"],
