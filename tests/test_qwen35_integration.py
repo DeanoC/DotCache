@@ -24,6 +24,8 @@ from dotcache.integrations.qwen35 import (
     inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
     run_qwen35_attention_subset_dotcache_harness,
+    run_qwen35_attention_subset_dotcache_loss_harness,
+    run_qwen35_attention_subset_dotcache_serving_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
@@ -813,6 +815,73 @@ def test_qwen35_attention_subset_dotcache_harness_class_tokenizes_and_runs() -> 
     assert harness.adapter.hybrid_dotcache_runtime_state is not None
 
 
+def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache serving", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_serving"
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["dotcache_ready"] is False
+    assert result["hybrid_dotcache_runtime_ready"] is True
+    assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset"
+    assert result["hybrid_runtime_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["hybrid_runtime_token_growing_layer_ids"] == [3]
+    assert result["attention_subset_layer_ids"] == [3]
+    assert result["attention_subset_capture_layer_count"] == 1
+    assert result["num_attention_heads"] == 4
+    assert result["num_key_value_heads"] == 1
+    assert result["query_heads_per_kv_head"] == 4
+    assert result["head_dim"] == adapter.dotcache_config.head_dim
+    assert result["group_size"] == adapter.dotcache_config.group_size
+    assert result["num_groups"] == adapter.dotcache_config.num_groups
+    assert result["padded_head_dim"] == adapter.dotcache_config.padded_head_dim
+    assert result["tokens_per_page"] == adapter.dotcache_config.tokens_per_page
+    assert len(result["dotcache_generated_ids"]) == 2
+    assert np.isfinite(result["dotcache_decode_ms_per_step"])
+
+
+def test_qwen35_attention_subset_dotcache_loss_harness_reports_teacher_forced_metrics() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache loss path", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_loss"
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["dotcache_ready"] is False
+    assert result["hybrid_dotcache_runtime_ready"] is True
+    assert np.isfinite(result["dense_teacher_forced_loss"])
+    assert np.isfinite(result["dotcache_teacher_forced_loss"])
+    assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+    assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
+    assert 0.0 <= result["teacher_forced_target_match_rate"] <= 1.0
+
+
 def test_qwen35_attention_subset_statecache_dotcache_harness_runs_on_tiny_hybrid_model() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
@@ -982,36 +1051,52 @@ def test_qwen35_statecache_cli_parse_supports_conv_flags(monkeypatch: pytest.Mon
     assert readout_args.conv_layer_bit_overrides == ["1:8"]
     assert readout_args.conv_mode_override == ["1:M3"]
 
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "bench_qwen35_deltanet_statecache_loss.py",
-            "--statecache-scope",
-            "conv_only",
-            "--conv-bits",
-            "8",
-        ],
+
+def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    serving_bench_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
     )
-    loss_args = loss_bench.parse_args()
-    assert loss_args.statecache_scope == "conv_only"
-    assert loss_args.conv_bits == 8
+    assert serving_bench_spec is not None and serving_bench_spec.loader is not None
+    serving_bench = importlib.util.module_from_spec(serving_bench_spec)
+    serving_bench_spec.loader.exec_module(serving_bench)
+
+    serving_sweep_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_serving_sweep",
+        repo_root / "scripts" / "run_qwen35_serving_sweep.py",
+    )
+    assert serving_sweep_spec is not None and serving_sweep_spec.loader is not None
+    serving_sweep = importlib.util.module_from_spec(serving_sweep_spec)
+    serving_sweep_spec.loader.exec_module(serving_sweep)
 
     monkeypatch.setattr(
         "sys.argv",
         [
-            "bench_qwen35_hybrid_failure_localize.py",
-            "--statecache-scope",
-            "conv_only",
-            "--statecache-conv-bits",
+            "bench_qwen35_attention_subset_dotcache_serving.py",
+            "--profile-backend",
+            "--tokens-per-page",
             "8",
-            "--statecache-conv-layer-bit-overrides",
-            "0:4",
-            "--statecache-conv-mode-override",
-            "0:M3",
         ],
     )
-    hybrid_args = hybrid_bench.parse_args()
-    assert hybrid_args.statecache_scope == "conv_only"
-    assert hybrid_args.statecache_conv_bits == 8
-    assert hybrid_args.statecache_conv_layer_bit_overrides == ["0:4"]
-    assert hybrid_args.statecache_conv_mode_override == ["0:M3"]
+    serving_args = serving_bench.parse_args()
+    assert serving_args.profile_backend is True
+    assert serving_args.tokens_per_page == 8
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_serving_sweep.py",
+            "--dotcache-profile-backend",
+            "--contexts",
+            "4096",
+            "16384",
+        ],
+    )
+    sweep_args = serving_sweep.parse_args()
+    assert sweep_args.dotcache_profile_backend is True
+    assert sweep_args.contexts == [4096, 16384]

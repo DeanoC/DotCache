@@ -9,13 +9,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from transformers import AutoTokenizer
 
 from benchmarks.bench_turboquant_external import _build_exact_prompt_text as _build_turboquant_exact_prompt_text
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "benchmarks" / "results" / "qwen35_quality_sweep_20260329"
 
 
@@ -30,14 +32,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-steps", type=int, default=16)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
+    parser.add_argument(
+        "--dotcache-layer-profile",
+        default=str(REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_third_pass.yaml"),
+    )
     parser.add_argument("--state-stage", default="post_update_m0")
     parser.add_argument("--state-bits", type=int, default=8)
     parser.add_argument("--state-renorm-interval", type=int, default=0)
     parser.add_argument("--dense-timeout-seconds", type=int, default=1800)
+    parser.add_argument("--dotcache-timeout-seconds", type=int, default=1800)
     parser.add_argument("--statecache-timeout-seconds", type=int, default=1800)
     parser.add_argument("--turboquant-timeout-seconds", type=int, default=1800)
     parser.add_argument("--turboquant-configs", nargs="+", default=["q8_0", "turbo3_uniform", "turbo3_la1"])
     parser.add_argument("--skip-dense", action="store_true")
+    parser.add_argument("--skip-dotcache", action="store_true")
     parser.add_argument("--skip-statecache", action="store_true")
     parser.add_argument("--skip-turboquant", action="store_true")
     return parser.parse_args()
@@ -125,10 +133,13 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dense_path = output_dir / "qwen35_0p8b_dense_quality.jsonl"
+    dotcache_path = output_dir / "qwen35_0p8b_dotcache_quality.jsonl"
     statecache_path = output_dir / "qwen35_0p8b_statecache_quality.jsonl"
     turboquant_path = output_dir / "qwen35_0p8b_turboquant_quality.jsonl"
     if not args.skip_dense and dense_path.exists():
         dense_path.unlink()
+    if not args.skip_dotcache and dotcache_path.exists():
+        dotcache_path.unlink()
     if not args.skip_statecache and statecache_path.exists():
         statecache_path.unlink()
     if not args.skip_turboquant and turboquant_path.exists():
@@ -186,6 +197,47 @@ def main() -> None:
                     "prefix_length": prefix_length,
                     "eval_steps": args.eval_steps,
                     "prompt_unit": args.prompt_unit,
+                },
+            )
+
+        if not args.skip_dotcache:
+            dotcache_command = [
+                python_exe,
+                str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_loss.py"),
+                "--model-id",
+                args.model_id,
+                "--backend",
+                args.backend,
+                "--device",
+                args.device,
+                "--torch-dtype",
+                args.torch_dtype,
+                "--layer-profile",
+                args.dotcache_layer_profile,
+                "--sequence-length",
+                str(sequence_length),
+                "--prefix-length",
+                str(prefix_length),
+                "--eval-steps",
+                str(args.eval_steps),
+                "--prompt-unit",
+                args.prompt_unit,
+            ]
+            _run_jsonl_command(
+                command=dotcache_command,
+                output_path=dotcache_path,
+                timeout_seconds=args.dotcache_timeout_seconds,
+                fallback_record={
+                    "benchmark": "qwen35_attention_subset_dotcache_loss",
+                    "model_id": args.model_id,
+                    "backend": args.backend,
+                    "device": args.device,
+                    "torch_dtype": args.torch_dtype,
+                    "sequence_length": sequence_length,
+                    "prefix_length": prefix_length,
+                    "eval_steps": args.eval_steps,
+                    "prompt_unit": args.prompt_unit,
+                    "layer_profile": args.dotcache_layer_profile,
                 },
             )
 
@@ -280,6 +332,7 @@ def main() -> None:
             {
                 "output_dir": str(output_dir),
                 "dense_jsonl": str(dense_path),
+                "dotcache_jsonl": str(dotcache_path),
                 "statecache_jsonl": str(statecache_path),
                 "turboquant_jsonl": str(turboquant_path),
                 "prefix_lengths": sorted(set(length for length in args.prefix_lengths if length > 0)),

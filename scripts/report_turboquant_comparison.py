@@ -11,6 +11,7 @@ BENCHMARKS = {
     "turboquant_external",
     "llama_compare",
     "qwen35_text",
+    "qwen35_attention_subset_dotcache_serving",
     "qwen35_deltanet_statecache_readout",
     "qwen35_deltanet_statecache_serving",
     "qwen35_attention_subset_statecache_dotcache",
@@ -223,6 +224,33 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "total_device_memory_bytes": _max_metric(
                         _metric(record, "dense_prefill_cuda_peak_memory_allocated_bytes"),
                         _metric(record, "dense_decode_cuda_peak_memory_allocated_bytes"),
+                    ),
+                }
+            )
+        elif benchmark == "qwen35_attention_subset_dotcache_serving":
+            dotcache_decode_ms = _metric(record, "dotcache_decode_ms_per_step")
+            default_mode_k = record.get("default_mode_k")
+            default_mode_v = record.get("default_mode_v")
+            config_label = "DotCache attention subset (serving)"
+            if default_mode_k is not None and default_mode_v is not None:
+                config_label = f"DotCache attention subset K={default_mode_k} / V={default_mode_v} (serving)"
+            rows.append(
+                {
+                    "model": record.get("model_id"),
+                    "runtime": "dotcache_hf",
+                    "config": config_label,
+                    "context": int(record.get("prompt_length") or 0),
+                    "decode_ms": dotcache_decode_ms,
+                    "decode_tps": None if dotcache_decode_ms in (None, 0.0) else 1000.0 / dotcache_decode_ms,
+                    "ppl": None,
+                    "agreement": None,
+                    "status": record.get("status", "ok") if record.get("dotcache_attention_subset_ready") is not False else "error",
+                    "error_type": record.get("error_type"),
+                    "error_message": record.get("error_message"),
+                    "cache_memory_bytes": _metric(record, "resident_bytes"),
+                    "total_device_memory_bytes": _max_metric(
+                        _metric(record, "dotcache_prefill_cuda_peak_memory_allocated_bytes"),
+                        _metric(record, "dotcache_decode_cuda_peak_memory_allocated_bytes"),
                     ),
                 }
             )
