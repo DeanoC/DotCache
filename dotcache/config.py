@@ -128,6 +128,7 @@ class DotCacheConfig:
     execution_exact_promote_max_context: int = 0
     execution_exact_promote_margin_threshold: float = 0.0
     execution_exact_promote_layers: tuple[int, ...] = ()
+    execution_exact_promote_union_rescue_top_k: int = 0
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"
@@ -240,6 +241,8 @@ class DotCacheConfig:
         for layer_id in self.execution_exact_promote_layers:
             if int(layer_id) < 0:
                 raise ValueError("execution_exact_promote_layers must be non-negative")
+        if self.execution_exact_promote_union_rescue_top_k < 0:
+            raise ValueError("execution_exact_promote_union_rescue_top_k must be non-negative")
         if self.execution_exact_refine_top_k < 0:
             raise ValueError("execution_exact_refine_top_k must be non-negative")
         for layer_id in self.execution_exact_refine_layers:

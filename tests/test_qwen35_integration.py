@@ -889,6 +889,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
@@ -943,6 +944,7 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -1001,6 +1003,7 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
@@ -1054,6 +1057,7 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
     first_record = result["scorer_layer_records"][0]
     first_group = first_record["groups"][0]
     assert "context_length_page_max" in first_group
@@ -1071,6 +1075,8 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "final_old_page_ranges" in first_trace
     assert "promote_candidate_page_ranges" in first_trace
     assert "promote_selected_page_ranges" in first_trace
+    assert "promote_candidate_indices" in first_trace
+    assert "promote_selected_indices" in first_trace
 
 
 def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
@@ -1412,6 +1418,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "0.25",
             "--execution-exact-promote-layer",
             "23",
+            "--execution-exact-promote-union-rescue-top-k",
+            "2",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1468,6 +1476,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_exact_promote_max_context == 16384
     assert serving_args.execution_exact_promote_margin_threshold == 0.25
     assert serving_args.execution_exact_promote_layer == [23]
+    assert serving_args.execution_exact_promote_union_rescue_top_k == 2
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]

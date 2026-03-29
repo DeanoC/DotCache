@@ -5590,6 +5590,9 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
         "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
         "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+        "execution_exact_promote_union_rescue_top_k": int(
+            adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+        ),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -5830,6 +5833,9 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6074,6 +6080,9 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6382,6 +6391,9 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),

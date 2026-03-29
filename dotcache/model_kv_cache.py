@@ -1468,6 +1468,169 @@ class ModelPagedKVCache:
     def _execution_recent_neighbor_rescue_enabled(self, *, layer_id: int) -> bool:
         return self.config.execution_recent_neighbor_rescue_enabled_for_layer(layer_id=layer_id)
 
+    def _execution_exact_promote_union_rescue_enabled(self, *, layer_id: int) -> bool:
+        return (
+            int(self.config.execution_exact_promote_union_rescue_top_k) > 0
+            and int(self.config.execution_exact_promote_top_k) > 0
+            and int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
+        )
+
+    def _apply_execution_exact_promote_union_rescue(
+        self,
+        *,
+        layer_id: int,
+        selected_indices_by_group: Sequence[list[int] | None],
+        key_pages_by_group: Sequence[Sequence[PageLike]],
+        representative_queries: Sequence[np.ndarray],
+        shortlist_traces_by_group: Sequence[dict[str, object] | None],
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[list[list[int] | None], list[dict[str, object]]]:
+        if not self._execution_exact_promote_union_rescue_enabled(layer_id=layer_id):
+            return [None if indices is None else list(indices) for indices in selected_indices_by_group], []
+
+        adjusted_indices_by_group = [None if indices is None else list(indices) for indices in selected_indices_by_group]
+        baseline_selected_index_sets = [
+            set() if indices is None else {int(index) for index in indices}
+            for indices in selected_indices_by_group
+        ]
+        rescue_records: list[dict[str, object]] = []
+        union_rescue_top_k = int(self.config.execution_exact_promote_union_rescue_top_k)
+
+        for group_index, (indices, key_pages, query_slice, shortlist_trace) in enumerate(
+            zip(
+                adjusted_indices_by_group,
+                key_pages_by_group,
+                representative_queries,
+                shortlist_traces_by_group,
+                strict=True,
+            )
+        ):
+            if indices is None:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "no_shortlist",
+                    }
+                )
+                continue
+            if shortlist_trace is None:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "missing_shortlist_trace",
+                    }
+                )
+                continue
+            if not bool(shortlist_trace.get("exact_promote_enabled", False)):
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": str(shortlist_trace.get("exact_promote_disable_reason")),
+                    }
+                )
+                continue
+
+            promote_candidate_indices = [int(index) for index in shortlist_trace.get("promote_candidate_indices", [])]
+            if not promote_candidate_indices:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "no_promote_candidates",
+                    }
+                )
+                continue
+
+            other_selected_indices = set().union(
+                *[
+                    selected_index_set
+                    for other_group_index, selected_index_set in enumerate(baseline_selected_index_sets)
+                    if other_group_index != group_index
+                ]
+            )
+            novel_candidate_indices = [
+                int(index)
+                for index in promote_candidate_indices
+                if int(index) not in other_selected_indices and int(index) not in baseline_selected_index_sets[group_index]
+            ]
+            if not novel_candidate_indices:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "no_novel_candidates",
+                        "promote_candidate_count": int(len(promote_candidate_indices)),
+                    }
+                )
+                continue
+
+            selected_novel_count = min(union_rescue_top_k, len(novel_candidate_indices))
+            novel_candidate_logits = score_pages(
+                np.asarray(query_slice, dtype=np.float32),
+                [key_pages[index] for index in novel_candidate_indices],
+                backend=self.backend,
+                trace=trace,
+            )
+            chosen_novel_indices = [
+                index
+                for _, index in sorted(
+                    (
+                        (float(np.max(np.asarray(logits, dtype=np.float32))), index)
+                        for index, logits in zip(novel_candidate_indices, novel_candidate_logits, strict=True)
+                    ),
+                    key=lambda item: item[0],
+                    reverse=True,
+                )[:selected_novel_count]
+            ]
+            if not chosen_novel_indices:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "novel_candidates_not_selected",
+                        "promote_candidate_count": int(len(promote_candidate_indices)),
+                        "novel_candidate_count": int(len(novel_candidate_indices)),
+                    }
+                )
+                continue
+
+            adjusted_indices_by_group[group_index] = sorted(set(indices).union(chosen_novel_indices))
+            rescue_records.append(
+                {
+                    "record_type": "union_rescue",
+                    "layer_id": int(layer_id),
+                    "group_index": int(group_index),
+                    "kv_head_id": shortlist_trace.get("kv_head_id"),
+                    "applied": True,
+                    "disable_reason": None,
+                    "promote_candidate_count": int(len(promote_candidate_indices)),
+                    "novel_candidate_count": int(len(novel_candidate_indices)),
+                    "selected_novel_count": int(len(chosen_novel_indices)),
+                    "selected_novel_indices": [int(index) for index in chosen_novel_indices],
+                    "selected_novel_page_ranges": [
+                        f"{int(index)}:{int(_page_header(key_pages[index]).token_start)}-{int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)}"
+                        for index in chosen_novel_indices
+                    ],
+                }
+            )
+
+        return adjusted_indices_by_group, rescue_records
+
     def _execution_shortlist_page_indices(
         self,
         key_pages: Sequence[PageLike],
@@ -1542,6 +1705,7 @@ class ModelPagedKVCache:
             )
             self._execution_shortlist_trace_records.append(
                 {
+                    "record_type": "shortlist_group",
                     "layer_id": int(layer_id),
                     "kv_head_id": None if kv_head_id is None else int(kv_head_id),
                     "context_length": None if context_length is None else int(context_length),
@@ -1553,6 +1717,9 @@ class ModelPagedKVCache:
                     "final_count": int(len(final_selected_indices)),
                     "stage1_old_count": int(len(stage1_old_indices)),
                     "final_old_count": int(len(final_old_indices)),
+                    "base_indices": [int(index) for index in sorted(base_index_set)],
+                    "stage1_indices": [int(index) for index in stage1_selected_indices],
+                    "final_indices": [int(index) for index in final_selected_indices],
                     "base_page_ranges": _page_range_labels(sorted(base_index_set)),
                     "stage1_old_page_ranges": _page_range_labels(stage1_old_indices),
                     "final_old_page_ranges": _page_range_labels(final_old_indices),
@@ -1565,6 +1732,8 @@ class ModelPagedKVCache:
                     "promote_target_old_page_count": (
                         None if promote_target_old_page_count is None else int(promote_target_old_page_count)
                     ),
+                    "promote_candidate_indices": [int(index) for index in promote_candidate_indices],
+                    "promote_selected_indices": [int(index) for index in promote_selected_indices],
                     "promote_candidate_page_ranges": _page_range_labels(promote_candidate_indices),
                     "promote_selected_page_ranges": _page_range_labels(promote_selected_indices),
                     "boundary_margin_normalized": (
@@ -3025,6 +3194,7 @@ class ModelPagedKVCache:
         key_pages_by_group: list[list[PageLike]] = []
         window_index_sets_by_group: list[set[int]] = []
         representative_queries: list[np.ndarray] = []
+        shortlist_trace_records_by_group: list[dict[str, object] | None] = []
 
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
@@ -3050,6 +3220,7 @@ class ModelPagedKVCache:
                 )
             )
             if shortlist_enabled:
+                trace_record_count = len(self._execution_shortlist_trace_records)
                 raw_selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
@@ -3058,6 +3229,13 @@ class ModelPagedKVCache:
                     context_length_override=int(context_length) if int(context_length) > 0 else None,
                     trace=trace,
                 )
+                shortlist_trace_record = (
+                    dict(self._execution_shortlist_trace_records[-1])
+                    if len(self._execution_shortlist_trace_records) > trace_record_count
+                    else None
+                )
+            else:
+                shortlist_trace_record = None
             selected_indices = (
                 list(range(len(key_pages))) if raw_selected_indices is None else [int(index) for index in raw_selected_indices]
             )
@@ -3083,8 +3261,28 @@ class ModelPagedKVCache:
             key_pages_by_group.append(key_pages)
             window_index_sets_by_group.append(window_index_set)
             representative_queries.append(representative_query)
+            shortlist_trace_records_by_group.append(shortlist_trace_record)
 
         shortlist_attempted = any(indices is not None for indices in raw_selected_indices_by_group)
+        union_rescue_records: list[dict[str, object]] = []
+        if shortlist_attempted and len(group_entries) > 1 and layer_prefer_grouped_batching:
+            adjusted_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
+                layer_id=layer_id,
+                selected_indices_by_group=full_selected_indices_by_group,
+                key_pages_by_group=key_pages_by_group,
+                representative_queries=representative_queries,
+                shortlist_traces_by_group=shortlist_trace_records_by_group,
+                trace=trace,
+            )
+            full_selected_indices_by_group = [
+                list(range(len(key_pages))) if indices is None else [int(index) for index in indices]
+                for key_pages, indices in zip(key_pages_by_group, adjusted_selected_indices_by_group, strict=True)
+            ]
+            raw_selected_indices_by_group = [
+                None if indices is None else [int(index) for index in indices]
+                for indices in adjusted_selected_indices_by_group
+            ]
+            self._execution_shortlist_trace_records.extend(union_rescue_records)
         union_indices = sorted(
             {
                 index
@@ -3105,6 +3303,14 @@ class ModelPagedKVCache:
         for group_index, entry in enumerate(group_entries):
             key_pages = key_pages_by_group[group_index]
             selected_indices = full_selected_indices_by_group[group_index]
+            union_rescue_record = next(
+                (
+                    record
+                    for record in union_rescue_records
+                    if int(record.get("group_index", -1)) == int(group_index)
+                ),
+                None,
+            )
             if union_active:
                 final_indices = list(union_indices)
                 union_added_indices = sorted(set(union_indices) - set(selected_indices))
@@ -3368,6 +3574,18 @@ class ModelPagedKVCache:
                     "exact_promote_candidate_expansion_disable_reason": exact_promote_candidate_expansion_reason,
                     "exact_promote_enabled": bool(exact_promote_enabled),
                     "exact_promote_disable_reason": exact_promote_disable_reason,
+                    "union_exact_promote_rescue_applied": bool(
+                        union_rescue_record is not None and bool(union_rescue_record.get("applied", False))
+                    ),
+                    "union_exact_promote_rescue_disable_reason": (
+                        None if union_rescue_record is None else union_rescue_record.get("disable_reason")
+                    ),
+                    "union_exact_promote_rescue_selected_novel_count": int(
+                        0 if union_rescue_record is None else union_rescue_record.get("selected_novel_count", 0)
+                    ),
+                    "union_exact_promote_rescue_selected_novel_page_ranges": (
+                        [] if union_rescue_record is None else list(union_rescue_record.get("selected_novel_page_ranges", []))
+                    ),
                     "recent_neighbor_anchor_pages": int(recent_neighbor_anchor_pages),
                     "recent_neighbor_recent_old_pages": int(recent_neighbor_recent_old_pages),
                     "recent_neighbor_rescue_triggered": bool(recent_neighbor_rescue_triggered),
@@ -3469,6 +3687,7 @@ class ModelPagedKVCache:
         original_value_pages_by_group: list[Sequence[PageLike]] = []
         original_layouts: list[_PreparedDecodeViewLayout | None] = []
         shortlist_selected_indices_by_group: list[list[int] | None] = []
+        shortlist_trace_records_by_group: list[dict[str, object] | None] = []
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
@@ -3479,8 +3698,10 @@ class ModelPagedKVCache:
             kv_queries = scaled_queries[list(q_head_ids)]
             key_pages, value_pages = self._m2_prefilter_pages_torch(kv_queries, key_pages, value_pages)
             selected_indices = None
+            shortlist_trace_record = None
             if self.config.execution_shortlist_enabled():
                 representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                trace_record_count = len(self._execution_shortlist_trace_records)
                 selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
@@ -3489,6 +3710,8 @@ class ModelPagedKVCache:
                     context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
                     trace=trace,
                 )
+                if len(self._execution_shortlist_trace_records) > trace_record_count:
+                    shortlist_trace_record = dict(self._execution_shortlist_trace_records[-1])
             active_q_head_ids.append(q_head_ids)
             active_queries.append(kv_queries)
             original_key_pages_by_group.append(key_pages)
@@ -3498,6 +3721,7 @@ class ModelPagedKVCache:
             active_value_pages.append(value_pages)
             active_layouts.append(decode_layout)
             shortlist_selected_indices_by_group.append(selected_indices)
+            shortlist_trace_records_by_group.append(shortlist_trace_record)
 
         shortlist_group_union_applied = False
         shortlist_attempted = any(indices is not None for indices in shortlist_selected_indices_by_group)
@@ -3507,6 +3731,19 @@ class ModelPagedKVCache:
         if shortlist_attempted:
             total_pages_per_group = [len(pages) for pages in original_key_pages_by_group]
             shortlist_total_pages = int(sum(total_pages_per_group))
+            if len(active_queries) > 1 and layer_prefer_grouped_batching:
+                shortlist_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
+                    layer_id=layer_id,
+                    selected_indices_by_group=shortlist_selected_indices_by_group,
+                    key_pages_by_group=original_key_pages_by_group,
+                    representative_queries=[
+                        query.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                        for query in active_queries
+                    ],
+                    shortlist_traces_by_group=shortlist_trace_records_by_group,
+                    trace=trace,
+                )
+                self._execution_shortlist_trace_records.extend(union_rescue_records)
             union_indices = sorted(
                 {
                     index
