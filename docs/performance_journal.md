@@ -21,6 +21,10 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
 - CUDA has now validated the same core serving idea at higher context. The shortlist stays bounded at both `16384` and `32768`, so the long-context path is real and not a Mac-only artifact.
 - The remaining quality issue is narrow and stubborn: layer `23` is quality-sensitive, but most of the rescue strategies we tested did not buy enough quality back to justify their complexity or runtime cost.
 - The `32768` CUDA cliff is now very likely a grouped-decode locality / working-set problem, not a shortlist-size problem.
+- The first grouped-decode compaction probe is the first real systems win against that CUDA cliff:
+  - `16384`: basically flat
+  - `32768`: about `11%` faster decode on the same shortlist shape and flat quality
+  - the biggest movement is inside backend `mix`, not shortlist size or quality
 
 ### Positive Findings
 
@@ -40,6 +44,11 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
   - backend bytes and call counts stayed flat
   - resident/prepared working set grew substantially
   - decode time still jumped from `265.93 -> 1145.16 ms/step`
+- The first compact grouped-decode CUDA probe strengthens the locality diagnosis:
+  - baseline shortlist shape stayed fixed at both `16384` and `32768`
+  - quality stayed unchanged
+  - `32768` quality lane improved from `1338.65 -> 1191.86 ms/step`
+  - `32768` backend `mix` time improved sharply `387.38 -> 150.91 ms total`
 
 ### Negative Findings
 
@@ -77,16 +86,17 @@ This is the current serving-performance baseline for the Qwen3.5 shortlist work.
 
 ### Current Best Hypothesis
 
-The main remaining performance problem is in grouped decode under a larger resident/prepared working set. The strongest candidate is poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface.
+The main remaining performance problem is in grouped decode under a larger resident/prepared working set. The strongest candidate is poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface. The new compact grouped-decode CUDA result makes that explanation materially stronger because it improves `32768` decode without changing shortlist size or quality.
 
 ### Next Investigation
 
-- Treat the current shortlist baseline as the default path.
+- Treat the current shortlist baseline as the default path unless the compact CUDA probe keeps reproducing.
 - Stop spending time on more page-budget rescue variants unless new evidence appears.
-- Investigate the CUDA `32768` cliff as a locality issue in grouped decode:
-  - compare grouped decode behavior under compact contiguous scratch buffers versus the current prepared-chunk path
-  - measure whether score/mix time improves without changing shortlist size
-  - keep this benchmark-only until it proves out
+- Continue the CUDA `32768` locality investigation in grouped decode:
+  - rerun the compact path for reproducibility on the same `16384/32768` lane
+  - test one higher context if the CUDA box can hold it
+  - isolate why compact layout helps `mix` so much more than `score`
+  - keep this benchmark-only until it proves out across more than one run
 
 ## Historical Status
 
