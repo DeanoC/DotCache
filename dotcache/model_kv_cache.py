@@ -918,11 +918,11 @@ class _PersistentTailPage:
         self.source_page.runtime_page_min = dense.min(axis=0).astype(np.float32, copy=False)
         self.source_page.runtime_page_max = dense.max(axis=0).astype(np.float32, copy=False)
 
-    def _ensure_allocated(self, *, token_start: int) -> None:
+    def _ensure_allocated(self, *, token_start: int) -> bool:
         if self.source_page is not None and self.prepared_page is not None and self.host_buffer is not None:
             self.source_page.header.token_start = int(token_start)
             self.prepared_page.header.token_start = int(token_start)
-            return
+            return False
 
         try:
             import torch
@@ -981,6 +981,7 @@ class _PersistentTailPage:
         self.resident_nbytes = int(device_payload.numel() * device_payload.element_size()) + (
             0 if device_scales is None else int(device_scales.numel() * device_scales.element_size())
         )
+        return True
 
     def load_rows(
         self,
@@ -1167,6 +1168,8 @@ class _HeadSessionState:
     decode_value_pages_with_tail: list[PageLike] | None = None
     decode_view_layout: _PreparedDecodeViewLayout | None = None
     sequence_length: int = 0
+    tracked_direct_prepared_pages: dict[int, int] = field(default_factory=dict)
+    tracked_tail_resident_bytes: int = 0
 
     def invalidate_decode_views(self) -> None:
         self.decode_key_pages_with_tail = None
@@ -1244,39 +1247,108 @@ class ModelPagedKVCache:
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
+        self._direct_prepared_page_resident_bytes = 0
+        self._direct_prepared_page_refcounts: dict[int, int] = {}
+        self._direct_prepared_page_sizes: dict[int, int] = {}
+        self._tail_resident_bytes = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
+        self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
 
     @property
     def resident_bytes(self) -> int:
         return self.resident_byte_summary()["resident_bytes"]
 
-    def _kv_resident_byte_summary(self) -> dict[str, int]:
-        static_resident_bytes = 0
-        tail_resident_bytes = 0
-        seen_prepared_pages: set[int] = set()
+    @staticmethod
+    def _prepared_page_resident_bytes(page: PreparedPageTorch) -> int:
+        resident_nbytes = int(page.resident_nbytes)
+        return resident_nbytes if resident_nbytes > 0 else int(page.host_to_device_nbytes)
+
+    def _collect_state_direct_prepared_pages(self, state: _HeadSessionState) -> dict[int, int]:
+        direct_pages: dict[int, int] = {}
+        for page in state.session.key_pages:
+            if isinstance(page, PreparedPageTorch) and not self.cache.owns_prepared_page(page):
+                direct_pages[id(page)] = self._prepared_page_resident_bytes(page)
+        for page in state.session.value_pages:
+            if isinstance(page, PreparedPageTorch) and not self.cache.owns_prepared_page(page):
+                direct_pages[id(page)] = self._prepared_page_resident_bytes(page)
+        return direct_pages
+
+    @staticmethod
+    def _collect_state_tail_resident_bytes(state: _HeadSessionState) -> int:
+        total = 0
+        if state.persistent_key_tail is not None:
+            total += int(state.persistent_key_tail.resident_nbytes)
+        if state.persistent_value_tail is not None:
+            total += int(state.persistent_value_tail.resident_nbytes)
+        return total
+
+    def _reset_resident_accounting(self) -> None:
+        self._direct_prepared_page_resident_bytes = 0
+        self._direct_prepared_page_refcounts.clear()
+        self._direct_prepared_page_sizes.clear()
+        self._tail_resident_bytes = 0
         for state in self._states.values():
-            for page in state.session.key_pages:
-                if not isinstance(page, PreparedPageTorch):
-                    continue
-                page_id = id(page)
-                if page_id in seen_prepared_pages or self.cache.owns_prepared_page(page):
-                    continue
-                seen_prepared_pages.add(page_id)
-                static_resident_bytes += int(page.resident_nbytes) if int(page.resident_nbytes) > 0 else int(page.host_to_device_nbytes)
-            for page in state.session.value_pages:
-                if not isinstance(page, PreparedPageTorch):
-                    continue
-                page_id = id(page)
-                if page_id in seen_prepared_pages or self.cache.owns_prepared_page(page):
-                    continue
-                seen_prepared_pages.add(page_id)
-                static_resident_bytes += int(page.resident_nbytes) if int(page.resident_nbytes) > 0 else int(page.host_to_device_nbytes)
-            if state.persistent_key_tail is not None:
-                tail_resident_bytes += state.persistent_key_tail.resident_nbytes
-            if state.persistent_value_tail is not None:
-                tail_resident_bytes += state.persistent_value_tail.resident_nbytes
-        kv_resident_bytes = self.cache.resident_bytes + static_resident_bytes + tail_resident_bytes
+            state.tracked_direct_prepared_pages.clear()
+            state.tracked_tail_resident_bytes = 0
+
+    def _refresh_state_resident_accounting(self, state: _HeadSessionState) -> bool:
+        resident_bytes_changed = False
+        new_direct_pages = self._collect_state_direct_prepared_pages(state)
+        old_direct_pages = state.tracked_direct_prepared_pages
+
+        removed_page_ids = set(old_direct_pages) - set(new_direct_pages)
+        for page_id in removed_page_ids:
+            refcount = int(self._direct_prepared_page_refcounts.get(page_id, 0)) - 1
+            if refcount <= 0:
+                self._direct_prepared_page_refcounts.pop(page_id, None)
+                removed_size = int(self._direct_prepared_page_sizes.pop(page_id, old_direct_pages[page_id]))
+                self._direct_prepared_page_resident_bytes = max(
+                    0,
+                    int(self._direct_prepared_page_resident_bytes) - removed_size,
+                )
+            else:
+                self._direct_prepared_page_refcounts[page_id] = refcount
+            resident_bytes_changed = True
+
+        added_page_ids = set(new_direct_pages) - set(old_direct_pages)
+        for page_id in added_page_ids:
+            page_size = int(new_direct_pages[page_id])
+            refcount = int(self._direct_prepared_page_refcounts.get(page_id, 0))
+            if refcount <= 0:
+                self._direct_prepared_page_sizes[page_id] = page_size
+                self._direct_prepared_page_resident_bytes += page_size
+                resident_bytes_changed = True
+            self._direct_prepared_page_refcounts[page_id] = refcount + 1
+
+        for page_id, page_size in new_direct_pages.items():
+            if page_id not in old_direct_pages:
+                continue
+            previous_size = int(self._direct_prepared_page_sizes.get(page_id, old_direct_pages[page_id]))
+            if previous_size == int(page_size):
+                continue
+            self._direct_prepared_page_sizes[page_id] = int(page_size)
+            self._direct_prepared_page_resident_bytes += int(page_size) - previous_size
+            resident_bytes_changed = True
+
+        new_tail_resident_bytes = self._collect_state_tail_resident_bytes(state)
+        if new_tail_resident_bytes != int(state.tracked_tail_resident_bytes):
+            self._tail_resident_bytes += int(new_tail_resident_bytes) - int(state.tracked_tail_resident_bytes)
+            state.tracked_tail_resident_bytes = int(new_tail_resident_bytes)
+            resident_bytes_changed = True
+
+        state.tracked_direct_prepared_pages = new_direct_pages
+        return resident_bytes_changed
+
+    def _rebuild_resident_accounting(self) -> None:
+        self._reset_resident_accounting()
+        for state in self._states.values():
+            self._refresh_state_resident_accounting(state)
+
+    def _kv_resident_byte_summary(self) -> dict[str, int]:
+        static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
+        tail_resident_bytes = int(self._tail_resident_bytes)
+        kv_resident_bytes = int(self.cache.resident_bytes) + static_resident_bytes + tail_resident_bytes
         return {
             "prepared_page_cache_resident_bytes": int(self.cache.resident_bytes),
             "direct_page_resident_bytes": int(static_resident_bytes),
@@ -1304,15 +1376,20 @@ class ModelPagedKVCache:
         if bool(freeze_during_decode and self.config.execution_freeze_chunk_budget_during_decode):
             if self._prepared_chunk_cache_frozen_budget_bytes is None:
                 self._prepared_chunk_cache_frozen_budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+            if self._prepared_chunk_cache_applied_budget_bytes != int(self._prepared_chunk_cache_frozen_budget_bytes):
                 set_prepared_chunk_cache_budget_override(
                     max_resident_bytes=self._prepared_chunk_cache_frozen_budget_bytes,
                 )
+                self._prepared_chunk_cache_applied_budget_bytes = int(self._prepared_chunk_cache_frozen_budget_bytes)
             self._prepared_chunk_cache_budget_dirty = False
             return
         self._prepared_chunk_cache_frozen_budget_bytes = None
-        set_prepared_chunk_cache_budget_override(
-            max_resident_bytes=self._prepared_chunk_cache_budget_bytes(),
-        )
+        budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+        if self._prepared_chunk_cache_applied_budget_bytes != budget_bytes:
+            set_prepared_chunk_cache_budget_override(
+                max_resident_bytes=budget_bytes,
+            )
+            self._prepared_chunk_cache_applied_budget_bytes = budget_bytes
         self._prepared_chunk_cache_budget_dirty = False
 
     def _mark_prepared_chunk_cache_budget_dirty(self) -> None:
@@ -2235,7 +2312,9 @@ class ModelPagedKVCache:
         self._execution_exact_refine_selected_pages_by_layer = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer = {}
+        self._reset_resident_accounting()
         self._prepared_chunk_cache_frozen_budget_bytes = None
+        self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
     def clear_layer(self, layer_id: int) -> None:
@@ -2247,6 +2326,7 @@ class ModelPagedKVCache:
             self._states[key].clear(clear_prepared_cache=False)
         self.cache.clear()
         clear_prepared_chunk_cache()
+        self._rebuild_resident_accounting()
         self._decode_path_counts_by_layer.pop(int(layer_id), None)
         self._decode_path_counts = {
             "grouped_batched": 0,
@@ -2265,6 +2345,9 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_candidate_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_selected_pages_by_layer.pop(int(layer_id), None)
+        self._prepared_chunk_cache_frozen_budget_bytes = None
+        self._prepared_chunk_cache_applied_budget_bytes = None
+        self._prepared_chunk_cache_budget_dirty = True
         self._decode_stage_timings_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_invocations = sum(self._execution_shortlist_invocations_by_layer.values())
         self._execution_shortlist_applied = sum(self._execution_shortlist_applied_by_layer.values())
@@ -2443,6 +2526,7 @@ class ModelPagedKVCache:
         key_pages: list[PageLike] = []
         value_refs: list[tuple[_HeadSessionState, int]] = []
         value_pages: list[PageLike] = []
+        touched_states: dict[int, _HeadSessionState] = {}
 
         for state in self._states.values():
             for index, page in enumerate(state.session.key_pages):
@@ -2450,11 +2534,13 @@ class ModelPagedKVCache:
                     continue
                 key_refs.append((state, index))
                 key_pages.append(page)
+                touched_states[id(state)] = state
             for index, page in enumerate(state.session.value_pages):
                 if isinstance(page, PreparedPageTorch):
                     continue
                 value_refs.append((state, index))
                 value_pages.append(page)
+                touched_states[id(state)] = state
 
         if key_pages:
             prepared_keys = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
@@ -2466,7 +2552,10 @@ class ModelPagedKVCache:
             for (state, index), prepared in zip(value_refs, prepared_values, strict=True):
                 state.session.value_pages[index] = prepared
                 state.invalidate_decode_views()
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if key_pages or value_pages:
+            for state in touched_states.values():
+                self._refresh_state_resident_accounting(state)
+            self._mark_prepared_chunk_cache_budget_dirty()
 
     def _ensure_prepared_static_pages(
         self,
@@ -2476,6 +2565,7 @@ class ModelPagedKVCache:
     ) -> None:
         if self._torch_device_type is None:
             return
+        state_changed = False
         if state.session.key_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
             state.session.key_pages = prepare_pages(
                 state.session.key_pages,
@@ -2484,6 +2574,7 @@ class ModelPagedKVCache:
                 trace=trace,
             )
             state.invalidate_decode_views()
+            state_changed = True
         if state.session.value_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages):
             state.session.value_pages = prepare_pages(
                 state.session.value_pages,
@@ -2492,7 +2583,10 @@ class ModelPagedKVCache:
                 trace=trace,
             )
             state.invalidate_decode_views()
-        self._mark_prepared_chunk_cache_budget_dirty()
+            state_changed = True
+        if state_changed:
+            self._refresh_state_resident_accounting(state)
+            self._mark_prepared_chunk_cache_budget_dirty()
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
@@ -2913,6 +3007,7 @@ class ModelPagedKVCache:
                 token_start=full_tokens,
                 trace=trace,
             )
+        self._rebuild_resident_accounting()
         self._mark_prepared_chunk_cache_budget_dirty()
 
     def ingest_prefill_cache_torch(
@@ -3039,6 +3134,7 @@ class ModelPagedKVCache:
                 values[:, full_tokens:],
                 token_start=full_tokens,
             )
+        self._rebuild_resident_accounting()
         self._mark_prepared_chunk_cache_budget_dirty()
 
     def append_step(
@@ -3066,6 +3162,7 @@ class ModelPagedKVCache:
             raise ValueError("key_step and value_step token counts must match")
         token_count = int(keys.shape[1])
 
+        resident_bytes_changed = False
         if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
@@ -3073,12 +3170,18 @@ class ModelPagedKVCache:
                 key_tail = key_tails[kv_head_id]
                 value_tail = value_tails[kv_head_id]
                 if key_tail is not None:
-                    key_tail._ensure_allocated(
-                        token_start=token_index if key_tail.token_count == 0 else key_tail.source_page.header.token_start
+                    resident_bytes_changed = (
+                        key_tail._ensure_allocated(
+                            token_start=token_index if key_tail.token_count == 0 else key_tail.source_page.header.token_start
+                        )
+                        or resident_bytes_changed
                     )
                 if value_tail is not None:
-                    value_tail._ensure_allocated(
-                        token_start=token_index if value_tail.token_count == 0 else value_tail.source_page.header.token_start
+                    resident_bytes_changed = (
+                        value_tail._ensure_allocated(
+                            token_start=token_index if value_tail.token_count == 0 else value_tail.source_page.header.token_start
+                        )
+                        or resident_bytes_changed
                     )
             self._batch_upload_persistent_tail_rows(key_tails, keys, token_start=token_index, trace=trace)
             self._batch_upload_persistent_tail_rows(value_tails, values, token_start=token_index, trace=trace)
@@ -3102,7 +3205,11 @@ class ModelPagedKVCache:
                     state.persistent_key_tail.clear()
                     state.persistent_value_tail.clear()
             state.sequence_length += token_count
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if resident_bytes_changed:
+            for kv_head_id in range(self.num_key_value_heads):
+                self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
+            self._mark_prepared_chunk_cache_budget_dirty()
+        return
 
     def append_step_torch(
         self,
@@ -3154,6 +3261,7 @@ class ModelPagedKVCache:
 
         key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
         value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+        resident_bytes_changed = False
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             if state.sequence_length != token_index:
@@ -3161,16 +3269,22 @@ class ModelPagedKVCache:
                     f"layer {layer_id} kv_head {kv_head_id} expected token_index {state.sequence_length}, received {token_index}"
                 )
             if key_tails[kv_head_id] is not None:
-                key_tails[kv_head_id]._ensure_allocated(
-                    token_start=token_index
-                    if key_tails[kv_head_id].token_count == 0
-                    else key_tails[kv_head_id].source_page.header.token_start
+                resident_bytes_changed = (
+                    key_tails[kv_head_id]._ensure_allocated(
+                        token_start=token_index
+                        if key_tails[kv_head_id].token_count == 0
+                        else key_tails[kv_head_id].source_page.header.token_start
+                    )
+                    or resident_bytes_changed
                 )
             if value_tails[kv_head_id] is not None:
-                value_tails[kv_head_id]._ensure_allocated(
-                    token_start=token_index
-                    if value_tails[kv_head_id].token_count == 0
-                    else value_tails[kv_head_id].source_page.header.token_start
+                resident_bytes_changed = (
+                    value_tails[kv_head_id]._ensure_allocated(
+                        token_start=token_index
+                        if value_tails[kv_head_id].token_count == 0
+                        else value_tails[kv_head_id].source_page.header.token_start
+                    )
+                    or resident_bytes_changed
                 )
 
         self._batch_append_persistent_tail_tensors(key_tails, keys, token_start=token_index)
@@ -3215,7 +3329,10 @@ class ModelPagedKVCache:
                 state.persistent_key_tail.clear()
                 state.persistent_value_tail.clear()
             state.sequence_length += token_count
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if resident_bytes_changed:
+            for kv_head_id in range(self.num_key_value_heads):
+                self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
+            self._mark_prepared_chunk_cache_budget_dirty()
 
     def _prepared_pages_with_tail(
         self,

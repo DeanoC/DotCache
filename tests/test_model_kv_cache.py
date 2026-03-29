@@ -778,8 +778,83 @@ def test_model_paged_kv_cache_can_freeze_chunk_budget_sync_during_decode(monkeyp
     cache._mark_prepared_chunk_cache_budget_dirty()
     cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
     assert budget_compute_calls == [1, 1]
-    assert budget_override_calls == [1234, 1234]
+    assert budget_override_calls == [1234]
     assert cache._prepared_chunk_cache_budget_dirty is False
+
+
+def test_model_paged_kv_cache_skips_reapplying_unchanged_chunk_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not mps_available():
+        return
+
+    cache = ModelPagedKVCache(
+        config=DotCacheConfig(
+            head_dim=32,
+            group_size=32,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=4,
+        ),
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    budget_compute_calls: list[int] = []
+    budget_override_calls: list[int] = []
+
+    def _fake_budget_bytes(*, kv_resident_bytes: int | None = None) -> int:
+        del kv_resident_bytes
+        budget_compute_calls.append(1)
+        return 1234
+
+    def _fake_budget_override(*, max_resident_bytes: int | None) -> None:
+        budget_override_calls.append(-1 if max_resident_bytes is None else int(max_resident_bytes))
+
+    monkeypatch.setattr(cache, "_prepared_chunk_cache_budget_bytes", _fake_budget_bytes)
+    monkeypatch.setattr("dotcache.model_kv_cache.set_prepared_chunk_cache_budget_override", _fake_budget_override)
+
+    cache._prepared_chunk_cache_budget_dirty = True
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty()
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1, 1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+
+def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(31021)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    key_step = torch.from_numpy(rng.normal(size=(1, 2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+    value_step = torch.from_numpy(rng.normal(size=(1, 2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+    summary_before_append = cache.resident_byte_summary()
+    cache._prepared_chunk_cache_budget_dirty = False
+
+    cache.append_step_torch(0, key_step, value_step, 5)
+    summary_after_append = cache.resident_byte_summary()
+
+    assert cache._prepared_chunk_cache_budget_dirty is False
+    assert summary_after_append["tail_resident_bytes"] == summary_before_append["tail_resident_bytes"]
+    assert summary_after_append["kv_resident_bytes"] == summary_before_append["kv_resident_bytes"]
 
 
 def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:
