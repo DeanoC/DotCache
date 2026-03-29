@@ -277,6 +277,21 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
         )
     if args.execution_relevance_mode == "envelope":
         args.execution_relevance_mode = str(profile.get("execution_relevance_mode", args.execution_relevance_mode))
+    if args.execution_exact_promote_top_k == 0:
+        args.execution_exact_promote_top_k = int(
+            profile.get("execution_exact_promote_top_k", args.execution_exact_promote_top_k)
+        )
+    if args.execution_exact_promote_margin_threshold == 0.0:
+        args.execution_exact_promote_margin_threshold = float(
+            profile.get(
+                "execution_exact_promote_margin_threshold",
+                args.execution_exact_promote_margin_threshold,
+            )
+        )
+    if not args.execution_exact_promote_layer:
+        args.execution_exact_promote_layer = list(
+            profile.get("execution_exact_promote_layers", args.execution_exact_promote_layer)
+        )
     if args.execution_exact_refine_top_k == 0:
         args.execution_exact_refine_top_k = int(
             profile.get("execution_exact_refine_top_k", args.execution_exact_refine_top_k)

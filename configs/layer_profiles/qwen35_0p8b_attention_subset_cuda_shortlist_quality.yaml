@@ -1,0 +1,38 @@
+model_id: Qwen/Qwen3.5-0.8B
+source:
+  benchmark: >
+    CUDA Qwen3.5 attention-subset DotCache shortlist quality mode derived from
+    the shortlist baseline plus exact promotion on high-margin layer-23 misses.
+  backend: torch_cuda
+  prompt_lengths: 16K, 32K
+  tokens_per_page: 16
+  notes: >
+    Optional quality-biased shortlist mode. Keeps the baseline shortlist policy
+    and promotes up to two exact pages on layer 23 when the normalized shortlist
+    boundary margin is high enough to justify the extra latency.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+recent_window: 0
+
+execution_recent_window: 1024
+execution_sink_window: 256
+execution_relevance_top_k: 4
+execution_relevance_mode: envelope
+execution_relevance_top_k_context_overrides:
+  - layer:23:min_ctx:32768=8
+execution_exact_promote_top_k: 2
+execution_exact_promote_margin_threshold: 0.0558
+execution_exact_promote_layers:
+  - 23
+
+key_layer_sensitivity:
+  - layer:11=strict
+  - layer:19=strict
+
+value_policy_overrides:
+  - layer:15=M0/affine/4,M0/affine/3,M1/lut/4
+
+value_mode_overrides:
+  - layer:19=M3
+  - layer:23=M3

@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-relevance-top-k-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-top-k-context-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-mode", choices=["sketch", "envelope"], default="envelope")
+    parser.add_argument("--execution-exact-promote-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-promote-margin-threshold", type=float, default=0.0)
+    parser.add_argument("--execution-exact-promote-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -147,6 +150,21 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
         )
     if args.execution_relevance_mode == "envelope":
         args.execution_relevance_mode = str(profile.get("execution_relevance_mode", args.execution_relevance_mode))
+    if args.execution_exact_promote_top_k == 0:
+        args.execution_exact_promote_top_k = int(
+            profile.get("execution_exact_promote_top_k", args.execution_exact_promote_top_k)
+        )
+    if args.execution_exact_promote_margin_threshold == 0.0:
+        args.execution_exact_promote_margin_threshold = float(
+            profile.get(
+                "execution_exact_promote_margin_threshold",
+                args.execution_exact_promote_margin_threshold,
+            )
+        )
+    if not args.execution_exact_promote_layer:
+        args.execution_exact_promote_layer = list(
+            profile.get("execution_exact_promote_layers", args.execution_exact_promote_layer)
+        )
     if args.execution_exact_refine_top_k == 0:
         args.execution_exact_refine_top_k = int(
             profile.get("execution_exact_refine_top_k", args.execution_exact_refine_top_k)
@@ -184,6 +202,9 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_relevance_top_k_overrides=tuple(args.execution_relevance_top_k_layer),
         execution_relevance_top_k_context_overrides=tuple(args.execution_relevance_top_k_context_layer),
         execution_relevance_mode=args.execution_relevance_mode,
+        execution_exact_promote_top_k=args.execution_exact_promote_top_k,
+        execution_exact_promote_margin_threshold=args.execution_exact_promote_margin_threshold,
+        execution_exact_promote_layers=tuple(args.execution_exact_promote_layer),
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -272,6 +293,9 @@ def main() -> None:
             "execution_relevance_top_k_overrides": list(args.execution_relevance_top_k_layer),
             "execution_relevance_top_k_context_overrides": list(args.execution_relevance_top_k_context_layer),
             "execution_relevance_mode": args.execution_relevance_mode,
+            "execution_exact_promote_top_k": args.execution_exact_promote_top_k,
+            "execution_exact_promote_margin_threshold": args.execution_exact_promote_margin_threshold,
+            "execution_exact_promote_layers": list(args.execution_exact_promote_layer),
             "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
             "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
             "m2_sketch_dim_k": args.m2_sketch_dim_k,
