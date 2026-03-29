@@ -1,0 +1,182 @@
+{
+  "baseline": {
+    "16384": {
+      "dotcache_decode_ms_per_step": 265.92763839289546,
+      "execution_shortlist_selected_pages": 2056,
+      "execution_shortlist_selected_pages_by_layer_23": 356,
+      "memory": {
+        "direct_page_resident_bytes": 75497472,
+        "dotcache_decode_cuda_peak_memory_allocated_bytes": 2342852096,
+        "dotcache_decode_cuda_peak_memory_reserved_bytes": 3634364416,
+        "dotcache_prefill_cuda_peak_memory_allocated_bytes": 3305597952,
+        "dotcache_prefill_cuda_peak_memory_reserved_bytes": 3579838464,
+        "kv_resident_bytes": 75694080,
+        "prepared_chunk_resident_bytes": 36265984,
+        "resident_bytes": 111960064
+      },
+      "teacher_forced_logit_mean_abs_error": 0.4154644012451172,
+      "teacher_forced_logit_rmse": 0.5244045257568359,
+      "trace": {
+        "chunk_assembly_ms_total": 0.6318935193121433,
+        "metadata_bytes_read": 3845500,
+        "mix_calls": 48,
+        "mix_ms_total": 156.7749809473753,
+        "payload_bytes_read": 8359936,
+        "score_calls": 48,
+        "score_ms_total": 159.61083490401506,
+        "softmax_ms_total": 0.41467975825071335,
+        "unpack_ms_total": 0.0
+      }
+    },
+    "32768": {
+      "dotcache_decode_ms_per_step": 1145.1641754247248,
+      "execution_shortlist_selected_pages": 2056,
+      "execution_shortlist_selected_pages_by_layer_23": 356,
+      "memory": {
+        "direct_page_resident_bytes": 150994944,
+        "dotcache_decode_cuda_peak_memory_allocated_bytes": 2851511808,
+        "dotcache_decode_cuda_peak_memory_reserved_bytes": 5702156288,
+        "dotcache_prefill_cuda_peak_memory_allocated_bytes": 4827869184,
+        "dotcache_prefill_cuda_peak_memory_reserved_bytes": 5647630336,
+        "kv_resident_bytes": 151191552,
+        "prepared_chunk_resident_bytes": 65994752,
+        "resident_bytes": 217186304
+      },
+      "teacher_forced_logit_mean_abs_error": 0.4214775264263153,
+      "teacher_forced_logit_rmse": 0.5318449139595032,
+      "trace": {
+        "chunk_assembly_ms_total": 0.6547747179865837,
+        "metadata_bytes_read": 3845550,
+        "mix_calls": 48,
+        "mix_ms_total": 476.22634610161185,
+        "payload_bytes_read": 8359936,
+        "score_calls": 48,
+        "score_ms_total": 417.5329878926277,
+        "softmax_ms_total": 0.45325420796871185,
+        "unpack_ms_total": 0.0
+      }
+    }
+  },
+  "derived": {
+    "baseline_32768_vs_16384": {
+      "decode_ms_ratio": 4.30629994815657,
+      "decode_reserved_bytes_ratio": 1.5689555683785343,
+      "metadata_bytes_ratio": 1.0000130022103757,
+      "mix_ms_ratio": 3.0376425066284454,
+      "payload_bytes_ratio": 1.0,
+      "prepared_chunk_resident_bytes_ratio": 1.8197424892703862,
+      "resident_bytes_ratio": 1.9398551254847443,
+      "score_ms_ratio": 2.615943887166049,
+      "softmax_ms_ratio": 1.0930222634466682
+    }
+  },
+  "unionwide_confirm": {
+    "16384": {
+      "dotcache_decode_ms_per_step": 271.2457049638033,
+      "execution_shortlist_selected_pages": 2056,
+      "execution_shortlist_selected_pages_by_layer_23": 356,
+      "layer23_groups": [
+        {
+          "kv_head_id": 0,
+          "selected_old_pages": 17,
+          "selected_pages": 97,
+          "union_added_exact_top_hits": 3,
+          "union_added_mean_exact_rank": 6.0,
+          "union_added_pages": 3,
+          "union_exact_promote_rescue_applied": true,
+          "union_exact_promote_rescue_selected_novel_count": 2,
+          "union_exact_promote_rescue_selected_novel_page_ranges": [
+            "829:13264-13280",
+            "843:13488-13504"
+          ]
+        },
+        {
+          "kv_head_id": 1,
+          "selected_old_pages": 17,
+          "selected_pages": 97,
+          "union_added_exact_top_hits": 1,
+          "union_added_mean_exact_rank": 41.0,
+          "union_added_pages": 5,
+          "union_exact_promote_rescue_applied": false,
+          "union_exact_promote_rescue_selected_novel_count": 0,
+          "union_exact_promote_rescue_selected_novel_page_ranges": []
+        }
+      ],
+      "memory": {
+        "direct_page_resident_bytes": 75497472,
+        "dotcache_decode_cuda_peak_memory_allocated_bytes": 2342852096,
+        "dotcache_decode_cuda_peak_memory_reserved_bytes": 3634364416,
+        "dotcache_prefill_cuda_peak_memory_allocated_bytes": 3305597952,
+        "dotcache_prefill_cuda_peak_memory_reserved_bytes": 3579838464,
+        "kv_resident_bytes": 75694080,
+        "prepared_chunk_resident_bytes": 36265984,
+        "resident_bytes": 111960064
+      },
+      "teacher_forced_logit_mean_abs_error": 0.4154644012451172,
+      "teacher_forced_logit_rmse": 0.5244045257568359,
+      "trace": {
+        "chunk_assembly_ms_total": 0.6721010431647301,
+        "metadata_bytes_read": 3845500,
+        "mix_calls": 48,
+        "mix_ms_total": 175.8005926385522,
+        "payload_bytes_read": 8359936,
+        "score_calls": 48,
+        "score_ms_total": 178.41811245307326,
+        "softmax_ms_total": 0.4298146814107895,
+        "unpack_ms_total": 0.0
+      }
+    },
+    "32768": {
+      "dotcache_decode_ms_per_step": 1209.8106059711426,
+      "execution_shortlist_selected_pages": 2056,
+      "execution_shortlist_selected_pages_by_layer_23": 356,
+      "layer23_groups": [
+        {
+          "kv_head_id": 0,
+          "selected_old_pages": 10,
+          "selected_pages": 90,
+          "union_added_exact_top_hits": 1,
+          "union_added_mean_exact_rank": 7.5,
+          "union_added_pages": 2,
+          "union_exact_promote_rescue_applied": false,
+          "union_exact_promote_rescue_selected_novel_count": 0,
+          "union_exact_promote_rescue_selected_novel_page_ranges": []
+        },
+        {
+          "kv_head_id": 1,
+          "selected_old_pages": 10,
+          "selected_pages": 90,
+          "union_added_exact_top_hits": 1,
+          "union_added_mean_exact_rank": 19.0,
+          "union_added_pages": 2,
+          "union_exact_promote_rescue_applied": false,
+          "union_exact_promote_rescue_selected_novel_count": 0,
+          "union_exact_promote_rescue_selected_novel_page_ranges": []
+        }
+      ],
+      "memory": {
+        "direct_page_resident_bytes": 150994944,
+        "dotcache_decode_cuda_peak_memory_allocated_bytes": 2851511808,
+        "dotcache_decode_cuda_peak_memory_reserved_bytes": 5702156288,
+        "dotcache_prefill_cuda_peak_memory_allocated_bytes": 4827869184,
+        "dotcache_prefill_cuda_peak_memory_reserved_bytes": 5647630336,
+        "kv_resident_bytes": 151191552,
+        "prepared_chunk_resident_bytes": 65994752,
+        "resident_bytes": 217186304
+      },
+      "teacher_forced_logit_mean_abs_error": 0.4214775264263153,
+      "teacher_forced_logit_rmse": 0.5318449139595032,
+      "trace": {
+        "chunk_assembly_ms_total": 0.6283130496740341,
+        "metadata_bytes_read": 3845550,
+        "mix_calls": 48,
+        "mix_ms_total": 232.74142993614078,
+        "payload_bytes_read": 8359936,
+        "score_calls": 48,
+        "score_ms_total": 483.575330581516,
+        "softmax_ms_total": 0.43064309284090996,
+        "unpack_ms_total": 0.0
+      }
+    }
+  }
+}
