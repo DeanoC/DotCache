@@ -40,6 +40,11 @@ _DECODE_STAGE_TIMING_STAGES = (
     "shortlist_selection",
     "shortlist_base_window",
     "shortlist_candidate_scoring",
+    "shortlist_candidate_approx_scoring",
+    "shortlist_candidate_ranking",
+    "shortlist_candidate_secondary_scoring",
+    "shortlist_candidate_neighbor_rescue",
+    "shortlist_candidate_builtin_selection",
     "shortlist_exact_selection",
     "shortlist_union_rescue",
     "shortlist_materialization",
@@ -2062,6 +2067,7 @@ class ModelPagedKVCache:
                 candidate_indices = [index for index in range(len(key_pages)) if index not in base_indices]
                 if candidate_indices:
                     approx_scores: list[float] = []
+                    shortlist_candidate_approx_scoring_started_at = _stage_start()
                     for index in candidate_indices:
                         approx_score = _score_page_relevance_for_mode(
                             np.asarray(query_slice, dtype=np.float32),
@@ -2071,6 +2077,8 @@ class ModelPagedKVCache:
                         if approx_score is None:
                             return None
                         approx_scores.append(float(approx_score))
+                    _stage_finish("shortlist_candidate_approx_scoring", shortlist_candidate_approx_scoring_started_at)
+                    shortlist_candidate_ranking_started_at = _stage_start()
                     score_scale = max(float(np.std(np.asarray(approx_scores, dtype=np.float32))), 1e-6)
                     recent_start = int(context_length) - int(layer_recent_window) if layer_recent_window > 0 and context_length is not None else int(context_length or 0)
                     adjusted_scores = [
@@ -2102,7 +2110,9 @@ class ModelPagedKVCache:
                     ]
                     stage1_ranked_candidates = ranked_candidates[:candidate_relevance_top_k]
                     stage1_indices = sorted(base_indices.union(stage1_ranked_candidates))
+                    _stage_finish("shortlist_candidate_ranking", shortlist_candidate_ranking_started_at)
                     if use_recent_neighbor_rescue and layer_recent_window > 0 and context_length is not None:
+                        shortlist_candidate_neighbor_rescue_started_at = _stage_start()
                         recent_start = int(context_length) - int(layer_recent_window)
                         primary_top_indices = stage1_ranked_candidates[:layer_relevance_top_k]
                         anchor_pages = [
@@ -2140,7 +2150,9 @@ class ModelPagedKVCache:
                                 probe_index -= 1
                             if rescue_indices:
                                 stage1_indices = sorted(stage1_index_set.union(rescue_indices))
+                        _stage_finish("shortlist_candidate_neighbor_rescue", shortlist_candidate_neighbor_rescue_started_at)
                     if use_secondary_relevance_rescue and layer_relevance_top_k > 0:
+                        shortlist_candidate_secondary_scoring_started_at = _stage_start()
                         secondary_scores: list[float] = []
                         for index in candidate_indices:
                             secondary_score = _score_page_relevance_for_mode(
@@ -2179,11 +2191,13 @@ class ModelPagedKVCache:
                                         break
                                 if rescue_indices:
                                     stage1_indices = sorted(set(stage1_indices).union(rescue_indices))
+                        _stage_finish("shortlist_candidate_secondary_scoring", shortlist_candidate_secondary_scoring_started_at)
                 else:
                     stage1_indices = sorted(base_indices)
             else:
                 stage1_indices = sorted(base_indices)
         else:
+            shortlist_candidate_builtin_selection_started_at = _stage_start()
             stage1_indices = select_execution_page_indices(
                 key_pages,
                 recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
@@ -2195,6 +2209,7 @@ class ModelPagedKVCache:
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
             )
+            _stage_finish("shortlist_candidate_builtin_selection", shortlist_candidate_builtin_selection_started_at)
         _stage_finish("shortlist_candidate_scoring", shortlist_candidate_scoring_started_at)
         if not self._execution_exact_refine_enabled(layer_id=layer_id):
             promote_enabled, promote_disable_reason = self._execution_exact_promote_status(
