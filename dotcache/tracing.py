@@ -30,6 +30,25 @@ class ExecutionTrace:
     fwht_calls: int = 0
     chunk_assembly_ms_total: float = 0.0
     chunk_assembly_calls: int = 0
+    grouped_decode_calls: int = 0
+    grouped_decode_output_only_calls: int = 0
+    grouped_score_chunk_count: int = 0
+    grouped_mix_chunk_count: int = 0
+    grouped_score_chunk_pages_total: int = 0
+    grouped_mix_chunk_pages_total: int = 0
+    grouped_score_chunk_pages_max: int = 0
+    grouped_mix_chunk_pages_max: int = 0
+    grouped_logits_elements_total: int = 0
+    grouped_weights_elements_total: int = 0
+    grouped_output_elements_total: int = 0
+    grouped_score_packed_cuda_calls: int = 0
+    grouped_score_fused_two_group64_calls: int = 0
+    grouped_score_fused_generic_calls: int = 0
+    grouped_score_generic_calls: int = 0
+    grouped_mix_packed_cuda_calls: int = 0
+    grouped_mix_fused_two_group64_calls: int = 0
+    grouped_mix_fused_generic_calls: int = 0
+    grouped_mix_generic_calls: int = 0
 
     def record_page_read(self, payload_bytes: int, metadata_bytes: int) -> None:
         self.payload_bytes_read += int(payload_bytes)
@@ -56,6 +75,69 @@ class ExecutionTrace:
     def record_cache_eviction(self, nbytes: int, count: int = 1) -> None:
         self.prepared_page_cache_evictions += int(count)
         self.cache_evicted_bytes += int(nbytes)
+
+    def record_grouped_decode_call(self, *, output_only: bool) -> None:
+        if output_only:
+            self.grouped_decode_output_only_calls += 1
+            return
+        self.grouped_decode_calls += 1
+
+    def record_grouped_score_chunk(
+        self,
+        *,
+        batch_size: int,
+        query_count: int,
+        page_count: int,
+        token_count: int,
+    ) -> None:
+        self.grouped_score_chunk_count += 1
+        self.grouped_score_chunk_pages_total += int(page_count)
+        self.grouped_score_chunk_pages_max = max(self.grouped_score_chunk_pages_max, int(page_count))
+        self.grouped_logits_elements_total += int(batch_size) * int(query_count) * int(page_count) * int(token_count)
+
+    def record_grouped_mix_chunk(
+        self,
+        *,
+        batch_size: int,
+        query_count: int,
+        page_count: int,
+        token_count: int,
+        head_dim: int,
+    ) -> None:
+        self.grouped_mix_chunk_count += 1
+        self.grouped_mix_chunk_pages_total += int(page_count)
+        self.grouped_mix_chunk_pages_max = max(self.grouped_mix_chunk_pages_max, int(page_count))
+        self.grouped_weights_elements_total += int(batch_size) * int(query_count) * int(page_count) * int(token_count)
+        self.grouped_output_elements_total += int(batch_size) * int(query_count) * int(head_dim)
+
+    def record_grouped_kernel_variant(self, *, section: str, variant: str) -> None:
+        if section == "score":
+            if variant == "packed_cuda":
+                self.grouped_score_packed_cuda_calls += 1
+                return
+            if variant == "fused_two_group64":
+                self.grouped_score_fused_two_group64_calls += 1
+                return
+            if variant == "fused_generic":
+                self.grouped_score_fused_generic_calls += 1
+                return
+            if variant == "generic":
+                self.grouped_score_generic_calls += 1
+                return
+        if section == "mix":
+            if variant == "packed_cuda":
+                self.grouped_mix_packed_cuda_calls += 1
+                return
+            if variant == "fused_two_group64":
+                self.grouped_mix_fused_two_group64_calls += 1
+                return
+            if variant == "fused_generic":
+                self.grouped_mix_fused_generic_calls += 1
+                return
+            if variant == "generic":
+                self.grouped_mix_generic_calls += 1
+                return
+        raise ValueError(f"unknown grouped kernel variant: {section}/{variant}")
 
     def record_timing(self, section: str, ms: float, count: int = 1) -> None:
         if section == "prepare":
@@ -113,6 +195,25 @@ class ExecutionTrace:
         self.fwht_calls += other.fwht_calls
         self.chunk_assembly_ms_total += other.chunk_assembly_ms_total
         self.chunk_assembly_calls += other.chunk_assembly_calls
+        self.grouped_decode_calls += other.grouped_decode_calls
+        self.grouped_decode_output_only_calls += other.grouped_decode_output_only_calls
+        self.grouped_score_chunk_count += other.grouped_score_chunk_count
+        self.grouped_mix_chunk_count += other.grouped_mix_chunk_count
+        self.grouped_score_chunk_pages_total += other.grouped_score_chunk_pages_total
+        self.grouped_mix_chunk_pages_total += other.grouped_mix_chunk_pages_total
+        self.grouped_score_chunk_pages_max = max(self.grouped_score_chunk_pages_max, other.grouped_score_chunk_pages_max)
+        self.grouped_mix_chunk_pages_max = max(self.grouped_mix_chunk_pages_max, other.grouped_mix_chunk_pages_max)
+        self.grouped_logits_elements_total += other.grouped_logits_elements_total
+        self.grouped_weights_elements_total += other.grouped_weights_elements_total
+        self.grouped_output_elements_total += other.grouped_output_elements_total
+        self.grouped_score_packed_cuda_calls += other.grouped_score_packed_cuda_calls
+        self.grouped_score_fused_two_group64_calls += other.grouped_score_fused_two_group64_calls
+        self.grouped_score_fused_generic_calls += other.grouped_score_fused_generic_calls
+        self.grouped_score_generic_calls += other.grouped_score_generic_calls
+        self.grouped_mix_packed_cuda_calls += other.grouped_mix_packed_cuda_calls
+        self.grouped_mix_fused_two_group64_calls += other.grouped_mix_fused_two_group64_calls
+        self.grouped_mix_fused_generic_calls += other.grouped_mix_fused_generic_calls
+        self.grouped_mix_generic_calls += other.grouped_mix_generic_calls
 
     def to_dict(self) -> dict[str, int | float]:
         return {
@@ -140,4 +241,23 @@ class ExecutionTrace:
             "fwht_calls": self.fwht_calls,
             "chunk_assembly_ms_total": self.chunk_assembly_ms_total,
             "chunk_assembly_calls": self.chunk_assembly_calls,
+            "grouped_decode_calls": self.grouped_decode_calls,
+            "grouped_decode_output_only_calls": self.grouped_decode_output_only_calls,
+            "grouped_score_chunk_count": self.grouped_score_chunk_count,
+            "grouped_mix_chunk_count": self.grouped_mix_chunk_count,
+            "grouped_score_chunk_pages_total": self.grouped_score_chunk_pages_total,
+            "grouped_mix_chunk_pages_total": self.grouped_mix_chunk_pages_total,
+            "grouped_score_chunk_pages_max": self.grouped_score_chunk_pages_max,
+            "grouped_mix_chunk_pages_max": self.grouped_mix_chunk_pages_max,
+            "grouped_logits_elements_total": self.grouped_logits_elements_total,
+            "grouped_weights_elements_total": self.grouped_weights_elements_total,
+            "grouped_output_elements_total": self.grouped_output_elements_total,
+            "grouped_score_packed_cuda_calls": self.grouped_score_packed_cuda_calls,
+            "grouped_score_fused_two_group64_calls": self.grouped_score_fused_two_group64_calls,
+            "grouped_score_fused_generic_calls": self.grouped_score_fused_generic_calls,
+            "grouped_score_generic_calls": self.grouped_score_generic_calls,
+            "grouped_mix_packed_cuda_calls": self.grouped_mix_packed_cuda_calls,
+            "grouped_mix_fused_two_group64_calls": self.grouped_mix_fused_two_group64_calls,
+            "grouped_mix_fused_generic_calls": self.grouped_mix_fused_generic_calls,
+            "grouped_mix_generic_calls": self.grouped_mix_generic_calls,
         }

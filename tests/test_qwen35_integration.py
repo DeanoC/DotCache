@@ -836,6 +836,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
         attention_mask=encoded["attention_mask"],
         tokenizer=tokenizer,
         decode_steps=2,
+        profile_backend=True,
     )
     assert result["runtime_mode"] == "dotcache_attention_subset_serving"
     assert result["dotcache_attention_subset_ready"] is True
@@ -893,6 +894,17 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_grouped_decode_compact" in result
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "decode_backend_trace" in result
+    trace = result["decode_backend_trace"]
+    assert "grouped_decode_calls" in trace
+    assert "grouped_decode_output_only_calls" in trace
+    assert "grouped_score_chunk_count" in trace
+    assert "grouped_mix_chunk_count" in trace
+    assert "grouped_logits_elements_total" in trace
+    assert "grouped_weights_elements_total" in trace
+    assert "grouped_output_elements_total" in trace
+    assert "grouped_score_packed_cuda_calls" in trace
+    assert "grouped_mix_packed_cuda_calls" in trace
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
