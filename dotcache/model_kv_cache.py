@@ -1194,6 +1194,7 @@ class ModelPagedKVCache:
         self._execution_shortlist_grouping_rejections_by_layer: dict[int, int] = {}
         self._execution_shortlist_total_pages_by_layer: dict[int, int] = {}
         self._execution_shortlist_selected_pages_by_layer: dict[int, int] = {}
+        self._execution_shortlist_trace_records: list[dict[str, object]] = []
         self._execution_exact_refine_invocations = 0
         self._execution_exact_refine_candidate_pages = 0
         self._execution_exact_refine_selected_pages = 0
@@ -1383,6 +1384,7 @@ class ModelPagedKVCache:
                 str(layer_id): int(count)
                 for layer_id, count in sorted(self._execution_shortlist_selected_pages_by_layer.items())
             },
+            "execution_shortlist_trace_records": list(self._execution_shortlist_trace_records),
             "execution_exact_refine_invocations": int(self._execution_exact_refine_invocations),
             "execution_exact_refine_candidate_pages": int(self._execution_exact_refine_candidate_pages),
             "execution_exact_refine_selected_pages": int(self._execution_exact_refine_selected_pages),
@@ -1471,6 +1473,7 @@ class ModelPagedKVCache:
         key_pages: Sequence[PageLike],
         *,
         layer_id: int,
+        kv_head_id: int | None = None,
         query_slice: np.ndarray,
         context_length_override: int | None = None,
         trace: ExecutionTrace | None = None,
@@ -1502,6 +1505,73 @@ class ModelPagedKVCache:
             and layer_relevance_top_k <= 0
         ):
             return None
+        promote_candidate_expansion_enabled, promote_candidate_expansion_disable_reason = (
+            self._execution_exact_promote_policy_status(
+                layer_id=layer_id,
+                context_length=context_length,
+            )
+        )
+
+        def _page_range_labels(indices: Sequence[int]) -> list[str]:
+            labels: list[str] = []
+            for index in indices:
+                header = _page_header(key_pages[int(index)])
+                labels.append(
+                    f"{int(index)}:{int(header.token_start)}-{int(header.token_start + header.token_count)}"
+                )
+            return labels
+
+        def _record_shortlist_trace(
+            *,
+            base_index_set: set[int],
+            stage1_selected_indices: Sequence[int],
+            final_selected_indices: Sequence[int],
+            promote_enabled: bool,
+            promote_disable_reason: str | None,
+            promote_candidate_indices: Sequence[int] | None = None,
+            promote_selected_indices: Sequence[int] | None = None,
+            promote_target_old_page_count: int | None = None,
+        ) -> None:
+            stage1_old_indices = [int(index) for index in stage1_selected_indices if int(index) not in base_index_set]
+            final_old_indices = [int(index) for index in final_selected_indices if int(index) not in base_index_set]
+            promote_candidate_indices = (
+                [] if promote_candidate_indices is None else [int(index) for index in promote_candidate_indices]
+            )
+            promote_selected_indices = (
+                [] if promote_selected_indices is None else [int(index) for index in promote_selected_indices]
+            )
+            self._execution_shortlist_trace_records.append(
+                {
+                    "layer_id": int(layer_id),
+                    "kv_head_id": None if kv_head_id is None else int(kv_head_id),
+                    "context_length": None if context_length is None else int(context_length),
+                    "layer_recent_window": int(layer_recent_window),
+                    "layer_relevance_top_k": int(layer_relevance_top_k),
+                    "candidate_relevance_top_k": int(candidate_relevance_top_k),
+                    "base_count": int(len(base_index_set)),
+                    "stage1_count": int(len(stage1_selected_indices)),
+                    "final_count": int(len(final_selected_indices)),
+                    "stage1_old_count": int(len(stage1_old_indices)),
+                    "final_old_count": int(len(final_old_indices)),
+                    "base_page_ranges": _page_range_labels(sorted(base_index_set)),
+                    "stage1_old_page_ranges": _page_range_labels(stage1_old_indices),
+                    "final_old_page_ranges": _page_range_labels(final_old_indices),
+                    "exact_promote_candidate_expansion_enabled": bool(promote_candidate_expansion_enabled),
+                    "exact_promote_candidate_expansion_disable_reason": promote_candidate_expansion_disable_reason,
+                    "exact_promote_enabled": bool(promote_enabled),
+                    "exact_promote_disable_reason": promote_disable_reason,
+                    "promote_candidate_count": int(len(promote_candidate_indices)),
+                    "promote_selected_count": int(len(promote_selected_indices)),
+                    "promote_target_old_page_count": (
+                        None if promote_target_old_page_count is None else int(promote_target_old_page_count)
+                    ),
+                    "promote_candidate_page_ranges": _page_range_labels(promote_candidate_indices),
+                    "promote_selected_page_ranges": _page_range_labels(promote_selected_indices),
+                    "boundary_margin_normalized": (
+                        None if boundary_margin_normalized is None else float(boundary_margin_normalized)
+                    ),
+                }
+            )
         key_page_sketches: list[np.ndarray] = []
         key_page_minima: list[np.ndarray] = []
         key_page_maxima: list[np.ndarray] = []
@@ -1520,7 +1590,7 @@ class ModelPagedKVCache:
                 key_page_minima.append(np.asarray(page_min, dtype=np.float32))
                 key_page_maxima.append(np.asarray(page_max, dtype=np.float32))
         candidate_relevance_top_k = int(layer_relevance_top_k)
-        if self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length):
+        if promote_candidate_expansion_enabled:
             candidate_relevance_top_k = max(
                 candidate_relevance_top_k,
                 int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k) * 2,
@@ -1541,7 +1611,7 @@ class ModelPagedKVCache:
         use_secondary_relevance_rescue = self._execution_secondary_relevance_enabled(layer_id=layer_id)
         use_recent_neighbor_rescue = self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
         use_confidence_gated_exact_promote = (
-            self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length)
+            promote_candidate_expansion_enabled
             and float(self.config.execution_exact_promote_margin_threshold) > 0.0
         )
         boundary_margin_normalized = None
@@ -1689,33 +1759,48 @@ class ModelPagedKVCache:
                 relevance_mode=self.config.execution_relevance_mode,
             )
         if not self._execution_exact_refine_enabled(layer_id=layer_id):
-            promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id, context_length=context_length)
-            if (
-                promote_enabled
-                and float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
-                and (
-                    boundary_margin_normalized is None
-                    or boundary_margin_normalized < float(self.config.execution_exact_promote_min_margin_threshold)
-                )
-            ):
-                promote_enabled = False
-            if (
-                promote_enabled
-                and float(self.config.execution_exact_promote_margin_threshold) > 0.0
-                and boundary_margin_normalized is not None
-                and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
-            ):
-                promote_enabled = False
+            promote_enabled, promote_disable_reason = self._execution_exact_promote_status(
+                layer_id=layer_id,
+                context_length=context_length,
+                boundary_margin_normalized=boundary_margin_normalized,
+            )
             if not promote_enabled:
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=False,
+                    promote_disable_reason=promote_disable_reason,
+                )
                 return stage1_indices
             candidate_indices = [index for index in stage1_indices if index not in base_indices]
             if not candidate_indices:
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=True,
+                    promote_disable_reason=None,
+                    promote_candidate_indices=[],
+                    promote_selected_indices=[],
+                    promote_target_old_page_count=0,
+                )
                 return stage1_indices
             target_old_page_count = min(
                 len(candidate_indices),
                 int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k),
             )
             if target_old_page_count >= len(candidate_indices):
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=True,
+                    promote_disable_reason=None,
+                    promote_candidate_indices=candidate_indices,
+                    promote_selected_indices=candidate_indices,
+                    promote_target_old_page_count=target_old_page_count,
+                )
                 return stage1_indices
             candidate_logits = score_pages(
                 np.asarray(query_slice, dtype=np.float32),
@@ -1734,7 +1819,18 @@ class ModelPagedKVCache:
                     reverse=True,
                 )[:target_old_page_count]
             ]
-            return sorted(base_indices.union(chosen))
+            final_indices = sorted(base_indices.union(chosen))
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=final_indices,
+                promote_enabled=True,
+                promote_disable_reason=None,
+                promote_candidate_indices=candidate_indices,
+                promote_selected_indices=chosen,
+                promote_target_old_page_count=target_old_page_count,
+            )
+            return final_indices
         base_indices = set(
             select_window_page_indices(
                 key_pages,
@@ -1745,6 +1841,13 @@ class ModelPagedKVCache:
         candidate_indices = [index for index in stage1_indices if index not in base_indices]
         if not candidate_indices:
             self._record_execution_exact_refine(layer_id=layer_id, candidate_pages=0, selected_pages=0)
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=stage1_indices,
+                promote_enabled=False,
+                promote_disable_reason="exact_refine_enabled",
+            )
             return stage1_indices
         top_k = min(int(self.config.execution_exact_refine_top_k), len(candidate_indices))
         if top_k >= len(candidate_indices):
@@ -1752,6 +1855,13 @@ class ModelPagedKVCache:
                 layer_id=layer_id,
                 candidate_pages=len(candidate_indices),
                 selected_pages=len(candidate_indices),
+            )
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=stage1_indices,
+                promote_enabled=False,
+                promote_disable_reason="exact_refine_enabled",
             )
             return stage1_indices
         candidate_logits = score_pages(
@@ -1776,7 +1886,15 @@ class ModelPagedKVCache:
             candidate_pages=len(candidate_indices),
             selected_pages=len(chosen),
         )
-        return sorted(base_indices.union(chosen))
+        final_indices = sorted(base_indices.union(chosen))
+        _record_shortlist_trace(
+            base_index_set=base_indices,
+            stage1_selected_indices=stage1_indices,
+            final_selected_indices=final_indices,
+            promote_enabled=False,
+            promote_disable_reason="exact_refine_enabled",
+        )
+        return final_indices
 
     def _should_build_execution_runtime_metadata(self, *, kind: str) -> bool:
         if kind != "K":
@@ -1808,6 +1926,7 @@ class ModelPagedKVCache:
         self._execution_shortlist_grouping_rejections_by_layer = {}
         self._execution_shortlist_total_pages_by_layer = {}
         self._execution_shortlist_selected_pages_by_layer = {}
+        self._execution_shortlist_trace_records = []
         self._execution_exact_refine_invocations = 0
         self._execution_exact_refine_candidate_pages = 0
         self._execution_exact_refine_selected_pages = 0
@@ -2934,6 +3053,7 @@ class ModelPagedKVCache:
                 raw_selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
+                    kv_head_id=int(kv_head_id),
                     query_slice=representative_query,
                     context_length_override=int(context_length) if int(context_length) > 0 else None,
                     trace=trace,
@@ -3364,6 +3484,7 @@ class ModelPagedKVCache:
                 selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
+                    kv_head_id=int(kv_head_id),
                     query_slice=representative_query,
                     context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
                     trace=trace,

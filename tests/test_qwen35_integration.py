@@ -1063,6 +1063,14 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "exact_promote_candidate_expansion_disable_reason" in first_group
     assert "exact_promote_enabled" in first_group
     assert "exact_promote_disable_reason" in first_group
+    assert "execution_shortlist_trace_records" in result
+    assert result["execution_shortlist_trace_records"]
+    first_trace = result["execution_shortlist_trace_records"][0]
+    assert "kv_head_id" in first_trace
+    assert "stage1_old_page_ranges" in first_trace
+    assert "final_old_page_ranges" in first_trace
+    assert "promote_candidate_page_ranges" in first_trace
+    assert "promote_selected_page_ranges" in first_trace
 
 
 def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
