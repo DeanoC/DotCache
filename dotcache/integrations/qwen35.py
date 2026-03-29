@@ -5614,6 +5614,84 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     return result
 
 
+_BACKEND_TRACE_TIMING_KEYS = (
+    "prepare_ms_total",
+    "score_ms_total",
+    "mix_ms_total",
+    "softmax_ms_total",
+    "unpack_ms_total",
+    "fwht_ms_total",
+    "chunk_assembly_ms_total",
+)
+
+
+def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
+    return {
+        "qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+        "append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+        "decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+        "output_projection_ms_total": float(adapter.output_projection_ms_total),
+    }
+
+
+def _backend_trace_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, int | float]:
+    return dict(adapter.decode_backend_trace.to_dict())
+
+
+def _numeric_delta_dict(
+    before: dict[str, int | float],
+    after: dict[str, int | float],
+) -> dict[str, int | float]:
+    delta: dict[str, int | float] = {}
+    for key, after_value in after.items():
+        before_value = before.get(key, 0)
+        if isinstance(after_value, float) or isinstance(before_value, float):
+            delta[key] = float(after_value) - float(before_value)
+        else:
+            delta[key] = int(after_value) - int(before_value)
+    return delta
+
+
+def _summarize_step_runtime_breakdown(
+    *,
+    step_index: int,
+    step_ms: float,
+    adapter_before: dict[str, float],
+    adapter_after: dict[str, float],
+    trace_before: dict[str, int | float],
+    trace_after: dict[str, int | float],
+) -> dict[str, Any]:
+    adapter_delta = {key: float(value) for key, value in _numeric_delta_dict(adapter_before, adapter_after).items()}
+    trace_delta = _numeric_delta_dict(trace_before, trace_after)
+    backend_ms_total = float(sum(float(trace_delta.get(key, 0.0)) for key in _BACKEND_TRACE_TIMING_KEYS))
+    decode_runtime_ms = float(adapter_delta["decode_runtime_ms_total"])
+    accounted_model_ms = float(
+        adapter_delta["qkv_projection_ms_total"]
+        + adapter_delta["append_runtime_ms_total"]
+        + decode_runtime_ms
+        + adapter_delta["output_projection_ms_total"]
+    )
+    return {
+        "step_index": int(step_index),
+        "step_ms_total": float(step_ms),
+        "qkv_projection_ms_total": float(adapter_delta["qkv_projection_ms_total"]),
+        "append_runtime_ms_total": float(adapter_delta["append_runtime_ms_total"]),
+        "decode_runtime_ms_total": decode_runtime_ms,
+        "output_projection_ms_total": float(adapter_delta["output_projection_ms_total"]),
+        "backend_prepare_ms_total": float(trace_delta.get("prepare_ms_total", 0.0)),
+        "backend_score_ms_total": float(trace_delta.get("score_ms_total", 0.0)),
+        "backend_mix_ms_total": float(trace_delta.get("mix_ms_total", 0.0)),
+        "backend_softmax_ms_total": float(trace_delta.get("softmax_ms_total", 0.0)),
+        "backend_unpack_ms_total": float(trace_delta.get("unpack_ms_total", 0.0)),
+        "backend_fwht_ms_total": float(trace_delta.get("fwht_ms_total", 0.0)),
+        "backend_chunk_assembly_ms_total": float(trace_delta.get("chunk_assembly_ms_total", 0.0)),
+        "backend_decode_ms_total": backend_ms_total,
+        "decode_non_backend_ms_total": float(decode_runtime_ms - backend_ms_total),
+        "model_step_accounted_ms_total": accounted_model_ms,
+        "model_step_non_adapter_ms_total": float(step_ms - accounted_model_ms),
+    }
+
+
 def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     model,
     adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -5662,6 +5740,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     dotcache_step_logits: list[np.ndarray] = []
     dotcache_records: list[list[LlamaReplayRecord]] = []
     dotcache_decode_ms_total = 0.0
+    dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
     if decode_steps > 0:
         current_attention_mask = torch.cat(
@@ -5673,6 +5752,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
             adapter.begin_capture_step(step_index)
             adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+            adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+            trace_before = _backend_trace_snapshot(adapter)
             try:
                 outputs, step_ms = _timed_call(
                     lambda: _run_dense_decode_step(
@@ -5686,7 +5767,19 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 )
             finally:
                 adapter.set_current_token_index(None)
+            adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+            trace_after = _backend_trace_snapshot(adapter)
             dotcache_decode_ms_total += step_ms
+            dotcache_step_runtime_breakdown.append(
+                _summarize_step_runtime_breakdown(
+                    step_index=step_index,
+                    step_ms=step_ms,
+                    adapter_before=adapter_runtime_before,
+                    adapter_after=adapter_runtime_after,
+                    trace_before=trace_before,
+                    trace_after=trace_after,
+                )
+            )
             dotcache_records.append(adapter.end_capture_step())
             dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
             runtime_state.advance(outputs.past_key_values)
@@ -5792,6 +5885,16 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "teacher_forced_logit_rmse": teacher_forced_rmse,
             "teacher_forced_token_agreement_rate": teacher_forced_token_agreement,
             "teacher_forced_per_step_logit_max_abs_error": teacher_forced_per_step_max_abs,
+            "dotcache_step_runtime_breakdown": dotcache_step_runtime_breakdown,
+            "dotcache_backend_decode_ms_total_from_trace": float(
+                sum(step["backend_decode_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_decode_non_backend_ms_total": float(
+                sum(step["decode_non_backend_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_model_step_non_adapter_ms_total": float(
+                sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
             "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
             "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
             "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
@@ -6159,6 +6262,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     diagnostic_records: list[dict[str, Any]] = []
     generated_ids: list[int] = []
     dotcache_decode_ms_total = 0.0
+    dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
     if decode_steps > 0:
         current_attention_mask = torch.cat(
@@ -6183,6 +6287,8 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                         **analysis_record,
                     }
                 )
+            adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+            trace_before = _backend_trace_snapshot(adapter)
             outputs, step_ms = _timed_call(
                 lambda: _run_dense_decode_step(
                     model,
@@ -6193,7 +6299,19 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 ),
                 device=device,
             )
+            adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+            trace_after = _backend_trace_snapshot(adapter)
             dotcache_decode_ms_total += step_ms
+            dotcache_step_runtime_breakdown.append(
+                _summarize_step_runtime_breakdown(
+                    step_index=step_index,
+                    step_ms=step_ms,
+                    adapter_before=adapter_runtime_before,
+                    adapter_after=adapter_runtime_after,
+                    trace_before=trace_before,
+                    trace_after=trace_after,
+                )
+            )
             runtime_state.advance(outputs.past_key_values)
             current_attention_mask = torch.cat(
                 [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
@@ -6339,6 +6457,16 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
             "scorer_diagnostic_record_count": int(len(diagnostic_records)),
             "scorer_diagnostic_layer_count": int(len({int(record["layer_id"]) for record in diagnostic_records})),
             "scorer_diagnostic_step_count": int(len({int(record["step_index"]) for record in diagnostic_records})),
+            "dotcache_step_runtime_breakdown": dotcache_step_runtime_breakdown,
+            "dotcache_backend_decode_ms_total_from_trace": float(
+                sum(step["backend_decode_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_decode_non_backend_ms_total": float(
+                sum(step["decode_non_backend_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_model_step_non_adapter_ms_total": float(
+                sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
             "scorer_rank_correlation_mean_by_layer": scorer_rank_correlation_mean_by_layer,
             "scorer_value_correlation_mean_by_layer": scorer_value_correlation_mean_by_layer,
             "scorer_approx_exact_top_recall_mean_by_layer": scorer_approx_exact_top_recall_mean_by_layer,

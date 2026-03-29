@@ -971,6 +971,11 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_grouped_decode_compact" in result
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "dotcache_step_runtime_breakdown" in result
+    assert len(result["dotcache_step_runtime_breakdown"]) == 2
+    assert "dotcache_backend_decode_ms_total_from_trace" in result
+    assert "dotcache_decode_non_backend_ms_total" in result
+    assert "dotcache_model_step_non_adapter_ms_total" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -1090,6 +1095,11 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_grouped_decode_compact" in result
     assert "execution_grouped_mix_compact" in result
     assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "dotcache_step_runtime_breakdown" in result
+    assert len(result["dotcache_step_runtime_breakdown"]) == 2
+    assert "dotcache_backend_decode_ms_total_from_trace" in result
+    assert "dotcache_decode_non_backend_ms_total" in result
+    assert "dotcache_model_step_non_adapter_ms_total" in result
     first_record = result["scorer_layer_records"][0]
     first_group = first_record["groups"][0]
     assert "context_length_page_max" in first_group
