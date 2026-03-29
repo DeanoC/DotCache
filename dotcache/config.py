@@ -104,10 +104,28 @@ class DotCacheConfig:
     sink_window: int = 0
     execution_recent_window: int = 0
     execution_sink_window: int = 0
+    execution_recent_window_overrides: tuple[str, ...] = ()
+    execution_recent_window_context_overrides: tuple[str, ...] = ()
     execution_relevance_top_k: int = 0
     execution_relevance_mode: str = "envelope"
     execution_relevance_top_k_overrides: tuple[str, ...] = ()
     execution_relevance_top_k_context_overrides: tuple[str, ...] = ()
+    execution_full_context_layers: tuple[int, ...] = ()
+    execution_disable_grouped_batching_layers: tuple[int, ...] = ()
+    execution_recent_old_bonus_window: int = 0
+    execution_recent_old_bonus_strength: float = 0.0
+    execution_recent_old_bonus_layers: tuple[int, ...] = ()
+    execution_secondary_relevance_mode: str = ""
+    execution_secondary_relevance_top_k: int = 0
+    execution_secondary_relevance_min_overlap: float = 0.0
+    execution_secondary_relevance_layers: tuple[int, ...] = ()
+    execution_recent_neighbor_rescue_top_k: int = 0
+    execution_recent_neighbor_rescue_anchor_window: int = 0
+    execution_recent_neighbor_rescue_min_anchor_pages: int = 0
+    execution_recent_neighbor_rescue_layers: tuple[int, ...] = ()
+    execution_exact_promote_top_k: int = 0
+    execution_exact_promote_margin_threshold: float = 0.0
+    execution_exact_promote_layers: tuple[int, ...] = ()
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"
@@ -166,6 +184,10 @@ class DotCacheConfig:
             raise ValueError("execution_recent_window must be non-negative")
         if self.execution_sink_window < 0:
             raise ValueError("execution_sink_window must be non-negative")
+        for spec in self.execution_recent_window_overrides:
+            _parse_layer_positive_int_spec(spec, field_name="execution_recent_window_overrides")
+        for spec in self.execution_recent_window_context_overrides:
+            _parse_layer_context_positive_int_spec(spec, field_name="execution_recent_window_context_overrides")
         if self.execution_relevance_top_k < 0:
             raise ValueError("execution_relevance_top_k must be non-negative")
         if self.execution_relevance_mode not in ("sketch", "envelope"):
@@ -174,6 +196,44 @@ class DotCacheConfig:
             _parse_layer_positive_int_spec(spec, field_name="execution_relevance_top_k_overrides")
         for spec in self.execution_relevance_top_k_context_overrides:
             _parse_layer_context_positive_int_spec(spec, field_name="execution_relevance_top_k_context_overrides")
+        for layer_id in self.execution_full_context_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_full_context_layers must be non-negative")
+        for layer_id in self.execution_disable_grouped_batching_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_disable_grouped_batching_layers must be non-negative")
+        if self.execution_recent_old_bonus_window < 0:
+            raise ValueError("execution_recent_old_bonus_window must be non-negative")
+        if self.execution_recent_old_bonus_strength < 0:
+            raise ValueError("execution_recent_old_bonus_strength must be non-negative")
+        for layer_id in self.execution_recent_old_bonus_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_recent_old_bonus_layers must be non-negative")
+        if self.execution_secondary_relevance_mode not in ("", "sketch", "envelope"):
+            raise ValueError("execution_secondary_relevance_mode must be empty, sketch, or envelope")
+        if self.execution_secondary_relevance_top_k < 0:
+            raise ValueError("execution_secondary_relevance_top_k must be non-negative")
+        if not 0.0 <= float(self.execution_secondary_relevance_min_overlap) <= 1.0:
+            raise ValueError("execution_secondary_relevance_min_overlap must be between 0 and 1")
+        for layer_id in self.execution_secondary_relevance_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_secondary_relevance_layers must be non-negative")
+        if self.execution_recent_neighbor_rescue_top_k < 0:
+            raise ValueError("execution_recent_neighbor_rescue_top_k must be non-negative")
+        if self.execution_recent_neighbor_rescue_anchor_window < 0:
+            raise ValueError("execution_recent_neighbor_rescue_anchor_window must be non-negative")
+        if self.execution_recent_neighbor_rescue_min_anchor_pages < 0:
+            raise ValueError("execution_recent_neighbor_rescue_min_anchor_pages must be non-negative")
+        for layer_id in self.execution_recent_neighbor_rescue_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_recent_neighbor_rescue_layers must be non-negative")
+        if self.execution_exact_promote_top_k < 0:
+            raise ValueError("execution_exact_promote_top_k must be non-negative")
+        if self.execution_exact_promote_margin_threshold < 0:
+            raise ValueError("execution_exact_promote_margin_threshold must be non-negative")
+        for layer_id in self.execution_exact_promote_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_exact_promote_layers must be non-negative")
         if self.execution_exact_refine_top_k < 0:
             raise ValueError("execution_exact_refine_top_k must be non-negative")
         for layer_id in self.execution_exact_refine_layers:
@@ -346,14 +406,60 @@ class DotCacheConfig:
                 resolved = int(override_value)
         return resolved
 
+    def resolve_execution_recent_window(self, *, layer_id: int) -> int:
+        resolved = int(self.execution_recent_window)
+        for spec in self.execution_recent_window_overrides:
+            override_layer_id, override_value = _parse_layer_positive_int_spec(
+                spec,
+                field_name="execution_recent_window_overrides",
+            )
+            if override_layer_id == int(layer_id):
+                resolved = int(override_value)
+        return resolved
+
     def execution_shortlist_enabled(self) -> bool:
         return (
             self.execution_recent_window > 0
             or self.execution_sink_window > 0
+            or bool(self.execution_recent_window_overrides)
+            or bool(self.execution_recent_window_context_overrides)
             or self.execution_relevance_top_k > 0
             or bool(self.execution_relevance_top_k_overrides)
             or bool(self.execution_relevance_top_k_context_overrides)
         )
+
+    def execution_shortlist_disabled_for_layer(self, *, layer_id: int) -> bool:
+        return int(layer_id) in {int(value) for value in self.execution_full_context_layers}
+
+    def execution_grouped_batching_disabled_for_layer(self, *, layer_id: int) -> bool:
+        return int(layer_id) in {int(value) for value in self.execution_disable_grouped_batching_layers}
+
+    def execution_recent_old_bonus_enabled_for_layer(self, *, layer_id: int) -> bool:
+        if self.execution_recent_old_bonus_window <= 0 or self.execution_recent_old_bonus_strength <= 0:
+            return False
+        if not self.execution_recent_old_bonus_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.execution_recent_old_bonus_layers}
+
+    def execution_secondary_relevance_enabled_for_layer(self, *, layer_id: int) -> bool:
+        if self.execution_secondary_relevance_mode not in ("sketch", "envelope"):
+            return False
+        if self.execution_secondary_relevance_top_k <= 0:
+            return False
+        if not self.execution_secondary_relevance_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.execution_secondary_relevance_layers}
+
+    def execution_recent_neighbor_rescue_enabled_for_layer(self, *, layer_id: int) -> bool:
+        if self.execution_recent_neighbor_rescue_top_k <= 0:
+            return False
+        if self.execution_recent_neighbor_rescue_anchor_window <= 0:
+            return False
+        if self.execution_recent_neighbor_rescue_min_anchor_pages <= 0:
+            return False
+        if not self.execution_recent_neighbor_rescue_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.execution_recent_neighbor_rescue_layers}
 
     def resolve_execution_relevance_top_k_for_context(self, *, layer_id: int, context_length: int | None = None) -> int:
         resolved = self.resolve_execution_relevance_top_k(layer_id=layer_id)
@@ -364,6 +470,24 @@ class DotCacheConfig:
             override_layer_id, min_context, override_value = _parse_layer_context_positive_int_spec(
                 spec,
                 field_name="execution_relevance_top_k_context_overrides",
+            )
+            if override_layer_id != int(layer_id):
+                continue
+            if int(context_length) < int(min_context) or int(min_context) < best_min_context:
+                continue
+            resolved = int(override_value)
+            best_min_context = int(min_context)
+        return resolved
+
+    def resolve_execution_recent_window_for_context(self, *, layer_id: int, context_length: int | None = None) -> int:
+        resolved = self.resolve_execution_recent_window(layer_id=layer_id)
+        if context_length is None:
+            return resolved
+        best_min_context = -1
+        for spec in self.execution_recent_window_context_overrides:
+            override_layer_id, min_context, override_value = _parse_layer_context_positive_int_spec(
+                spec,
+                field_name="execution_recent_window_context_overrides",
             )
             if override_layer_id != int(layer_id):
                 continue
