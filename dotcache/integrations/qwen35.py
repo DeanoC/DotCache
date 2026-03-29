@@ -2321,6 +2321,50 @@ class Qwen35AttentionSubsetDotCacheHarness:
             multimodal_inputs=multimodal_inputs,
         )
 
+    def run_attention_subset_dotcache_serving_recall_analysis(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_attention_subset_dotcache_serving_scorer_diagnostic(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
     def evaluate_attention_subset_dotcache_loss(
         self,
         *,
@@ -5505,10 +5549,36 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         "tokens_per_page": int(adapter.dotcache_config.tokens_per_page),
         "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
         "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+        "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+        "execution_recent_window_context_overrides": list(
+            adapter.dotcache_config.execution_recent_window_context_overrides
+        ),
         "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
         "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
         "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+        "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+        "execution_disable_grouped_batching_layers": list(
+            adapter.dotcache_config.execution_disable_grouped_batching_layers
+        ),
+        "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+        "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+        "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
         "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+        "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+        "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+        "execution_secondary_relevance_min_overlap": float(adapter.dotcache_config.execution_secondary_relevance_min_overlap),
+        "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+        "execution_recent_neighbor_rescue_top_k": int(adapter.dotcache_config.execution_recent_neighbor_rescue_top_k),
+        "execution_recent_neighbor_rescue_anchor_window": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+        ),
+        "execution_recent_neighbor_rescue_min_anchor_pages": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+        ),
+        "execution_recent_neighbor_rescue_layers": list(adapter.dotcache_config.execution_recent_neighbor_rescue_layers),
+        "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+        "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
+        "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -5707,10 +5777,588 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "teacher_forced_per_step_logit_max_abs_error": teacher_forced_per_step_max_abs,
             "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
             "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+            "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+            "execution_recent_window_context_overrides": list(
+                adapter.dotcache_config.execution_recent_window_context_overrides
+            ),
             "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
             "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
             "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+            "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+            "execution_disable_grouped_batching_layers": list(
+                adapter.dotcache_config.execution_disable_grouped_batching_layers
+            ),
+            "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+            "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+            "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
             "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+            "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+            "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+            "execution_secondary_relevance_min_overlap": float(
+                adapter.dotcache_config.execution_secondary_relevance_min_overlap
+            ),
+            "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+            "execution_recent_neighbor_rescue_top_k": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_top_k
+            ),
+            "execution_recent_neighbor_rescue_anchor_window": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+            ),
+            "execution_recent_neighbor_rescue_min_anchor_pages": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+            ),
+            "execution_recent_neighbor_rescue_layers": list(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_layers
+            ),
+            "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_margin_threshold
+            ),
+            "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
+            "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+            "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+            "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+            "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+        }
+    )
+    result.update({f"dotcache_prefill_{key}": value for key, value in dotcache_prefill_cuda_memory.items()})
+    result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    device = input_ids.device
+
+    recall_records: list[dict[str, Any]] = []
+    generated_ids: list[int] = []
+    dotcache_decode_ms_total = 0.0
+    dotcache_decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+            generated_ids.append(int(decode_input_ids.item()))
+            for dense_record in dense_capture["capture_records"][step_index]:
+                analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
+                    dense_record.layer_id,
+                    dense_record.query_states,
+                    adapter.q_head_to_kv_head,
+                    trace=None,
+                )
+                recall_records.append(
+                    {
+                        "step_index": int(step_index),
+                        "token_index": int(dense_record.token_index),
+                        **analysis_record,
+                    }
+                )
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            dotcache_decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+
+    recall_values: list[float] = []
+    recall_hits_total = 0
+    recall_budget_total = 0
+    recall_union_added_pages_total = 0
+    recall_age_bucket_totals = {"recent": 0, "middle": 0, "old": 0}
+    per_layer_recalls: dict[str, list[float]] = {}
+    per_layer_first_missed_ranks: dict[str, list[int]] = {}
+    per_layer_union_added_pages: dict[str, int] = {}
+    per_layer_age_buckets: dict[str, dict[str, int]] = {}
+    for record in recall_records:
+        layer_key = str(record["layer_id"])
+        per_layer_recalls.setdefault(layer_key, [])
+        per_layer_first_missed_ranks.setdefault(layer_key, [])
+        per_layer_union_added_pages[layer_key] = int(per_layer_union_added_pages.get(layer_key, 0))
+        per_layer_age_buckets.setdefault(layer_key, {"recent": 0, "middle": 0, "old": 0})
+        for group in record["groups"]:
+            recall_budget_total += int(group["exact_top_budget"])
+            recall_hits_total += int(group["exact_top_overlap"])
+            recall_union_added_pages_total += int(group["union_added_pages"])
+            per_layer_union_added_pages[layer_key] += int(group["union_added_pages"])
+            if int(group["exact_top_budget"]) > 0:
+                per_layer_recalls[layer_key].append(float(group["exact_top_recall"]))
+                recall_values.append(float(group["exact_top_recall"]))
+            if group["first_missed_exact_rank"] is not None:
+                per_layer_first_missed_ranks[layer_key].append(int(group["first_missed_exact_rank"]))
+            for age_bucket, count in group["missed_exact_age_buckets"].items():
+                recall_age_bucket_totals[str(age_bucket)] += int(count)
+                per_layer_age_buckets[layer_key][str(age_bucket)] += int(count)
+
+    shortlist_recall_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else 1.0
+        for layer_id, values in sorted(per_layer_recalls.items())
+    }
+    shortlist_recall_min_by_layer = {
+        layer_id: float(min(values)) if values else 1.0
+        for layer_id, values in sorted(per_layer_recalls.items())
+    }
+    shortlist_recall_first_missed_rank_min_by_layer = {
+        layer_id: (min(values) if values else None)
+        for layer_id, values in sorted(per_layer_first_missed_ranks.items())
+    }
+    shortlist_recall_worst_layer_id = None
+    if shortlist_recall_min_by_layer:
+        shortlist_recall_worst_layer_id = min(
+            shortlist_recall_min_by_layer.items(),
+            key=lambda item: (item[1], shortlist_recall_mean_by_layer.get(item[0], 1.0), int(item[0])),
+        )[0]
+
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        {
+            "dotcache_attention_subset_ready": True,
+            "dotcache_ready": False,
+            "runtime_mode": "dotcache_attention_subset_serving_recall_analysis",
+            "dotcache_prefill_ms": float(dotcache_prefill_ms),
+            "dotcache_generated_ids": generated_ids,
+            "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "shortlist_recall_ready": bool(recall_records),
+            "shortlist_recall_record_count": int(len(recall_records)),
+            "shortlist_recall_step_count": int(len({int(record["step_index"]) for record in recall_records})),
+            "shortlist_recall_layer_count": int(len({int(record["layer_id"]) for record in recall_records})),
+            "shortlist_recall_exact_top_budget_total": int(recall_budget_total),
+            "shortlist_recall_exact_top_hits_total": int(recall_hits_total),
+            "shortlist_recall_exact_top_recall_weighted": (
+                float(recall_hits_total / max(recall_budget_total, 1)) if recall_budget_total > 0 else 1.0
+            ),
+            "shortlist_recall_exact_top_recall_mean": float(sum(recall_values) / len(recall_values)) if recall_values else 1.0,
+            "shortlist_recall_exact_top_recall_min": float(min(recall_values)) if recall_values else 1.0,
+            "shortlist_recall_union_added_pages_total": int(recall_union_added_pages_total),
+            "shortlist_recall_missed_exact_age_buckets_total": dict(recall_age_bucket_totals),
+            "shortlist_recall_mean_by_layer": shortlist_recall_mean_by_layer,
+            "shortlist_recall_min_by_layer": shortlist_recall_min_by_layer,
+            "shortlist_recall_first_missed_rank_min_by_layer": shortlist_recall_first_missed_rank_min_by_layer,
+            "shortlist_recall_union_added_pages_by_layer": {
+                layer_id: int(total) for layer_id, total in sorted(per_layer_union_added_pages.items())
+            },
+            "shortlist_recall_missed_exact_age_buckets_by_layer": {
+                layer_id: dict(sorted(counts.items()))
+                for layer_id, counts in sorted(per_layer_age_buckets.items())
+            },
+            "shortlist_recall_worst_layer_id": shortlist_recall_worst_layer_id,
+            "shortlist_recall_layer_records": recall_records,
+            "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+            "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+            "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+            "execution_recent_window_context_overrides": list(
+                adapter.dotcache_config.execution_recent_window_context_overrides
+            ),
+            "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+            "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+            "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+            "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+            "execution_disable_grouped_batching_layers": list(
+                adapter.dotcache_config.execution_disable_grouped_batching_layers
+            ),
+            "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+            "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+            "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
+            "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+            "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+            "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+            "execution_secondary_relevance_min_overlap": float(
+                adapter.dotcache_config.execution_secondary_relevance_min_overlap
+            ),
+            "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+            "execution_recent_neighbor_rescue_top_k": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_top_k
+            ),
+            "execution_recent_neighbor_rescue_anchor_window": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+            ),
+            "execution_recent_neighbor_rescue_min_anchor_pages": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+            ),
+            "execution_recent_neighbor_rescue_layers": list(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_layers
+            ),
+            "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_margin_threshold
+            ),
+            "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
+            "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+            "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+            "dotcache_qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+            "dotcache_output_projection_ms_total": float(adapter.output_projection_ms_total),
+        }
+    )
+    result.update({f"dotcache_prefill_{key}": value for key, value in dotcache_prefill_cuda_memory.items()})
+    result.update({f"dotcache_decode_{key}": value for key, value in dotcache_decode_cuda_memory.items()})
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    device = input_ids.device
+
+    diagnostic_records: list[dict[str, Any]] = []
+    generated_ids: list[int] = []
+    dotcache_decode_ms_total = 0.0
+    dotcache_decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+            generated_ids.append(int(decode_input_ids.item()))
+            for dense_record in dense_capture["capture_records"][step_index]:
+                analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
+                    dense_record.layer_id,
+                    dense_record.query_states,
+                    adapter.q_head_to_kv_head,
+                    trace=None,
+                )
+                diagnostic_records.append(
+                    {
+                        "step_index": int(step_index),
+                        "token_index": int(dense_record.token_index),
+                        **analysis_record,
+                    }
+                )
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=decode_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            dotcache_decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+
+    rank_corr_by_layer: dict[str, list[float]] = {}
+    value_corr_by_layer: dict[str, list[float]] = {}
+    approx_recall_by_layer: dict[str, list[float]] = {}
+    exact_top1_approx_rank_by_layer: dict[str, list[int]] = {}
+    approx_top1_exact_rank_by_layer: dict[str, list[int]] = {}
+    mean_abs_rank_error_by_layer: dict[str, list[float]] = {}
+    boundary_margin_by_layer: dict[str, list[float]] = {}
+    secondary_primary_recall_by_layer: dict[str, list[float]] = {}
+    secondary_exact_recall_by_layer: dict[str, list[float]] = {}
+    secondary_trigger_count_by_layer: dict[str, int] = {}
+    secondary_group_count_by_layer: dict[str, int] = {}
+    recent_neighbor_trigger_count_by_layer: dict[str, int] = {}
+    recent_neighbor_group_count_by_layer: dict[str, int] = {}
+    scorer_missed_age_buckets_by_layer: dict[str, dict[str, int]] = {}
+    for record in diagnostic_records:
+        layer_key = str(record["layer_id"])
+        rank_corr_by_layer.setdefault(layer_key, [])
+        value_corr_by_layer.setdefault(layer_key, [])
+        approx_recall_by_layer.setdefault(layer_key, [])
+        exact_top1_approx_rank_by_layer.setdefault(layer_key, [])
+        approx_top1_exact_rank_by_layer.setdefault(layer_key, [])
+        mean_abs_rank_error_by_layer.setdefault(layer_key, [])
+        boundary_margin_by_layer.setdefault(layer_key, [])
+        secondary_primary_recall_by_layer.setdefault(layer_key, [])
+        secondary_exact_recall_by_layer.setdefault(layer_key, [])
+        secondary_trigger_count_by_layer.setdefault(layer_key, 0)
+        secondary_group_count_by_layer.setdefault(layer_key, 0)
+        recent_neighbor_trigger_count_by_layer.setdefault(layer_key, 0)
+        recent_neighbor_group_count_by_layer.setdefault(layer_key, 0)
+        scorer_missed_age_buckets_by_layer.setdefault(layer_key, {"recent": 0, "middle": 0, "old": 0})
+        for group in record["groups"]:
+            if group["score_rank_correlation"] is not None:
+                rank_corr_by_layer[layer_key].append(float(group["score_rank_correlation"]))
+            if group["score_value_correlation"] is not None:
+                value_corr_by_layer[layer_key].append(float(group["score_value_correlation"]))
+            approx_recall_by_layer[layer_key].append(float(group["approx_exact_top_recall"]))
+            if group["exact_top1_approx_rank"] is not None:
+                exact_top1_approx_rank_by_layer[layer_key].append(int(group["exact_top1_approx_rank"]))
+            if group["approx_top1_exact_rank"] is not None:
+                approx_top1_exact_rank_by_layer[layer_key].append(int(group["approx_top1_exact_rank"]))
+            if group["mean_abs_rank_error"] is not None:
+                mean_abs_rank_error_by_layer[layer_key].append(float(group["mean_abs_rank_error"]))
+            if group["approx_boundary_margin_normalized"] is not None:
+                boundary_margin_by_layer[layer_key].append(float(group["approx_boundary_margin_normalized"]))
+            if group["secondary_relevance_mode"] is not None:
+                secondary_group_count_by_layer[layer_key] += 1
+                secondary_primary_recall_by_layer[layer_key].append(float(group["secondary_primary_top_recall"]))
+                secondary_exact_recall_by_layer[layer_key].append(float(group["secondary_exact_top_recall"]))
+                if bool(group["secondary_triggered"]):
+                    secondary_trigger_count_by_layer[layer_key] += 1
+            if "recent_neighbor_rescue_triggered" in group:
+                recent_neighbor_group_count_by_layer[layer_key] += 1
+                if bool(group["recent_neighbor_rescue_triggered"]):
+                    recent_neighbor_trigger_count_by_layer[layer_key] += 1
+            for age_bucket, count in group["scorer_missed_exact_age_buckets"].items():
+                scorer_missed_age_buckets_by_layer[layer_key][str(age_bucket)] += int(count)
+
+    scorer_rank_correlation_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(rank_corr_by_layer.items())
+    }
+    scorer_value_correlation_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(value_corr_by_layer.items())
+    }
+    scorer_approx_exact_top_recall_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else 1.0
+        for layer_id, values in sorted(approx_recall_by_layer.items())
+    }
+    scorer_exact_top1_approx_rank_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(exact_top1_approx_rank_by_layer.items())
+    }
+    scorer_approx_top1_exact_rank_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(approx_top1_exact_rank_by_layer.items())
+    }
+    scorer_mean_abs_rank_error_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(mean_abs_rank_error_by_layer.items())
+    }
+    scorer_boundary_margin_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(boundary_margin_by_layer.items())
+    }
+    scorer_secondary_primary_top_recall_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(secondary_primary_recall_by_layer.items())
+    }
+    scorer_secondary_exact_top_recall_mean_by_layer = {
+        layer_id: float(sum(values) / len(values)) if values else None
+        for layer_id, values in sorted(secondary_exact_recall_by_layer.items())
+    }
+    scorer_secondary_trigger_rate_by_layer = {
+        layer_id: (
+            float(secondary_trigger_count_by_layer[layer_id] / max(secondary_group_count_by_layer[layer_id], 1))
+            if secondary_group_count_by_layer.get(layer_id, 0) > 0
+            else None
+        )
+        for layer_id in sorted(secondary_group_count_by_layer.keys())
+    }
+    scorer_recent_neighbor_rescue_trigger_rate_by_layer = {
+        layer_id: (
+            float(recent_neighbor_trigger_count_by_layer[layer_id] / max(recent_neighbor_group_count_by_layer[layer_id], 1))
+            if recent_neighbor_group_count_by_layer.get(layer_id, 0) > 0
+            else None
+        )
+        for layer_id in sorted(recent_neighbor_group_count_by_layer.keys())
+    }
+    scorer_worst_layer_id = None
+    if scorer_approx_exact_top_recall_mean_by_layer:
+        scorer_worst_layer_id = min(
+            scorer_approx_exact_top_recall_mean_by_layer.items(),
+            key=lambda item: (item[1], int(item[0])),
+        )[0]
+
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        {
+            "dotcache_attention_subset_ready": True,
+            "dotcache_ready": False,
+            "runtime_mode": "dotcache_attention_subset_serving_scorer_diagnostic",
+            "dotcache_prefill_ms": float(dotcache_prefill_ms),
+            "dotcache_generated_ids": generated_ids,
+            "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "scorer_diagnostic_ready": bool(diagnostic_records),
+            "scorer_diagnostic_record_count": int(len(diagnostic_records)),
+            "scorer_diagnostic_layer_count": int(len({int(record["layer_id"]) for record in diagnostic_records})),
+            "scorer_diagnostic_step_count": int(len({int(record["step_index"]) for record in diagnostic_records})),
+            "scorer_rank_correlation_mean_by_layer": scorer_rank_correlation_mean_by_layer,
+            "scorer_value_correlation_mean_by_layer": scorer_value_correlation_mean_by_layer,
+            "scorer_approx_exact_top_recall_mean_by_layer": scorer_approx_exact_top_recall_mean_by_layer,
+            "scorer_exact_top1_approx_rank_mean_by_layer": scorer_exact_top1_approx_rank_mean_by_layer,
+            "scorer_approx_top1_exact_rank_mean_by_layer": scorer_approx_top1_exact_rank_mean_by_layer,
+            "scorer_mean_abs_rank_error_by_layer": scorer_mean_abs_rank_error_by_layer,
+            "scorer_boundary_margin_mean_by_layer": scorer_boundary_margin_mean_by_layer,
+            "scorer_secondary_primary_top_recall_mean_by_layer": scorer_secondary_primary_top_recall_mean_by_layer,
+            "scorer_secondary_exact_top_recall_mean_by_layer": scorer_secondary_exact_top_recall_mean_by_layer,
+            "scorer_secondary_trigger_rate_by_layer": scorer_secondary_trigger_rate_by_layer,
+            "scorer_recent_neighbor_rescue_trigger_rate_by_layer": scorer_recent_neighbor_rescue_trigger_rate_by_layer,
+            "scorer_missed_exact_age_buckets_by_layer": {
+                layer_id: dict(sorted(counts.items()))
+                for layer_id, counts in sorted(scorer_missed_age_buckets_by_layer.items())
+            },
+            "scorer_worst_layer_id": scorer_worst_layer_id,
+            "scorer_layer_records": diagnostic_records,
+            "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+            "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+            "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+            "execution_recent_window_context_overrides": list(
+                adapter.dotcache_config.execution_recent_window_context_overrides
+            ),
+            "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+            "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+            "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+            "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+            "execution_disable_grouped_batching_layers": list(
+                adapter.dotcache_config.execution_disable_grouped_batching_layers
+            ),
+            "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+            "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+            "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
+            "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+            "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+            "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+            "execution_secondary_relevance_min_overlap": float(
+                adapter.dotcache_config.execution_secondary_relevance_min_overlap
+            ),
+            "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+            "execution_recent_neighbor_rescue_top_k": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_top_k
+            ),
+            "execution_recent_neighbor_rescue_anchor_window": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+            ),
+            "execution_recent_neighbor_rescue_min_anchor_pages": int(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+            ),
+            "execution_recent_neighbor_rescue_layers": list(
+                adapter.dotcache_config.execution_recent_neighbor_rescue_layers
+            ),
+            "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_margin_threshold
+            ),
+            "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6173,6 +6821,8 @@ __all__ = [
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_dotcache_serving_harness",
+    "run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness",
+    "run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness",
     "run_qwen35_attention_subset_dotcache_serving_quality_harness",
     "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",

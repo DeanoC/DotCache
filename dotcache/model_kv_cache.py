@@ -22,7 +22,7 @@ from .encode import encode_page
 from .planner import choose_page_mode, observe_page
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
-from .session_runtime import PagedDecodeSession, select_execution_page_indices, select_window_page_indices
+from .session_runtime import PagedDecodeSession, score_page_relevance, select_execution_page_indices, select_window_page_indices
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
 from .modes.m2_key_sketch import segment_ids_for_token_count
@@ -51,6 +51,87 @@ def _group_query_heads(mapping: np.ndarray, *, num_key_value_heads: int) -> tupl
             raise ValueError("q_head_to_kv_head contains an invalid KV head id")
         grouped[kv_head_id].append(q_head_id)
     return tuple(tuple(group) for group in grouped)
+
+
+def _page_header(page: PageLike) -> PageHeader:
+    return page.header if not isinstance(page, PreparedPageTorch) else page.header
+
+
+def _page_token_range(page: PageLike) -> dict[str, int]:
+    header = _page_header(page)
+    return {
+        "token_start": int(header.token_start),
+        "token_end": int(header.token_start + header.token_count),
+        "token_count": int(header.token_count),
+    }
+
+
+def _page_age_bucket(page: PageLike, *, context_length: int) -> str:
+    header = _page_header(page)
+    if context_length <= 0:
+        return "recent"
+    age_fraction = max(0.0, min(1.0, 1.0 - (float(header.token_start + header.token_count) / float(context_length))))
+    if age_fraction < 0.25:
+        return "recent"
+    if age_fraction < 0.75:
+        return "middle"
+    return "old"
+
+
+def _recent_old_bonus_weight(
+    page: PageLike,
+    *,
+    recent_start: int,
+    bonus_window: int,
+) -> float:
+    if bonus_window <= 0:
+        return 0.0
+    header = _page_header(page)
+    page_end = int(header.token_start + header.token_count)
+    if page_end > recent_start:
+        return 0.0
+    distance = max(0, int(recent_start) - page_end)
+    if distance >= int(bonus_window):
+        return 0.0
+    return float(1.0 - (float(distance) / float(max(int(bonus_window), 1))))
+
+
+def _rank_correlation(lhs: Sequence[float], rhs: Sequence[float]) -> float | None:
+    if len(lhs) != len(rhs):
+        raise ValueError("rank correlation inputs must have matching lengths")
+    if len(lhs) < 2:
+        return None
+    lhs_array = np.asarray(lhs, dtype=np.float32)
+    rhs_array = np.asarray(rhs, dtype=np.float32)
+    lhs_std = float(np.std(lhs_array))
+    rhs_std = float(np.std(rhs_array))
+    if lhs_std <= 0.0 or rhs_std <= 0.0:
+        return None
+    return float(np.corrcoef(lhs_array, rhs_array)[0, 1])
+
+
+def _score_page_relevance_for_mode(
+    query_slice: np.ndarray,
+    page: PageLike,
+    *,
+    relevance_mode: str,
+) -> float | None:
+    source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+    if relevance_mode == "sketch" and source_page.runtime_page_sketch is None:
+        return None
+    if relevance_mode == "envelope" and (source_page.runtime_page_min is None or source_page.runtime_page_max is None):
+        return None
+    return float(
+        score_page_relevance(
+            np.asarray(query_slice, dtype=np.float32),
+            relevance_mode=relevance_mode,
+            page_sketch=None
+            if source_page.runtime_page_sketch is None
+            else np.asarray(source_page.runtime_page_sketch, dtype=np.float32),
+            page_min=None if source_page.runtime_page_min is None else np.asarray(source_page.runtime_page_min, dtype=np.float32),
+            page_max=None if source_page.runtime_page_max is None else np.asarray(source_page.runtime_page_max, dtype=np.float32),
+        )
+    )
 
 
 def _page_has_m2_sidecar(page: PageLike) -> bool:
@@ -1326,6 +1407,19 @@ class ModelPagedKVCache:
             return False
         return int(layer_id) in {int(value) for value in self.config.execution_exact_refine_layers}
 
+    def _execution_exact_promote_enabled(self, *, layer_id: int) -> bool:
+        if self.config.execution_exact_promote_top_k <= 0:
+            return False
+        if not self.config.execution_exact_promote_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
+
+    def _execution_secondary_relevance_enabled(self, *, layer_id: int) -> bool:
+        return self.config.execution_secondary_relevance_enabled_for_layer(layer_id=layer_id)
+
+    def _execution_recent_neighbor_rescue_enabled(self, *, layer_id: int) -> bool:
+        return self.config.execution_recent_neighbor_rescue_enabled_for_layer(layer_id=layer_id)
+
     def _execution_shortlist_page_indices(
         self,
         key_pages: Sequence[PageLike],
@@ -1334,6 +1428,8 @@ class ModelPagedKVCache:
         query_slice: np.ndarray,
         trace: ExecutionTrace | None = None,
     ) -> list[int] | None:
+        if self.config.execution_shortlist_disabled_for_layer(layer_id=layer_id):
+            return None
         context_length = None
         if key_pages:
             context_length = max(
@@ -1341,6 +1437,12 @@ class ModelPagedKVCache:
                 + int((page.source_page if isinstance(page, PreparedPageTorch) else page).header.token_count)
                 for page in key_pages
             )
+        layer_recent_window = int(
+            self.config.resolve_execution_recent_window_for_context(
+                layer_id=layer_id,
+                context_length=context_length,
+            )
+        )
         layer_relevance_top_k = int(
             self.config.resolve_execution_relevance_top_k_for_context(
                 layer_id=layer_id,
@@ -1348,7 +1450,7 @@ class ModelPagedKVCache:
             )
         )
         if (
-            self.config.execution_recent_window <= 0
+            layer_recent_window <= 0
             and self.config.execution_sink_window <= 0
             and layer_relevance_top_k <= 0
         ):
@@ -1371,28 +1473,216 @@ class ModelPagedKVCache:
                 key_page_minima.append(np.asarray(page_min, dtype=np.float32))
                 key_page_maxima.append(np.asarray(page_max, dtype=np.float32))
         candidate_relevance_top_k = int(layer_relevance_top_k)
+        if self._execution_exact_promote_enabled(layer_id=layer_id):
+            candidate_relevance_top_k = max(
+                candidate_relevance_top_k,
+                int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k) * 2,
+            )
         if self._execution_exact_refine_enabled(layer_id=layer_id):
             candidate_relevance_top_k = max(
                 candidate_relevance_top_k,
                 int(self.config.execution_exact_refine_top_k) * 2,
             )
-        stage1_indices = select_execution_page_indices(
-            key_pages,
-            recent_window_tokens=int(self.config.execution_recent_window) if self.config.execution_recent_window > 0 else None,
-            sink_window_tokens=int(self.config.execution_sink_window),
-            query_slice=np.asarray(query_slice, dtype=np.float32),
-            key_page_sketches=key_page_sketches if key_page_sketches else None,
-            key_page_minima=key_page_minima if key_page_minima else None,
-            key_page_maxima=key_page_maxima if key_page_maxima else None,
-            relevance_top_k=candidate_relevance_top_k,
-            relevance_mode=self.config.execution_relevance_mode,
-        )
-        if not self._execution_exact_refine_enabled(layer_id=layer_id):
-            return stage1_indices
         base_indices = set(
             select_window_page_indices(
                 key_pages,
-                recent_window_tokens=int(self.config.execution_recent_window) if self.config.execution_recent_window > 0 else None,
+                recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
+                sink_window_tokens=int(self.config.execution_sink_window),
+            )
+        )
+        use_recent_old_bonus = self.config.execution_recent_old_bonus_enabled_for_layer(layer_id=layer_id)
+        use_secondary_relevance_rescue = self._execution_secondary_relevance_enabled(layer_id=layer_id)
+        use_recent_neighbor_rescue = self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
+        use_confidence_gated_exact_promote = (
+            self._execution_exact_promote_enabled(layer_id=layer_id)
+            and float(self.config.execution_exact_promote_margin_threshold) > 0.0
+        )
+        boundary_margin_normalized = None
+        if (
+            use_recent_old_bonus
+            or use_secondary_relevance_rescue
+            or use_recent_neighbor_rescue
+            or use_confidence_gated_exact_promote
+        ):
+            if candidate_relevance_top_k > 0:
+                candidate_indices = [index for index in range(len(key_pages)) if index not in base_indices]
+                if candidate_indices:
+                    approx_scores: list[float] = []
+                    for index in candidate_indices:
+                        approx_score = _score_page_relevance_for_mode(
+                            np.asarray(query_slice, dtype=np.float32),
+                            key_pages[index],
+                            relevance_mode=self.config.execution_relevance_mode,
+                        )
+                        if approx_score is None:
+                            return None
+                        approx_scores.append(float(approx_score))
+                    score_scale = max(float(np.std(np.asarray(approx_scores, dtype=np.float32))), 1e-6)
+                    recent_start = int(context_length) - int(layer_recent_window) if layer_recent_window > 0 and context_length is not None else int(context_length or 0)
+                    adjusted_scores = [
+                        score
+                        + (
+                            float(self.config.execution_recent_old_bonus_strength)
+                            * score_scale
+                            * _recent_old_bonus_weight(
+                                key_pages[index],
+                                recent_start=int(recent_start),
+                                bonus_window=int(self.config.execution_recent_old_bonus_window),
+                            )
+                        )
+                        for index, score in zip(candidate_indices, approx_scores, strict=True)
+                    ]
+                    if len(adjusted_scores) > candidate_relevance_top_k and candidate_relevance_top_k > 0:
+                        sorted_scores = sorted(adjusted_scores, reverse=True)
+                        boundary_margin_normalized = float(
+                            (sorted_scores[candidate_relevance_top_k - 1] - sorted_scores[candidate_relevance_top_k])
+                            / max(float(np.std(np.asarray(adjusted_scores, dtype=np.float32))), 1e-6)
+                        )
+                    ranked_candidates = [
+                        index
+                        for _, index in sorted(
+                            zip(adjusted_scores, candidate_indices, strict=True),
+                            key=lambda item: item[0],
+                            reverse=True,
+                        )
+                    ]
+                    stage1_ranked_candidates = ranked_candidates[:candidate_relevance_top_k]
+                    stage1_indices = sorted(base_indices.union(stage1_ranked_candidates))
+                    if use_recent_neighbor_rescue and layer_recent_window > 0 and context_length is not None:
+                        recent_start = int(context_length) - int(layer_recent_window)
+                        primary_top_indices = stage1_ranked_candidates[:layer_relevance_top_k]
+                        anchor_pages = [
+                            index
+                            for index in primary_top_indices
+                            if int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                            <= int(self.config.execution_recent_neighbor_rescue_anchor_window)
+                        ]
+                        recent_old_indices = [
+                            index
+                            for index in primary_top_indices
+                            if (
+                                int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                                <= int(recent_start)
+                                and int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                                > int(recent_start - layer_recent_window)
+                            )
+                        ]
+                        if (
+                            len(anchor_pages) >= int(self.config.execution_recent_neighbor_rescue_min_anchor_pages)
+                            and recent_old_indices
+                        ):
+                            rescue_indices: list[int] = []
+                            probe_index = min(recent_old_indices) - 1
+                            stage1_index_set = set(stage1_indices)
+                            while probe_index >= 0 and len(rescue_indices) < int(self.config.execution_recent_neighbor_rescue_top_k):
+                                page_end = int(
+                                    _page_header(key_pages[probe_index]).token_start
+                                    + _page_header(key_pages[probe_index]).token_count
+                                )
+                                if page_end <= int(recent_start - layer_recent_window):
+                                    break
+                                if probe_index not in base_indices and probe_index not in stage1_index_set:
+                                    rescue_indices.append(int(probe_index))
+                                probe_index -= 1
+                            if rescue_indices:
+                                stage1_indices = sorted(stage1_index_set.union(rescue_indices))
+                    if use_secondary_relevance_rescue and layer_relevance_top_k > 0:
+                        secondary_scores: list[float] = []
+                        for index in candidate_indices:
+                            secondary_score = _score_page_relevance_for_mode(
+                                np.asarray(query_slice, dtype=np.float32),
+                                key_pages[index],
+                                relevance_mode=self.config.execution_secondary_relevance_mode,
+                            )
+                            if secondary_score is None:
+                                secondary_scores = []
+                                break
+                            secondary_scores.append(float(secondary_score))
+                        if secondary_scores:
+                            secondary_ranked_candidates = [
+                                index
+                                for _, index in sorted(
+                                    zip(secondary_scores, candidate_indices, strict=True),
+                                    key=lambda item: item[0],
+                                    reverse=True,
+                                )
+                            ]
+                            primary_top_indices = stage1_ranked_candidates[:layer_relevance_top_k]
+                            secondary_top_indices = secondary_ranked_candidates[:layer_relevance_top_k]
+                            overlap_budget = min(len(primary_top_indices), len(secondary_top_indices))
+                            overlap_ratio = (
+                                float(len(set(primary_top_indices) & set(secondary_top_indices))) / float(overlap_budget)
+                                if overlap_budget > 0
+                                else 1.0
+                            )
+                            if overlap_ratio < float(self.config.execution_secondary_relevance_min_overlap):
+                                rescue_indices: list[int] = []
+                                for index in secondary_ranked_candidates:
+                                    if index in stage1_indices:
+                                        continue
+                                    rescue_indices.append(int(index))
+                                    if len(rescue_indices) >= int(self.config.execution_secondary_relevance_top_k):
+                                        break
+                                if rescue_indices:
+                                    stage1_indices = sorted(set(stage1_indices).union(rescue_indices))
+                else:
+                    stage1_indices = sorted(base_indices)
+            else:
+                stage1_indices = sorted(base_indices)
+        else:
+            stage1_indices = select_execution_page_indices(
+                key_pages,
+                recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
+                sink_window_tokens=int(self.config.execution_sink_window),
+                query_slice=np.asarray(query_slice, dtype=np.float32),
+                key_page_sketches=key_page_sketches if key_page_sketches else None,
+                key_page_minima=key_page_minima if key_page_minima else None,
+                key_page_maxima=key_page_maxima if key_page_maxima else None,
+                relevance_top_k=candidate_relevance_top_k,
+                relevance_mode=self.config.execution_relevance_mode,
+            )
+        if not self._execution_exact_refine_enabled(layer_id=layer_id):
+            promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id)
+            if (
+                promote_enabled
+                and float(self.config.execution_exact_promote_margin_threshold) > 0.0
+                and boundary_margin_normalized is not None
+                and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
+            ):
+                promote_enabled = False
+            if not promote_enabled:
+                return stage1_indices
+            candidate_indices = [index for index in stage1_indices if index not in base_indices]
+            if not candidate_indices:
+                return stage1_indices
+            target_old_page_count = min(
+                len(candidate_indices),
+                int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k),
+            )
+            if target_old_page_count >= len(candidate_indices):
+                return stage1_indices
+            candidate_logits = score_pages(
+                np.asarray(query_slice, dtype=np.float32),
+                [key_pages[index] for index in candidate_indices],
+                backend=self.backend,
+                trace=trace,
+            )
+            chosen = [
+                index
+                for _, index in sorted(
+                    (
+                        (float(np.max(np.asarray(logits, dtype=np.float32))), index)
+                        for index, logits in zip(candidate_indices, candidate_logits, strict=True)
+                    ),
+                    key=lambda item: item[0],
+                    reverse=True,
+                )[:target_old_page_count]
+            ]
+            return sorted(base_indices.union(chosen))
+        base_indices = set(
+            select_window_page_indices(
+                key_pages,
+                recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
                 sink_window_tokens=int(self.config.execution_sink_window),
             )
         )
@@ -2531,6 +2821,408 @@ class ModelPagedKVCache:
             outputs[list(q_head_ids)] = kv_outputs
         return outputs
 
+    def analyze_execution_shortlist_layer(
+        self,
+        layer_id: int,
+        query_step: np.ndarray,
+        q_head_to_kv_head: Sequence[int] | np.ndarray,
+        *,
+        query_scale: float = 1.0,
+        prefer_grouped_batching: bool = True,
+        trace: ExecutionTrace | None = None,
+    ) -> dict[str, object]:
+        queries = _normalize_query_step(
+            query_step,
+            num_attention_heads=self.num_attention_heads,
+            head_dim=self.config.head_dim,
+        )
+        scaled_queries = queries * np.float32(query_scale)
+        grouped_query_heads = self._grouped_query_heads_for_mapping(q_head_to_kv_head)
+        layer_prefer_grouped_batching = (
+            bool(prefer_grouped_batching)
+            and not self.config.execution_grouped_batching_disabled_for_layer(layer_id=layer_id)
+        )
+
+        shortlist_enabled = self.config.execution_shortlist_enabled()
+        group_entries: list[dict[str, object]] = []
+        raw_selected_indices_by_group: list[list[int] | None] = []
+        full_selected_indices_by_group: list[list[int]] = []
+        key_pages_by_group: list[list[PageLike]] = []
+        window_index_sets_by_group: list[set[int]] = []
+        representative_queries: list[np.ndarray] = []
+
+        for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
+            if not q_head_ids:
+                continue
+            key_pages, value_pages, _ = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            if not key_pages:
+                raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            kv_queries = scaled_queries[list(q_head_ids)]
+            key_pages, _ = self._m2_prefilter_pages_numpy(kv_queries, key_pages, value_pages)
+            representative_query = kv_queries.mean(axis=0).astype(np.float32, copy=False)
+            raw_selected_indices = None
+            context_length = (
+                max(_page_header(page).token_start + _page_header(page).token_count for page in key_pages)
+                if key_pages
+                else 0
+            )
+            layer_recent_window = int(
+                self.config.resolve_execution_recent_window_for_context(
+                    layer_id=layer_id,
+                    context_length=context_length,
+                )
+            )
+            if shortlist_enabled:
+                raw_selected_indices = self._execution_shortlist_page_indices(
+                    key_pages,
+                    layer_id=layer_id,
+                    query_slice=representative_query,
+                    trace=trace,
+                )
+            selected_indices = (
+                list(range(len(key_pages))) if raw_selected_indices is None else [int(index) for index in raw_selected_indices]
+            )
+            window_index_set = set(
+                select_window_page_indices(
+                    key_pages,
+                    recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
+                    sink_window_tokens=int(self.config.execution_sink_window),
+                )
+            )
+            group_entries.append(
+                {
+                    "kv_head_id": int(kv_head_id),
+                    "query_head_ids": list(q_head_ids),
+                    "layer_recent_window": int(layer_recent_window),
+                }
+            )
+            raw_selected_indices_by_group.append(raw_selected_indices)
+            full_selected_indices_by_group.append(selected_indices)
+            key_pages_by_group.append(key_pages)
+            window_index_sets_by_group.append(window_index_set)
+            representative_queries.append(representative_query)
+
+        shortlist_attempted = any(indices is not None for indices in raw_selected_indices_by_group)
+        union_indices = sorted(
+            {
+                index
+                for indices in raw_selected_indices_by_group
+                if indices is not None
+                for index in indices
+            }
+        )
+        union_active = bool(union_indices) and len(group_entries) > 1 and layer_prefer_grouped_batching
+
+        layer_exact_top_budget_total = 0
+        layer_exact_top_overlap_total = 0
+        layer_union_added_pages_total = 0
+        layer_missed_age_buckets = {"recent": 0, "middle": 0, "old": 0}
+        layer_recalls: list[float] = []
+        layer_first_missed_ranks: list[int] = []
+
+        for group_index, entry in enumerate(group_entries):
+            key_pages = key_pages_by_group[group_index]
+            selected_indices = full_selected_indices_by_group[group_index]
+            if union_active:
+                final_indices = list(union_indices)
+                union_added_indices = sorted(set(union_indices) - set(selected_indices))
+            else:
+                final_indices = list(selected_indices)
+                union_added_indices = []
+            window_index_set = window_index_sets_by_group[group_index]
+            representative_query = representative_queries[group_index]
+            old_candidate_indices = [index for index in range(len(key_pages)) if index not in window_index_set]
+            selected_old_indices = [index for index in final_indices if index not in window_index_set]
+            exact_top_budget = min(len(selected_old_indices), len(old_candidate_indices))
+            approx_top_budget = min(
+                int(
+                    self.config.resolve_execution_relevance_top_k_for_context(
+                        layer_id=layer_id,
+                        context_length=context_length,
+                    )
+                ),
+                len(old_candidate_indices),
+            )
+
+            exact_rank_by_index: dict[int, int] = {}
+            exact_top_indices: list[int] = []
+            approx_rank_by_index: dict[int, int] = {}
+            approx_top_indices: list[int] = []
+            approx_scores_by_index: dict[int, float] = {}
+            exact_scores_by_index: dict[int, float] = {}
+            approx_boundary_margin = None
+            approx_boundary_margin_normalized = None
+            secondary_rank_by_index: dict[int, int] = {}
+            secondary_top_indices: list[int] = []
+            secondary_scores_by_index: dict[int, float] = {}
+            recent_neighbor_anchor_pages = 0
+            recent_neighbor_recent_old_pages = 0
+            if old_candidate_indices:
+                for index in old_candidate_indices:
+                    approx_score = _score_page_relevance_for_mode(
+                        representative_query,
+                        key_pages[index],
+                        relevance_mode=self.config.execution_relevance_mode,
+                    )
+                    if approx_score is None:
+                        raise ValueError(
+                            f"missing {self.config.execution_relevance_mode} relevance sidecars for layer {layer_id}"
+                        )
+                    approx_scores_by_index[int(index)] = float(approx_score)
+                approx_ranked_pairs = sorted(
+                    ((score, int(index)) for index, score in approx_scores_by_index.items()),
+                    key=lambda item: item[0],
+                    reverse=True,
+                )
+                if len(approx_ranked_pairs) > approx_top_budget and approx_top_budget > 0:
+                    approx_boundary_margin = float(
+                        approx_ranked_pairs[approx_top_budget - 1][0] - approx_ranked_pairs[approx_top_budget][0]
+                    )
+                    approx_std = max(
+                        float(np.std(np.asarray(list(approx_scores_by_index.values()), dtype=np.float32))),
+                        1e-6,
+                    )
+                    approx_boundary_margin_normalized = float(approx_boundary_margin / approx_std)
+                approx_rank_by_index = {int(index): rank for rank, (_, index) in enumerate(approx_ranked_pairs, start=1)}
+                approx_top_indices = [int(index) for _, index in approx_ranked_pairs[:approx_top_budget]]
+                if self._execution_secondary_relevance_enabled(layer_id=layer_id):
+                    secondary_scores_missing = False
+                    for index in old_candidate_indices:
+                        secondary_score = _score_page_relevance_for_mode(
+                            representative_query,
+                            key_pages[index],
+                            relevance_mode=self.config.execution_secondary_relevance_mode,
+                        )
+                        if secondary_score is None:
+                            secondary_scores_missing = True
+                            secondary_scores_by_index = {}
+                            secondary_rank_by_index = {}
+                            secondary_top_indices = []
+                            break
+                        secondary_scores_by_index[int(index)] = float(secondary_score)
+                    if not secondary_scores_missing:
+                        secondary_ranked_pairs = sorted(
+                            ((score, int(index)) for index, score in secondary_scores_by_index.items()),
+                            key=lambda item: item[0],
+                            reverse=True,
+                        )
+                        secondary_rank_by_index = {
+                            int(index): rank for rank, (_, index) in enumerate(secondary_ranked_pairs, start=1)
+                        }
+                        secondary_top_indices = [int(index) for _, index in secondary_ranked_pairs[:approx_top_budget]]
+                if self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id) and layer_recent_window > 0:
+                    recent_start = int(context_length) - int(layer_recent_window)
+                    recent_neighbor_anchor_pages = sum(
+                        1
+                        for index in approx_top_indices
+                        if int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                        <= int(self.config.execution_recent_neighbor_rescue_anchor_window)
+                    )
+                    recent_neighbor_recent_old_pages = sum(
+                        1
+                        for index in approx_top_indices
+                        if (
+                            int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                            <= int(recent_start)
+                            and int(_page_header(key_pages[index]).token_start + _page_header(key_pages[index]).token_count)
+                            > int(recent_start - layer_recent_window)
+                        )
+                    )
+                candidate_logits = score_pages(
+                    representative_query,
+                    [key_pages[index] for index in old_candidate_indices],
+                    backend=self.backend,
+                    trace=trace,
+                )
+                ranked_pairs = sorted(
+                    (
+                        (
+                            float(np.max(np.asarray(logits, dtype=np.float32))),
+                            int(index),
+                        )
+                        for index, logits in zip(old_candidate_indices, candidate_logits, strict=True)
+                    ),
+                    key=lambda item: item[0],
+                    reverse=True,
+                )
+                exact_scores_by_index = {
+                    int(index): float(score)
+                    for score, index in ranked_pairs
+                }
+                exact_rank_by_index = {int(index): rank for rank, (_, index) in enumerate(ranked_pairs, start=1)}
+                exact_top_indices = [int(index) for _, index in ranked_pairs[:exact_top_budget]]
+
+            exact_top_index_set = set(exact_top_indices)
+            selected_old_index_set = set(selected_old_indices)
+            exact_top_overlap = len(selected_old_index_set & exact_top_index_set)
+            approx_top_index_set = set(approx_top_indices)
+            approx_exact_top_overlap = len(approx_top_index_set & exact_top_index_set)
+            secondary_top_index_set = set(secondary_top_indices)
+            secondary_primary_top_overlap = len(secondary_top_index_set & approx_top_index_set)
+            secondary_exact_top_overlap = len(secondary_top_index_set & exact_top_index_set)
+            if exact_top_budget > 0:
+                exact_top_recall = float(exact_top_overlap) / float(exact_top_budget)
+                layer_recalls.append(exact_top_recall)
+            else:
+                exact_top_recall = 1.0
+            if exact_top_budget > 0:
+                approx_exact_top_recall = float(approx_exact_top_overlap) / float(exact_top_budget)
+                secondary_exact_top_recall = float(secondary_exact_top_overlap) / float(exact_top_budget)
+            else:
+                approx_exact_top_recall = 1.0
+                secondary_exact_top_recall = 1.0
+            secondary_primary_top_recall = (
+                float(secondary_primary_top_overlap) / float(max(min(len(secondary_top_indices), len(approx_top_indices)), 1))
+                if secondary_top_indices and approx_top_indices
+                else (1.0 if not secondary_top_indices else 0.0)
+            )
+            secondary_triggered = bool(
+                secondary_top_indices
+                and secondary_primary_top_recall < float(self.config.execution_secondary_relevance_min_overlap)
+            )
+            recent_neighbor_rescue_triggered = bool(
+                self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
+                and recent_neighbor_anchor_pages >= int(self.config.execution_recent_neighbor_rescue_min_anchor_pages)
+                and recent_neighbor_recent_old_pages > 0
+            )
+            missed_exact_indices = [index for index in exact_top_indices if index not in selected_old_index_set]
+            first_missed_exact_rank = (
+                int(exact_rank_by_index[missed_exact_indices[0]]) if missed_exact_indices else None
+            )
+            if first_missed_exact_rank is not None:
+                layer_first_missed_ranks.append(first_missed_exact_rank)
+            scorer_missed_exact_indices = [index for index in exact_top_indices if index not in approx_top_index_set]
+            first_scorer_missed_exact_rank = (
+                int(exact_rank_by_index[scorer_missed_exact_indices[0]]) if scorer_missed_exact_indices else None
+            )
+            missed_exact_age_buckets = {"recent": 0, "middle": 0, "old": 0}
+            for index in missed_exact_indices:
+                age_bucket = _page_age_bucket(key_pages[index], context_length=int(context_length))
+                missed_exact_age_buckets[age_bucket] += 1
+                layer_missed_age_buckets[age_bucket] += 1
+            scorer_missed_exact_age_buckets = {"recent": 0, "middle": 0, "old": 0}
+            for index in scorer_missed_exact_indices:
+                age_bucket = _page_age_bucket(key_pages[index], context_length=int(context_length))
+                scorer_missed_exact_age_buckets[age_bucket] += 1
+
+            exact_top1_approx_rank = None
+            approx_top1_exact_rank = None
+            secondary_top1_exact_rank = None
+            primary_top1_secondary_rank = None
+            score_rank_correlation = None
+            score_value_correlation = None
+            mean_abs_rank_error = None
+            if exact_top_indices:
+                exact_top1_approx_rank = approx_rank_by_index.get(int(exact_top_indices[0]))
+            if approx_top_indices:
+                approx_top1_exact_rank = exact_rank_by_index.get(int(approx_top_indices[0]))
+                primary_top1_secondary_rank = secondary_rank_by_index.get(int(approx_top_indices[0]))
+            if secondary_top_indices:
+                secondary_top1_exact_rank = exact_rank_by_index.get(int(secondary_top_indices[0]))
+            if exact_rank_by_index and approx_rank_by_index:
+                shared_indices = [index for index in old_candidate_indices if index in exact_rank_by_index and index in approx_rank_by_index]
+                if shared_indices:
+                    exact_ranks = [float(exact_rank_by_index[index]) for index in shared_indices]
+                    approx_ranks = [float(approx_rank_by_index[index]) for index in shared_indices]
+                    score_rank_correlation = _rank_correlation(approx_ranks, exact_ranks)
+                    mean_abs_rank_error = float(
+                        np.mean(
+                            np.abs(
+                                np.asarray(approx_ranks, dtype=np.float32) - np.asarray(exact_ranks, dtype=np.float32)
+                            )
+                        )
+                    )
+                    exact_scores = [float(exact_scores_by_index[index]) for index in shared_indices]
+                    approx_scores = [float(approx_scores_by_index[index]) for index in shared_indices]
+                    score_value_correlation = _rank_correlation(approx_scores, exact_scores)
+
+            union_added_old_indices = [index for index in union_added_indices if index not in window_index_set]
+            union_added_ranks = [
+                int(exact_rank_by_index[index])
+                for index in union_added_old_indices
+                if index in exact_rank_by_index
+            ]
+            union_added_mean_exact_rank = (
+                float(sum(union_added_ranks) / len(union_added_ranks)) if union_added_ranks else None
+            )
+
+            layer_exact_top_budget_total += int(exact_top_budget)
+            layer_exact_top_overlap_total += int(exact_top_overlap)
+            layer_union_added_pages_total += int(len(union_added_indices))
+
+            entry.update(
+                {
+                    "context_length": int(context_length),
+                    "total_pages": int(len(key_pages)),
+                    "window_pages": int(len(window_index_set)),
+                    "old_candidate_pages": int(len(old_candidate_indices)),
+                    "selected_pages": int(len(final_indices)),
+                    "selected_old_pages": int(len(selected_old_indices)),
+                    "exact_top_budget": int(exact_top_budget),
+                    "exact_top_overlap": int(exact_top_overlap),
+                    "exact_top_recall": float(exact_top_recall),
+                    "approx_top_budget": int(approx_top_budget),
+                    "approx_exact_top_overlap": int(approx_exact_top_overlap),
+                    "approx_exact_top_recall": float(approx_exact_top_recall),
+                    "secondary_relevance_mode": (
+                        self.config.execution_secondary_relevance_mode
+                        if self._execution_secondary_relevance_enabled(layer_id=layer_id)
+                        else None
+                    ),
+                    "secondary_primary_top_overlap": int(secondary_primary_top_overlap),
+                    "secondary_primary_top_recall": float(secondary_primary_top_recall),
+                    "secondary_exact_top_overlap": int(secondary_exact_top_overlap),
+                    "secondary_exact_top_recall": float(secondary_exact_top_recall),
+                    "secondary_triggered": bool(secondary_triggered),
+                    "recent_neighbor_anchor_pages": int(recent_neighbor_anchor_pages),
+                    "recent_neighbor_recent_old_pages": int(recent_neighbor_recent_old_pages),
+                    "recent_neighbor_rescue_triggered": bool(recent_neighbor_rescue_triggered),
+                    "approx_boundary_margin": approx_boundary_margin,
+                    "approx_boundary_margin_normalized": approx_boundary_margin_normalized,
+                    "exact_top1_approx_rank": exact_top1_approx_rank,
+                    "approx_top1_exact_rank": approx_top1_exact_rank,
+                    "secondary_top1_exact_rank": secondary_top1_exact_rank,
+                    "primary_top1_secondary_rank": primary_top1_secondary_rank,
+                    "first_scorer_missed_exact_rank": first_scorer_missed_exact_rank,
+                    "score_rank_correlation": score_rank_correlation,
+                    "score_value_correlation": score_value_correlation,
+                    "mean_abs_rank_error": mean_abs_rank_error,
+                    "first_missed_exact_rank": first_missed_exact_rank,
+                    "union_active": bool(union_active),
+                    "union_added_pages": int(len(union_added_indices)),
+                    "union_added_exact_top_hits": int(sum(1 for index in union_added_old_indices if index in exact_top_index_set)),
+                    "union_added_mean_exact_rank": union_added_mean_exact_rank,
+                    "selected_old_page_ranges": [_page_token_range(key_pages[index]) for index in selected_old_indices],
+                    "top_approx_page_ranges": [_page_token_range(key_pages[index]) for index in approx_top_indices],
+                    "top_secondary_page_ranges": [_page_token_range(key_pages[index]) for index in secondary_top_indices],
+                    "top_exact_page_ranges": [_page_token_range(key_pages[index]) for index in exact_top_indices],
+                    "missed_exact_page_ranges": [_page_token_range(key_pages[index]) for index in missed_exact_indices],
+                    "missed_exact_age_buckets": missed_exact_age_buckets,
+                    "scorer_missed_exact_page_ranges": [_page_token_range(key_pages[index]) for index in scorer_missed_exact_indices],
+                    "scorer_missed_exact_age_buckets": scorer_missed_exact_age_buckets,
+                }
+            )
+
+        first_missed_exact_rank_min = min(layer_first_missed_ranks) if layer_first_missed_ranks else None
+        return {
+            "layer_id": int(layer_id),
+            "shortlist_enabled": bool(shortlist_enabled),
+            "shortlist_attempted": bool(shortlist_attempted),
+            "grouped_batching_enabled": bool(layer_prefer_grouped_batching),
+            "union_active": bool(union_active),
+            "group_count": int(len(group_entries)),
+            "exact_top_budget_total": int(layer_exact_top_budget_total),
+            "exact_top_overlap_total": int(layer_exact_top_overlap_total),
+            "exact_top_recall_mean": (
+                float(sum(layer_recalls) / len(layer_recalls)) if layer_recalls else 1.0
+            ),
+            "exact_top_recall_min": float(min(layer_recalls)) if layer_recalls else 1.0,
+            "first_missed_exact_rank_min": first_missed_exact_rank_min,
+            "union_added_pages_total": int(layer_union_added_pages_total),
+            "missed_exact_age_buckets": dict(layer_missed_age_buckets),
+            "groups": group_entries,
+        }
+
     def decode_layer_torch(
         self,
         layer_id: int,
@@ -2564,6 +3256,10 @@ class ModelPagedKVCache:
 
         scaled_queries = queries.to(dtype=torch.float32) * float(query_scale)
         grouped_query_heads = self._grouped_query_heads_for_mapping(q_head_to_kv_head)
+        layer_prefer_grouped_batching = (
+            bool(prefer_grouped_batching)
+            and not self.config.execution_grouped_batching_disabled_for_layer(layer_id=layer_id)
+        )
 
         outputs = torch.zeros(
             (self.num_attention_heads, self.config.head_dim),
@@ -2622,7 +3318,7 @@ class ModelPagedKVCache:
                     for index in indices
                 }
             )
-            use_union_indices = bool(union_indices) and len(active_queries) > 1 and prefer_grouped_batching
+            use_union_indices = bool(union_indices) and len(active_queries) > 1 and layer_prefer_grouped_batching
             if use_union_indices:
                 shortlist_group_union_applied = True
                 shortlist_selected_pages = int(len(union_indices) * len(active_queries))
@@ -2664,7 +3360,7 @@ class ModelPagedKVCache:
 
         self._sync_prepared_chunk_cache_budget()
 
-        if shortlist_attempted and shortlist_applied and prefer_grouped_batching and len(active_queries) > 1:
+        if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:
             shortlisted_can_batch = _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
             if not shortlisted_can_batch:
                 self._record_execution_shortlist(
@@ -2696,9 +3392,9 @@ class ModelPagedKVCache:
                 group_union_applied=shortlist_group_union_applied,
             )
 
-        cached_group_layout = prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
+        cached_group_layout = layer_prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
         if cached_group_layout or (
-            prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
+            layer_prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
         ):
             self._record_decode_path(layer_id, "grouped_batched")
             key_chunk_lengths = active_layouts[0].key_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None

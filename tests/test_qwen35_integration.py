@@ -25,7 +25,9 @@ from dotcache.integrations.qwen35 import (
     load_qwen35_text_only_from_pretrained,
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_dotcache_loss_harness,
+    run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness,
     run_qwen35_attention_subset_dotcache_serving_harness,
+    run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
@@ -864,8 +866,26 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "serving_shortlist_heuristic_applied" in result
     assert "execution_recent_window" in result
     assert "execution_sink_window" in result
+    assert "execution_recent_window_overrides" in result
+    assert "execution_recent_window_context_overrides" in result
     assert "execution_relevance_top_k" in result
     assert "execution_relevance_top_k_context_overrides" in result
+    assert "execution_full_context_layers" in result
+    assert "execution_disable_grouped_batching_layers" in result
+    assert "execution_recent_old_bonus_window" in result
+    assert "execution_recent_old_bonus_strength" in result
+    assert "execution_recent_old_bonus_layers" in result
+    assert "execution_secondary_relevance_mode" in result
+    assert "execution_secondary_relevance_top_k" in result
+    assert "execution_secondary_relevance_min_overlap" in result
+    assert "execution_secondary_relevance_layers" in result
+    assert "execution_recent_neighbor_rescue_top_k" in result
+    assert "execution_recent_neighbor_rescue_anchor_window" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
@@ -899,7 +919,132 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
     assert len(result["teacher_forced_per_step_logit_max_abs_error"]) == 2
     assert "serving_shortlist_heuristic_applied" in result
+    assert "execution_recent_window_overrides" in result
+    assert "execution_recent_window_context_overrides" in result
     assert "execution_relevance_top_k_context_overrides" in result
+    assert "execution_full_context_layers" in result
+    assert "execution_disable_grouped_batching_layers" in result
+    assert "execution_recent_old_bonus_window" in result
+    assert "execution_recent_old_bonus_strength" in result
+    assert "execution_recent_old_bonus_layers" in result
+    assert "execution_secondary_relevance_mode" in result
+    assert "execution_secondary_relevance_top_k" in result
+    assert "execution_secondary_relevance_min_overlap" in result
+    assert "execution_secondary_relevance_layers" in result
+    assert "execution_recent_neighbor_rescue_top_k" in result
+    assert "execution_recent_neighbor_rescue_anchor_window" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
+
+
+def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(
+            head_dim=16,
+            group_size=16,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=2,
+            execution_recent_window=2,
+            execution_sink_window=2,
+            execution_relevance_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache serving recall analysis", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_serving_recall_analysis"
+    assert result["dotcache_attention_subset_ready"] is True
+    assert result["shortlist_recall_ready"] is True
+    assert result["shortlist_recall_record_count"] > 0
+    assert result["shortlist_recall_exact_top_budget_total"] >= result["shortlist_recall_exact_top_hits_total"]
+    assert 0.0 <= result["shortlist_recall_exact_top_recall_mean"] <= 1.0
+    assert 0.0 <= result["shortlist_recall_exact_top_recall_weighted"] <= 1.0
+    assert isinstance(result["shortlist_recall_mean_by_layer"], dict)
+    assert "serving_shortlist_heuristic_applied" in result
+    assert "execution_recent_window_overrides" in result
+    assert "execution_recent_window_context_overrides" in result
+    assert "execution_relevance_top_k_context_overrides" in result
+    assert "execution_full_context_layers" in result
+    assert "execution_disable_grouped_batching_layers" in result
+    assert "execution_recent_old_bonus_window" in result
+    assert "execution_recent_old_bonus_strength" in result
+    assert "execution_recent_old_bonus_layers" in result
+    assert "execution_secondary_relevance_mode" in result
+    assert "execution_secondary_relevance_top_k" in result
+    assert "execution_secondary_relevance_min_overlap" in result
+    assert "execution_secondary_relevance_layers" in result
+    assert "execution_recent_neighbor_rescue_top_k" in result
+    assert "execution_recent_neighbor_rescue_anchor_window" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
+
+
+def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(
+            head_dim=16,
+            group_size=16,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=2,
+            execution_recent_window=2,
+            execution_sink_window=2,
+            execution_relevance_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset dotcache scorer diagnostic", return_tensors="pt")
+    result = run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_serving_scorer_diagnostic"
+    assert result["scorer_diagnostic_ready"] is True
+    assert result["scorer_diagnostic_record_count"] > 0
+    assert isinstance(result["scorer_rank_correlation_mean_by_layer"], dict)
+    assert isinstance(result["scorer_value_correlation_mean_by_layer"], dict)
+    assert isinstance(result["scorer_approx_exact_top_recall_mean_by_layer"], dict)
+    assert isinstance(result["scorer_secondary_trigger_rate_by_layer"], dict)
+    assert isinstance(result["scorer_recent_neighbor_rescue_trigger_rate_by_layer"], dict)
+    assert isinstance(result["scorer_missed_exact_age_buckets_by_layer"], dict)
+    assert "execution_recent_old_bonus_window" in result
+    assert "execution_recent_old_bonus_strength" in result
+    assert "execution_recent_old_bonus_layers" in result
+    assert "execution_secondary_relevance_mode" in result
+    assert "execution_secondary_relevance_top_k" in result
+    assert "execution_secondary_relevance_min_overlap" in result
+    assert "execution_secondary_relevance_layers" in result
+    assert "execution_recent_neighbor_rescue_top_k" in result
+    assert "execution_recent_neighbor_rescue_anchor_window" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
 
 
 def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
@@ -1170,18 +1315,56 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "64",
             "--execution-sink-window",
             "16",
+            "--execution-recent-window-layer",
+            "layer:23=96",
+            "--execution-recent-window-context-layer",
+            "layer:23:min_ctx:8192=1536",
             "--execution-relevance-top-k",
             "4",
             "--execution-relevance-top-k-layer",
             "layer:23=8",
             "--execution-relevance-top-k-context-layer",
             "layer:23:min_ctx:8192=8",
+            "--execution-full-context-layer",
+            "23",
+            "--execution-disable-grouped-batching-layer",
+            "23",
+            "--execution-recent-old-bonus-window",
+            "512",
+            "--execution-recent-old-bonus-strength",
+            "0.5",
+            "--execution-recent-old-bonus-layer",
+            "23",
+            "--execution-exact-promote-top-k",
+            "2",
+            "--execution-exact-promote-margin-threshold",
+            "0.25",
+            "--execution-exact-promote-layer",
+            "23",
+            "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
+            "--execution-secondary-relevance-mode",
+            "sketch",
+            "--execution-secondary-relevance-top-k",
+            "2",
+            "--execution-secondary-relevance-min-overlap",
+            "0.5",
+            "--execution-secondary-relevance-layer",
+            "23",
+            "--execution-recent-neighbor-rescue-top-k",
+            "2",
+            "--execution-recent-neighbor-rescue-anchor-window",
+            "1024",
+            "--execution-recent-neighbor-rescue-min-anchor-pages",
+            "4",
+            "--execution-recent-neighbor-rescue-layer",
+            "23",
             "--execution-exact-refine-top-k",
             "2",
             "--execution-exact-refine-layer",
             "23",
+            "--recall-analysis",
             "--quality-check",
         ],
     )
@@ -1190,12 +1373,32 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.tokens_per_page == 8
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16
+    assert serving_args.execution_recent_window_layer == ["layer:23=96"]
+    assert serving_args.execution_recent_window_context_layer == ["layer:23:min_ctx:8192=1536"]
     assert serving_args.execution_relevance_top_k == 4
     assert serving_args.execution_relevance_top_k_layer == ["layer:23=8"]
     assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:8192=8"]
+    assert serving_args.execution_full_context_layer == [23]
+    assert serving_args.execution_disable_grouped_batching_layer == [23]
+    assert serving_args.execution_recent_old_bonus_window == 512
+    assert serving_args.execution_recent_old_bonus_strength == 0.5
+    assert serving_args.execution_recent_old_bonus_layer == [23]
     assert serving_args.execution_relevance_mode == "envelope"
+    assert serving_args.execution_secondary_relevance_mode == "sketch"
+    assert serving_args.execution_secondary_relevance_top_k == 2
+    assert serving_args.execution_secondary_relevance_min_overlap == 0.5
+    assert serving_args.execution_secondary_relevance_layer == [23]
+    assert serving_args.execution_recent_neighbor_rescue_top_k == 2
+    assert serving_args.execution_recent_neighbor_rescue_anchor_window == 1024
+    assert serving_args.execution_recent_neighbor_rescue_min_anchor_pages == 4
+    assert serving_args.execution_recent_neighbor_rescue_layer == [23]
+    assert serving_args.execution_exact_promote_top_k == 2
+    assert serving_args.execution_exact_promote_margin_threshold == 0.25
+    assert serving_args.execution_exact_promote_layer == [23]
+    assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]
+    assert serving_args.recall_analysis is True
     assert serving_args.quality_check is True
 
     monkeypatch.setattr(

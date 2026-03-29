@@ -39,10 +39,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent-window", type=int, default=128)
     parser.add_argument("--execution-recent-window", type=int, default=0)
     parser.add_argument("--execution-sink-window", type=int, default=0)
+    parser.add_argument("--execution-recent-window-layer", action="append", default=[])
+    parser.add_argument("--execution-recent-window-context-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-top-k", type=int, default=0)
     parser.add_argument("--execution-relevance-top-k-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-top-k-context-layer", action="append", default=[])
+    parser.add_argument("--execution-full-context-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-disable-grouped-batching-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-recent-old-bonus-window", type=int, default=0)
+    parser.add_argument("--execution-recent-old-bonus-strength", type=float, default=0.0)
+    parser.add_argument("--execution-recent-old-bonus-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-relevance-mode", choices=["sketch", "envelope"], default="envelope")
+    parser.add_argument("--execution-secondary-relevance-mode", choices=["", "sketch", "envelope"], default="")
+    parser.add_argument("--execution-secondary-relevance-top-k", type=int, default=0)
+    parser.add_argument("--execution-secondary-relevance-min-overlap", type=float, default=0.0)
+    parser.add_argument("--execution-secondary-relevance-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-recent-neighbor-rescue-top-k", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-anchor-window", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-min-anchor-pages", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-exact-promote-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-promote-margin-threshold", type=float, default=0.0)
+    parser.add_argument("--execution-exact-promote-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -66,6 +84,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--profile-backend", action="store_true")
+    parser.add_argument("--scorer-diagnostic", action="store_true")
+    parser.add_argument("--recall-analysis", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
     parser.add_argument("--tokens-per-page", type=int, default=16)
@@ -111,7 +131,21 @@ def _run_case(
     continue_on_error: bool,
 ) -> None:
     try:
-        if bool(base_record.get("quality_check", False)):
+        if bool(base_record.get("scorer_diagnostic", False)):
+            record = harness.run_attention_subset_dotcache_serving_scorer_diagnostic(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+                profile_backend=bool(base_record.get("profile_backend", False)),
+            )
+        elif bool(base_record.get("recall_analysis", False)):
+            record = harness.run_attention_subset_dotcache_serving_recall_analysis(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+                profile_backend=bool(base_record.get("profile_backend", False)),
+            )
+        elif bool(base_record.get("quality_check", False)):
             record = harness.run_attention_subset_dotcache_serving_quality(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -135,11 +169,43 @@ def _run_case(
                 {
                     "execution_recent_window": int(effective_config.execution_recent_window),
                     "execution_sink_window": int(effective_config.execution_sink_window),
+                    "execution_recent_window_overrides": list(effective_config.execution_recent_window_overrides),
+                    "execution_recent_window_context_overrides": list(
+                        effective_config.execution_recent_window_context_overrides
+                    ),
                     "execution_relevance_top_k": int(effective_config.execution_relevance_top_k),
                     "execution_relevance_top_k_overrides": list(effective_config.execution_relevance_top_k_overrides),
                     "execution_relevance_top_k_context_overrides": list(
                         effective_config.execution_relevance_top_k_context_overrides
                     ),
+                    "execution_full_context_layers": list(effective_config.execution_full_context_layers),
+                    "execution_disable_grouped_batching_layers": list(
+                        effective_config.execution_disable_grouped_batching_layers
+                    ),
+                    "execution_recent_old_bonus_window": int(effective_config.execution_recent_old_bonus_window),
+                    "execution_recent_old_bonus_strength": float(effective_config.execution_recent_old_bonus_strength),
+                    "execution_recent_old_bonus_layers": list(effective_config.execution_recent_old_bonus_layers),
+                    "execution_secondary_relevance_mode": str(effective_config.execution_secondary_relevance_mode),
+                    "execution_secondary_relevance_top_k": int(effective_config.execution_secondary_relevance_top_k),
+                    "execution_secondary_relevance_min_overlap": float(
+                        effective_config.execution_secondary_relevance_min_overlap
+                    ),
+                    "execution_secondary_relevance_layers": list(effective_config.execution_secondary_relevance_layers),
+                    "execution_recent_neighbor_rescue_top_k": int(effective_config.execution_recent_neighbor_rescue_top_k),
+                    "execution_recent_neighbor_rescue_anchor_window": int(
+                        effective_config.execution_recent_neighbor_rescue_anchor_window
+                    ),
+                    "execution_recent_neighbor_rescue_min_anchor_pages": int(
+                        effective_config.execution_recent_neighbor_rescue_min_anchor_pages
+                    ),
+                    "execution_recent_neighbor_rescue_layers": list(
+                        effective_config.execution_recent_neighbor_rescue_layers
+                    ),
+                    "execution_exact_promote_top_k": int(effective_config.execution_exact_promote_top_k),
+                    "execution_exact_promote_margin_threshold": float(
+                        effective_config.execution_exact_promote_margin_threshold
+                    ),
+                    "execution_exact_promote_layers": list(effective_config.execution_exact_promote_layers),
                     "execution_relevance_mode": str(effective_config.execution_relevance_mode),
                     "serving_shortlist_heuristic_applied": bool(
                         getattr(getattr(harness, "adapter", None), "serving_shortlist_heuristic_applied", False)
@@ -217,10 +283,28 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         recent_window=args.recent_window,
         execution_recent_window=args.execution_recent_window,
         execution_sink_window=args.execution_sink_window,
+        execution_recent_window_overrides=tuple(args.execution_recent_window_layer),
+        execution_recent_window_context_overrides=tuple(args.execution_recent_window_context_layer),
         execution_relevance_top_k=args.execution_relevance_top_k,
         execution_relevance_top_k_overrides=tuple(args.execution_relevance_top_k_layer),
         execution_relevance_top_k_context_overrides=tuple(args.execution_relevance_top_k_context_layer),
+        execution_full_context_layers=tuple(args.execution_full_context_layer),
+        execution_disable_grouped_batching_layers=tuple(args.execution_disable_grouped_batching_layer),
+        execution_recent_old_bonus_window=args.execution_recent_old_bonus_window,
+        execution_recent_old_bonus_strength=args.execution_recent_old_bonus_strength,
+        execution_recent_old_bonus_layers=tuple(args.execution_recent_old_bonus_layer),
         execution_relevance_mode=args.execution_relevance_mode,
+        execution_secondary_relevance_mode=args.execution_secondary_relevance_mode,
+        execution_secondary_relevance_top_k=args.execution_secondary_relevance_top_k,
+        execution_secondary_relevance_min_overlap=args.execution_secondary_relevance_min_overlap,
+        execution_secondary_relevance_layers=tuple(args.execution_secondary_relevance_layer),
+        execution_recent_neighbor_rescue_top_k=args.execution_recent_neighbor_rescue_top_k,
+        execution_recent_neighbor_rescue_anchor_window=args.execution_recent_neighbor_rescue_anchor_window,
+        execution_recent_neighbor_rescue_min_anchor_pages=args.execution_recent_neighbor_rescue_min_anchor_pages,
+        execution_recent_neighbor_rescue_layers=tuple(args.execution_recent_neighbor_rescue_layer),
+        execution_exact_promote_top_k=args.execution_exact_promote_top_k,
+        execution_exact_promote_margin_threshold=args.execution_exact_promote_margin_threshold,
+        execution_exact_promote_layers=tuple(args.execution_exact_promote_layer),
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -251,6 +335,8 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "device": args.device,
         "torch_dtype": args.torch_dtype,
         "tokens_per_page": args.tokens_per_page,
+        "scorer_diagnostic": bool(args.scorer_diagnostic),
+        "recall_analysis": bool(args.recall_analysis),
         "quality_check": bool(args.quality_check),
         "default_mode_k": args.default_mode_k,
         "default_mode_v": args.default_mode_v,
@@ -272,10 +358,28 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "recent_window": args.recent_window,
         "execution_recent_window": args.execution_recent_window,
         "execution_sink_window": args.execution_sink_window,
+        "execution_recent_window_overrides": list(args.execution_recent_window_layer),
+        "execution_recent_window_context_overrides": list(args.execution_recent_window_context_layer),
         "execution_relevance_top_k": args.execution_relevance_top_k,
         "execution_relevance_top_k_overrides": list(args.execution_relevance_top_k_layer),
         "execution_relevance_top_k_context_overrides": list(args.execution_relevance_top_k_context_layer),
+        "execution_full_context_layers": list(args.execution_full_context_layer),
+        "execution_disable_grouped_batching_layers": list(args.execution_disable_grouped_batching_layer),
+        "execution_recent_old_bonus_window": args.execution_recent_old_bonus_window,
+        "execution_recent_old_bonus_strength": args.execution_recent_old_bonus_strength,
+        "execution_recent_old_bonus_layers": list(args.execution_recent_old_bonus_layer),
         "execution_relevance_mode": args.execution_relevance_mode,
+        "execution_secondary_relevance_mode": args.execution_secondary_relevance_mode,
+        "execution_secondary_relevance_top_k": args.execution_secondary_relevance_top_k,
+        "execution_secondary_relevance_min_overlap": args.execution_secondary_relevance_min_overlap,
+        "execution_secondary_relevance_layers": list(args.execution_secondary_relevance_layer),
+        "execution_recent_neighbor_rescue_top_k": args.execution_recent_neighbor_rescue_top_k,
+        "execution_recent_neighbor_rescue_anchor_window": args.execution_recent_neighbor_rescue_anchor_window,
+        "execution_recent_neighbor_rescue_min_anchor_pages": args.execution_recent_neighbor_rescue_min_anchor_pages,
+        "execution_recent_neighbor_rescue_layers": list(args.execution_recent_neighbor_rescue_layer),
+        "execution_exact_promote_top_k": args.execution_exact_promote_top_k,
+        "execution_exact_promote_margin_threshold": args.execution_exact_promote_margin_threshold,
+        "execution_exact_promote_layers": list(args.execution_exact_promote_layer),
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
         "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,
