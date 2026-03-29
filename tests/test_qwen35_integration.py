@@ -1414,3 +1414,44 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     sweep_args = serving_sweep.parse_args()
     assert sweep_args.dotcache_profile_backend is True
     assert sweep_args.contexts == [4096, 16384]
+
+
+def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    probe_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_cuda_shortlist_probe",
+        repo_root / "scripts" / "run_qwen35_cuda_shortlist_probe.py",
+    )
+    assert probe_spec is not None and probe_spec.loader is not None
+    probe_module = importlib.util.module_from_spec(probe_spec)
+    probe_spec.loader.exec_module(probe_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_cuda_shortlist_probe.py",
+            "--contexts",
+            "16384",
+            "32768",
+            "--cases",
+            "shortlist_base",
+            "shortlist_l23_ctx",
+            "--timeout-seconds",
+            "90",
+            "--profile-backend",
+            "--quality-check",
+            "--output",
+            "benchmarks/results/test_probe.jsonl",
+        ],
+    )
+    args = probe_module.parse_args()
+    assert args.contexts == [16384, 32768]
+    assert args.cases == ["shortlist_base", "shortlist_l23_ctx"]
+    assert args.timeout_seconds == 90
+    assert args.profile_backend is True
+    assert args.quality_check is True
+    assert args.output == "benchmarks/results/test_probe.jsonl"
