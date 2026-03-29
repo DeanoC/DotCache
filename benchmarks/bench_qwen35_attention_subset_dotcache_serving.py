@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-grouped-mix-disable-packed-cuda", action="store_true")
     parser.add_argument("--execution-freeze-chunk-budget-during-decode", action="store_true")
     parser.add_argument("--execution-builtin-selector-cache", action="store_true")
+    parser.add_argument("--execution-builtin-selector-score-all-pages", action="store_true")
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -232,6 +233,9 @@ def _run_case(
                     "execution_builtin_selector_cache": bool(
                         effective_config.execution_builtin_selector_cache
                     ),
+                    "execution_builtin_selector_score_all_pages": bool(
+                        effective_config.execution_builtin_selector_score_all_pages
+                    ),
                     "execution_relevance_mode": str(effective_config.execution_relevance_mode),
                     "serving_shortlist_heuristic_applied": bool(
                         getattr(getattr(harness, "adapter", None), "serving_shortlist_heuristic_applied", False)
@@ -366,6 +370,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_grouped_mix_disable_packed_cuda=args.execution_grouped_mix_disable_packed_cuda,
         execution_freeze_chunk_budget_during_decode=args.execution_freeze_chunk_budget_during_decode,
         execution_builtin_selector_cache=args.execution_builtin_selector_cache,
+        execution_builtin_selector_score_all_pages=args.execution_builtin_selector_score_all_pages,
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -449,6 +454,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "execution_grouped_mix_disable_packed_cuda": args.execution_grouped_mix_disable_packed_cuda,
         "execution_freeze_chunk_budget_during_decode": args.execution_freeze_chunk_budget_during_decode,
         "execution_builtin_selector_cache": args.execution_builtin_selector_cache,
+        "execution_builtin_selector_score_all_pages": args.execution_builtin_selector_score_all_pages,
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
         "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,
