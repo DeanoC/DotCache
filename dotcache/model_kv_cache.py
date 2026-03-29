@@ -34,11 +34,17 @@ PageLike = EncodedPage | PreparedPageTorch
 
 _DECODE_STAGE_TIMING_STAGES = (
     "prepare_pages_with_tail",
+    "prepare_layout_build",
     "m2_prefilter",
+    "query_export",
     "shortlist_selection",
+    "shortlist_base_window",
+    "shortlist_candidate_scoring",
+    "shortlist_exact_selection",
     "shortlist_union_rescue",
     "shortlist_materialization",
     "grouping_validation",
+    "chunk_budget_sync",
     "backend_call_wall",
     "backend_call_non_backend",
 )
@@ -1734,6 +1740,20 @@ class ModelPagedKVCache:
         context_length_override: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> list[int] | None:
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _stage_start() -> float | None:
+            return perf_counter() if capture_stage_timings else None
+
+        def _stage_finish(stage: str, started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage=stage,
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
+
         if self.config.execution_shortlist_disabled_for_layer(layer_id=layer_id):
             return None
         context_length = int(context_length_override) if context_length_override is not None else None
@@ -1862,6 +1882,7 @@ class ModelPagedKVCache:
                 candidate_relevance_top_k,
                 int(self.config.execution_exact_refine_top_k) * 2,
             )
+        base_window_started_at = _stage_start()
         base_indices = set(
             select_window_page_indices(
                 key_pages,
@@ -1869,6 +1890,7 @@ class ModelPagedKVCache:
                 sink_window_tokens=int(self.config.execution_sink_window),
             )
         )
+        _stage_finish("shortlist_base_window", base_window_started_at)
         use_recent_old_bonus = self.config.execution_recent_old_bonus_enabled_for_layer(layer_id=layer_id)
         use_secondary_relevance_rescue = self._execution_secondary_relevance_enabled(layer_id=layer_id)
         use_recent_neighbor_rescue = self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
@@ -1877,6 +1899,7 @@ class ModelPagedKVCache:
             and float(self.config.execution_exact_promote_margin_threshold) > 0.0
         )
         boundary_margin_normalized = None
+        shortlist_candidate_scoring_started_at = _stage_start()
         if (
             use_recent_old_bonus
             or use_secondary_relevance_rescue
@@ -2020,6 +2043,7 @@ class ModelPagedKVCache:
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
             )
+        _stage_finish("shortlist_candidate_scoring", shortlist_candidate_scoring_started_at)
         if not self._execution_exact_refine_enabled(layer_id=layer_id):
             promote_enabled, promote_disable_reason = self._execution_exact_promote_status(
                 layer_id=layer_id,
@@ -2064,6 +2088,7 @@ class ModelPagedKVCache:
                     promote_target_old_page_count=target_old_page_count,
                 )
                 return stage1_indices
+            shortlist_exact_selection_started_at = _stage_start()
             candidate_logits = score_pages(
                 np.asarray(query_slice, dtype=np.float32),
                 [key_pages[index] for index in candidate_indices],
@@ -2092,6 +2117,7 @@ class ModelPagedKVCache:
                 promote_selected_indices=chosen,
                 promote_target_old_page_count=target_old_page_count,
             )
+            _stage_finish("shortlist_exact_selection", shortlist_exact_selection_started_at)
             return final_indices
         base_indices = set(
             select_window_page_indices(
@@ -2126,6 +2152,7 @@ class ModelPagedKVCache:
                 promote_disable_reason="exact_refine_enabled",
             )
             return stage1_indices
+        shortlist_exact_selection_started_at = _stage_start()
         candidate_logits = score_pages(
             np.asarray(query_slice, dtype=np.float32),
             [key_pages[index] for index in candidate_indices],
@@ -2156,6 +2183,7 @@ class ModelPagedKVCache:
             promote_enabled=False,
             promote_disable_reason="exact_refine_enabled",
         )
+        _stage_finish("shortlist_exact_selection", shortlist_exact_selection_started_at)
         return final_indices
 
     def _should_build_execution_runtime_metadata(self, *, kind: str) -> bool:
@@ -3184,6 +3212,17 @@ class ModelPagedKVCache:
         *,
         trace: ExecutionTrace | None = None,
     ) -> tuple[list[PageLike], list[PageLike], _PreparedDecodeViewLayout | None]:
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _record_layout_build_timing(started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage="prepare_layout_build",
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
+
         state = self._state(layer_id, kv_head_id)
         self._ensure_prepared_static_pages(state, trace=trace)
         if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
@@ -3209,14 +3248,20 @@ class ModelPagedKVCache:
                 value_pages.append(prepared_value_tail)
                 state.decode_key_pages_with_tail = key_pages
                 state.decode_value_pages_with_tail = value_pages
+                layout_started_at = perf_counter() if capture_stage_timings else None
                 state.decode_view_layout = _build_prepared_decode_view_layout(key_pages, value_pages)
+                _record_layout_build_timing(layout_started_at)
                 return key_pages, value_pages, state.decode_view_layout
             state.invalidate_decode_views()
+            layout_started_at = perf_counter() if capture_stage_timings else None
             state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            _record_layout_build_timing(layout_started_at)
             return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_pages = state.tail.build_temp_pages()
         if temp_pages is None:
+            layout_started_at = perf_counter() if capture_stage_timings else None
             state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            _record_layout_build_timing(layout_started_at)
             return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_key_page, temp_value_page = temp_pages
         # Temporary live-tail pages are rebuilt on demand and should not go
@@ -3227,7 +3272,10 @@ class ModelPagedKVCache:
         value_pages = list(state.session.value_pages)
         key_pages.append(prepared_temp_key_page)
         value_pages.append(prepared_temp_value_page)
-        return key_pages, value_pages, _build_prepared_decode_view_layout(key_pages, value_pages)
+        layout_started_at = perf_counter() if capture_stage_timings else None
+        layout = _build_prepared_decode_view_layout(key_pages, value_pages)
+        _record_layout_build_timing(layout_started_at)
+        return key_pages, value_pages, layout
 
     def decode_layer(
         self,
@@ -3818,7 +3866,9 @@ class ModelPagedKVCache:
             selected_indices = None
             shortlist_trace_record = None
             if self.config.execution_shortlist_enabled():
+                query_export_started_at = _stage_start()
                 representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                _stage_finish("query_export", query_export_started_at)
                 trace_record_count = len(self._execution_shortlist_trace_records)
                 shortlist_started_at = _stage_start()
                 selected_indices = self._execution_shortlist_page_indices(
@@ -3852,15 +3902,18 @@ class ModelPagedKVCache:
             total_pages_per_group = [len(pages) for pages in original_key_pages_by_group]
             shortlist_total_pages = int(sum(total_pages_per_group))
             if len(active_queries) > 1 and layer_prefer_grouped_batching:
+                query_export_started_at = _stage_start()
+                representative_queries = [
+                    query.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                    for query in active_queries
+                ]
+                _stage_finish("query_export", query_export_started_at)
                 union_rescue_started_at = _stage_start()
                 shortlist_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
                     layer_id=layer_id,
                     selected_indices_by_group=shortlist_selected_indices_by_group,
                     key_pages_by_group=original_key_pages_by_group,
-                    representative_queries=[
-                        query.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
-                        for query in active_queries
-                    ],
+                    representative_queries=representative_queries,
                     shortlist_traces_by_group=shortlist_trace_records_by_group,
                     trace=trace,
                 )
@@ -3916,7 +3969,9 @@ class ModelPagedKVCache:
                 active_layouts = shortlisted_layouts
             _stage_finish("shortlist_materialization", shortlist_materialization_started_at)
 
+        chunk_budget_sync_started_at = _stage_start()
         self._sync_prepared_chunk_cache_budget()
+        _stage_finish("chunk_budget_sync", chunk_budget_sync_started_at)
 
         grouping_validation_started_at = _stage_start()
         if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:

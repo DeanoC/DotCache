@@ -5627,11 +5627,17 @@ _BACKEND_TRACE_TIMING_KEYS = (
 
 _MODEL_KV_CACHE_DECODE_STAGE_KEYS = (
     "execution_decode_prepare_pages_with_tail_ms_total",
+    "execution_decode_prepare_layout_build_ms_total",
     "execution_decode_m2_prefilter_ms_total",
+    "execution_decode_query_export_ms_total",
     "execution_decode_shortlist_selection_ms_total",
+    "execution_decode_shortlist_base_window_ms_total",
+    "execution_decode_shortlist_candidate_scoring_ms_total",
+    "execution_decode_shortlist_exact_selection_ms_total",
     "execution_decode_shortlist_union_rescue_ms_total",
     "execution_decode_shortlist_materialization_ms_total",
     "execution_decode_grouping_validation_ms_total",
+    "execution_decode_chunk_budget_sync_ms_total",
     "execution_decode_backend_call_wall_ms_total",
     "execution_decode_backend_call_non_backend_ms_total",
 )
@@ -5693,10 +5699,12 @@ def _summarize_step_runtime_breakdown(
     decode_pre_backend_ms_total = float(
         stage_totals["execution_decode_prepare_pages_with_tail_ms_total"]
         + stage_totals["execution_decode_m2_prefilter_ms_total"]
+        + stage_totals["execution_decode_query_export_ms_total"]
         + stage_totals["execution_decode_shortlist_selection_ms_total"]
         + stage_totals["execution_decode_shortlist_union_rescue_ms_total"]
         + stage_totals["execution_decode_shortlist_materialization_ms_total"]
         + stage_totals["execution_decode_grouping_validation_ms_total"]
+        + stage_totals["execution_decode_chunk_budget_sync_ms_total"]
     )
     return {
         "step_index": int(step_index),
@@ -5715,11 +5723,17 @@ def _summarize_step_runtime_breakdown(
         "backend_decode_ms_total": backend_ms_total,
         "decode_non_backend_ms_total": decode_non_backend_ms_total,
         "decode_prepare_pages_with_tail_ms_total": stage_totals["execution_decode_prepare_pages_with_tail_ms_total"],
+        "decode_prepare_layout_build_ms_total": stage_totals["execution_decode_prepare_layout_build_ms_total"],
         "decode_m2_prefilter_ms_total": stage_totals["execution_decode_m2_prefilter_ms_total"],
+        "decode_query_export_ms_total": stage_totals["execution_decode_query_export_ms_total"],
         "decode_shortlist_selection_ms_total": stage_totals["execution_decode_shortlist_selection_ms_total"],
+        "decode_shortlist_base_window_ms_total": stage_totals["execution_decode_shortlist_base_window_ms_total"],
+        "decode_shortlist_candidate_scoring_ms_total": stage_totals["execution_decode_shortlist_candidate_scoring_ms_total"],
+        "decode_shortlist_exact_selection_ms_total": stage_totals["execution_decode_shortlist_exact_selection_ms_total"],
         "decode_shortlist_union_rescue_ms_total": stage_totals["execution_decode_shortlist_union_rescue_ms_total"],
         "decode_shortlist_materialization_ms_total": stage_totals["execution_decode_shortlist_materialization_ms_total"],
         "decode_grouping_validation_ms_total": stage_totals["execution_decode_grouping_validation_ms_total"],
+        "decode_chunk_budget_sync_ms_total": stage_totals["execution_decode_chunk_budget_sync_ms_total"],
         "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
         "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],
         "decode_non_backend_unattributed_ms_total": float(
