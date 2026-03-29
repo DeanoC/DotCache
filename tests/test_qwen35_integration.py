@@ -1461,3 +1461,65 @@ def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) 
     assert args.quality_mode == "loss_tail"
     assert args.quality_eval_steps == 8
     assert args.output == "benchmarks/results/test_probe.jsonl"
+
+
+def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    serving_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
+    )
+    assert serving_spec is not None and serving_spec.loader is not None
+    serving_module = importlib.util.module_from_spec(serving_spec)
+    serving_spec.loader.exec_module(serving_module)
+
+    loss_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_loss",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_loss.py",
+    )
+    assert loss_spec is not None and loss_spec.loader is not None
+    loss_module = importlib.util.module_from_spec(loss_spec)
+    loss_spec.loader.exec_module(loss_module)
+
+    profile_path = (
+        repo_root
+        / "configs"
+        / "layer_profiles"
+        / "qwen35_0p8b_attention_subset_cuda_shortlist_context_aware.yaml"
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_serving.py",
+            "--layer-profile",
+            str(profile_path),
+        ],
+    )
+    serving_args = serving_module.parse_args()
+    serving_module._resolve_args_from_layer_profile(serving_args)
+    assert serving_args.execution_recent_window == 1024
+    assert serving_args.execution_sink_window == 256
+    assert serving_args.execution_relevance_top_k == 4
+    assert serving_args.execution_relevance_mode == "envelope"
+    assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_loss.py",
+            "--layer-profile",
+            str(profile_path),
+        ],
+    )
+    loss_args = loss_module.parse_args()
+    loss_module._resolve_args_from_layer_profile(loss_args)
+    assert loss_args.execution_recent_window == 1024
+    assert loss_args.execution_sink_window == 256
+    assert loss_args.execution_relevance_top_k == 4
+    assert loss_args.execution_relevance_mode == "envelope"
+    assert loss_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:32768=8"]

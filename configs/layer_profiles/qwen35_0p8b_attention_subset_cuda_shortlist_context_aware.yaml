@@ -1,0 +1,34 @@
+model_id: Qwen/Qwen3.5-0.8B
+source:
+  benchmark: >
+    CUDA Qwen3.5 attention-subset DotCache shortlist profile derived from the
+    third-pass CUDA profile, with a measured context-aware layer-23 widening.
+  backend: torch_cuda
+  prompt_lengths: 4K, 8K, 16K, 32K
+  tokens_per_page: 16
+  notes: >
+    Keep the base shortlist through 16K. Only widen layer 23 once context
+    reaches 32K, where the extra shortlist budget starts to pay back its
+    overhead on the quality-cleared CUDA path.
+
+key_policy_tier: balanced
+value_policy_tier: balanced
+recent_window: 0
+
+execution_recent_window: 1024
+execution_sink_window: 256
+execution_relevance_top_k: 4
+execution_relevance_mode: envelope
+execution_relevance_top_k_context_overrides:
+  - layer:23:min_ctx:32768=8
+
+key_layer_sensitivity:
+  - layer:11=strict
+  - layer:19=strict
+
+value_policy_overrides:
+  - layer:15=M0/affine/4,M0/affine/3,M1/lut/4
+
+value_mode_overrides:
+  - layer:19=M3
+  - layer:23=M3

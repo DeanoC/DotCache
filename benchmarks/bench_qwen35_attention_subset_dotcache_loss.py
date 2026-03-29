@@ -128,6 +128,33 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
         args.value_policy_override = list(profile.get("value_policy_overrides", []))
     if args.recent_window == 128:
         args.recent_window = int(profile.get("recent_window", args.recent_window))
+    if args.execution_recent_window == 0:
+        args.execution_recent_window = int(profile.get("execution_recent_window", args.execution_recent_window))
+    if args.execution_sink_window == 0:
+        args.execution_sink_window = int(profile.get("execution_sink_window", args.execution_sink_window))
+    if args.execution_relevance_top_k == 0:
+        args.execution_relevance_top_k = int(profile.get("execution_relevance_top_k", args.execution_relevance_top_k))
+    if not args.execution_relevance_top_k_layer:
+        args.execution_relevance_top_k_layer = list(
+            profile.get("execution_relevance_top_k_overrides", args.execution_relevance_top_k_layer)
+        )
+    if not args.execution_relevance_top_k_context_layer:
+        args.execution_relevance_top_k_context_layer = list(
+            profile.get(
+                "execution_relevance_top_k_context_overrides",
+                args.execution_relevance_top_k_context_layer,
+            )
+        )
+    if args.execution_relevance_mode == "envelope":
+        args.execution_relevance_mode = str(profile.get("execution_relevance_mode", args.execution_relevance_mode))
+    if args.execution_exact_refine_top_k == 0:
+        args.execution_exact_refine_top_k = int(
+            profile.get("execution_exact_refine_top_k", args.execution_exact_refine_top_k)
+        )
+    if not args.execution_exact_refine_layer:
+        args.execution_exact_refine_layer = list(
+            profile.get("execution_exact_refine_layers", args.execution_exact_refine_layer)
+        )
 
 
 def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCacheConfig:
