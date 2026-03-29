@@ -116,7 +116,10 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "status": record.get("status"),
                         "error_type": record.get("error_type"),
                         "error_message": record.get("error_message"),
-                        "total_memory_bytes": None,
+                        "total_memory_bytes": (
+                            _metric(record, "memory_breakdown_all_devices_self_bytes")
+                            or _metric(record, "memory_breakdown_device_self_bytes")
+                        ),
                     }
                 )
             elif mode == "perplexity":
@@ -133,7 +136,10 @@ def _build_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "status": record.get("status"),
                         "error_type": record.get("error_type"),
                         "error_message": record.get("error_message"),
-                        "total_memory_bytes": None,
+                        "total_memory_bytes": (
+                            _metric(record, "memory_breakdown_all_devices_self_bytes")
+                            or _metric(record, "memory_breakdown_device_self_bytes")
+                        ),
                     }
                 )
         elif benchmark == "llama_compare":

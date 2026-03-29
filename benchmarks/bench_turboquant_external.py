@@ -27,6 +27,16 @@ _SUMMARY_TPS_PATTERN = re.compile(
     r"\[\s*Prompt:\s*(?P<prompt_tps>[0-9]+(?:\.[0-9]+)?)\s*t/s\s*\|\s*Generation:\s*"
     r"(?P<generation_tps>[0-9]+(?:\.[0-9]+)?)\s*t/s\s*\]"
 )
+_MEMORY_BREAKDOWN_DEVICE_PATTERN = re.compile(
+    r"llama_memory_breakdown_print:\s*\|\s*-\s*(?P<label>[^|]+?)\s*\|\s*"
+    r"(?P<total_mib>\d+)\s*=\s*(?P<free_mib>\d+)\s*\+\s*"
+    r"\((?P<self_mib>\d+)\s*=\s*(?P<model_mib>\d+)\s*\+\s*(?P<context_mib>\d+)\s*\+\s*(?P<compute_mib>\d+)\)\s*\+\s*"
+    r"(?P<unaccounted_mib>\d+)\s*\|"
+)
+_MEMORY_BREAKDOWN_HOST_PATTERN = re.compile(
+    r"llama_memory_breakdown_print:\s*\|\s*-\s*Host\s*\|\s*"
+    r"(?P<self_mib>\d+)\s*=\s*(?P<model_mib>\d+)\s*\+\s*(?P<context_mib>\d+)\s*\+\s*(?P<compute_mib>\d+)\s*\|"
+)
 _DEFAULT_GGUF_MODELS_DIR = os.environ.get("GGUF_MODELS_DIR", "/workspace/models/gguf")
 _DEFAULT_TURBOQUANT_CLI = os.environ.get(
     "TURBOQUANT_LLAMA_CLI",
@@ -76,6 +86,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--perplexity-file", default=None, help="Optional plain text file for llama-perplexity.")
     parser.add_argument("--perplexity-context", type=int, default=2048)
     parser.add_argument("--perplexity-chunks", type=int, default=8)
+    parser.add_argument("--skip-decode", action="store_true")
+    parser.add_argument("--skip-perplexity", action="store_true")
     parser.add_argument("--continue-on-error", action="store_true")
     return parser.parse_args()
 
@@ -244,6 +256,53 @@ def _parse_ppl(text: str) -> float | None:
     return float(match.group(1))
 
 
+def _parse_memory_breakdown(text: str) -> dict[str, object]:
+    mib = 1024.0 * 1024.0
+    device_rows: list[dict[str, object]] = []
+    for match in _MEMORY_BREAKDOWN_DEVICE_PATTERN.finditer(text):
+        row = {
+            "label": str(match.group("label")).strip(),
+            "total_bytes": int(float(match.group("total_mib")) * mib),
+            "free_bytes": int(float(match.group("free_mib")) * mib),
+            "self_bytes": int(float(match.group("self_mib")) * mib),
+            "model_bytes": int(float(match.group("model_mib")) * mib),
+            "context_bytes": int(float(match.group("context_mib")) * mib),
+            "compute_bytes": int(float(match.group("compute_mib")) * mib),
+            "unaccounted_bytes": int(float(match.group("unaccounted_mib")) * mib),
+        }
+        device_rows.append(row)
+
+    result: dict[str, object] = {}
+    if device_rows:
+        result["memory_breakdown_device_rows"] = device_rows
+        result["memory_breakdown_all_devices_total_bytes"] = int(sum(int(row["total_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_free_bytes"] = int(sum(int(row["free_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_self_bytes"] = int(sum(int(row["self_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_model_bytes"] = int(sum(int(row["model_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_context_bytes"] = int(sum(int(row["context_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_compute_bytes"] = int(sum(int(row["compute_bytes"]) for row in device_rows))
+        result["memory_breakdown_all_devices_unaccounted_bytes"] = int(
+            sum(int(row["unaccounted_bytes"]) for row in device_rows)
+        )
+        first_row = device_rows[0]
+        result["memory_breakdown_device_label"] = str(first_row["label"])
+        result["memory_breakdown_device_total_bytes"] = int(first_row["total_bytes"])
+        result["memory_breakdown_device_free_bytes"] = int(first_row["free_bytes"])
+        result["memory_breakdown_device_self_bytes"] = int(first_row["self_bytes"])
+        result["memory_breakdown_device_model_bytes"] = int(first_row["model_bytes"])
+        result["memory_breakdown_device_context_bytes"] = int(first_row["context_bytes"])
+        result["memory_breakdown_device_compute_bytes"] = int(first_row["compute_bytes"])
+        result["memory_breakdown_device_unaccounted_bytes"] = int(first_row["unaccounted_bytes"])
+
+    host_match = _MEMORY_BREAKDOWN_HOST_PATTERN.search(text)
+    if host_match is not None:
+        result["memory_breakdown_host_self_bytes"] = int(float(host_match.group("self_mib")) * mib)
+        result["memory_breakdown_host_model_bytes"] = int(float(host_match.group("model_mib")) * mib)
+        result["memory_breakdown_host_context_bytes"] = int(float(host_match.group("context_mib")) * mib)
+        result["memory_breakdown_host_compute_bytes"] = int(float(host_match.group("compute_mib")) * mib)
+    return result
+
+
 def _resolve_model_arg(
     model_id: str,
     *,
@@ -319,6 +378,7 @@ def _build_ppl_command(
             "-ctv",
             config.ctv,
             "-fa",
+            "on",
             "-c",
             str(args.perplexity_context),
             "--chunks",
@@ -389,6 +449,7 @@ def _run_decode_case(
         "ctv": config.ctv,
     }
     record.update(_parse_timings(output_text))
+    record.update(_parse_memory_breakdown(output_text))
     prompt_tps = record.get("prompt_eval_time_tokens_per_second")
     if prompt_tps not in (None, 0, 0.0):
         prompt_tps_value = float(prompt_tps)
@@ -443,6 +504,7 @@ def _run_ppl_case(args: argparse.Namespace, *, config: TurboConfig) -> None:
         "ppl": _parse_ppl(output_text),
     }
     record.update(_parse_timings(output_text))
+    record.update(_parse_memory_breakdown(output_text))
     if completed.returncode != 0:
         record["error_type"] = "RuntimeError"
         record["error_message"] = output_text[-2000:]
@@ -465,7 +527,7 @@ def main() -> None:
         except KeyError as exc:
             raise SystemExit(f"unknown turboquant config: {key}") from exc
 
-    if args.perplexity_file:
+    if args.perplexity_file and not args.skip_perplexity:
         for config in configs:
             try:
                 _run_ppl_case(args, config=config)
@@ -486,41 +548,42 @@ def main() -> None:
                     }
                 )
 
-    for prompt_length in args.target_prompt_lengths:
-        prompt_text, actual_prompt_length = _build_exact_prompt_text(
-            tokenizer,
-            prompt_unit=args.prompt_unit,
-            prompt_length=prompt_length,
-        )
-        for config in configs:
-            try:
-                _run_decode_case(
-                    args,
-                    config=config,
-                    prompt_text=prompt_text,
-                    prompt_length=actual_prompt_length,
-                    prompt_mode="exact_length",
-                    requested_prompt_length=prompt_length,
-                )
-            except Exception as exc:
-                if not args.continue_on_error:
-                    raise
-                _emit(
-                    {
-                        "benchmark": "turboquant_external",
-                        "mode": "decode",
-                        "runtime": "llama.cpp_turboquant",
-                        "config": config.key,
-                        "model_id": args.model_id,
-                        "tokenizer_model_id": args.tokenizer_model_id,
-                        "prompt_length": actual_prompt_length,
-                        "prompt_mode": "exact_length",
-                        "requested_prompt_length": prompt_length,
-                        "status": "error",
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    }
-                )
+    if not args.skip_decode:
+        for prompt_length in args.target_prompt_lengths:
+            prompt_text, actual_prompt_length = _build_exact_prompt_text(
+                tokenizer,
+                prompt_unit=args.prompt_unit,
+                prompt_length=prompt_length,
+            )
+            for config in configs:
+                try:
+                    _run_decode_case(
+                        args,
+                        config=config,
+                        prompt_text=prompt_text,
+                        prompt_length=actual_prompt_length,
+                        prompt_mode="exact_length",
+                        requested_prompt_length=prompt_length,
+                    )
+                except Exception as exc:
+                    if not args.continue_on_error:
+                        raise
+                    _emit(
+                        {
+                            "benchmark": "turboquant_external",
+                            "mode": "decode",
+                            "runtime": "llama.cpp_turboquant",
+                            "config": config.key,
+                            "model_id": args.model_id,
+                            "tokenizer_model_id": args.tokenizer_model_id,
+                            "prompt_length": actual_prompt_length,
+                            "prompt_mode": "exact_length",
+                            "requested_prompt_length": prompt_length,
+                            "status": "error",
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                        }
+                    )
 
     for repeat_count in args.repeat_counts:
         prompt_text = _build_repeat_prompt(args.prompt_unit, repeat_count)

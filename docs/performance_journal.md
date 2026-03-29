@@ -3259,3 +3259,46 @@ Current practical read from the full sweep:
 - TurboQuant stays dramatically faster and keeps running through `65536`
 
 That is the current benchmark appendix to use for Qwen3.5 until we either add comparable total-memory telemetry on the external lane or port a closer mechanism-equivalence path into `llama.cpp`.
+
+## 2026-03-29 10:20 UTC - Filled external memory, added long-context quality, and separated serving-only StateCache from compare-harness OOMs
+
+I closed the three main follow-ups on the `Qwen/Qwen3.5-0.8B` full sweep:
+
+- filled the external TurboQuant memory column from `llama_memory_breakdown_print`
+- added a long-context quality gate at `16384` and `32768`
+- proved the earlier `32768` native `StateCache` OOM was a compare-harness artifact, not the serving-only limit
+
+Artifacts:
+
+- [qwen35_turboquant_full_sweep_20260329.md](/workspace/DotCache/docs/qwen35_turboquant_full_sweep_20260329.md)
+- [qwen35_context_sweep_20260329_full](/workspace/DotCache/benchmarks/results/qwen35_context_sweep_20260329_full)
+- [qwen35_quality_sweep_20260329](/workspace/DotCache/benchmarks/results/qwen35_quality_sweep_20260329)
+- [qwen35_statecache_serving_20260329](/workspace/DotCache/benchmarks/results/qwen35_statecache_serving_20260329)
+
+New checked-in memory read:
+
+- TurboQuant `q8_0`: `2932 MiB`
+- TurboQuant `turbo3_la1`: `2292 MiB`
+- TurboQuant `turbo3_uniform`: `1972 MiB`
+
+Those rows are flat across the measured context ladder on this box, which means the external GGUF run is not paying the same context-growing resident-memory cost that the native Hugging Face rows expose in the reporter.
+
+New quality read:
+
+- native dense vs native `StateCache` remains effectively identical
+  - `16384`: dense `1.0001547`, StateCache `1.0001527`
+  - `32768`: dense `1.0001489`, StateCache `1.0001515`
+- external TurboQuant also stays very clean
+  - `q8_0`: `1.0002` at both contexts
+  - `turbo3_la1`: `1.0002` at both contexts
+  - `turbo3_uniform`: `1.0007` at both contexts
+
+The useful refinement is that `turbo3_la1` keeps the same perplexity as `q8_0` on this Qwen3.5 lane, while `turbo3_uniform` gives up a small but measurable amount of quality.
+
+The serving-only check changed the OOM interpretation:
+
+- compare/readout `StateCache` OOMs at `32768`
+- serving-only `StateCache` succeeds at `32768`
+- serving-only `StateCache` first OOMs at `65536`
+
+So the first `32768` native failure in the full sweep is best understood as harness overhead from the dense-capture/readout path, not as the true serving limit of `StateCache` itself.
