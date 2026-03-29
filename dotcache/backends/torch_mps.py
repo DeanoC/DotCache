@@ -3090,6 +3090,7 @@ def _score_page_chunk_grouped_multiquery_torch(
     *,
     prepared_query_groups_tensor=None,
     query_group_sums=None,
+    compact_grouped_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -3151,7 +3152,11 @@ def _score_page_chunk_grouped_multiquery_torch(
             ).reshape(batch_size, query_count, header.padded_head_dim)
             query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        grouped_prepared_chunk = (
+            _build_grouped_prepared_chunk_mps(pages_by_group)
+            if compact_grouped_chunk
+            else _get_grouped_prepared_chunk_mps(pages_by_group)
+        )
         if (
             grouped_prepared_chunk is not None
             and grouped_prepared_chunk.m2_sketch_tensor is not None
@@ -3181,8 +3186,12 @@ def _score_page_chunk_grouped_multiquery_torch(
             logits += torch.einsum("bpgtc,bqgc->bqpt", mean_tensor[:, :, :, segment_ids, :], qg)
             return logits.reshape(batch_size, query_count, -1)
         prepared_chunks = None if grouped_prepared_chunk is not None else [
-            _get_prepared_chunk_mps(group_pages) or (
-                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            (
+                _build_prepared_chunk_mps(group_pages)
+                if compact_grouped_chunk
+                else _get_prepared_chunk_mps(group_pages) or (
+                    _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+                )
             )
             for group_pages in pages_by_group
         ]
@@ -3245,7 +3254,11 @@ def _score_page_chunk_grouped_multiquery_torch(
             ).reshape(batch_size, query_count, header.padded_head_dim)
             query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        grouped_prepared_chunk = (
+            _build_grouped_prepared_chunk_mps(pages_by_group)
+            if compact_grouped_chunk
+            else _get_grouped_prepared_chunk_mps(pages_by_group)
+        )
         if (
             grouped_prepared_chunk is not None
             and grouped_prepared_chunk.m2_sketch_tensor is not None
@@ -3283,8 +3296,12 @@ def _score_page_chunk_grouped_multiquery_torch(
             logits += torch.einsum("bpgc,bqgc->bqp", mean_tensor, qg)[:, :, :, None]
             return logits.reshape(batch_size, query_count, -1)
         prepared_chunks = None if grouped_prepared_chunk is not None else [
-            _get_prepared_chunk_mps(group_pages) or (
-                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            (
+                _build_prepared_chunk_mps(group_pages)
+                if compact_grouped_chunk
+                else _get_prepared_chunk_mps(group_pages) or (
+                    _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+                )
             )
             for group_pages in pages_by_group
         ]
@@ -3441,10 +3458,18 @@ def _score_page_chunk_grouped_multiquery_torch(
         query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
     query_group_sums_tensor = query_group_sums if query_group_sums is not None else query_groups_tensor.sum(dim=-1)
     logits = torch.zeros((batch_size, query_count, page_count * header.token_count), dtype=torch.float32, device=device_type)
-    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    grouped_prepared_chunk = (
+        _build_grouped_prepared_chunk_mps(pages_by_group)
+        if compact_grouped_chunk
+        else _get_grouped_prepared_chunk_mps(pages_by_group)
+    )
     prepared_chunks = None if grouped_prepared_chunk is not None else [
-        _get_prepared_chunk_mps(group_pages) or (
-            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        (
+            _build_prepared_chunk_mps(group_pages)
+            if compact_grouped_chunk
+            else _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
         )
         for group_pages in pages_by_group
     ]
@@ -3625,6 +3650,7 @@ def _mix_page_chunk_grouped_multiquery_torch(
     pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     *,
     out_acc=None,
+    compact_grouped_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -3739,10 +3765,18 @@ def _mix_page_chunk_grouped_multiquery_torch(
             output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)
         return output
 
-    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    grouped_prepared_chunk = (
+        _build_grouped_prepared_chunk_mps(pages_by_group)
+        if compact_grouped_chunk
+        else _get_grouped_prepared_chunk_mps(pages_by_group)
+    )
     prepared_chunks = None if grouped_prepared_chunk is not None else [
-        _get_prepared_chunk_mps(group_pages) or (
-            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        (
+            _build_prepared_chunk_mps(group_pages)
+            if compact_grouped_chunk
+            else _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
         )
         for group_pages in pages_by_group
     ]
@@ -4021,6 +4055,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
     *,
     key_chunk_lengths: Sequence[int] | None = None,
     value_chunk_lengths: Sequence[int] | None = None,
+    compact_grouped_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4097,6 +4132,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                     chunk_pages,
                     prepared_query_groups_tensor=prepared_query_groups_tensor,
                     query_group_sums=query_group_sums,
+                    compact_grouped_chunk=compact_grouped_chunk,
                     trace=trace,
                 ),
             )
@@ -4148,6 +4184,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 chunk_weights,
                 chunk_pages,
                 out_acc=output,
+                compact_grouped_chunk=compact_grouped_chunk,
                 trace=trace,
             ),
         )
@@ -4162,6 +4199,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
     key_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     value_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     *,
+    compact_grouped_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4230,6 +4268,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 key_chunk_pages,
                 prepared_query_groups_tensor=prepared_query_groups_tensor,
                 query_group_sums=query_group_sums,
+                compact_grouped_chunk=compact_grouped_chunk,
                 trace=trace,
             ),
         )
@@ -4280,6 +4319,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 chunk_weights,
                 value_chunk_pages,
                 out_acc=output,
+                compact_grouped_chunk=compact_grouped_chunk,
                 trace=trace,
             ),
         )

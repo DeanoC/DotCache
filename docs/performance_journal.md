@@ -6,7 +6,91 @@ Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/d
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
-## Current Status
+## 2026-03-29 Qwen3.5 Serving Investigation
+
+This is the current serving-performance baseline for the Qwen3.5 shortlist work. The detailed experiment log is split across:
+
+- [benchmarks/results/qwen35_mps_investigation_20260329/README.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_mps_investigation_20260329/README.md)
+- [benchmarks/results/qwen35_mps_shortlist_20260329/README.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_mps_shortlist_20260329/README.md)
+- [benchmarks/results/qwen35_cuda_cliff_analysis_20260329.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_cliff_analysis_20260329.md)
+
+### Current Read
+
+- The real Qwen3.5 shortlist path is validated. On the Mac mini MPS lane, exact `M0` shortlist serving improved from `687.45 -> 608.12 ms/step` at `4096` and from `1320.23 -> 520.93 ms/step` at `8192`, while preserving grouped batching.
+- The current best local serving baseline is the context-aware layer-`23` budget heuristic promoted into the real MPS path. It keeps the plain shortlist at shorter prompts and raises layer `23` only once context is long enough to justify it.
+- CUDA has now validated the same core serving idea at higher context. The shortlist stays bounded at both `16384` and `32768`, so the long-context path is real and not a Mac-only artifact.
+- The remaining quality issue is narrow and stubborn: layer `23` is quality-sensitive, but most of the rescue strategies we tested did not buy enough quality back to justify their complexity or runtime cost.
+- The `32768` CUDA cliff is now very likely a grouped-decode locality / working-set problem, not a shortlist-size problem.
+
+### Positive Findings
+
+- Real model-path shortlist works:
+  - MPS `4096`: `687.45 -> 608.12 ms/step`
+  - MPS `8192`: `1320.23 -> 520.93 ms/step`
+  - grouped batching stayed intact in the winning runs
+- The context-aware layer-`23` budget policy was the best local trade:
+  - it preserved the cheaper shortlist shape at `4096`
+  - it improved the `8192` long-context trade without broadening the short-context path
+- The default MPS heuristic is now a useful serving baseline rather than a benchmark-only knob.
+- Cross-device shortlist behavior is consistent enough to trust:
+  - CUDA `16384` and `32768` both stayed at `2056` selected pages in the baseline lane
+  - layer `23` stayed bounded at `356` selected pages on those CUDA runs
+- The newest CUDA cliff analysis is directionally strong:
+  - shortlist size stayed flat from `16384 -> 32768`
+  - backend bytes and call counts stayed flat
+  - resident/prepared working set grew substantially
+  - decode time still jumped from `265.93 -> 1145.16 ms/step`
+
+### Negative Findings
+
+- MPS `16384` still OOMs even with the shortlist heuristic. The decode policy improved cost, but not enough to move the machine memory ceiling.
+- The first compact grouped-decode sanity check was negative on local MPS `4096`:
+  - shortlist shape and token output stayed the same
+  - decode moved slightly the wrong way: `486.31 -> 492.92 ms/step`
+  - backend `mix` time worsened noticeably
+  - this does not rule out the CUDA locality hypothesis, but it does mean the compaction idea is not a generic MPS improvement
+- Layer-`23` rescue attempts that did not hold up as defaults:
+  - exact rerank
+  - broader recent-window expansion
+  - per-KV fallback instead of grouped union
+  - tiny exact promotion
+  - recent-old scorer bias
+  - confidence-gated promotion
+  - dual-scorer rescue
+  - cheap neighbor rescue
+- Cross-device rescue tuning also mostly stayed negative:
+  - high-margin exact promotion only helped in a fragile way
+  - several bugs in the first CUDA promotion experiments were fixed, but the corrected versions showed the effect was much smaller than it first looked
+  - even the union-aware and union-wide layer-`23` rescues now activate correctly at `16384` without affecting `32768`, but still do not buy a meaningful quality improvement
+
+### Diagnostic Conclusions
+
+- Layer `23` is not the worst shortlist-recall layer. In the MPS recall and scorer diagnostics, layer `11` is usually the worst scorer / recall layer.
+- Layer `23` is still the quality-sensitive layer. Making only layer `23` exact buys back more meaningful quality than making layers `11` and `15` exact, even though those layers have worse shortlist recall.
+- That means the layer-`23` issue is not simply “the shortlist missed the top pages.” It looks more like sensitivity inside the shortlisted set or a value-side / grouped-decode interaction.
+- The union-rescue debugging on CUDA narrowed an important class of false leads:
+  - some earlier failures were real control-flow bugs
+  - those bugs are now fixed
+  - after the fixes, the rescue path does activate correctly at `16384`
+  - but it still does not materially improve quality
+- The `32768` cliff is separate from these rescue issues. It persists even when promotion is fully off and shortlist counts stay bounded.
+
+### Current Best Hypothesis
+
+The main remaining performance problem is in grouped decode under a larger resident/prepared working set. The strongest candidate is poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface.
+
+### Next Investigation
+
+- Treat the current shortlist baseline as the default path.
+- Stop spending time on more page-budget rescue variants unless new evidence appears.
+- Investigate the CUDA `32768` cliff as a locality issue in grouped decode:
+  - compare grouped decode behavior under compact contiguous scratch buffers versus the current prepared-chunk path
+  - measure whether score/mix time improves without changing shortlist size
+  - keep this benchmark-only until it proves out
+
+## Historical Status
+
+The sections below are older journal entries and reference points from earlier branches and phases. They are still useful context, but they are not the current Qwen3.5 serving baseline.
 
 Current branch head: `codex/turbo3-profile-breakdown`
 
