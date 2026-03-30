@@ -1632,6 +1632,28 @@ class ModelPagedKVCache:
         state.execution_builtin_selector_cache = cache
         return cache
 
+    def _should_prewarm_execution_builtin_selector_cache(self) -> bool:
+        return bool(
+            self.config.execution_builtin_selector_cache
+            and (
+                int(self.config.execution_relevance_top_k) > 0
+                or bool(self.config.execution_relevance_top_k_overrides)
+                or bool(self.config.execution_relevance_top_k_context_overrides)
+            )
+        )
+
+    def _maybe_prewarm_execution_builtin_selector_cache(self, state: _HeadSessionState) -> None:
+        if not self._should_prewarm_execution_builtin_selector_cache():
+            return
+        if not state.session.key_pages:
+            return
+        if not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
+            return
+        self._execution_builtin_selector_cache_for_state(
+            state,
+            relevance_mode=self.config.execution_relevance_mode,
+        )
+
     def _execution_builtin_selector_matrices(
         self,
         *,
@@ -2839,6 +2861,8 @@ class ModelPagedKVCache:
             for state in touched_states.values():
                 self._refresh_state_resident_accounting(state)
             self._mark_prepared_chunk_cache_budget_dirty(reason="prepare_static_pages")
+        for state in self._states.values():
+            self._maybe_prewarm_execution_builtin_selector_cache(state)
 
     def _ensure_prepared_static_pages(
         self,
@@ -2870,6 +2894,7 @@ class ModelPagedKVCache:
         if state_changed:
             self._refresh_state_resident_accounting(state)
             self._mark_prepared_chunk_cache_budget_dirty(reason="ensure_prepared_static_pages")
+        self._maybe_prewarm_execution_builtin_selector_cache(state)
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
