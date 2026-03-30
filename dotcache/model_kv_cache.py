@@ -1302,6 +1302,7 @@ class ModelPagedKVCache:
         self._builtin_selector_cache_build_bytes = 0
         self._builtin_selector_cache_build_bytes_max = 0
         self._execution_value_escape_cache: dict[tuple[int, int, int, str, str], PageLike] = {}
+        self._execution_value_escape_source_pages: dict[tuple[int, str], EncodedPage] = {}
         self._execution_value_escape_cache_hits = 0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
@@ -1425,6 +1426,7 @@ class ModelPagedKVCache:
 
     def _reset_execution_value_escape_tracking(self) -> None:
         self._execution_value_escape_cache.clear()
+        self._execution_value_escape_source_pages.clear()
         self._execution_value_escape_cache_hits = 0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
@@ -1562,6 +1564,38 @@ class ModelPagedKVCache:
             str(self._torch_device_type or "cpu_ref"),
         )
 
+    def _execution_value_escape_source_key(self, page: PageLike, *, escape_mode: str) -> tuple[int, str]:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        return (id(source_page), str(escape_mode))
+
+    def _maybe_register_execution_value_escape_source(
+        self,
+        source_page: EncodedPage,
+        *,
+        dense_values: np.ndarray,
+        escape_mode: str,
+    ) -> None:
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=int(source_page.header.layer_id)):
+            return
+        if str(source_page.header.kind) != "V":
+            return
+        if str(source_page.header.mode_default) == str(escape_mode):
+            return
+        source_key = self._execution_value_escape_source_key(source_page, escape_mode=escape_mode)
+        if source_key in self._execution_value_escape_source_pages:
+            return
+        self._execution_value_escape_source_pages[source_key] = encode_page(
+            np.asarray(dense_values, dtype=np.float32, copy=False),
+            self.config,
+            kind="V",
+            layer_id=int(source_page.header.layer_id),
+            kv_head_id=int(source_page.header.kv_head_id),
+            token_start=int(source_page.header.token_start),
+            mode=str(escape_mode),
+            build_runtime_metadata=False,
+        )
+        self._execution_value_escape_builds += 1
+
     def _prepare_execution_value_escape_page(
         self,
         page: PageLike,
@@ -1574,6 +1608,16 @@ class ModelPagedKVCache:
             raise ValueError("execution value escape requires V pages")
         if str(source_page.header.mode_default) == str(escape_mode):
             return page
+        source_key = self._execution_value_escape_source_key(page, escape_mode=escape_mode)
+        exact_source_page = self._execution_value_escape_source_pages.get(source_key)
+        if exact_source_page is not None:
+            self._execution_value_escape_cache_hits += 1
+            return prepare_pages(
+                [exact_source_page],
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )[0]
         cache_key = self._execution_value_escape_cache_key(page, escape_mode=escape_mode)
         cached_page = self._execution_value_escape_cache.get(cache_key)
         if cached_page is not None:
@@ -1593,7 +1637,7 @@ class ModelPagedKVCache:
         prepared_escape_page = prepare_pages(
             [escaped_page],
             backend=self.backend,
-            cache=None,
+            cache=self.cache,
             trace=trace,
         )[0]
         self._execution_value_escape_cache[cache_key] = prepared_escape_page
@@ -2963,25 +3007,30 @@ class ModelPagedKVCache:
                         ),
                     )
                 )
-                value_pages_by_head[kv_head_id].append(
-                    encode_page(
-                        full_values[kv_head_id, page_start:page_end],
-                        self.config,
+                dense_value_page = full_values[kv_head_id, page_start:page_end]
+                value_page = encode_page(
+                    dense_value_page,
+                    self.config,
+                    kind="V",
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=page_start,
+                    page_mode=self._select_page_mode(
+                        dense_value_page,
                         kind="V",
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
-                        page_mode=self._select_page_mode(
-                            full_values[kv_head_id, page_start:page_end],
-                            kind="V",
-                            layer_id=layer_id,
-                            kv_head_id=kv_head_id,
-                            token_start=page_start,
-                            sequence_length=sequence_length,
-                        ),
-                        build_runtime_metadata=False,
-                    )
+                        sequence_length=sequence_length,
+                    ),
+                    build_runtime_metadata=False,
                 )
+                self._maybe_register_execution_value_escape_source(
+                    value_page,
+                    dense_values=dense_value_page,
+                    escape_mode=str(self.config.execution_value_escape_mode),
+                )
+                value_pages_by_head[kv_head_id].append(value_page)
         return key_pages_by_head, value_pages_by_head
 
     def _can_direct_prepare_full_prefill_pages_torch(self) -> bool:

@@ -835,6 +835,8 @@ def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mo
 
 
 def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> None:
+    from dotcache.decode_reference import decode_page
+
     config = DotCacheConfig(
         head_dim=32,
         group_size=32,
@@ -852,8 +854,9 @@ def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> 
         backend="cpu_ref",
     )
     rng = np.random.default_rng(31022)
+    dense_values = rng.normal(size=(4, config.head_dim)).astype(np.float32)
     value_page = encode_page(
-        rng.normal(size=(4, config.head_dim)).astype(np.float32),
+        dense_values,
         config,
         kind="V",
         layer_id=0,
@@ -861,15 +864,22 @@ def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> 
         token_start=0,
         mode="M0",
     )
+    cache._maybe_register_execution_value_escape_source(
+        value_page,
+        dense_values=dense_values,
+        escape_mode="M3",
+    )
 
     first = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
     second = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
+    reconstructed = decode_page(first.source_page if isinstance(first, PreparedPageTorch) else first)
 
     assert first is second
     assert first.header.mode_default == "M3"
+    np.testing.assert_allclose(reconstructed, dense_values.astype(np.float32), atol=5e-3, rtol=5e-3)
     summary = cache.execution_value_escape_summary()
     assert summary["execution_value_escape_builds"] == 1
-    assert summary["execution_value_escape_cache_hits"] == 1
+    assert summary["execution_value_escape_cache_hits"] == 2
 
 
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
