@@ -1870,6 +1870,63 @@ def test_qwen35_layer23_ablation_matrix_can_disable_default_layer_profile(
     assert "Qwen/Qwen3.5-4B" in command
 
 
+def test_qwen35_value_escape_layer_scan_builds_layer_specific_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_layer_scan",
+        repo_root / "scripts" / "run_qwen35_value_escape_layer_scan.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--model-id",
+            "Qwen/Qwen3.5-4B",
+            "--layer-profile",
+            "none",
+            "--layers",
+            "19",
+            "23",
+            "--contexts",
+            "16384",
+            "--selector-modes",
+            "layer_full_context",
+            "--kv-modes",
+            "m0_v_escape",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.layers == [19, 23]
+    assert args.contexts == [16384]
+    assert args.selector_modes == ["layer_full_context"]
+    assert args.kv_modes == ["m0_v_escape"]
+
+    command = script_module._benchmark_command(
+        args,
+        layer_id=19,
+        context=16384,
+        selector_mode="layer_full_context",
+        kv_mode="m0_v_escape",
+    )
+    assert "--layer-profile" not in command
+    assert "--execution-full-context-layer" in command
+    assert "19" in command
+    assert "--execution-value-escape-layer" in command
+    assert "--value-mode-override" in command
+    assert "layer:19=M0" in command
+
+
 def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
     from pathlib import Path
