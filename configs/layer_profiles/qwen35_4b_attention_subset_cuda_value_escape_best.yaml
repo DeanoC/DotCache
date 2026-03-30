@@ -1,0 +1,36 @@
+model_id: Qwen/Qwen3.5-4B
+source:
+  benchmark: >
+    Promoted CUDA shortlist/value-escape lane after the 2026-03-30
+    layer scan and prewarm transfer checks.
+  backend: torch_cuda
+  prompt_lengths: 32K, 49K, 65K
+  tokens_per_page: 16
+  notes: >
+    Use the candidate-only shortlist lane with selected-page layer-7 value
+    escape. The 0.8B prewarm policy does not transfer here, so prewarm stays
+    off.
+
+key_policy_tier: exact
+value_policy_tier: exact
+recent_window: 128
+
+execution_recent_window: 1024
+execution_sink_window: 256
+execution_relevance_top_k: 4
+execution_relevance_mode: envelope
+execution_relevance_top_k_context_overrides:
+  - layer:7:min_ctx:8192=8
+
+execution_builtin_selector_cache: true
+execution_builtin_selector_candidate_only: true
+
+key_mode_overrides:
+  - layer:7=M0
+value_mode_overrides:
+  - layer:7=M0
+
+execution_value_escape_layers:
+  - 7
+execution_value_escape_mode: M3
+execution_value_escape_prewarm: false
