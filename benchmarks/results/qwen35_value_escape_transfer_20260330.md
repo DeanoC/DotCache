@@ -73,6 +73,11 @@ with presets:
 - `qwen35_0p8b_best`
 - `qwen35_4b_best`
 
+Those presets now resolve through first-class serving profiles:
+
+- [qwen35_0p8b_attention_subset_cuda_value_escape_best.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_value_escape_best.yaml)
+- [qwen35_4b_attention_subset_cuda_value_escape_best.yaml](/Users/deanocalver/Documents/Projects/DotCache/configs/layer_profiles/qwen35_4b_attention_subset_cuda_value_escape_best.yaml)
+
 The promoted scan entrypoint now also has named presets in
 [run_qwen35_value_escape_layer_scan.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_layer_scan.py):
 

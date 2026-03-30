@@ -330,6 +330,67 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
         )
     if args.execution_relevance_mode == "envelope":
         args.execution_relevance_mode = str(profile.get("execution_relevance_mode", args.execution_relevance_mode))
+    if not args.execution_full_context_layer:
+        args.execution_full_context_layer = list(
+            profile.get("execution_full_context_layers", args.execution_full_context_layer)
+        )
+    if not args.execution_disable_grouped_batching_layer:
+        args.execution_disable_grouped_batching_layer = list(
+            profile.get("execution_disable_grouped_batching_layers", args.execution_disable_grouped_batching_layer)
+        )
+    if args.execution_builtin_selector_cache is False:
+        args.execution_builtin_selector_cache = bool(
+            profile.get("execution_builtin_selector_cache", args.execution_builtin_selector_cache)
+        )
+    if args.execution_builtin_selector_score_all_pages is False:
+        args.execution_builtin_selector_score_all_pages = bool(
+            profile.get(
+                "execution_builtin_selector_score_all_pages",
+                args.execution_builtin_selector_score_all_pages,
+            )
+        )
+    if args.execution_builtin_selector_candidate_only is False:
+        args.execution_builtin_selector_candidate_only = bool(
+            profile.get(
+                "execution_builtin_selector_candidate_only",
+                args.execution_builtin_selector_candidate_only,
+            )
+        )
+    if args.execution_builtin_selector_score_all_pages_min_candidate_fraction == 0.0:
+        args.execution_builtin_selector_score_all_pages_min_candidate_fraction = float(
+            profile.get(
+                "execution_builtin_selector_score_all_pages_min_candidate_fraction",
+                args.execution_builtin_selector_score_all_pages_min_candidate_fraction,
+            )
+        )
+    if not args.execution_value_escape_layer:
+        args.execution_value_escape_layer = [
+            int(layer_id)
+            for layer_id in profile.get("execution_value_escape_layers", args.execution_value_escape_layer)
+        ]
+    if args.execution_value_escape_mode == "M3":
+        args.execution_value_escape_mode = str(
+            profile.get("execution_value_escape_mode", args.execution_value_escape_mode)
+        )
+    if args.execution_value_escape_old_only is False:
+        args.execution_value_escape_old_only = bool(
+            profile.get("execution_value_escape_old_only", args.execution_value_escape_old_only)
+        )
+    if args.execution_value_escape_top_k == 0:
+        args.execution_value_escape_top_k = int(
+            profile.get("execution_value_escape_top_k", args.execution_value_escape_top_k)
+        )
+    if args.execution_value_escape_prewarm is False:
+        args.execution_value_escape_prewarm = bool(
+            profile.get("execution_value_escape_prewarm", args.execution_value_escape_prewarm)
+        )
+    if args.execution_value_escape_prewarm_min_context == 0:
+        args.execution_value_escape_prewarm_min_context = int(
+            profile.get(
+                "execution_value_escape_prewarm_min_context",
+                args.execution_value_escape_prewarm_min_context,
+            )
+        )
     if args.execution_exact_promote_top_k == 0:
         args.execution_exact_promote_top_k = int(
             profile.get("execution_exact_promote_top_k", args.execution_exact_promote_top_k)

@@ -2012,11 +2012,9 @@ def test_qwen35_value_escape_reference_presets_build_expected_commands(
     command = script_module._benchmark_command(args, context=49152)
     assert "Qwen/Qwen3.5-0.8B" in command
     assert "--layer-profile" in command
-    assert "--execution-value-escape-layer" in command
-    assert "23" in command
-    assert "--execution-value-escape-prewarm" in command
-    assert "--execution-value-escape-prewarm-min-context" in command
-    assert "49152" in command
+    assert "qwen35_0p8b_attention_subset_cuda_value_escape_best.yaml" in " ".join(command)
+    assert "--execution-value-escape-layer" not in command
+    assert "--execution-value-escape-prewarm" not in command
 
     monkeypatch.setattr(
         "sys.argv",
@@ -2032,9 +2030,9 @@ def test_qwen35_value_escape_reference_presets_build_expected_commands(
     args = script_module.parse_args()
     command = script_module._benchmark_command(args, context=65536)
     assert "Qwen/Qwen3.5-4B" in command
-    assert "--layer-profile" not in command
-    assert "--execution-value-escape-layer" in command
-    assert "7" in command
+    assert "--layer-profile" in command
+    assert "qwen35_4b_attention_subset_cuda_value_escape_best.yaml" in " ".join(command)
+    assert "--execution-value-escape-layer" not in command
     assert "--execution-value-escape-prewarm" not in command
 
 
@@ -2164,6 +2162,75 @@ def test_qwen35_cuda_layer_profile_loads_shortlist_quality_defaults(monkeypatch:
     assert loss_args.execution_exact_promote_top_k == 2
     assert loss_args.execution_exact_promote_margin_threshold == 0.0558
     assert loss_args.execution_exact_promote_layer == [23]
+
+
+def test_qwen35_cuda_layer_profile_loads_value_escape_reference_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    serving_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
+    )
+    assert serving_spec is not None and serving_spec.loader is not None
+    serving_module = importlib.util.module_from_spec(serving_spec)
+    serving_spec.loader.exec_module(serving_module)
+
+    profile_0p8b = (
+        repo_root
+        / "configs"
+        / "layer_profiles"
+        / "qwen35_0p8b_attention_subset_cuda_value_escape_best.yaml"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_serving.py",
+            "--layer-profile",
+            str(profile_0p8b),
+        ],
+    )
+    serving_args = serving_module.parse_args()
+    serving_module._resolve_args_from_layer_profile(serving_args)
+    assert serving_args.execution_builtin_selector_cache is True
+    assert serving_args.execution_builtin_selector_candidate_only is True
+    assert serving_args.execution_relevance_top_k_context_layer == ["layer:23:min_ctx:8192=8"]
+    assert serving_args.key_mode_override == ["layer:23=M0"]
+    assert serving_args.value_mode_override == ["layer:23=M0"]
+    assert serving_args.execution_value_escape_layer == [23]
+    assert serving_args.execution_value_escape_mode == "M3"
+    assert serving_args.execution_value_escape_prewarm is True
+    assert serving_args.execution_value_escape_prewarm_min_context == 49152
+
+    profile_4b = (
+        repo_root
+        / "configs"
+        / "layer_profiles"
+        / "qwen35_4b_attention_subset_cuda_value_escape_best.yaml"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_attention_subset_dotcache_serving.py",
+            "--model-id",
+            "Qwen/Qwen3.5-4B",
+            "--layer-profile",
+            str(profile_4b),
+        ],
+    )
+    serving_args = serving_module.parse_args()
+    serving_module._resolve_args_from_layer_profile(serving_args)
+    assert serving_args.execution_builtin_selector_cache is True
+    assert serving_args.execution_builtin_selector_candidate_only is True
+    assert serving_args.execution_relevance_top_k_context_layer == ["layer:7:min_ctx:8192=8"]
+    assert serving_args.key_mode_override == ["layer:7=M0"]
+    assert serving_args.value_mode_override == ["layer:7=M0"]
+    assert serving_args.execution_value_escape_layer == [7]
+    assert serving_args.execution_value_escape_mode == "M3"
+    assert serving_args.execution_value_escape_prewarm is False
+    assert serving_args.execution_value_escape_prewarm_min_context == 0
 
 
 def test_qwen35_cuda_profile_bakeoff_cli_parse(monkeypatch: pytest.MonkeyPatch) -> None:

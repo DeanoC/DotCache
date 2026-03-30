@@ -14,7 +14,10 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_0P8B_LAYER_PROFILE = (
-    REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_shortlist_context_aware.yaml"
+    REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_value_escape_best.yaml"
+)
+DEFAULT_4B_LAYER_PROFILE = (
+    REPO_ROOT / "configs" / "layer_profiles" / "qwen35_4b_attention_subset_cuda_value_escape_best.yaml"
 )
 
 PRESETS: dict[str, dict[str, Any]] = {
@@ -28,7 +31,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "qwen35_4b_best": {
         "model_id": "Qwen/Qwen3.5-4B",
-        "layer_profile": None,
+        "layer_profile": str(DEFAULT_4B_LAYER_PROFILE),
         "escape_layer": 7,
         "contexts": [32768, 49152, 65536],
         "prewarm": False,
@@ -81,7 +84,6 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
 
 def _benchmark_command(args: argparse.Namespace, *, context: int) -> list[str]:
     preset = _preset(args)
-    escape_layer = int(preset["escape_layer"])
     command = [
         sys.executable,
         str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py"),
@@ -111,35 +113,10 @@ def _benchmark_command(args: argparse.Namespace, *, context: int) -> list[str]:
         "--continue-on-error",
         "--blas-num-threads",
         str(args.blas_num_threads),
-        "--execution-recent-window",
-        "1024",
-        "--execution-sink-window",
-        "256",
-        "--execution-relevance-top-k",
-        "4",
-        "--execution-relevance-top-k-context-layer",
-        f"layer:{escape_layer}:min_ctx:8192=8",
-        "--execution-relevance-mode",
-        "envelope",
-        "--execution-builtin-selector-cache",
-        "--execution-builtin-selector-candidate-only",
-        "--key-mode-override",
-        f"layer:{escape_layer}=M0",
-        "--value-mode-override",
-        f"layer:{escape_layer}=M0",
-        "--execution-value-escape-layer",
-        str(escape_layer),
-        "--execution-value-escape-mode",
-        "M3",
     ]
     layer_profile = preset.get("layer_profile")
     if layer_profile:
         command.extend(["--layer-profile", str(layer_profile)])
-    if bool(preset.get("prewarm", False)):
-        command.append("--execution-value-escape-prewarm")
-        min_context = int(preset.get("prewarm_min_context", 0))
-        if min_context > 0:
-            command.extend(["--execution-value-escape-prewarm-min-context", str(min_context)])
     if args.profile_backend:
         command.append("--profile-backend")
     if args.quality_check:
