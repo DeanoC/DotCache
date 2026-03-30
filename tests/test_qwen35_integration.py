@@ -1583,6 +1583,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-builtin-selector-candidate-only",
             "--execution-builtin-selector-score-all-pages-min-candidate-fraction",
             "0.5",
+            "--execution-value-escape-layer",
+            "23",
+            "--execution-value-escape-mode",
+            "M3",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1650,6 +1654,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_builtin_selector_score_all_pages is True
     assert serving_args.execution_builtin_selector_candidate_only is True
     assert serving_args.execution_builtin_selector_score_all_pages_min_candidate_fraction == 0.5
+    assert serving_args.execution_value_escape_layer == [23]
+    assert serving_args.execution_value_escape_mode == "M3"
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]
@@ -1783,7 +1789,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
             "--selector-modes",
             "layer23_full_context",
             "--kv-modes",
-            "m0_exact",
+            "m0_v_escape",
             "--quality-check",
             "--blas-num-threads",
             "1",
@@ -1792,7 +1798,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
     args = script_module.parse_args()
     assert args.contexts == [32768]
     assert args.selector_modes == ["layer23_full_context"]
-    assert args.kv_modes == ["m0_exact"]
+    assert args.kv_modes == ["m0_v_escape"]
     assert args.quality_check is True
     assert args.blas_num_threads == 1
 
@@ -1800,12 +1806,15 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
         args,
         context=32768,
         selector_mode="layer23_full_context",
-        kv_mode="m0_exact",
+        kv_mode="m0_v_escape",
     )
     assert "--execution-full-context-layer" in command
     assert "23" in command
     assert "--key-mode-override" in command
     assert "layer:23=M0" in command
+    assert "--execution-value-escape-layer" in command
+    assert "--execution-value-escape-mode" in command
+    assert "M3" in command
     assert "--blas-num-threads" in command
     assert "1" in command
 

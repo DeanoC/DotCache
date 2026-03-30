@@ -137,6 +137,8 @@ class DotCacheConfig:
     execution_builtin_selector_score_all_pages: bool = False
     execution_builtin_selector_candidate_only: bool = False
     execution_builtin_selector_score_all_pages_min_candidate_fraction: float = 0.0
+    execution_value_escape_layers: tuple[int, ...] = ()
+    execution_value_escape_mode: str = "M3"
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"
@@ -251,6 +253,12 @@ class DotCacheConfig:
                 raise ValueError("execution_exact_promote_layers must be non-negative")
         if self.execution_exact_promote_union_rescue_top_k < 0:
             raise ValueError("execution_exact_promote_union_rescue_top_k must be non-negative")
+        for layer_id in self.execution_value_escape_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_value_escape_layers must be non-negative")
+        if self.execution_value_escape_mode not in _VALID_VALUE_MODES:
+            allowed = ", ".join(_VALID_VALUE_MODES)
+            raise ValueError(f"execution_value_escape_mode must be one of {allowed}")
         if self.execution_exact_refine_top_k < 0:
             raise ValueError("execution_exact_refine_top_k must be non-negative")
         for layer_id in self.execution_exact_refine_layers:
@@ -450,6 +458,11 @@ class DotCacheConfig:
 
     def execution_grouped_batching_disabled_for_layer(self, *, layer_id: int) -> bool:
         return int(layer_id) in {int(value) for value in self.execution_disable_grouped_batching_layers}
+
+    def execution_value_escape_enabled_for_layer(self, *, layer_id: int) -> bool:
+        if not self.execution_value_escape_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.execution_value_escape_layers}
 
     def execution_recent_old_bonus_enabled_for_layer(self, *, layer_id: int) -> bool:
         if self.execution_recent_old_bonus_window <= 0 or self.execution_recent_old_bonus_strength <= 0:

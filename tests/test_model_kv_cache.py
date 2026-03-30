@@ -834,6 +834,44 @@ def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mo
     assert summary["execution_chunk_budget_override_same_budget_calls"] == 1
 
 
+def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31022)
+    value_page = encode_page(
+        rng.normal(size=(4, config.head_dim)).astype(np.float32),
+        config,
+        kind="V",
+        layer_id=0,
+        kv_head_id=0,
+        token_start=0,
+        mode="M0",
+    )
+
+    first = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
+    second = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
+
+    assert first is second
+    assert first.header.mode_default == "M3"
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_builds"] == 1
+    assert summary["execution_value_escape_cache_hits"] == 1
+
+
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
     if not mps_available():
         return

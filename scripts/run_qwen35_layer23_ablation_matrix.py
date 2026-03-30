@@ -18,7 +18,7 @@ DEFAULT_LAYER_PROFILE = (
 )
 
 SELECTOR_MODES = ("approx_shortlist", "layer23_full_context")
-KV_MODES = ("exact_exact", "m0_exact", "exact_m0", "m0_m0")
+KV_MODES = ("exact_exact", "m0_exact", "exact_m0", "m0_m0", "m0_v_escape")
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +79,17 @@ def _kv_args(kv_mode: str) -> list[str]:
         return ["--value-mode-override", "layer:23=M0"]
     if kv_mode == "m0_m0":
         return ["--key-mode-override", "layer:23=M0", "--value-mode-override", "layer:23=M0"]
+    if kv_mode == "m0_v_escape":
+        return [
+            "--key-mode-override",
+            "layer:23=M0",
+            "--value-mode-override",
+            "layer:23=M0",
+            "--execution-value-escape-layer",
+            "23",
+            "--execution-value-escape-mode",
+            "M3",
+        ]
     raise ValueError(f"unsupported kv mode: {kv_mode}")
 
 

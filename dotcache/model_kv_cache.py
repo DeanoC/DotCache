@@ -19,6 +19,7 @@ from .backends import (
     set_prepared_chunk_cache_budget_override,
 )
 from .config import DotCacheConfig
+from .decode_reference import decode_page
 from .encode import encode_page
 from .planner import choose_page_mode, observe_page
 from .page_cache import PreparedPageCache
@@ -1300,6 +1301,10 @@ class ModelPagedKVCache:
         self._builtin_selector_cache_builds = 0
         self._builtin_selector_cache_build_bytes = 0
         self._builtin_selector_cache_build_bytes_max = 0
+        self._execution_value_escape_cache: dict[tuple[int, int, int, str, str], PageLike] = {}
+        self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_builds = 0
+        self._execution_value_escape_applied_pages = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -1418,6 +1423,12 @@ class ModelPagedKVCache:
         self._builtin_selector_cache_build_bytes = 0
         self._builtin_selector_cache_build_bytes_max = 0
 
+    def _reset_execution_value_escape_tracking(self) -> None:
+        self._execution_value_escape_cache.clear()
+        self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_builds = 0
+        self._execution_value_escape_applied_pages = 0
+
     def _kv_resident_byte_summary(self) -> dict[str, int]:
         static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
         tail_resident_bytes = int(self._tail_resident_bytes)
@@ -1530,6 +1541,97 @@ class ModelPagedKVCache:
             "execution_builtin_selector_cache_build_bytes": int(self._builtin_selector_cache_build_bytes),
             "execution_builtin_selector_cache_build_bytes_max": int(self._builtin_selector_cache_build_bytes_max),
         }
+
+    def execution_value_escape_summary(self) -> dict[str, int | str | list[int]]:
+        return {
+            "execution_value_escape_layers": [int(layer_id) for layer_id in self.config.execution_value_escape_layers],
+            "execution_value_escape_mode": str(self.config.execution_value_escape_mode),
+            "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
+            "execution_value_escape_builds": int(self._execution_value_escape_builds),
+            "execution_value_escape_applied_pages": int(self._execution_value_escape_applied_pages),
+        }
+
+    def _execution_value_escape_cache_key(self, page: PageLike, *, escape_mode: str) -> tuple[int, int, int, str, str]:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        header = source_page.header
+        return (
+            id(source_page),
+            int(header.token_start),
+            int(header.token_count),
+            str(escape_mode),
+            str(self._torch_device_type or "cpu_ref"),
+        )
+
+    def _prepare_execution_value_escape_page(
+        self,
+        page: PageLike,
+        *,
+        escape_mode: str,
+        trace: ExecutionTrace | None = None,
+    ) -> PageLike:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        if str(source_page.header.kind) != "V":
+            raise ValueError("execution value escape requires V pages")
+        if str(source_page.header.mode_default) == str(escape_mode):
+            return page
+        cache_key = self._execution_value_escape_cache_key(page, escape_mode=escape_mode)
+        cached_page = self._execution_value_escape_cache.get(cache_key)
+        if cached_page is not None:
+            self._execution_value_escape_cache_hits += 1
+            return cached_page
+        dense_values = decode_page(source_page).astype(np.float32, copy=False)
+        escaped_page = encode_page(
+            dense_values,
+            self.config,
+            kind="V",
+            layer_id=int(source_page.header.layer_id),
+            kv_head_id=int(source_page.header.kv_head_id),
+            token_start=int(source_page.header.token_start),
+            mode=str(escape_mode),
+            build_runtime_metadata=False,
+        )
+        prepared_escape_page = prepare_pages(
+            [escaped_page],
+            backend=self.backend,
+            cache=None,
+            trace=trace,
+        )[0]
+        self._execution_value_escape_cache[cache_key] = prepared_escape_page
+        self._execution_value_escape_builds += 1
+        return prepared_escape_page
+
+    def _apply_execution_value_escape(
+        self,
+        *,
+        layer_id: int,
+        value_pages_by_group: Sequence[Sequence[PageLike]],
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[list[Sequence[PageLike]], bool]:
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            return [list(pages) for pages in value_pages_by_group], False
+        escape_mode = str(self.config.execution_value_escape_mode)
+        escaped_groups: list[Sequence[PageLike]] = []
+        any_applied = False
+        for value_pages in value_pages_by_group:
+            escaped_pages: list[PageLike] = []
+            group_applied = False
+            for page in value_pages:
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if str(source_page.header.mode_default) == escape_mode:
+                    escaped_pages.append(page)
+                    continue
+                escaped_page = self._prepare_execution_value_escape_page(
+                    page,
+                    escape_mode=escape_mode,
+                    trace=trace,
+                )
+                escaped_pages.append(escaped_page)
+                if escaped_page is not page:
+                    group_applied = True
+                    self._execution_value_escape_applied_pages += 1
+            escaped_groups.append(escaped_pages if group_applied else list(value_pages))
+            any_applied = any_applied or group_applied
+        return escaped_groups, any_applied
 
     def resident_byte_summary(self) -> dict[str, int]:
         summary = self._kv_resident_byte_summary()
@@ -2711,6 +2813,7 @@ class ModelPagedKVCache:
         self._reset_resident_accounting()
         self._reset_chunk_budget_tracking()
         self._reset_builtin_selector_tracking()
+        self._reset_execution_value_escape_tracking()
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -2762,6 +2865,7 @@ class ModelPagedKVCache:
                 if stage in self._decode_stage_timings:
                     self._decode_stage_timings[stage] += float(value)
         self._reset_builtin_selector_tracking()
+        self._reset_execution_value_escape_tracking()
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
@@ -4499,6 +4603,16 @@ class ModelPagedKVCache:
                 active_value_pages = shortlisted_value_pages
                 active_layouts = shortlisted_layouts
             _stage_finish("shortlist_materialization", shortlist_materialization_started_at)
+
+        value_escape_applied = False
+        if self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            active_value_pages, value_escape_applied = self._apply_execution_value_escape(
+                layer_id=layer_id,
+                value_pages_by_group=active_value_pages,
+                trace=trace,
+            )
+            if value_escape_applied:
+                active_layouts = [None] * len(active_layouts)
 
         chunk_budget_sync_started_at = _stage_start()
         self._sync_prepared_chunk_cache_budget(
