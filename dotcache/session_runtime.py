@@ -261,7 +261,8 @@ def select_execution_page_indices(
             query = np.asarray(query_slice, dtype=np.float32)
             if relevance_mode == "sketch":
                 if key_page_sketch_matrix is not None:
-                    if int(key_page_sketch_matrix.shape[0]) != len(key_pages):
+                    expected_sketch_rows = len(key_pages) - 1 if tail_page_sketch is not None else len(key_pages)
+                    if int(key_page_sketch_matrix.shape[0]) != expected_sketch_rows:
                         raise ValueError("key_page_sketch_matrix must align with key_pages")
                     if score_all_pages_with_matrices:
                         score_compute_started_at = perf_counter() if stage_recorder is not None else None
@@ -297,7 +298,15 @@ def select_execution_page_indices(
                 positive_query = np.maximum(query, 0.0)
                 negative_query = np.minimum(query, 0.0)
                 if key_page_minima_matrix is not None and key_page_maxima_matrix is not None:
-                    if int(key_page_minima_matrix.shape[0]) != len(key_pages) or int(key_page_maxima_matrix.shape[0]) != len(key_pages):
+                    expected_envelope_rows = (
+                        len(key_pages) - 1
+                        if tail_page_minimum is not None and tail_page_maximum is not None
+                        else len(key_pages)
+                    )
+                    if (
+                        int(key_page_minima_matrix.shape[0]) != expected_envelope_rows
+                        or int(key_page_maxima_matrix.shape[0]) != expected_envelope_rows
+                    ):
                         raise ValueError("page minima and maxima matrices must align with key_pages")
                     if score_all_pages_with_matrices:
                         score_compute_started_at = perf_counter() if stage_recorder is not None else None
