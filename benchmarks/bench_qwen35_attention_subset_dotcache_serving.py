@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-freeze-chunk-budget-during-decode", action="store_true")
     parser.add_argument("--execution-builtin-selector-cache", action="store_true")
     parser.add_argument("--execution-builtin-selector-score-all-pages", action="store_true")
+    parser.add_argument("--execution-builtin-selector-candidate-only", action="store_true")
     parser.add_argument("--execution-builtin-selector-score-all-pages-min-candidate-fraction", type=float, default=0.0)
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
@@ -237,6 +238,9 @@ def _run_case(
                     "execution_builtin_selector_score_all_pages": bool(
                         effective_config.execution_builtin_selector_score_all_pages
                     ),
+                    "execution_builtin_selector_candidate_only": bool(
+                        effective_config.execution_builtin_selector_candidate_only
+                    ),
                     "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
                         effective_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
                     ),
@@ -375,6 +379,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_freeze_chunk_budget_during_decode=args.execution_freeze_chunk_budget_during_decode,
         execution_builtin_selector_cache=args.execution_builtin_selector_cache,
         execution_builtin_selector_score_all_pages=args.execution_builtin_selector_score_all_pages,
+        execution_builtin_selector_candidate_only=args.execution_builtin_selector_candidate_only,
         execution_builtin_selector_score_all_pages_min_candidate_fraction=(
             args.execution_builtin_selector_score_all_pages_min_candidate_fraction
         ),
@@ -462,6 +467,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "execution_freeze_chunk_budget_during_decode": args.execution_freeze_chunk_budget_during_decode,
         "execution_builtin_selector_cache": args.execution_builtin_selector_cache,
         "execution_builtin_selector_score_all_pages": args.execution_builtin_selector_score_all_pages,
+        "execution_builtin_selector_candidate_only": args.execution_builtin_selector_candidate_only,
         "execution_builtin_selector_score_all_pages_min_candidate_fraction": (
             args.execution_builtin_selector_score_all_pages_min_candidate_fraction
         ),

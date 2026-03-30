@@ -2449,7 +2449,10 @@ class ModelPagedKVCache:
                     kv_head_id=kv_head_id,
                     key_pages=key_pages,
                     relevance_mode=self.config.execution_relevance_mode,
-                    score_all_pages_with_matrices=self.config.execution_builtin_selector_score_all_pages,
+                    score_all_pages_with_matrices=(
+                        self.config.execution_builtin_selector_score_all_pages
+                        and not self.config.execution_builtin_selector_candidate_only
+                    ),
                 )
             if (
                 builtin_sketch_matrix is not None
@@ -2474,7 +2477,10 @@ class ModelPagedKVCache:
                 tail_page_maximum=builtin_tail_maximum,
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
-                score_all_pages_with_matrices=self.config.execution_builtin_selector_score_all_pages,
+                score_all_pages_with_matrices=(
+                    self.config.execution_builtin_selector_score_all_pages
+                    and not self.config.execution_builtin_selector_candidate_only
+                ),
                 score_all_pages_min_candidate_fraction=self.config.execution_builtin_selector_score_all_pages_min_candidate_fraction,
                 selector_stats_recorder=lambda stats: self._record_builtin_selector_stats(
                     candidate_pages=int(stats["candidate_pages"]),
