@@ -23,6 +23,16 @@ The corrected `m0_v_escape` path is the current best benchmark-only rescue:
 
 That path materially improves over `exact_m0` and recovers a meaningful fraction of the gap back to `exact_exact`, while preserving `1.0` token agreement in the tested rows.
 
+The current best `0.8B` operating point is now the size-gated prewarm variant:
+
+- `execution-value-escape-prewarm` enabled
+- `execution-value-escape-prewarm-min-context = 49152`
+
+That keeps `32768` on the old path, while moving the escape-page construction for `49152+` out of first-token decode and into explicit prewarm telemetry. The missing `65536` control confirmed that this is favorable at the next context up as well:
+
+- non-prewarmed `65536`: decode `442.67 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+- thresholded-prewarm `65536`: decode `421.83 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+
 ## What did not win
 
 Two narrower variants did not beat full `m0_v_escape`:

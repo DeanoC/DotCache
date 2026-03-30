@@ -3552,6 +3552,24 @@ I also separated the escape telemetry so the branch can report something more pr
 
 Those counters now flow into the step breakdown as well, which should make it easier to judge whether a future larger-model transfer run is paying mostly for one-time setup, prepared-page construction, or per-step applied-page churn.
 
+The latest `0.8B` scheduling pass also made the size-gated prewarm policy concrete:
+
+- always-on value-escape prewarm was not the right operating point
+- gating prewarm at `min_context = 49152` gives the behavior we wanted
+- `32768` stays on the old decode-time build path with zero prewarm activity
+- `49152` and `65536` switch cleanly to explicit prewarm
+
+The missing `65536` control also landed, so the current `0.8B` read is now stronger:
+
+- non-prewarmed `65536`: decode `442.67 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+- thresholded-prewarm `65536`: decode `421.83 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+
+So the branch should currently treat this as the best benchmark-only `0.8B` lane:
+
+- current candidate-only selector path
+- full selected-page `layer 23` `V` escape
+- prewarm enabled with `execution_value_escape_prewarm_min_context = 49152`
+
 ## 2026-03-30 19:15 UTC - Value escape transfers across models, but the sensitive layer does not
 
 The first larger-model sanity check on `Qwen/Qwen3.5-4B` gave the answer we needed.
