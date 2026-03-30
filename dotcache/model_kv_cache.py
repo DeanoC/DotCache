@@ -1549,6 +1549,7 @@ class ModelPagedKVCache:
             "execution_value_escape_layers": [int(layer_id) for layer_id in self.config.execution_value_escape_layers],
             "execution_value_escape_mode": str(self.config.execution_value_escape_mode),
             "execution_value_escape_old_only": bool(self.config.execution_value_escape_old_only),
+            "execution_value_escape_top_k": int(self.config.execution_value_escape_top_k),
             "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
             "execution_value_escape_builds": int(self._execution_value_escape_builds),
             "execution_value_escape_applied_pages": int(self._execution_value_escape_applied_pages),
@@ -1652,17 +1653,19 @@ class ModelPagedKVCache:
         key_pages_by_group: Sequence[Sequence[PageLike]],
         value_pages_by_group: Sequence[Sequence[PageLike]],
         context_lengths_by_group: Sequence[int] | None = None,
+        representative_queries_by_group: Sequence[np.ndarray] | None = None,
         trace: ExecutionTrace | None = None,
     ) -> tuple[list[Sequence[PageLike]], bool]:
         if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
             return [list(pages) for pages in value_pages_by_group], False
         escape_mode = str(self.config.execution_value_escape_mode)
+        escape_top_k = max(0, int(self.config.execution_value_escape_top_k))
         escaped_groups: list[Sequence[PageLike]] = []
         any_applied = False
         for group_index, (key_pages, value_pages) in enumerate(zip(key_pages_by_group, value_pages_by_group, strict=True)):
             escaped_pages: list[PageLike] = []
             group_applied = False
-            old_selected_indices: set[int] | None = None
+            eligible_indices: set[int] | None = None
             if bool(self.config.execution_value_escape_old_only):
                 context_length = None
                 if context_lengths_by_group is not None and group_index < len(context_lengths_by_group):
@@ -1671,15 +1674,38 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     context_length=context_length,
                 )
-                old_selected_indices = set(range(len(key_pages))) - set(
+                eligible_indices = set(range(len(key_pages))) - set(
                     select_window_page_indices(
                         key_pages,
                         recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
                         sink_window_tokens=int(self.config.execution_sink_window),
                     )
                 )
+            if escape_top_k > 0:
+                query_slice = None
+                if representative_queries_by_group is not None and group_index < len(representative_queries_by_group):
+                    query_slice = np.asarray(representative_queries_by_group[group_index], dtype=np.float32)
+                ranked_candidate_indices: list[int] = []
+                if query_slice is not None:
+                    scored_indices: list[tuple[float, int]] = []
+                    candidate_pool = range(len(key_pages)) if eligible_indices is None else sorted(eligible_indices)
+                    for page_index in candidate_pool:
+                        score = _score_page_relevance_for_mode(
+                            query_slice,
+                            key_pages[page_index],
+                            relevance_mode=self.config.execution_relevance_mode,
+                        )
+                        if score is not None:
+                            scored_indices.append((float(score), int(page_index)))
+                    if scored_indices:
+                        scored_indices.sort(key=lambda item: item[0], reverse=True)
+                        ranked_candidate_indices = [index for _, index in scored_indices[:escape_top_k]]
+                if ranked_candidate_indices:
+                    eligible_indices = set(ranked_candidate_indices)
+                elif eligible_indices is None:
+                    eligible_indices = set(range(min(len(key_pages), escape_top_k)))
             for page_index, page in enumerate(value_pages):
-                if old_selected_indices is not None and page_index not in old_selected_indices:
+                if eligible_indices is not None and page_index not in eligible_indices:
                     escaped_pages.append(page)
                     continue
                 source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
@@ -4552,6 +4578,7 @@ class ModelPagedKVCache:
         active_value_pages: list[Sequence[PageLike]] = []
         active_layouts: list[_PreparedDecodeViewLayout | None] = []
         active_context_lengths: list[int] = []
+        active_representative_queries: list[np.ndarray] = []
         original_key_pages_by_group: list[Sequence[PageLike]] = []
         original_value_pages_by_group: list[Sequence[PageLike]] = []
         original_layouts: list[_PreparedDecodeViewLayout | None] = []
@@ -4598,6 +4625,7 @@ class ModelPagedKVCache:
             active_value_pages.append(value_pages)
             active_layouts.append(decode_layout)
             active_context_lengths.append(int(state.sequence_length))
+            active_representative_queries.append(representative_query)
             shortlist_selected_indices_by_group.append(selected_indices)
             shortlist_trace_records_by_group.append(shortlist_trace_record)
 
@@ -4684,6 +4712,7 @@ class ModelPagedKVCache:
                 key_pages_by_group=active_key_pages,
                 value_pages_by_group=active_value_pages,
                 context_lengths_by_group=active_context_lengths,
+                representative_queries_by_group=active_representative_queries,
                 trace=trace,
             )
             if value_escape_applied:
