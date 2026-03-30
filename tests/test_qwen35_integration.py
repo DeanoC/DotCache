@@ -1591,6 +1591,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-value-escape-top-k",
             "64",
             "--execution-value-escape-prewarm",
+            "--execution-value-escape-prewarm-min-context",
+            "49152",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1663,6 +1665,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_value_escape_old_only is True
     assert serving_args.execution_value_escape_top_k == 64
     assert serving_args.execution_value_escape_prewarm is True
+    assert serving_args.execution_value_escape_prewarm_min_context == 49152
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]

@@ -142,6 +142,7 @@ class DotCacheConfig:
     execution_value_escape_old_only: bool = False
     execution_value_escape_top_k: int = 0
     execution_value_escape_prewarm: bool = False
+    execution_value_escape_prewarm_min_context: int = 0
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"

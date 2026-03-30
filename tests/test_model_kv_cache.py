@@ -1076,6 +1076,61 @@ def test_model_paged_kv_cache_execution_value_escape_prewarm_builds_before_decod
     assert summary["execution_value_escape_cache_hits"] == 2
 
 
+def test_model_paged_kv_cache_execution_value_escape_prewarm_respects_min_context() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_prewarm=True,
+        execution_value_escape_prewarm_min_context=16,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    state = cache._state(0, 0)
+    state.sequence_length = 8
+    rng = np.random.default_rng(31025)
+    for page_index in range(2):
+        token_start = page_index * config.tokens_per_page
+        dense_values = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        value_page = encode_page(
+            dense_values,
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values,
+            escape_mode="M3",
+        )
+        state.session.value_pages.append(value_page)
+
+    cache._maybe_prewarm_execution_value_escape_pages(state)
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 0
+    assert summary["execution_value_escape_prewarm_pages"] == 0
+    assert summary["execution_value_escape_prepared_page_builds"] == 0
+
+    state.sequence_length = 16
+    cache._maybe_prewarm_execution_value_escape_pages(state)
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 1
+    assert summary["execution_value_escape_prewarm_pages"] == 2
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+
+
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
     if not mps_available():
         return

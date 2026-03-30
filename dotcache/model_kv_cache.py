@@ -1561,6 +1561,7 @@ class ModelPagedKVCache:
             "execution_value_escape_old_only": bool(self.config.execution_value_escape_old_only),
             "execution_value_escape_top_k": int(self.config.execution_value_escape_top_k),
             "execution_value_escape_prewarm": bool(self.config.execution_value_escape_prewarm),
+            "execution_value_escape_prewarm_min_context": int(self.config.execution_value_escape_prewarm_min_context),
             "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
             "execution_value_escape_source_registrations": int(self._execution_value_escape_source_registrations),
             "execution_value_escape_prepared_page_builds": int(self._execution_value_escape_prepared_page_builds),
@@ -1682,6 +1683,9 @@ class ModelPagedKVCache:
             return
         layer_id = int(state.tail.layer_id)
         if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            return
+        min_context = max(0, int(self.config.execution_value_escape_prewarm_min_context))
+        if min_context > 0 and int(state.sequence_length) < min_context:
             return
         if bool(self.config.execution_value_escape_old_only) or int(self.config.execution_value_escape_top_k) > 0:
             return
