@@ -1306,6 +1306,9 @@ class ModelPagedKVCache:
         self._execution_value_escape_cache_hits = 0
         self._execution_value_escape_source_registrations = 0
         self._execution_value_escape_prepared_page_builds = 0
+        self._execution_value_escape_prewarm_invocations = 0
+        self._execution_value_escape_prewarm_pages = 0
+        self._execution_value_escape_prewarm_ms_total = 0.0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
@@ -1432,6 +1435,9 @@ class ModelPagedKVCache:
         self._execution_value_escape_cache_hits = 0
         self._execution_value_escape_source_registrations = 0
         self._execution_value_escape_prepared_page_builds = 0
+        self._execution_value_escape_prewarm_invocations = 0
+        self._execution_value_escape_prewarm_pages = 0
+        self._execution_value_escape_prewarm_ms_total = 0.0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
 
@@ -1554,9 +1560,13 @@ class ModelPagedKVCache:
             "execution_value_escape_mode": str(self.config.execution_value_escape_mode),
             "execution_value_escape_old_only": bool(self.config.execution_value_escape_old_only),
             "execution_value_escape_top_k": int(self.config.execution_value_escape_top_k),
+            "execution_value_escape_prewarm": bool(self.config.execution_value_escape_prewarm),
             "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
             "execution_value_escape_source_registrations": int(self._execution_value_escape_source_registrations),
             "execution_value_escape_prepared_page_builds": int(self._execution_value_escape_prepared_page_builds),
+            "execution_value_escape_prewarm_invocations": int(self._execution_value_escape_prewarm_invocations),
+            "execution_value_escape_prewarm_pages": int(self._execution_value_escape_prewarm_pages),
+            "execution_value_escape_prewarm_ms_total": float(self._execution_value_escape_prewarm_ms_total),
             "execution_value_escape_builds": int(self._execution_value_escape_builds),
             "execution_value_escape_applied_pages": int(self._execution_value_escape_applied_pages),
         }
@@ -1661,6 +1671,39 @@ class ModelPagedKVCache:
         self._execution_value_escape_prepared_page_builds += 1
         self._execution_value_escape_builds += 1
         return prepared_escape_page
+
+    def _maybe_prewarm_execution_value_escape_pages(
+        self,
+        state: _HeadSessionState,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        if not bool(self.config.execution_value_escape_prewarm):
+            return
+        layer_id = int(state.tail.layer_id)
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            return
+        if bool(self.config.execution_value_escape_old_only) or int(self.config.execution_value_escape_top_k) > 0:
+            return
+        if not state.session.value_pages:
+            return
+        started_at = perf_counter()
+        prewarmed_pages = 0
+        escape_mode = str(self.config.execution_value_escape_mode)
+        for page in state.session.value_pages:
+            source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+            if str(source_page.header.kind) != "V":
+                continue
+            if str(source_page.header.mode_default) == escape_mode:
+                continue
+            prepared_page = self._prepare_execution_value_escape_page(page, escape_mode=escape_mode, trace=trace)
+            if prepared_page is not page:
+                prewarmed_pages += 1
+        if prewarmed_pages <= 0:
+            return
+        self._execution_value_escape_prewarm_invocations += 1
+        self._execution_value_escape_prewarm_pages += int(prewarmed_pages)
+        self._execution_value_escape_prewarm_ms_total += float((perf_counter() - started_at) * 1000.0)
 
     def _apply_execution_value_escape(
         self,
@@ -3174,6 +3217,7 @@ class ModelPagedKVCache:
             self._mark_prepared_chunk_cache_budget_dirty(reason="prepare_static_pages")
         for state in self._states.values():
             self._maybe_prewarm_execution_builtin_selector_cache(state)
+            self._maybe_prewarm_execution_value_escape_pages(state, trace=trace)
 
     def _ensure_prepared_static_pages(
         self,
@@ -3206,6 +3250,7 @@ class ModelPagedKVCache:
             self._refresh_state_resident_accounting(state)
             self._mark_prepared_chunk_cache_budget_dirty(reason="ensure_prepared_static_pages")
         self._maybe_prewarm_execution_builtin_selector_cache(state)
+        self._maybe_prewarm_execution_value_escape_pages(state, trace=trace)
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:

@@ -1021,6 +1021,61 @@ def test_model_paged_kv_cache_execution_value_escape_top_k_uses_relevance_rankin
     assert escaped_modes == ["M0", "M3", "M0", "M3"]
 
 
+def test_model_paged_kv_cache_execution_value_escape_prewarm_builds_before_decode() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_prewarm=True,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31024)
+    dense_values = rng.normal(size=(8, config.head_dim)).astype(np.float32)
+    for page_index in range(2):
+        token_start = page_index * config.tokens_per_page
+        value_page = encode_page(
+            dense_values[token_start : token_start + config.tokens_per_page],
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values[token_start : token_start + config.tokens_per_page],
+            escape_mode="M3",
+        )
+        cache._state(0, 0).session.value_pages.append(value_page)
+
+    cache._maybe_prewarm_execution_value_escape_pages(cache._state(0, 0))
+    summary = cache.execution_value_escape_summary()
+
+    assert summary["execution_value_escape_prewarm"] is True
+    assert summary["execution_value_escape_prewarm_invocations"] == 1
+    assert summary["execution_value_escape_prewarm_pages"] == 2
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+    assert summary["execution_value_escape_cache_hits"] == 0
+
+    cache._maybe_prewarm_execution_value_escape_pages(cache._state(0, 0))
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 2
+    assert summary["execution_value_escape_prewarm_pages"] == 4
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+    assert summary["execution_value_escape_cache_hits"] == 2
+
+
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
     if not mps_available():
         return
