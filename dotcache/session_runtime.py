@@ -249,7 +249,7 @@ def select_execution_page_indices(
         first_index = int(direct_candidate_indices[0])
         last_index = int(direct_candidate_indices[-1])
         if last_index - first_index + 1 == len(direct_candidate_indices):
-            return np.asarray(matrix[first_index : last_index + 1], dtype=np.float32)
+            return np.ascontiguousarray(matrix[first_index : last_index + 1], dtype=np.float32)
         return np.take(matrix, direct_candidate_indices, axis=0).astype(np.float32, copy=False)
 
     if not key_pages:
