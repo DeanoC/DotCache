@@ -3551,3 +3551,41 @@ I also separated the escape telemetry so the branch can report something more pr
 - applied escaped pages
 
 Those counters now flow into the step breakdown as well, which should make it easier to judge whether a future larger-model transfer run is paying mostly for one-time setup, prepared-page construction, or per-step applied-page churn.
+
+## 2026-03-30 19:15 UTC - Value escape transfers across models, but the sensitive layer does not
+
+The first larger-model sanity check on `Qwen/Qwen3.5-4B` gave the answer we needed.
+
+The mechanism does transfer, but the exact layer does not:
+
+- provisional `layer 23` on `4B` was neutral-to-slightly harmful
+- a cheap layer scan at `16384` pointed to earlier candidates, with `19` strongest and `7` second
+- the `32768` follow-up changed the ranking again and made `layer 7` the clear winner
+
+That means the honest cross-model read is:
+
+- full selected-page `V` escape is a real mechanism
+- the fragile value-sensitive layer is model-specific
+- and it can also be context-sensitive inside the same model
+
+The strongest `4B` result so far is:
+
+- `Qwen/Qwen3.5-4B @ 32768`, `approx_shortlist`, `layer 7`
+  - mean abs `0.4656 -> 0.3654`
+  - RMSE `0.6312 -> 0.4738`
+  - decode `679.59 -> 670.89 ms/step`
+
+while `layer 19` was slightly harmful at that same context.
+
+So the branch should now describe the value-escape strategy this way:
+
+- `0.8B`: `layer 23` was the right value-side rescue target on the tested prompt family
+- `4B`: the same mechanism transfers, but `layer 7` looks like the better `32768` rescue target than `23`
+
+This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
+
+- scan the candidate full-attention layers
+- identify the fragile value-sensitive layer for that model/context regime
+- then apply the same selected-page `V` escape mechanism there
+
+I also added [run_qwen35_value_escape_layer_scan.py](/workspace/DotCache/scripts/run_qwen35_value_escape_layer_scan.py) so this retuning step is now a first-class benchmark flow rather than an ad hoc pile of one-off commands.
