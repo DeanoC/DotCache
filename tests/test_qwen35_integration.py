@@ -1534,6 +1534,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "bench_qwen35_attention_subset_dotcache_serving.py",
             "--profile-backend",
             "--trace-python-allocations",
+            "--blas-num-threads",
+            "1",
             "--tokens-per-page",
             "8",
             "--execution-recent-window",
@@ -1611,6 +1613,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     serving_args = serving_bench.parse_args()
     assert serving_args.profile_backend is True
     assert serving_args.trace_python_allocations is True
+    assert serving_args.blas_num_threads == 1
     assert serving_args.tokens_per_page == 8
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16

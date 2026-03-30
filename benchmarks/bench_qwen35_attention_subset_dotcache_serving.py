@@ -2,14 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-
-import torch
-from transformers import AutoConfig
-
-from dotcache.config import DotCacheConfig
-from dotcache.config_io import load_layer_profile
-from dotcache.integrations.llama import resolve_hf_auth_kwargs
-from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
+import os
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,6 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--trace-python-allocations", action="store_true")
+    parser.add_argument("--blas-num-threads", type=int, default=0)
     parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--recall-analysis", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
@@ -105,11 +99,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def _build_exact_length_inputs(
-    harness: Qwen35AttentionSubsetDotCacheHarness,
+    harness,
     *,
     prompt_unit: str,
     prompt_length: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+):
+    import torch
+
     if harness.tokenizer is None:
         raise ValueError("tokenizer is unavailable for exact-length prompt construction")
     if prompt_length <= 0:
@@ -134,10 +130,10 @@ def _build_exact_length_inputs(
 
 
 def _run_case(
-    harness: Qwen35AttentionSubsetDotCacheHarness,
+    harness,
     *,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
+    input_ids,
+    attention_mask,
     max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
@@ -271,6 +267,8 @@ def _run_case(
 
 
 def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
+    from dotcache.config_io import load_layer_profile
+
     if args.layer_profile is None:
         return
     profile = load_layer_profile(args.layer_profile)
@@ -329,6 +327,8 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
 
 
 def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCacheConfig:
+    from dotcache.config import DotCacheConfig
+
     return DotCacheConfig(
         head_dim=head_dim,
         group_size=args.group_size,
@@ -498,11 +498,26 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "hybrid_family": "qwen3_5",
         "profile_backend": bool(args.profile_backend),
         "trace_python_allocations": bool(args.trace_python_allocations),
+        "blas_num_threads": int(args.blas_num_threads),
     }
 
 
 def main() -> None:
     args = parse_args()
+    if int(args.blas_num_threads) > 0:
+        thread_count = str(int(args.blas_num_threads))
+        os.environ["OMP_NUM_THREADS"] = thread_count
+        os.environ["OPENBLAS_NUM_THREADS"] = thread_count
+        os.environ["MKL_NUM_THREADS"] = thread_count
+
+    import torch
+    from transformers import AutoConfig
+
+    from dotcache.config import DotCacheConfig
+    from dotcache.config_io import load_layer_profile
+    from dotcache.integrations.llama import resolve_hf_auth_kwargs
+    from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
+
     if not transformers_available():
         raise SystemExit("bench_qwen35_attention_subset_dotcache_serving.py requires the optional transformers dependencies")
 
