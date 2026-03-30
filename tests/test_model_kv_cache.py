@@ -882,6 +882,75 @@ def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> 
     assert summary["execution_value_escape_cache_hits"] == 2
 
 
+def test_model_paged_kv_cache_execution_value_escape_old_only_skips_sink_and_recent_pages() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_old_only=True,
+        execution_recent_window=4,
+        execution_sink_window=4,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31023)
+    key_pages: list = []
+    value_pages: list = []
+    for page_index in range(5):
+        token_start = page_index * config.tokens_per_page
+        dense_keys = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        dense_values = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        key_pages.append(
+            encode_page(
+                dense_keys,
+                config,
+                kind="K",
+                layer_id=0,
+                kv_head_id=0,
+                token_start=token_start,
+                mode="M0",
+            )
+        )
+        value_page = encode_page(
+            dense_values,
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values,
+            escape_mode="M3",
+        )
+        value_pages.append(value_page)
+
+    escaped_groups, any_applied = cache._apply_execution_value_escape(
+        layer_id=0,
+        key_pages_by_group=[key_pages],
+        value_pages_by_group=[value_pages],
+        context_lengths_by_group=[len(key_pages) * config.tokens_per_page],
+    )
+
+    assert any_applied is True
+    escaped_pages = list(escaped_groups[0])
+    escaped_modes = [page.header.mode_default for page in escaped_pages]
+    assert escaped_modes == ["M0", "M3", "M3", "M3", "M0"]
+    assert escaped_pages[0] is value_pages[0]
+    assert escaped_pages[-1] is value_pages[-1]
+
+
 def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
     if not mps_available():
         return

@@ -1789,7 +1789,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
             "--selector-modes",
             "layer23_full_context",
             "--kv-modes",
-            "m0_v_escape",
+            "m0_v_escape_old",
             "--quality-check",
             "--blas-num-threads",
             "1",
@@ -1798,7 +1798,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
     args = script_module.parse_args()
     assert args.contexts == [32768]
     assert args.selector_modes == ["layer23_full_context"]
-    assert args.kv_modes == ["m0_v_escape"]
+    assert args.kv_modes == ["m0_v_escape_old"]
     assert args.quality_check is True
     assert args.blas_num_threads == 1
 
@@ -1806,7 +1806,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
         args,
         context=32768,
         selector_mode="layer23_full_context",
-        kv_mode="m0_v_escape",
+        kv_mode="m0_v_escape_old",
     )
     assert "--execution-full-context-layer" in command
     assert "23" in command
@@ -1814,6 +1814,7 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
     assert "layer:23=M0" in command
     assert "--execution-value-escape-layer" in command
     assert "--execution-value-escape-mode" in command
+    assert "--execution-value-escape-old-only" in command
     assert "M3" in command
     assert "--blas-num-threads" in command
     assert "1" in command

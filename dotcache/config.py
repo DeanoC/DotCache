@@ -139,6 +139,7 @@ class DotCacheConfig:
     execution_builtin_selector_score_all_pages_min_candidate_fraction: float = 0.0
     execution_value_escape_layers: tuple[int, ...] = ()
     execution_value_escape_mode: str = "M3"
+    execution_value_escape_old_only: bool = False
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"

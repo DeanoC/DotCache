@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-builtin-selector-score-all-pages-min-candidate-fraction", type=float, default=0.0)
     parser.add_argument("--execution-value-escape-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-value-escape-mode", choices=["M0", "M1", "M3", "T3"], default="M3")
+    parser.add_argument("--execution-value-escape-old-only", action="store_true")
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -247,6 +248,7 @@ def _run_case(
                     ),
                     "execution_value_escape_layers": list(effective_config.execution_value_escape_layers),
                     "execution_value_escape_mode": str(effective_config.execution_value_escape_mode),
+                    "execution_value_escape_old_only": bool(effective_config.execution_value_escape_old_only),
                     "execution_relevance_mode": str(effective_config.execution_relevance_mode),
                     "serving_shortlist_heuristic_applied": bool(
                         getattr(getattr(harness, "adapter", None), "serving_shortlist_heuristic_applied", False)
@@ -392,6 +394,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         ),
         execution_value_escape_layers=tuple(args.execution_value_escape_layer),
         execution_value_escape_mode=args.execution_value_escape_mode,
+        execution_value_escape_old_only=args.execution_value_escape_old_only,
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -482,6 +485,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         ),
         "execution_value_escape_layers": list(args.execution_value_escape_layer),
         "execution_value_escape_mode": args.execution_value_escape_mode,
+        "execution_value_escape_old_only": bool(args.execution_value_escape_old_only),
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
         "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,
