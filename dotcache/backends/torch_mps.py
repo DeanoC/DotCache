@@ -1020,6 +1020,10 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
     header = source_page.header
     if header.layout != "group_major":
         return False
+    if int(header.group_size) <= 0 or int(header.num_groups) <= 0:
+        return False
+    if int(header.group_size) * int(header.num_groups) != int(header.padded_head_dim):
+        return False
     if header.mode_default == "M3":
         if source_page.escape_payload is None:
             return False
@@ -1051,8 +1055,7 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
             and source_page.codebooks is not None
         )
     return (
-        header.group_size in (32, 64)
-        and source_page.payload is not None
+        source_page.payload is not None
         and (
             (
                 header.mode_default == "M0"

@@ -146,6 +146,7 @@ def _configure_qwen35_linear_attention_runtime(model_or_config: Any) -> None:
         linear_attn = getattr(layers[layer_id], "linear_attn", None)
         if linear_attn is None:
             continue
+        _maybe_wrap_qwen35_rocm_float32_fast_path(linear_attn)
         if use_cuda_fast_path:
             continue
         linear_attn.causal_conv1d_fn = None
@@ -161,6 +162,31 @@ def _configure_qwen35_linear_attention_runtime(model_or_config: Any) -> None:
                 fallback_norm.weight.data.copy_(linear_attn.norm.weight.detach().to(dtype=fallback_norm.weight.dtype))
             fallback_norm = fallback_norm.to(device=linear_attn.out_proj.weight.device)
             linear_attn.norm = fallback_norm
+
+
+def _maybe_wrap_qwen35_rocm_float32_fast_path(linear_attn: Any) -> None:
+    if torch is None or not bool(getattr(torch.version, "hip", None)):
+        return
+    for attr_name in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule"):
+        kernel = getattr(linear_attn, attr_name, None)
+        if kernel is None or getattr(kernel, "_dotcache_rocm_float32_fast_path_wrapped", False):
+            continue
+
+        def _wrapped(q, k, v, *args, _kernel=kernel, **kwargs):
+            input_dtype = q.dtype
+            if input_dtype == torch.float32:
+                out, state = _kernel(
+                    q.to(torch.float16),
+                    k.to(torch.float16),
+                    v.to(torch.float16),
+                    *args,
+                    **kwargs,
+                )
+                return out.to(input_dtype), state
+            return _kernel(q, k, v, *args, **kwargs)
+
+        setattr(_wrapped, "_dotcache_rocm_float32_fast_path_wrapped", True)
+        setattr(linear_attn, attr_name, _wrapped)
 
 
 def _hybrid_layer_records(model_or_config: Any) -> list[dict[str, Any]]:

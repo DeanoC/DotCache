@@ -214,6 +214,26 @@ def test_model_paged_kv_cache_recent_policy_can_decode_m3_int8_pages_on_cuda() -
 
 
 @requires_cuda
+def test_group_size16_pages_decode_on_cuda_matches_cpu_reference() -> None:
+    rng = np.random.default_rng(90315)
+    config = DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2)
+    context_length = 4
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+
+    key_pages = _encode_paged(keys, config, kind="K")
+    value_pages = _encode_paged(values, config, kind="V")
+
+    cpu_logits, cpu_weights, cpu_output = decode_step(query, key_pages, value_pages, backend="cpu_ref")
+    cuda_logits, cuda_weights, cuda_output = decode_step(query, key_pages, value_pages, backend="torch_cuda")
+
+    np.testing.assert_allclose(cuda_logits, cpu_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(cuda_weights, cpu_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(cuda_output, cpu_output, atol=1e-4, rtol=1e-4)
+
+
+@requires_cuda
 def test_model_paged_kv_cache_segmented_m2_keys_decode_on_cuda() -> None:
     rng = np.random.default_rng(9032)
     config = DotCacheConfig(

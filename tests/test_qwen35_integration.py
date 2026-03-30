@@ -40,6 +40,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
+    _configure_qwen35_linear_attention_runtime,
     _qwen35_mps_serving_shortlist_heuristic,
 )
 from dotcache.model_kv_cache import ModelPagedKVCache
@@ -113,6 +114,74 @@ def _tiny_deltanet_qwen35_model() -> Qwen3_5ForConditionalGeneration:
         },
     )
     return Qwen3_5ForConditionalGeneration(config).eval()
+
+
+def test_qwen35_rocm_fast_path_wrapper_downcasts_float32_qkv(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeLinearAttn:
+        def __init__(self) -> None:
+            self.chunk_seen_dtypes: list[torch.dtype] = []
+            self.recur_seen_dtypes: list[torch.dtype] = []
+
+            def _chunk(q, k, v, *args, **kwargs):
+                self.chunk_seen_dtypes.append(q.dtype)
+                return q + k + v, q
+
+            def _recur(q, k, v, *args, **kwargs):
+                self.recur_seen_dtypes.append(q.dtype)
+                return q + k + v, q
+
+            self.chunk_gated_delta_rule = _chunk
+            self.recurrent_gated_delta_rule = _recur
+
+    class _FakeLayer:
+        def __init__(self) -> None:
+            self.linear_attn = _FakeLinearAttn()
+
+    class _FakeLanguageModel:
+        def __init__(self) -> None:
+            self.layers = [_FakeLayer()]
+
+    class _FakeRootModel:
+        def __init__(self) -> None:
+            self.language_model = _FakeLanguageModel()
+
+        def parameters(self):
+            yield _FakeParam()
+
+    class _FakeTextConfig:
+        layer_types = ["linear_attention"]
+
+    class _FakeConfig:
+        def __init__(self) -> None:
+            self.text_config = _FakeTextConfig()
+
+    class _FakeParam:
+        device = torch.device("cuda")
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.model = _FakeRootModel()
+            self.config = _FakeConfig()
+
+    fake_model = _FakeModel()
+    monkeypatch.setattr(torch.version, "hip", "7.1", raising=False)
+
+    _configure_qwen35_linear_attention_runtime(fake_model)
+
+    linear_attn = fake_model.model.language_model.layers[0].linear_attn
+    q = torch.randn(1, 2, 3, 4, dtype=torch.float32)
+    k = torch.randn(1, 2, 3, 4, dtype=torch.float32)
+    v = torch.randn(1, 2, 3, 4, dtype=torch.float32)
+
+    out_chunk, state_chunk = linear_attn.chunk_gated_delta_rule(q, k, v)
+    out_recur, state_recur = linear_attn.recurrent_gated_delta_rule(q, k, v)
+
+    assert linear_attn.chunk_seen_dtypes == [torch.float16]
+    assert linear_attn.recur_seen_dtypes == [torch.float16]
+    assert out_chunk.dtype == torch.float32
+    assert out_recur.dtype == torch.float32
+    assert state_chunk.dtype == torch.float16
+    assert state_recur.dtype == torch.float16
 
 
 def test_qwen35_adapter_rejects_dotcache_mode() -> None:
