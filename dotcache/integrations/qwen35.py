@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import gc
 import math
 import numpy as np
+import sys
+import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -2307,6 +2310,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         attention_mask=None,
         decode_steps: int = 4,
         profile_backend: bool = False,
+        trace_python_allocations: bool = False,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_quality_harness(
@@ -2318,6 +2322,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
             profile_backend=profile_backend,
+            trace_python_allocations=trace_python_allocations,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -2351,6 +2356,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         attention_mask=None,
         decode_steps: int = 4,
         profile_backend: bool = False,
+        trace_python_allocations: bool = False,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
@@ -2362,6 +2368,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
             profile_backend=profile_backend,
+            trace_python_allocations=trace_python_allocations,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -5584,8 +5591,31 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         ),
         "execution_recent_neighbor_rescue_layers": list(adapter.dotcache_config.execution_recent_neighbor_rescue_layers),
         "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+        "execution_exact_promote_min_margin_threshold": float(
+            adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+        ),
+        "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
         "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
         "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+        "execution_exact_promote_union_rescue_top_k": int(
+            adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+        ),
+        "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+        "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+        "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+        "execution_freeze_chunk_budget_during_decode": bool(
+            adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+        ),
+        "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+        "execution_builtin_selector_score_all_pages": bool(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages
+        ),
+        "execution_builtin_selector_candidate_only": bool(
+            adapter.dotcache_config.execution_builtin_selector_candidate_only
+        ),
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -5598,10 +5628,376 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
     return result
+
+
+_BACKEND_TRACE_TIMING_KEYS = (
+    "prepare_ms_total",
+    "score_ms_total",
+    "mix_ms_total",
+    "softmax_ms_total",
+    "unpack_ms_total",
+    "fwht_ms_total",
+    "chunk_assembly_ms_total",
+)
+
+_MODEL_KV_CACHE_DECODE_STAGE_KEYS = (
+    "execution_decode_prepare_pages_with_tail_ms_total",
+    "execution_decode_prepare_layout_build_ms_total",
+    "execution_decode_m2_prefilter_ms_total",
+    "execution_decode_query_export_ms_total",
+    "execution_decode_shortlist_selection_ms_total",
+    "execution_decode_shortlist_base_window_ms_total",
+    "execution_decode_shortlist_candidate_scoring_ms_total",
+    "execution_decode_shortlist_candidate_approx_scoring_ms_total",
+    "execution_decode_shortlist_candidate_ranking_ms_total",
+    "execution_decode_shortlist_candidate_secondary_scoring_ms_total",
+    "execution_decode_shortlist_candidate_neighbor_rescue_ms_total",
+    "execution_decode_shortlist_candidate_builtin_selection_ms_total",
+    "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total",
+    "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total",
+    "execution_decode_shortlist_candidate_builtin_score_compute_ms_total",
+    "execution_decode_shortlist_candidate_builtin_ranking_ms_total",
+    "execution_decode_shortlist_exact_selection_ms_total",
+    "execution_decode_shortlist_union_rescue_ms_total",
+    "execution_decode_shortlist_materialization_ms_total",
+    "execution_decode_grouping_validation_ms_total",
+    "execution_decode_chunk_budget_sync_ms_total",
+    "execution_decode_backend_call_wall_ms_total",
+    "execution_decode_backend_call_non_backend_ms_total",
+)
+
+_MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS = (
+    "execution_chunk_budget_dirty_marks",
+    "execution_chunk_budget_dirty_transitions",
+    "execution_chunk_budget_sync_invocations",
+    "execution_chunk_budget_sync_clean_skips",
+    "execution_chunk_budget_sync_dirty_invocations",
+    "execution_chunk_budget_override_calls",
+    "execution_chunk_budget_override_budget_change_calls",
+    "execution_chunk_budget_override_same_budget_calls",
+    "execution_chunk_budget_freeze_override_calls",
+)
+
+_MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS = (
+    "execution_builtin_selector_score_all_pages_calls",
+    "execution_builtin_selector_candidate_only_calls",
+    "execution_builtin_selector_candidate_pages",
+    "execution_builtin_selector_total_pages",
+    "execution_builtin_selector_candidate_fraction_sum",
+    "execution_builtin_selector_candidate_fraction_max",
+    "execution_builtin_selector_cache_hits",
+    "execution_builtin_selector_cache_builds",
+    "execution_builtin_selector_cache_build_bytes",
+    "execution_builtin_selector_cache_build_bytes_max",
+)
+
+_MODEL_KV_CACHE_VALUE_ESCAPE_COUNTER_KEYS = (
+    "execution_value_escape_cache_hits",
+    "execution_value_escape_source_registrations",
+    "execution_value_escape_prepared_page_builds",
+    "execution_value_escape_builds",
+    "execution_value_escape_applied_pages",
+)
+
+
+def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
+    snapshot = {
+        "qkv_projection_ms_total": float(adapter.qkv_projection_ms_total),
+        "append_runtime_ms_total": float(adapter.append_runtime_ms_total),
+        "decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
+        "output_projection_ms_total": float(adapter.output_projection_ms_total),
+    }
+    snapshot.update(adapter.model_kv_cache.decode_stage_runtime_totals())
+    chunk_budget_summary = adapter.model_kv_cache.chunk_budget_summary()
+    snapshot.update(
+        {
+            key: float(chunk_budget_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS
+        }
+    )
+    builtin_selector_summary = adapter.model_kv_cache.builtin_selector_summary()
+    snapshot.update(
+        {
+            key: float(builtin_selector_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS
+        }
+    )
+    value_escape_summary = adapter.model_kv_cache.execution_value_escape_summary()
+    snapshot.update(
+        {
+            key: float(value_escape_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_VALUE_ESCAPE_COUNTER_KEYS
+        }
+    )
+    return snapshot
+
+
+def _chunk_budget_reason_counts_snapshot(
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+) -> dict[str, int]:
+    return dict(
+        adapter.model_kv_cache.chunk_budget_summary().get("execution_chunk_budget_dirty_reason_counts", {})
+    )
+
+
+def _backend_trace_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, int | float]:
+    return dict(adapter.decode_backend_trace.to_dict())
+
+
+def _ensure_python_allocation_tracing(enabled: bool) -> bool:
+    if not enabled or tracemalloc.is_tracing():
+        return False
+    tracemalloc.start()
+    return True
+
+
+def _python_allocation_snapshot(enabled: bool) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    allocated_blocks_getter = getattr(sys, "getallocatedblocks", None)
+    allocated_blocks = int(allocated_blocks_getter()) if callable(allocated_blocks_getter) else 0
+    gc_counts = gc.get_count()
+    return {
+        "current_bytes": int(current_bytes),
+        "peak_bytes": int(peak_bytes),
+        "allocated_blocks": int(allocated_blocks),
+        "gc_counts": [int(gc_counts[0]), int(gc_counts[1]), int(gc_counts[2])],
+    }
+
+
+def _numeric_delta_dict(
+    before: dict[str, int | float],
+    after: dict[str, int | float],
+) -> dict[str, int | float]:
+    delta: dict[str, int | float] = {}
+    for key, after_value in after.items():
+        before_value = before.get(key, 0)
+        if isinstance(after_value, float) or isinstance(before_value, float):
+            delta[key] = float(after_value) - float(before_value)
+        else:
+            delta[key] = int(after_value) - int(before_value)
+    return delta
+
+
+def _reason_count_delta(
+    before: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, int]:
+    keys = sorted(set(before) | set(after))
+    return {
+        key: int(after.get(key, 0)) - int(before.get(key, 0))
+        for key in keys
+        if int(after.get(key, 0)) - int(before.get(key, 0)) != 0
+    }
+
+
+def _summarize_step_runtime_breakdown(
+    *,
+    step_index: int,
+    step_ms: float,
+    adapter_before: dict[str, float],
+    adapter_after: dict[str, float],
+    chunk_budget_reason_counts_before: dict[str, int],
+    chunk_budget_reason_counts_after: dict[str, int],
+    trace_before: dict[str, int | float],
+    trace_after: dict[str, int | float],
+    python_before: dict[str, Any] | None = None,
+    python_after: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    adapter_delta = {key: float(value) for key, value in _numeric_delta_dict(adapter_before, adapter_after).items()}
+    trace_delta = _numeric_delta_dict(trace_before, trace_after)
+    chunk_budget_reason_delta = _reason_count_delta(
+        chunk_budget_reason_counts_before,
+        chunk_budget_reason_counts_after,
+    )
+    python_current_bytes_delta = 0
+    python_peak_bytes = 0
+    python_allocated_blocks_delta = 0
+    python_gc_count_delta = [0, 0, 0]
+    if python_before is not None and python_after is not None:
+        python_current_bytes_delta = int(python_after["current_bytes"]) - int(python_before["current_bytes"])
+        python_peak_bytes = int(python_after["peak_bytes"])
+        python_allocated_blocks_delta = int(python_after["allocated_blocks"]) - int(python_before["allocated_blocks"])
+        python_gc_count_delta = [
+            int(after_count) - int(before_count)
+            for before_count, after_count in zip(
+                python_before["gc_counts"],
+                python_after["gc_counts"],
+                strict=True,
+            )
+        ]
+    backend_ms_total = float(sum(float(trace_delta.get(key, 0.0)) for key in _BACKEND_TRACE_TIMING_KEYS))
+    decode_runtime_ms = float(adapter_delta["decode_runtime_ms_total"])
+    accounted_model_ms = float(
+        adapter_delta["qkv_projection_ms_total"]
+        + adapter_delta["append_runtime_ms_total"]
+        + decode_runtime_ms
+        + adapter_delta["output_projection_ms_total"]
+    )
+    stage_totals = {
+        key: float(adapter_delta.get(key, 0.0))
+        for key in _MODEL_KV_CACHE_DECODE_STAGE_KEYS
+    }
+    decode_non_backend_ms_total = float(decode_runtime_ms - backend_ms_total)
+    decode_pre_backend_ms_total = float(
+        stage_totals["execution_decode_prepare_pages_with_tail_ms_total"]
+        + stage_totals["execution_decode_m2_prefilter_ms_total"]
+        + stage_totals["execution_decode_query_export_ms_total"]
+        + stage_totals["execution_decode_shortlist_selection_ms_total"]
+        + stage_totals["execution_decode_shortlist_union_rescue_ms_total"]
+        + stage_totals["execution_decode_shortlist_materialization_ms_total"]
+        + stage_totals["execution_decode_grouping_validation_ms_total"]
+        + stage_totals["execution_decode_chunk_budget_sync_ms_total"]
+    )
+    return {
+        "step_index": int(step_index),
+        "step_ms_total": float(step_ms),
+        "qkv_projection_ms_total": float(adapter_delta["qkv_projection_ms_total"]),
+        "append_runtime_ms_total": float(adapter_delta["append_runtime_ms_total"]),
+        "decode_runtime_ms_total": decode_runtime_ms,
+        "output_projection_ms_total": float(adapter_delta["output_projection_ms_total"]),
+        "backend_prepare_ms_total": float(trace_delta.get("prepare_ms_total", 0.0)),
+        "backend_score_ms_total": float(trace_delta.get("score_ms_total", 0.0)),
+        "backend_mix_ms_total": float(trace_delta.get("mix_ms_total", 0.0)),
+        "backend_softmax_ms_total": float(trace_delta.get("softmax_ms_total", 0.0)),
+        "backend_unpack_ms_total": float(trace_delta.get("unpack_ms_total", 0.0)),
+        "backend_fwht_ms_total": float(trace_delta.get("fwht_ms_total", 0.0)),
+        "backend_chunk_assembly_ms_total": float(trace_delta.get("chunk_assembly_ms_total", 0.0)),
+        "backend_decode_ms_total": backend_ms_total,
+        "decode_non_backend_ms_total": decode_non_backend_ms_total,
+        "decode_prepare_pages_with_tail_ms_total": stage_totals["execution_decode_prepare_pages_with_tail_ms_total"],
+        "decode_prepare_layout_build_ms_total": stage_totals["execution_decode_prepare_layout_build_ms_total"],
+        "decode_m2_prefilter_ms_total": stage_totals["execution_decode_m2_prefilter_ms_total"],
+        "decode_query_export_ms_total": stage_totals["execution_decode_query_export_ms_total"],
+        "decode_shortlist_selection_ms_total": stage_totals["execution_decode_shortlist_selection_ms_total"],
+        "decode_shortlist_base_window_ms_total": stage_totals["execution_decode_shortlist_base_window_ms_total"],
+        "decode_shortlist_candidate_scoring_ms_total": stage_totals["execution_decode_shortlist_candidate_scoring_ms_total"],
+        "decode_shortlist_candidate_approx_scoring_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_approx_scoring_ms_total"
+        ],
+        "decode_shortlist_candidate_ranking_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_ranking_ms_total"
+        ],
+        "decode_shortlist_candidate_secondary_scoring_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_secondary_scoring_ms_total"
+        ],
+        "decode_shortlist_candidate_neighbor_rescue_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_neighbor_rescue_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_selection_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_selection_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_candidate_index_build_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_sidecar_stack_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_score_compute_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_score_compute_ms_total"
+        ],
+        "decode_shortlist_candidate_builtin_ranking_ms_total": stage_totals[
+            "execution_decode_shortlist_candidate_builtin_ranking_ms_total"
+        ],
+        "decode_shortlist_exact_selection_ms_total": stage_totals["execution_decode_shortlist_exact_selection_ms_total"],
+        "decode_shortlist_union_rescue_ms_total": stage_totals["execution_decode_shortlist_union_rescue_ms_total"],
+        "decode_shortlist_materialization_ms_total": stage_totals["execution_decode_shortlist_materialization_ms_total"],
+        "decode_grouping_validation_ms_total": stage_totals["execution_decode_grouping_validation_ms_total"],
+        "decode_chunk_budget_sync_ms_total": stage_totals["execution_decode_chunk_budget_sync_ms_total"],
+        "decode_chunk_budget_dirty_marks": int(adapter_delta.get("execution_chunk_budget_dirty_marks", 0.0)),
+        "decode_chunk_budget_dirty_transitions": int(
+            adapter_delta.get("execution_chunk_budget_dirty_transitions", 0.0)
+        ),
+        "decode_chunk_budget_dirty_reason_counts": chunk_budget_reason_delta,
+        "decode_chunk_budget_sync_invocations": int(
+            adapter_delta.get("execution_chunk_budget_sync_invocations", 0.0)
+        ),
+        "decode_chunk_budget_sync_clean_skips": int(
+            adapter_delta.get("execution_chunk_budget_sync_clean_skips", 0.0)
+        ),
+        "decode_chunk_budget_sync_dirty_invocations": int(
+            adapter_delta.get("execution_chunk_budget_sync_dirty_invocations", 0.0)
+        ),
+        "decode_chunk_budget_override_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_calls", 0.0)
+        ),
+        "decode_chunk_budget_override_budget_change_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_budget_change_calls", 0.0)
+        ),
+        "decode_chunk_budget_override_same_budget_calls": int(
+            adapter_delta.get("execution_chunk_budget_override_same_budget_calls", 0.0)
+        ),
+        "decode_chunk_budget_freeze_override_calls": int(
+            adapter_delta.get("execution_chunk_budget_freeze_override_calls", 0.0)
+        ),
+        "decode_builtin_selector_score_all_pages_calls": int(
+            adapter_delta.get("execution_builtin_selector_score_all_pages_calls", 0.0)
+        ),
+        "decode_builtin_selector_candidate_only_calls": int(
+            adapter_delta.get("execution_builtin_selector_candidate_only_calls", 0.0)
+        ),
+        "decode_builtin_selector_candidate_pages": int(
+            adapter_delta.get("execution_builtin_selector_candidate_pages", 0.0)
+        ),
+        "decode_builtin_selector_total_pages": int(
+            adapter_delta.get("execution_builtin_selector_total_pages", 0.0)
+        ),
+        "decode_builtin_selector_candidate_fraction_sum": float(
+            adapter_delta.get("execution_builtin_selector_candidate_fraction_sum", 0.0)
+        ),
+        "decode_builtin_selector_candidate_fraction_max": float(
+            adapter_delta.get("execution_builtin_selector_candidate_fraction_max", 0.0)
+        ),
+        "decode_builtin_selector_cache_hits": int(
+            adapter_delta.get("execution_builtin_selector_cache_hits", 0.0)
+        ),
+        "decode_builtin_selector_cache_builds": int(
+            adapter_delta.get("execution_builtin_selector_cache_builds", 0.0)
+        ),
+        "decode_builtin_selector_cache_build_bytes": int(
+            adapter_delta.get("execution_builtin_selector_cache_build_bytes", 0.0)
+        ),
+        "decode_builtin_selector_cache_build_bytes_max": int(
+            adapter_delta.get("execution_builtin_selector_cache_build_bytes_max", 0.0)
+        ),
+        "decode_value_escape_cache_hits": int(
+            adapter_delta.get("execution_value_escape_cache_hits", 0.0)
+        ),
+        "decode_value_escape_source_registrations": int(
+            adapter_delta.get("execution_value_escape_source_registrations", 0.0)
+        ),
+        "decode_value_escape_prepared_page_builds": int(
+            adapter_delta.get("execution_value_escape_prepared_page_builds", 0.0)
+        ),
+        "decode_value_escape_builds": int(
+            adapter_delta.get("execution_value_escape_builds", 0.0)
+        ),
+        "decode_value_escape_applied_pages": int(
+            adapter_delta.get("execution_value_escape_applied_pages", 0.0)
+        ),
+        "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
+        "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],
+        "decode_non_backend_unattributed_ms_total": float(
+            decode_non_backend_ms_total
+            - decode_pre_backend_ms_total
+            - stage_totals["execution_decode_backend_call_non_backend_ms_total"]
+        ),
+        "model_step_accounted_ms_total": accounted_model_ms,
+        "model_step_non_adapter_ms_total": float(step_ms - accounted_model_ms),
+        "python_tracemalloc_current_bytes_delta": int(python_current_bytes_delta),
+        "python_tracemalloc_peak_bytes": int(python_peak_bytes),
+        "python_allocated_blocks_delta": int(python_allocated_blocks_delta),
+        "python_gc_count_delta": list(python_gc_count_delta),
+    }
 
 
 def run_qwen35_attention_subset_dotcache_serving_quality_harness(
@@ -5614,6 +6010,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     tokenizer=None,
     decode_steps: int = 4,
     profile_backend: bool = False,
+    trace_python_allocations: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
@@ -5652,40 +6049,70 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     dotcache_step_logits: list[np.ndarray] = []
     dotcache_records: list[list[LlamaReplayRecord]] = []
     dotcache_decode_ms_total = 0.0
+    dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
-    if decode_steps > 0:
-        current_attention_mask = torch.cat(
-            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
-            dim=1,
-        )
-        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
-        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
-        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
-            adapter.begin_capture_step(step_index)
-            adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
-            try:
-                outputs, step_ms = _timed_call(
-                    lambda: _run_dense_decode_step(
-                        model,
-                        decode_input_ids=decode_input_ids,
-                        attention_mask=current_attention_mask,
-                        past_key_values=runtime_state.model_past_key_values,
-                        cache_position=cache_position,
-                    ),
-                    device=device,
-                )
-            finally:
-                adapter.set_current_token_index(None)
-            dotcache_decode_ms_total += step_ms
-            dotcache_records.append(adapter.end_capture_step())
-            dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
-            runtime_state.advance(outputs.past_key_values)
+    managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
+    try:
+        if decode_steps > 0:
             current_attention_mask = torch.cat(
-                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
             )
-            cache_position = cache_position + 1
-        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+            cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+            dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+            for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+                adapter.begin_capture_step(step_index)
+                adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+                adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_before = _backend_trace_snapshot(adapter)
+                if trace_python_allocations:
+                    tracemalloc.reset_peak()
+                python_before = _python_allocation_snapshot(trace_python_allocations)
+                try:
+                    outputs, step_ms = _timed_call(
+                        lambda: _run_dense_decode_step(
+                            model,
+                            decode_input_ids=decode_input_ids,
+                            attention_mask=current_attention_mask,
+                            past_key_values=runtime_state.model_past_key_values,
+                            cache_position=cache_position,
+                        ),
+                        device=device,
+                    )
+                finally:
+                    adapter.set_current_token_index(None)
+                adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_after = _backend_trace_snapshot(adapter)
+                python_after = _python_allocation_snapshot(trace_python_allocations)
+                dotcache_decode_ms_total += step_ms
+                dotcache_step_runtime_breakdown.append(
+                    _summarize_step_runtime_breakdown(
+                        step_index=step_index,
+                        step_ms=step_ms,
+                        adapter_before=adapter_runtime_before,
+                        adapter_after=adapter_runtime_after,
+                        chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                        chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
+                        trace_before=trace_before,
+                        trace_after=trace_after,
+                        python_before=python_before,
+                        python_after=python_after,
+                    )
+                )
+                dotcache_records.append(adapter.end_capture_step())
+                dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+                runtime_state.advance(outputs.past_key_values)
+                current_attention_mask = torch.cat(
+                    [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                    dim=1,
+                )
+                cache_position = cache_position + 1
+            dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+    finally:
+        if managed_python_allocation_tracing:
+            tracemalloc.stop()
 
     dense_record_map = {
         (record.step_index, record.layer_id): record
@@ -5782,6 +6209,35 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "teacher_forced_logit_rmse": teacher_forced_rmse,
             "teacher_forced_token_agreement_rate": teacher_forced_token_agreement,
             "teacher_forced_per_step_logit_max_abs_error": teacher_forced_per_step_max_abs,
+            "dotcache_step_runtime_breakdown": dotcache_step_runtime_breakdown,
+            "dotcache_backend_decode_ms_total_from_trace": float(
+                sum(step["backend_decode_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_decode_non_backend_ms_total": float(
+                sum(step["decode_non_backend_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_model_step_non_adapter_ms_total": float(
+                sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocation_tracing": bool(trace_python_allocations),
+            "dotcache_python_tracemalloc_peak_bytes_max": int(
+                max((int(step["python_tracemalloc_peak_bytes"]) for step in dotcache_step_runtime_breakdown), default=0)
+            ),
+            "dotcache_python_tracemalloc_current_bytes_delta_total": int(
+                sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocated_blocks_delta_total": int(
+                sum(int(step["python_allocated_blocks_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_gc_count_delta_total": [
+                int(
+                    sum(
+                        int(step["python_gc_count_delta"][generation_index])
+                        for step in dotcache_step_runtime_breakdown
+                    )
+                )
+                for generation_index in range(3)
+            ],
             "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
             "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
             "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
@@ -5818,10 +6274,33 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
+            "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
+            "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+            "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+            "execution_freeze_chunk_budget_during_decode": bool(
+                adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+            ),
+            "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+            "execution_builtin_selector_score_all_pages": bool(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages
+            ),
+            "execution_builtin_selector_candidate_only": bool(
+                adapter.dotcache_config.execution_builtin_selector_candidate_only
+            ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -5835,6 +6314,10 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6058,10 +6541,33 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
+            "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
+            "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+            "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+            "execution_freeze_chunk_budget_during_decode": bool(
+                adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+            ),
+            "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+            "execution_builtin_selector_score_all_pages": bool(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages
+            ),
+            "execution_builtin_selector_candidate_only": bool(
+                adapter.dotcache_config.execution_builtin_selector_candidate_only
+            ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6075,6 +6581,10 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
@@ -6091,6 +6601,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     tokenizer=None,
     decode_steps: int = 4,
     profile_backend: bool = False,
+    trace_python_allocations: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
@@ -6129,48 +6640,78 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     diagnostic_records: list[dict[str, Any]] = []
     generated_ids: list[int] = []
     dotcache_decode_ms_total = 0.0
+    dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
-    if decode_steps > 0:
-        current_attention_mask = torch.cat(
-            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
-            dim=1,
-        )
-        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
-        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
-        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
-            generated_ids.append(int(decode_input_ids.item()))
-            for dense_record in dense_capture["capture_records"][step_index]:
-                analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
-                    dense_record.layer_id,
-                    dense_record.query_states,
-                    adapter.q_head_to_kv_head,
-                    trace=None,
-                )
-                diagnostic_records.append(
-                    {
-                        "step_index": int(step_index),
-                        "token_index": int(dense_record.token_index),
-                        **analysis_record,
-                    }
-                )
-            outputs, step_ms = _timed_call(
-                lambda: _run_dense_decode_step(
-                    model,
-                    decode_input_ids=decode_input_ids,
-                    attention_mask=current_attention_mask,
-                    past_key_values=runtime_state.model_past_key_values,
-                    cache_position=cache_position,
-                ),
-                device=device,
-            )
-            dotcache_decode_ms_total += step_ms
-            runtime_state.advance(outputs.past_key_values)
+    managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
+    try:
+        if decode_steps > 0:
             current_attention_mask = torch.cat(
-                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
             )
-            cache_position = cache_position + 1
-        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+            cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+            dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+            for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+                generated_ids.append(int(decode_input_ids.item()))
+                for dense_record in dense_capture["capture_records"][step_index]:
+                    analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
+                        dense_record.layer_id,
+                        dense_record.query_states,
+                        adapter.q_head_to_kv_head,
+                        trace=None,
+                    )
+                    diagnostic_records.append(
+                        {
+                            "step_index": int(step_index),
+                            "token_index": int(dense_record.token_index),
+                            **analysis_record,
+                        }
+                    )
+                adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_before = _backend_trace_snapshot(adapter)
+                if trace_python_allocations:
+                    tracemalloc.reset_peak()
+                python_before = _python_allocation_snapshot(trace_python_allocations)
+                outputs, step_ms = _timed_call(
+                    lambda: _run_dense_decode_step(
+                        model,
+                        decode_input_ids=decode_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=runtime_state.model_past_key_values,
+                        cache_position=cache_position,
+                    ),
+                    device=device,
+                )
+                adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_after = _backend_trace_snapshot(adapter)
+                python_after = _python_allocation_snapshot(trace_python_allocations)
+                dotcache_decode_ms_total += step_ms
+                dotcache_step_runtime_breakdown.append(
+                    _summarize_step_runtime_breakdown(
+                        step_index=step_index,
+                        step_ms=step_ms,
+                        adapter_before=adapter_runtime_before,
+                        adapter_after=adapter_runtime_after,
+                        chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                        chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
+                        trace_before=trace_before,
+                        trace_after=trace_after,
+                        python_before=python_before,
+                        python_after=python_after,
+                    )
+                )
+                runtime_state.advance(outputs.past_key_values)
+                current_attention_mask = torch.cat(
+                    [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                    dim=1,
+                )
+                cache_position = cache_position + 1
+            dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+    finally:
+        if managed_python_allocation_tracing:
+            tracemalloc.stop()
 
     rank_corr_by_layer: dict[str, list[float]] = {}
     value_corr_by_layer: dict[str, list[float]] = {}
@@ -6309,6 +6850,35 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
             "scorer_diagnostic_record_count": int(len(diagnostic_records)),
             "scorer_diagnostic_layer_count": int(len({int(record["layer_id"]) for record in diagnostic_records})),
             "scorer_diagnostic_step_count": int(len({int(record["step_index"]) for record in diagnostic_records})),
+            "dotcache_step_runtime_breakdown": dotcache_step_runtime_breakdown,
+            "dotcache_backend_decode_ms_total_from_trace": float(
+                sum(step["backend_decode_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_decode_non_backend_ms_total": float(
+                sum(step["decode_non_backend_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_model_step_non_adapter_ms_total": float(
+                sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocation_tracing": bool(trace_python_allocations),
+            "dotcache_python_tracemalloc_peak_bytes_max": int(
+                max((int(step["python_tracemalloc_peak_bytes"]) for step in dotcache_step_runtime_breakdown), default=0)
+            ),
+            "dotcache_python_tracemalloc_current_bytes_delta_total": int(
+                sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocated_blocks_delta_total": int(
+                sum(int(step["python_allocated_blocks_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_gc_count_delta_total": [
+                int(
+                    sum(
+                        int(step["python_gc_count_delta"][generation_index])
+                        for step in dotcache_step_runtime_breakdown
+                    )
+                )
+                for generation_index in range(3)
+            ],
             "scorer_rank_correlation_mean_by_layer": scorer_rank_correlation_mean_by_layer,
             "scorer_value_correlation_mean_by_layer": scorer_value_correlation_mean_by_layer,
             "scorer_approx_exact_top_recall_mean_by_layer": scorer_approx_exact_top_recall_mean_by_layer,
@@ -6362,10 +6932,33 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
                 adapter.dotcache_config.execution_recent_neighbor_rescue_layers
             ),
             "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+            "execution_exact_promote_min_margin_threshold": float(
+                adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+            ),
+            "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
             "execution_exact_promote_margin_threshold": float(
                 adapter.dotcache_config.execution_exact_promote_margin_threshold
             ),
             "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+            "execution_exact_promote_union_rescue_top_k": int(
+                adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+            ),
+            "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+            "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+            "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+            "execution_freeze_chunk_budget_during_decode": bool(
+                adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+            ),
+            "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+            "execution_builtin_selector_score_all_pages": bool(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages
+            ),
+            "execution_builtin_selector_candidate_only": bool(
+                adapter.dotcache_config.execution_builtin_selector_candidate_only
+            ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6379,6 +6972,10 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())

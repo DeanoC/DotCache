@@ -1,0 +1,988 @@
+{
+  "results": [
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04525517753791064,
+        "median_ms": 0.045015476644039154,
+        "p95_ms": 0.04551750607788563
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04525517753791064,
+        "median_ms": 0.045015476644039154,
+        "p95_ms": 0.04551750607788563
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.610723146237433,
+        "median_ms": 0.03766498412005603,
+        "p95_ms": 0.041131008765660226
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.05764436908066273,
+        "median_ms": 0.05534000229090452,
+        "p95_ms": 0.061202049255371094
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.6683675153180957,
+        "median_ms": 0.09296101052314043,
+        "p95_ms": 0.10151750466320664
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.041463858215138316,
+        "median_ms": 0.04128000000491738,
+        "p95_ms": 0.04202691197860985
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005352048901841044,
+        "median_ms": 0.0005300098564475775,
+        "p95_ms": 0.0005705252988263965
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04199906310532242,
+        "median_ms": 0.04182499833405018,
+        "p95_ms": 0.04257741675246506
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.041474339668639004,
+        "median_ms": 0.04136550705879927,
+        "p95_ms": 0.04182393313385546
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005274097202345729,
+        "median_ms": 0.0005200272426009178,
+        "p95_ms": 0.0005699723260477185
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04200174938887358,
+        "median_ms": 0.04189045284874737,
+        "p95_ms": 0.042335447506047785
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04122215206734836,
+        "median_ms": 0.041140010580420494,
+        "p95_ms": 0.04161008691880852
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.04122215206734836,
+        "median_ms": 0.041140010580420494,
+        "p95_ms": 0.04161008691880852
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.03890163730829954,
+        "median_ms": 0.038910016883164644,
+        "p95_ms": 0.039544902392663055
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.06078288774006069,
+        "median_ms": 0.06088547524996102,
+        "p95_ms": 0.06164654332678765
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.09968452504836023,
+        "median_ms": 0.09983600466512144,
+        "p95_ms": 0.10215395304840058
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.0380224222317338,
+        "median_ms": 0.03783503780141473,
+        "p95_ms": 0.038742931792512536
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005440972745418549,
+        "median_ms": 0.0005399924702942371,
+        "p95_ms": 0.0005800393410027027
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.038566519506275654,
+        "median_ms": 0.038380036130547523,
+        "p95_ms": 0.039272470166906714
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.03765250206924975,
+        "median_ms": 0.037535501178354025,
+        "p95_ms": 0.038032582961022854
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005208089714869857,
+        "median_ms": 0.0005199690349400043,
+        "p95_ms": 0.0005510024493560194
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.038173311040736735,
+        "median_ms": 0.03805547021329403,
+        "p95_ms": 0.03857152187265456
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04471307271160185,
+        "median_ms": 0.044599990360438824,
+        "p95_ms": 0.045001538819633424
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04471307271160185,
+        "median_ms": 0.044599990360438824,
+        "p95_ms": 0.045001538819633424
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.038921128143556416,
+        "median_ms": 0.038964994018897414,
+        "p95_ms": 0.03976252628490329
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.06106240150984377,
+        "median_ms": 0.061229977291077375,
+        "p95_ms": 0.06345244473777711
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.09998352965340018,
+        "median_ms": 0.10025050141848624,
+        "p95_ms": 0.1026210404234007
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.041584960417822,
+        "median_ms": 0.04143099067732692,
+        "p95_ms": 0.042145911720581346
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005420984234660864,
+        "median_ms": 0.0005399924702942371,
+        "p95_ms": 0.0005699723260477185
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04212705884128809,
+        "median_ms": 0.04197549424134195,
+        "p95_ms": 0.04277089610695838
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04144504782743752,
+        "median_ms": 0.04136099596507847,
+        "p95_ms": 0.04167404258623719
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005194003460928798,
+        "median_ms": 0.0005199690349400043,
+        "p95_ms": 0.0005500041879713535
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.0419644481735304,
+        "median_ms": 0.04188049933873117,
+        "p95_ms": 0.042203080374747515
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04168403276707977,
+        "median_ms": 0.041405000956729054,
+        "p95_ms": 0.042087543988600366
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.04168403276707977,
+        "median_ms": 0.041405000956729054,
+        "p95_ms": 0.042087543988600366
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.03918164118658751,
+        "median_ms": 0.03908053622581065,
+        "p95_ms": 0.03959199821110815
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.06112559058237821,
+        "median_ms": 0.06094551645219326,
+        "p95_ms": 0.06350406911224127
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.10030723176896572,
+        "median_ms": 0.10003050556406379,
+        "p95_ms": 0.10292309452779591
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.03823561128228903,
+        "median_ms": 0.03823597216978669,
+        "p95_ms": 0.03886456543114036
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005416222847998142,
+        "median_ms": 0.0005399924702942371,
+        "p95_ms": 0.0005700276233255863
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.03877723356708884,
+        "median_ms": 0.0387909822165966,
+        "p95_ms": 0.03941451432183385
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.037832631496712565,
+        "median_ms": 0.037730002077296376,
+        "p95_ms": 0.0380924844648689
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_contigslice_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005219969898462296,
+        "median_ms": 0.0005199981387704611,
+        "p95_ms": 0.0005505047738552094
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.038354628486558795,
+        "median_ms": 0.038250989746302366,
+        "p95_ms": 0.03865055041387677
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.044925977708771825,
+        "median_ms": 0.044715008698403835,
+        "p95_ms": 0.045473524369299405
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.044925977708771825,
+        "median_ms": 0.044715008698403835,
+        "p95_ms": 0.045473524369299405
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.03888882405590266,
+        "median_ms": 0.039045524317771196,
+        "p95_ms": 0.039503449806943536
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.06094630807638168,
+        "median_ms": 0.06124051287770271,
+        "p95_ms": 0.06372258067131042
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.09983513213228434,
+        "median_ms": 0.10031598503701389,
+        "p95_ms": 0.10312804079148918
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04167025093920529,
+        "median_ms": 0.04155503120273352,
+        "p95_ms": 0.041855970630422235
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005488126771524549,
+        "median_ms": 0.0005500041879713535,
+        "p95_ms": 0.0005800393410027027
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.042219063616357744,
+        "median_ms": 0.04208998871035874,
+        "p95_ms": 0.0424244994064793
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04169356019701809,
+        "median_ms": 0.04156050272285938,
+        "p95_ms": 0.04213100182823837
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step0:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005494995275512338,
+        "median_ms": 0.0005199690349400043,
+        "p95_ms": 0.0005505047738552094
+      },
+      "step_index": 0,
+      "total": {
+        "mean_ms": 0.04224305972456932,
+        "median_ms": 0.042080500861629844,
+        "p95_ms": 0.04277396656107157
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.04138203687034547,
+        "median_ms": 0.04123550024814904,
+        "p95_ms": 0.04172493354417384
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "score_all_pages",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.04138203687034547,
+        "median_ms": 0.04123550024814904,
+        "p95_ms": 0.04172493354417384
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.038318191072903574,
+        "median_ms": 0.038770027458667755,
+        "p95_ms": 0.03916246350854635
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_take",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.05983178969472647,
+        "median_ms": 0.0608910049777478,
+        "p95_ms": 0.06298995285760611
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.09814998076763004,
+        "median_ms": 0.09972552652470767,
+        "p95_ms": 0.10264349693898112
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.038036610931158066,
+        "median_ms": 0.037965510273352265,
+        "p95_ms": 0.0387169566238299
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_view",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005498121026903391,
+        "median_ms": 0.0005500041879713535,
+        "p95_ms": 0.0005805370165035129
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.038586423033848405,
+        "median_ms": 0.03853600355796516,
+        "p95_ms": 0.039266960811801255
+      }
+    },
+    {
+      "candidate_fraction": 0.9736413927757891,
+      "candidate_start": 41,
+      "candidate_stop": 3033,
+      "compute": {
+        "mean_ms": 0.0376771972514689,
+        "median_ms": 0.03758003003895283,
+        "p95_ms": 0.03800249833147973
+      },
+      "env": {
+        "MKL_NUM_THREADS": "",
+        "NUMEXPR_NUM_THREADS": "",
+        "OMP_NUM_THREADS": "",
+        "OPENBLAS_NUM_THREADS": "",
+        "numpy_version": "2.1.2"
+      },
+      "head_dim": 128,
+      "label": "qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality:ctx49152:step1:candidate_only",
+      "maxima_stride0_bytes": 512,
+      "minima_stride0_bytes": 512,
+      "mode": "candidate_packedspan",
+      "per_call_candidate_pages": 2992,
+      "per_call_selected_pages": 81,
+      "per_call_total_pages": 3073,
+      "prompt_length": 49152,
+      "result_contiguous": true,
+      "selector_calls": 12,
+      "selector_mode": "candidate_only",
+      "source": "benchmarks/results/qwen35_selector_hybrid_fraction0975_packedspan_20260330/quality.jsonl",
+      "stack": {
+        "mean_ms": 0.0005223066546022892,
+        "median_ms": 0.0005200272426009178,
+        "p95_ms": 0.0005500041879713535
+      },
+      "step_index": 1,
+      "total": {
+        "mean_ms": 0.038199503906071186,
+        "median_ms": 0.03810998168773949,
+        "p95_ms": 0.038541489630006254
+      }
+    }
+  ]
+}

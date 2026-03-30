@@ -42,6 +42,7 @@ from dotcache.integrations.qwen35 import (
     summarize_qwen35_dotcache_fit,
     _qwen35_mps_serving_shortlist_heuristic,
 )
+from dotcache.model_kv_cache import ModelPagedKVCache
 
 
 class _TinyTokenizer:
@@ -835,6 +836,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
         attention_mask=encoded["attention_mask"],
         tokenizer=tokenizer,
         decode_steps=2,
+        profile_backend=True,
     )
     assert result["runtime_mode"] == "dotcache_attention_subset_serving"
     assert result["dotcache_attention_subset_ready"] is True
@@ -884,8 +886,45 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_candidate_only" in result
+    assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
+    assert "execution_builtin_selector_score_all_pages_calls" in result
+    assert "execution_builtin_selector_candidate_only_calls" in result
+    assert "execution_builtin_selector_candidate_fraction_max" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
+    assert "decode_backend_trace" in result
+    trace = result["decode_backend_trace"]
+    assert "grouped_decode_calls" in trace
+    assert "grouped_decode_output_only_calls" in trace
+    assert "grouped_score_chunk_count" in trace
+    assert "grouped_mix_chunk_count" in trace
+    assert "grouped_logits_elements_total" in trace
+    assert "grouped_weights_elements_total" in trace
+    assert "grouped_output_elements_total" in trace
+    assert "grouped_score_packed_cuda_calls" in trace
+    assert "grouped_mix_packed_cuda_calls" in trace
+    assert "per_kv_decode_calls" in trace
+    assert "per_kv_score_chunk_count" in trace
+    assert "per_kv_mix_chunk_count" in trace
+    assert "per_kv_logits_elements_total" in trace
+    assert "per_kv_weights_elements_total" in trace
+    assert "per_kv_output_elements_total" in trace
+    assert "per_kv_score_generic_calls" in trace
+    assert "per_kv_mix_generic_calls" in trace
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
@@ -936,8 +975,66 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
+    assert "dotcache_step_runtime_breakdown" in result
+    assert len(result["dotcache_step_runtime_breakdown"]) == 2
+    assert "dotcache_backend_decode_ms_total_from_trace" in result
+    assert "dotcache_decode_non_backend_ms_total" in result
+    assert "dotcache_model_step_non_adapter_ms_total" in result
+    assert "dotcache_python_allocation_tracing" in result
+    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
+    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
+    assert "dotcache_python_allocated_blocks_delta_total" in result
+    assert "dotcache_python_gc_count_delta_total" in result
+    assert "execution_decode_prepare_pages_with_tail_ms_total" in result
+    assert "execution_decode_m2_prefilter_ms_total" in result
+    assert "execution_decode_shortlist_selection_ms_total" in result
+    assert "execution_decode_shortlist_materialization_ms_total" in result
+    assert "execution_decode_backend_call_non_backend_ms_total" in result
+    assert "execution_decode_shortlist_candidate_approx_scoring_ms_total" in result
+    assert "execution_decode_shortlist_candidate_ranking_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_score_compute_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_ranking_ms_total" in result
+    assert "execution_chunk_budget_dirty_marks" in result
+    assert "execution_chunk_budget_dirty_reason_counts" in result
+    assert "execution_chunk_budget_override_calls" in result
+    first_step = result["dotcache_step_runtime_breakdown"][0]
+    assert "decode_prepare_pages_with_tail_ms_total" in first_step
+    assert "decode_shortlist_materialization_ms_total" in first_step
+    assert "decode_backend_call_non_backend_ms_total" in first_step
+    assert "decode_non_backend_unattributed_ms_total" in first_step
+    assert "decode_shortlist_candidate_approx_scoring_ms_total" in first_step
+    assert "decode_shortlist_candidate_ranking_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_score_compute_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
+    assert "decode_chunk_budget_dirty_reason_counts" in first_step
+    assert "decode_chunk_budget_override_calls" in first_step
+    assert "decode_builtin_selector_cache_hits" in first_step
+    assert "decode_builtin_selector_cache_builds" in first_step
+    assert "decode_builtin_selector_cache_build_bytes" in first_step
+    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
+    assert "python_tracemalloc_current_bytes_delta" in first_step
+    assert "python_tracemalloc_peak_bytes" in first_step
+    assert "python_allocated_blocks_delta" in first_step
+    assert "python_gc_count_delta" in first_step
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -992,8 +1089,21 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
@@ -1043,8 +1153,81 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
     assert "execution_recent_neighbor_rescue_layers" in result
     assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
     assert "execution_exact_promote_margin_threshold" in result
     assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
+    assert "dotcache_step_runtime_breakdown" in result
+    assert len(result["dotcache_step_runtime_breakdown"]) == 2
+    assert "dotcache_backend_decode_ms_total_from_trace" in result
+    assert "dotcache_decode_non_backend_ms_total" in result
+    assert "dotcache_model_step_non_adapter_ms_total" in result
+    assert "dotcache_python_allocation_tracing" in result
+    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
+    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
+    assert "dotcache_python_allocated_blocks_delta_total" in result
+    assert "dotcache_python_gc_count_delta_total" in result
+    assert "execution_decode_prepare_pages_with_tail_ms_total" in result
+    assert "execution_decode_m2_prefilter_ms_total" in result
+    assert "execution_decode_shortlist_selection_ms_total" in result
+    assert "execution_decode_shortlist_materialization_ms_total" in result
+    assert "execution_decode_backend_call_non_backend_ms_total" in result
+    assert "execution_decode_shortlist_candidate_approx_scoring_ms_total" in result
+    assert "execution_decode_shortlist_candidate_ranking_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_score_compute_ms_total" in result
+    assert "execution_decode_shortlist_candidate_builtin_ranking_ms_total" in result
+    assert "execution_chunk_budget_dirty_marks" in result
+    assert "execution_chunk_budget_dirty_reason_counts" in result
+    assert "execution_chunk_budget_override_calls" in result
+    first_step = result["dotcache_step_runtime_breakdown"][0]
+    assert "decode_prepare_pages_with_tail_ms_total" in first_step
+    assert "decode_shortlist_materialization_ms_total" in first_step
+    assert "decode_backend_call_non_backend_ms_total" in first_step
+    assert "decode_non_backend_unattributed_ms_total" in first_step
+    assert "decode_shortlist_candidate_approx_scoring_ms_total" in first_step
+    assert "decode_shortlist_candidate_ranking_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_score_compute_ms_total" in first_step
+    assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
+    assert "decode_chunk_budget_dirty_reason_counts" in first_step
+    assert "decode_chunk_budget_override_calls" in first_step
+    assert "decode_builtin_selector_cache_hits" in first_step
+    assert "decode_builtin_selector_cache_builds" in first_step
+    assert "decode_builtin_selector_cache_build_bytes" in first_step
+    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
+    assert "python_tracemalloc_current_bytes_delta" in first_step
+    assert "python_tracemalloc_peak_bytes" in first_step
+    assert "python_allocated_blocks_delta" in first_step
+    assert "python_gc_count_delta" in first_step
+    first_record = result["scorer_layer_records"][0]
+    first_group = first_record["groups"][0]
+    assert "context_length_page_max" in first_group
+    assert "context_length_effective" in first_group
+    assert "context_length_override_applied" in first_group
+    assert "exact_promote_candidate_expansion_enabled" in first_group
+    assert "exact_promote_candidate_expansion_disable_reason" in first_group
+    assert "exact_promote_enabled" in first_group
+    assert "exact_promote_disable_reason" in first_group
+    assert "execution_shortlist_trace_records" in result
+    assert result["execution_shortlist_trace_records"]
+    first_trace = result["execution_shortlist_trace_records"][0]
+    assert "kv_head_id" in first_trace
+    assert "stage1_old_page_ranges" in first_trace
+    assert "final_old_page_ranges" in first_trace
+    assert "promote_candidate_page_ranges" in first_trace
+    assert "promote_selected_page_ranges" in first_trace
+    assert "promote_candidate_indices" in first_trace
+    assert "promote_selected_indices" in first_trace
 
 
 def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overriding() -> None:
@@ -1081,6 +1264,47 @@ def test_qwen35_mps_serving_shortlist_heuristic_is_context_aware_and_non_overrid
     unchanged_cpu, applied_cpu = _qwen35_mps_serving_shortlist_heuristic(base, backend="cpu_ref", prompt_length=8192)
     assert applied_cpu is False
     assert unchanged_cpu == base
+
+
+def test_execution_exact_promote_max_context_disables_promotion_before_candidate_expansion() -> None:
+    cache = ModelPagedKVCache.__new__(ModelPagedKVCache)
+    cache.config = DotCacheConfig(
+        head_dim=16,
+        group_size=16,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=2,
+        execution_exact_promote_top_k=2,
+        execution_exact_promote_layers=(23,),
+        execution_exact_promote_max_context=16384,
+    )
+
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=16384) is True
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=32768) is False
+    assert cache._execution_exact_promote_enabled(layer_id=11, context_length=8192) is False
+
+
+def test_execution_exact_promote_candidate_expansion_ignores_margin_threshold() -> None:
+    cache = ModelPagedKVCache.__new__(ModelPagedKVCache)
+    cache.config = DotCacheConfig(
+        head_dim=16,
+        group_size=16,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=2,
+        execution_exact_promote_top_k=2,
+        execution_exact_promote_layers=(23,),
+        execution_exact_promote_min_margin_threshold=0.5,
+    )
+
+    assert cache._execution_exact_promote_enabled(layer_id=23, context_length=8192) is True
+    enabled, reason = cache._execution_exact_promote_status(
+        layer_id=23,
+        context_length=8192,
+        boundary_margin_normalized=0.25,
+    )
+    assert enabled is False
+    assert reason == "below_min_margin_threshold"
 
 
 def test_qwen35_attention_subset_dotcache_loss_harness_reports_teacher_forced_metrics() -> None:
@@ -1309,6 +1533,9 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
         [
             "bench_qwen35_attention_subset_dotcache_serving.py",
             "--profile-backend",
+            "--trace-python-allocations",
+            "--blas-num-threads",
+            "1",
             "--tokens-per-page",
             "8",
             "--execution-recent-window",
@@ -1337,10 +1564,35 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "23",
             "--execution-exact-promote-top-k",
             "2",
+            "--execution-exact-promote-min-margin-threshold",
+            "0.0558",
+            "--execution-exact-promote-max-context",
+            "16384",
             "--execution-exact-promote-margin-threshold",
             "0.25",
             "--execution-exact-promote-layer",
             "23",
+            "--execution-exact-promote-union-rescue-top-k",
+            "2",
+            "--execution-grouped-decode-compact",
+            "--execution-grouped-mix-compact",
+            "--execution-grouped-mix-disable-packed-cuda",
+            "--execution-freeze-chunk-budget-during-decode",
+            "--execution-builtin-selector-cache",
+            "--execution-builtin-selector-score-all-pages",
+            "--execution-builtin-selector-candidate-only",
+            "--execution-builtin-selector-score-all-pages-min-candidate-fraction",
+            "0.5",
+            "--execution-value-escape-layer",
+            "23",
+            "--execution-value-escape-mode",
+            "M3",
+            "--execution-value-escape-old-only",
+            "--execution-value-escape-top-k",
+            "64",
+            "--execution-value-escape-prewarm",
+            "--execution-value-escape-prewarm-min-context",
+            "49152",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1370,6 +1622,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     )
     serving_args = serving_bench.parse_args()
     assert serving_args.profile_backend is True
+    assert serving_args.trace_python_allocations is True
+    assert serving_args.blas_num_threads == 1
     assert serving_args.tokens_per_page == 8
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16
@@ -1393,8 +1647,25 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_recent_neighbor_rescue_min_anchor_pages == 4
     assert serving_args.execution_recent_neighbor_rescue_layer == [23]
     assert serving_args.execution_exact_promote_top_k == 2
+    assert serving_args.execution_exact_promote_min_margin_threshold == 0.0558
+    assert serving_args.execution_exact_promote_max_context == 16384
     assert serving_args.execution_exact_promote_margin_threshold == 0.25
     assert serving_args.execution_exact_promote_layer == [23]
+    assert serving_args.execution_exact_promote_union_rescue_top_k == 2
+    assert serving_args.execution_grouped_decode_compact is True
+    assert serving_args.execution_grouped_mix_compact is True
+    assert serving_args.execution_grouped_mix_disable_packed_cuda is True
+    assert serving_args.execution_freeze_chunk_budget_during_decode is True
+    assert serving_args.execution_builtin_selector_cache is True
+    assert serving_args.execution_builtin_selector_score_all_pages is True
+    assert serving_args.execution_builtin_selector_candidate_only is True
+    assert serving_args.execution_builtin_selector_score_all_pages_min_candidate_fraction == 0.5
+    assert serving_args.execution_value_escape_layer == [23]
+    assert serving_args.execution_value_escape_mode == "M3"
+    assert serving_args.execution_value_escape_old_only is True
+    assert serving_args.execution_value_escape_top_k == 64
+    assert serving_args.execution_value_escape_prewarm is True
+    assert serving_args.execution_value_escape_prewarm_min_context == 49152
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]
@@ -1414,6 +1685,46 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     sweep_args = serving_sweep.parse_args()
     assert sweep_args.dotcache_profile_backend is True
     assert sweep_args.contexts == [4096, 16384]
+
+
+def test_qwen35_dotcache_serving_run_case_forwards_quality_allocation_trace() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    serving_bench_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
+    )
+    assert serving_bench_spec is not None and serving_bench_spec.loader is not None
+    serving_bench = importlib.util.module_from_spec(serving_bench_spec)
+    serving_bench_spec.loader.exec_module(serving_bench)
+
+    class _FakeHarness:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run_attention_subset_dotcache_serving_quality(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True}
+
+    harness = _FakeHarness()
+    serving_bench._run_case(
+        harness,
+        input_ids=torch.ones((1, 4), dtype=torch.long),
+        attention_mask=torch.ones((1, 4), dtype=torch.long),
+        max_new_tokens=2,
+        base_record={
+            "benchmark": "qwen35_attention_subset_dotcache_serving",
+            "quality_check": True,
+            "profile_backend": True,
+            "trace_python_allocations": True,
+        },
+        continue_on_error=False,
+    )
+    assert len(harness.calls) == 1
+    assert harness.calls[0]["trace_python_allocations"] is True
+    assert harness.calls[0]["profile_backend"] is True
 
 
 def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1461,6 +1772,270 @@ def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) 
     assert args.quality_mode == "loss_tail"
     assert args.quality_eval_steps == 8
     assert args.output == "benchmarks/results/test_probe.jsonl"
+
+
+def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_layer23_ablation_matrix",
+        repo_root / "scripts" / "run_qwen35_layer23_ablation_matrix.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_layer23_ablation_matrix.py",
+            "--contexts",
+            "32768",
+            "--selector-modes",
+            "layer23_full_context",
+            "--kv-modes",
+            "m0_v_escape_top256",
+            "--quality-check",
+            "--blas-num-threads",
+            "1",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.contexts == [32768]
+    assert args.selector_modes == ["layer23_full_context"]
+    assert args.kv_modes == ["m0_v_escape_top256"]
+    assert args.quality_check is True
+    assert args.blas_num_threads == 1
+
+    command = script_module._benchmark_command(
+        args,
+        context=32768,
+        selector_mode="layer23_full_context",
+        kv_mode="m0_v_escape_top256",
+    )
+    assert "--execution-full-context-layer" in command
+    assert "23" in command
+    assert "--key-mode-override" in command
+    assert "layer:23=M0" in command
+    assert "--execution-value-escape-layer" in command
+    assert "--execution-value-escape-mode" in command
+    assert "--execution-value-escape-top-k" in command
+    assert "256" in command
+    assert "M3" in command
+    assert "--blas-num-threads" in command
+    assert "1" in command
+
+
+def test_qwen35_layer23_ablation_matrix_can_disable_default_layer_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_layer23_ablation_matrix",
+        repo_root / "scripts" / "run_qwen35_layer23_ablation_matrix.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_layer23_ablation_matrix.py",
+            "--model-id",
+            "Qwen/Qwen3.5-4B",
+            "--layer-profile",
+            "none",
+            "--contexts",
+            "16384",
+            "--selector-modes",
+            "approx_shortlist",
+            "--kv-modes",
+            "m0_v_escape",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(
+        args,
+        context=16384,
+        selector_mode="approx_shortlist",
+        kv_mode="m0_v_escape",
+    )
+    assert "--layer-profile" not in command
+    assert "Qwen/Qwen3.5-4B" in command
+
+
+def test_qwen35_value_escape_layer_scan_builds_layer_specific_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_layer_scan",
+        repo_root / "scripts" / "run_qwen35_value_escape_layer_scan.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--model-id",
+            "Qwen/Qwen3.5-4B",
+            "--layer-profile",
+            "none",
+            "--layers",
+            "19",
+            "23",
+            "--contexts",
+            "16384",
+            "--selector-modes",
+            "layer_full_context",
+            "--kv-modes",
+            "m0_v_escape",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.layers == [19, 23]
+    assert args.contexts == [16384]
+    assert args.selector_modes == ["layer_full_context"]
+    assert args.kv_modes == ["m0_v_escape"]
+
+    command = script_module._benchmark_command(
+        args,
+        layer_id=19,
+        context=16384,
+        selector_mode="layer_full_context",
+        kv_mode="m0_v_escape",
+    )
+    assert "--layer-profile" not in command
+    assert "--execution-full-context-layer" in command
+    assert "19" in command
+    assert "--execution-value-escape-layer" in command
+    assert "--value-mode-override" in command
+    assert "layer:19=M0" in command
+
+
+def test_qwen35_value_escape_layer_scan_presets_apply_expected_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_layer_scan",
+        repo_root / "scripts" / "run_qwen35_value_escape_layer_scan.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_4b_initial_scan",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.model_id == "Qwen/Qwen3.5-4B"
+    assert args.layer_profile == "none"
+    assert args.layers == [3, 7, 11, 15, 19, 23]
+    assert args.contexts == [16384]
+    assert args.selector_modes == ["approx_shortlist"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_4b_confirm_32768",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.layers == [7, 19]
+    assert args.contexts == [32768]
+    assert args.selector_modes == ["approx_shortlist", "layer_full_context"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
+
+def test_qwen35_value_escape_reference_presets_build_expected_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_reference",
+        repo_root / "scripts" / "run_qwen35_value_escape_reference.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_reference.py",
+            "--preset",
+            "qwen35_0p8b_best",
+            "--contexts",
+            "49152",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(args, context=49152)
+    assert "Qwen/Qwen3.5-0.8B" in command
+    assert "--layer-profile" in command
+    assert "--execution-value-escape-layer" in command
+    assert "23" in command
+    assert "--execution-value-escape-prewarm" in command
+    assert "--execution-value-escape-prewarm-min-context" in command
+    assert "49152" in command
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_reference.py",
+            "--preset",
+            "qwen35_4b_best",
+            "--contexts",
+            "65536",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(args, context=65536)
+    assert "Qwen/Qwen3.5-4B" in command
+    assert "--layer-profile" not in command
+    assert "--execution-value-escape-layer" in command
+    assert "7" in command
+    assert "--execution-value-escape-prewarm" not in command
 
 
 def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

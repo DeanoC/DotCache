@@ -6,7 +6,108 @@ Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/d
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
-## Current Status
+## 2026-03-29 Qwen3.5 Serving Investigation
+
+This is the current serving-performance baseline for the Qwen3.5 shortlist work. The detailed experiment log is split across:
+
+- [benchmarks/results/qwen35_mps_investigation_20260329/README.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_mps_investigation_20260329/README.md)
+- [benchmarks/results/qwen35_mps_shortlist_20260329/README.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_mps_shortlist_20260329/README.md)
+- [benchmarks/results/qwen35_cuda_cliff_analysis_20260329.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_cliff_analysis_20260329.md)
+
+### Current Read
+
+- The real Qwen3.5 shortlist path is validated. On the Mac mini MPS lane, exact `M0` shortlist serving improved from `687.45 -> 608.12 ms/step` at `4096` and from `1320.23 -> 520.93 ms/step` at `8192`, while preserving grouped batching.
+- The current best local serving baseline is the context-aware layer-`23` budget heuristic promoted into the real MPS path. It keeps the plain shortlist at shorter prompts and raises layer `23` only once context is long enough to justify it.
+- CUDA has now validated the same core serving idea at higher context. The shortlist stays bounded at both `16384` and `32768`, so the long-context path is real and not a Mac-only artifact.
+- The remaining quality issue is narrow and stubborn: layer `23` is quality-sensitive, but most of the rescue strategies we tested did not buy enough quality back to justify their complexity or runtime cost.
+- The `32768` CUDA cliff is now very likely a grouped-decode locality / working-set problem, not a shortlist-size problem.
+- The grouped-decode compaction probe is still interesting, but it is not stable enough yet to promote:
+  - one earlier `32768` run was about `11%` faster on the same shortlist shape and flat quality
+  - the fresh confirm run did not reproduce as a clean win across both long contexts
+  - `32768` compact was worse on quality decode and only trivially better on scorer decode
+  - `49152` compact was slightly better on quality decode but worse on scorer decode
+
+### Positive Findings
+
+- Real model-path shortlist works:
+  - MPS `4096`: `687.45 -> 608.12 ms/step`
+  - MPS `8192`: `1320.23 -> 520.93 ms/step`
+  - grouped batching stayed intact in the winning runs
+- The context-aware layer-`23` budget policy was the best local trade:
+  - it preserved the cheaper shortlist shape at `4096`
+  - it improved the `8192` long-context trade without broadening the short-context path
+- The default MPS heuristic is now a useful serving baseline rather than a benchmark-only knob.
+- Cross-device shortlist behavior is consistent enough to trust:
+  - CUDA `16384` and `32768` both stayed at `2056` selected pages in the baseline lane
+  - layer `23` stayed bounded at `356` selected pages on those CUDA runs
+- The newest CUDA cliff analysis is directionally strong:
+  - shortlist size stayed flat from `16384 -> 32768`
+  - backend bytes and call counts stayed flat
+  - resident/prepared working set grew substantially
+  - decode time still jumped from `265.93 -> 1145.16 ms/step`
+- The compact grouped-decode probe still supports the locality diagnosis directionally:
+  - shortlist shape stayed fixed in every compact-vs-baseline comparison
+  - quality stayed flat in the quality lanes
+  - the mixed results suggest we are touching a real systems effect, but not with a stable enough implementation yet
+
+### Negative Findings
+
+- MPS `16384` still OOMs even with the shortlist heuristic. The decode policy improved cost, but not enough to move the machine memory ceiling.
+- The first compact grouped-decode sanity check was negative on local MPS `4096`:
+  - shortlist shape and token output stayed the same
+  - decode moved slightly the wrong way: `486.31 -> 492.92 ms/step`
+  - backend `mix` time worsened noticeably
+  - this does not rule out the CUDA locality hypothesis, but it does mean the compaction idea is not a generic MPS improvement
+- The fresh CUDA compact confirmation is also mixed rather than clean:
+  - `32768` baseline quality/scorer: `1209.77 / 1233.19 ms/step`
+  - `32768` compact quality/scorer: `1442.60 / 1223.03 ms/step`
+  - `49152` baseline quality/scorer: `1302.58 / 1412.76 ms/step`
+  - `49152` compact quality/scorer: `1274.88 / 1492.25 ms/step`
+  - same shortlist shape, same resident bytes, same quality
+  - not good enough to promote compact grouped decode as the main CUDA branch
+- Layer-`23` rescue attempts that did not hold up as defaults:
+  - exact rerank
+  - broader recent-window expansion
+  - per-KV fallback instead of grouped union
+  - tiny exact promotion
+  - recent-old scorer bias
+  - confidence-gated promotion
+  - dual-scorer rescue
+  - cheap neighbor rescue
+- Cross-device rescue tuning also mostly stayed negative:
+  - high-margin exact promotion only helped in a fragile way
+  - several bugs in the first CUDA promotion experiments were fixed, but the corrected versions showed the effect was much smaller than it first looked
+  - even the union-aware and union-wide layer-`23` rescues now activate correctly at `16384` without affecting `32768`, but still do not buy a meaningful quality improvement
+
+### Diagnostic Conclusions
+
+- Layer `23` is not the worst shortlist-recall layer. In the MPS recall and scorer diagnostics, layer `11` is usually the worst scorer / recall layer.
+- Layer `23` is still the quality-sensitive layer. Making only layer `23` exact buys back more meaningful quality than making layers `11` and `15` exact, even though those layers have worse shortlist recall.
+- That means the layer-`23` issue is not simply “the shortlist missed the top pages.” It looks more like sensitivity inside the shortlisted set or a value-side / grouped-decode interaction.
+- The union-rescue debugging on CUDA narrowed an important class of false leads:
+  - some earlier failures were real control-flow bugs
+  - those bugs are now fixed
+  - after the fixes, the rescue path does activate correctly at `16384`
+  - but it still does not materially improve quality
+- The `32768` cliff is separate from these rescue issues. It persists even when promotion is fully off and shortlist counts stay bounded.
+
+### Current Best Hypothesis
+
+The main remaining performance problem is still in grouped decode under a larger resident/prepared working set. The strongest candidate remains poorer memory locality or scratch-layout efficiency once the prepared working set grows, rather than a larger attention surface. The compact experiment touched that area, but the result is not stable enough yet to treat compaction itself as the fix.
+
+### Next Investigation
+
+- Treat the current shortlist baseline as the default path unless the compact CUDA probe keeps reproducing.
+- Stop spending time on more page-budget rescue variants unless new evidence appears.
+- Continue the CUDA `32768` locality investigation in grouped decode:
+  - rerun the compact path for reproducibility on the same `16384/32768` lane
+  - test one higher context if the CUDA box can hold it
+  - isolate why compact layout helps `mix` so much more than `score`
+  - keep this benchmark-only until it proves out across more than one run
+
+## Historical Status
+
+The sections below are older journal entries and reference points from earlier branches and phases. They are still useful context, but they are not the current Qwen3.5 serving baseline.
 
 Current branch head: `codex/turbo3-profile-breakdown`
 
@@ -3374,3 +3475,170 @@ The important read is simple:
 I intentionally did not promote `32768` into the table yet. The current ad hoc CUDA wrappers for that long-context probe left orphaned benchmark processes behind and polluted later runs, so `32768` still needs a cleaner single-shot runner before it should be treated as benchmark-quality evidence.
 
 I then added that runner as [run_qwen35_cuda_shortlist_probe.py](/workspace/DotCache/scripts/run_qwen35_cuda_shortlist_probe.py). It launches one context and one shortlist config per subprocess, forces exact-length-only probes, and kills the whole process group on timeout. A clean `4096` shortlist smoke run produced a single normalized JSON row, and a forced `5s` timeout at `32768` returned a timeout record with no leaked CUDA children afterward.
+
+## 2026-03-30 14:40 UTC - Candidate-only selector stability is mostly a BLAS/runtime issue, and the next layer-23 matrix is now scripted
+
+The latest CUDA selector work clarified three separate effects:
+
+- selector cache build is real and grows with context, but it happens before decode rather than inside decode steps
+- decode-step Python allocation churn is overwhelmingly a step-0 warmup effect
+- the scary `builtin_score_compute` swings collapse when BLAS threads are pinned, which makes the remaining variance look much more like host BLAS/runtime behavior than selector semantics
+
+The benchmark surface now records the key bookkeeping for this:
+
+- `blas_num_threads`
+- Python allocation deltas/peaks
+- builtin selector cache hits/builds/build-bytes
+
+The current honest CUDA selector read is:
+
+- the candidate-only lane remains viable through `65536`
+- shortlist shape stays flat on the tested prompt family
+- quality stays clean on that lane
+- comparisons are only fair when BLAS thread settings are reported alongside the run
+
+I also added [run_qwen35_layer23_ablation_matrix.py](/workspace/DotCache/scripts/run_qwen35_layer23_ablation_matrix.py) to turn the next `layer 23` experiment into a reproducible matrix instead of a pile of manual commands.
+
+Important caveat:
+
+- the selector axis in that runner is currently `approx_shortlist` vs `layer23_full_context`
+- `layer23_full_context` is an honest stand-in for an exact selector on that layer, but it is not yet a same-budget exact-shortlist switch
+
+So the next matrix should be read as:
+
+- selector: approximate shortlist vs layer-23 full context
+- `K`: exact vs `M0` on layer `23`
+- `V`: exact vs `M0` on layer `23`
+
+That is the current cleanest way to answer whether `layer 23` is mostly:
+
+- shortlist selection error
+- key-side approximation error
+- value-side approximation error
+- or interaction between them
+
+## 2026-03-30 18:05 UTC - Layer-23 rescue is value-side, full selected-page `V` escape is the current winner, and rank/recency narrowing did not beat it
+
+The layer-`23` ablation matrix and follow-up escape probes converged on a cleaner result than I expected:
+
+- `K`-side exactness on `layer 23` is basically not buying anything useful here
+- `V`-side exactness is the main quality lever
+- the selector/full-context axis matters, but it is smaller than the `V exact` vs `V=M0` move
+
+The corrected benchmark-only `m0_v_escape` path is now the honest best rescue:
+
+- it improves materially over `exact_m0` in every decisive row
+- it closes a meaningful chunk of the gap back to `exact_exact`
+- token agreement stayed `1.0` throughout the matrix
+
+The failed follow-up cuts were also informative:
+
+- `m0_v_escape_old` gave back too much of the recovered quality, so the sensitive `V` signal is not just living in old shortlisted pages
+- rank-capped variants (`top128/256/512`) matched full escape on the shortlist rows but did not lower decode, and were worse on the full-context rows
+
+So the repo should currently treat:
+
+- shortlist lane: current candidate-only selector path
+- layer rescue: full selected-page `layer 23` `V` escape
+
+as the main benchmark-only CUDA candidate, not the narrowed recency/rank variants.
+
+I also separated the escape telemetry so the branch can report something more production-shaped than a single opaque `builds` count:
+
+- exact-source registrations
+- prepared escape-page builds
+- cache hits
+- applied escaped pages
+
+Those counters now flow into the step breakdown as well, which should make it easier to judge whether a future larger-model transfer run is paying mostly for one-time setup, prepared-page construction, or per-step applied-page churn.
+
+The latest `0.8B` scheduling pass also made the size-gated prewarm policy concrete:
+
+- always-on value-escape prewarm was not the right operating point
+- gating prewarm at `min_context = 49152` gives the behavior we wanted
+- `32768` stays on the old decode-time build path with zero prewarm activity
+- `49152` and `65536` switch cleanly to explicit prewarm
+
+The missing `65536` control also landed, so the current `0.8B` read is now stronger:
+
+- non-prewarmed `65536`: decode `442.67 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+- thresholded-prewarm `65536`: decode `421.83 ms/step`, mean abs `0.5386`, RMSE `0.6885`
+
+So the branch should currently treat this as the best benchmark-only `0.8B` lane:
+
+- current candidate-only selector path
+- full selected-page `layer 23` `V` escape
+- prewarm enabled with `execution_value_escape_prewarm_min_context = 49152`
+
+## 2026-03-30 19:15 UTC - Value escape transfers across models, but the sensitive layer does not
+
+The first larger-model sanity check on `Qwen/Qwen3.5-4B` gave the answer we needed.
+
+The mechanism does transfer, but the exact layer does not:
+
+- provisional `layer 23` on `4B` was neutral-to-slightly harmful
+- a cheap layer scan at `16384` pointed to earlier candidates, with `19` strongest and `7` second
+- the `32768` follow-up changed the ranking again and made `layer 7` the clear winner
+
+That means the honest cross-model read is:
+
+- full selected-page `V` escape is a real mechanism
+- the fragile value-sensitive layer is model-specific
+- and it can also be context-sensitive inside the same model
+
+The strongest `4B` result so far is:
+
+- `Qwen/Qwen3.5-4B @ 32768`, `approx_shortlist`, `layer 7`
+  - mean abs `0.4656 -> 0.3654`
+  - RMSE `0.6312 -> 0.4738`
+  - decode `679.59 -> 670.89 ms/step`
+
+while `layer 19` was slightly harmful at that same context.
+
+So the branch should now describe the value-escape strategy this way:
+
+- `0.8B`: `layer 23` was the right value-side rescue target on the tested prompt family
+- `4B`: the same mechanism transfers, but `layer 7` looks like the better `32768` rescue target than `23`
+
+The follow-up prewarm check also made the policy split explicit instead of universal:
+
+- `0.8B`: thresholded prewarm at `49152+` is the current best benchmark-only operating point
+- `4B`: the same prewarm policy did not transfer cleanly on the tested `layer 7 @ 49152` lane
+  - baseline: decode `831.54 ms/step`, mean abs `0.2790`, RMSE `0.3587`
+  - thresholded prewarm: decode `859.84 ms/step`, same quality
+- `4B`: the `65536` control closed the loop the same way
+  - baseline: decode `1024.55 ms/step`, mean abs `0.2712`, RMSE `0.3413`
+  - thresholded prewarm: decode `1048.77 ms/step`, same quality
+
+So the production-shaped read is now:
+
+- scan for the fragile value-sensitive layer per model/context regime
+- decide prewarm separately for that model/layer/context regime
+- do not assume one global prewarm rule
+
+The current benchmark-only operating points are therefore:
+
+- `0.8B`: `layer 23` full selected-page `V` escape with prewarm gated at `49152+`
+- `4B`: `layer 7` full selected-page `V` escape with no prewarm
+
+The promoted reference entrypoint for those benchmark lanes now lives at
+[run_qwen35_value_escape_reference.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_reference.py)
+with presets:
+
+- `qwen35_0p8b_best`
+- `qwen35_4b_best`
+
+The promoted scan entrypoint now lives at
+[run_qwen35_value_escape_layer_scan.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_layer_scan.py)
+with presets:
+
+- `qwen35_4b_initial_scan`
+- `qwen35_4b_confirm_32768`
+
+This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
+
+- scan the candidate full-attention layers
+- identify the fragile value-sensitive layer for that model/context regime
+- then apply the same selected-page `V` escape mechanism there
+
+I also added [run_qwen35_value_escape_layer_scan.py](/workspace/DotCache/scripts/run_qwen35_value_escape_layer_scan.py) so this retuning step is now a first-class benchmark flow rather than an ad hoc pile of one-off commands.

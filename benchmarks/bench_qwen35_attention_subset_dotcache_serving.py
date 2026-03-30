@@ -2,14 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-
-import torch
-from transformers import AutoConfig
-
-from dotcache.config import DotCacheConfig
-from dotcache.config_io import load_layer_profile
-from dotcache.integrations.llama import resolve_hf_auth_kwargs
-from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
+import os
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,8 +52,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-recent-neighbor-rescue-min-anchor-pages", type=int, default=0)
     parser.add_argument("--execution-recent-neighbor-rescue-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-exact-promote-top-k", type=int, default=0)
+    parser.add_argument("--execution-exact-promote-min-margin-threshold", type=float, default=0.0)
+    parser.add_argument("--execution-exact-promote-max-context", type=int, default=0)
     parser.add_argument("--execution-exact-promote-margin-threshold", type=float, default=0.0)
     parser.add_argument("--execution-exact-promote-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-exact-promote-union-rescue-top-k", type=int, default=0)
+    parser.add_argument("--execution-grouped-decode-compact", action="store_true")
+    parser.add_argument("--execution-grouped-mix-compact", action="store_true")
+    parser.add_argument("--execution-grouped-mix-disable-packed-cuda", action="store_true")
+    parser.add_argument("--execution-freeze-chunk-budget-during-decode", action="store_true")
+    parser.add_argument("--execution-builtin-selector-cache", action="store_true")
+    parser.add_argument("--execution-builtin-selector-score-all-pages", action="store_true")
+    parser.add_argument("--execution-builtin-selector-candidate-only", action="store_true")
+    parser.add_argument("--execution-builtin-selector-score-all-pages-min-candidate-fraction", type=float, default=0.0)
+    parser.add_argument("--execution-value-escape-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-value-escape-mode", choices=["M0", "M1", "M3", "T3"], default="M3")
+    parser.add_argument("--execution-value-escape-old-only", action="store_true")
+    parser.add_argument("--execution-value-escape-top-k", type=int, default=0)
+    parser.add_argument("--execution-value-escape-prewarm", action="store_true")
+    parser.add_argument("--execution-value-escape-prewarm-min-context", type=int, default=0)
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
@@ -84,6 +94,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--profile-backend", action="store_true")
+    parser.add_argument("--trace-python-allocations", action="store_true")
+    parser.add_argument("--blas-num-threads", type=int, default=0)
     parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--recall-analysis", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
@@ -93,11 +105,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def _build_exact_length_inputs(
-    harness: Qwen35AttentionSubsetDotCacheHarness,
+    harness,
     *,
     prompt_unit: str,
     prompt_length: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+):
+    import torch
+
     if harness.tokenizer is None:
         raise ValueError("tokenizer is unavailable for exact-length prompt construction")
     if prompt_length <= 0:
@@ -122,10 +136,10 @@ def _build_exact_length_inputs(
 
 
 def _run_case(
-    harness: Qwen35AttentionSubsetDotCacheHarness,
+    harness,
     *,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
+    input_ids,
+    attention_mask,
     max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
@@ -137,6 +151,7 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
+                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         elif bool(base_record.get("recall_analysis", False)):
             record = harness.run_attention_subset_dotcache_serving_recall_analysis(
@@ -151,6 +166,7 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
+                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         else:
             record = harness.run_attention_subset_dotcache_serving(
@@ -202,10 +218,45 @@ def _run_case(
                         effective_config.execution_recent_neighbor_rescue_layers
                     ),
                     "execution_exact_promote_top_k": int(effective_config.execution_exact_promote_top_k),
+                    "execution_exact_promote_min_margin_threshold": float(
+                        effective_config.execution_exact_promote_min_margin_threshold
+                    ),
+                    "execution_exact_promote_max_context": int(effective_config.execution_exact_promote_max_context),
                     "execution_exact_promote_margin_threshold": float(
                         effective_config.execution_exact_promote_margin_threshold
                     ),
                     "execution_exact_promote_layers": list(effective_config.execution_exact_promote_layers),
+                    "execution_exact_promote_union_rescue_top_k": int(
+                        effective_config.execution_exact_promote_union_rescue_top_k
+                    ),
+                    "execution_grouped_decode_compact": bool(effective_config.execution_grouped_decode_compact),
+                    "execution_grouped_mix_compact": bool(effective_config.execution_grouped_mix_compact),
+                    "execution_grouped_mix_disable_packed_cuda": bool(
+                        effective_config.execution_grouped_mix_disable_packed_cuda
+                    ),
+                    "execution_freeze_chunk_budget_during_decode": bool(
+                        effective_config.execution_freeze_chunk_budget_during_decode
+                    ),
+                    "execution_builtin_selector_cache": bool(
+                        effective_config.execution_builtin_selector_cache
+                    ),
+                    "execution_builtin_selector_score_all_pages": bool(
+                        effective_config.execution_builtin_selector_score_all_pages
+                    ),
+                    "execution_builtin_selector_candidate_only": bool(
+                        effective_config.execution_builtin_selector_candidate_only
+                    ),
+                    "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                        effective_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+                    ),
+                    "execution_value_escape_layers": list(effective_config.execution_value_escape_layers),
+                    "execution_value_escape_mode": str(effective_config.execution_value_escape_mode),
+                    "execution_value_escape_old_only": bool(effective_config.execution_value_escape_old_only),
+                    "execution_value_escape_top_k": int(effective_config.execution_value_escape_top_k),
+                    "execution_value_escape_prewarm": bool(effective_config.execution_value_escape_prewarm),
+                    "execution_value_escape_prewarm_min_context": int(
+                        effective_config.execution_value_escape_prewarm_min_context
+                    ),
                     "execution_relevance_mode": str(effective_config.execution_relevance_mode),
                     "serving_shortlist_heuristic_applied": bool(
                         getattr(getattr(harness, "adapter", None), "serving_shortlist_heuristic_applied", False)
@@ -230,6 +281,8 @@ def _run_case(
 
 
 def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
+    from dotcache.config_io import load_layer_profile
+
     if args.layer_profile is None:
         return
     profile = load_layer_profile(args.layer_profile)
@@ -303,6 +356,8 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
 
 
 def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCacheConfig:
+    from dotcache.config import DotCacheConfig
+
     return DotCacheConfig(
         head_dim=head_dim,
         group_size=args.group_size,
@@ -345,8 +400,27 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         execution_recent_neighbor_rescue_min_anchor_pages=args.execution_recent_neighbor_rescue_min_anchor_pages,
         execution_recent_neighbor_rescue_layers=tuple(args.execution_recent_neighbor_rescue_layer),
         execution_exact_promote_top_k=args.execution_exact_promote_top_k,
+        execution_exact_promote_min_margin_threshold=args.execution_exact_promote_min_margin_threshold,
+        execution_exact_promote_max_context=args.execution_exact_promote_max_context,
         execution_exact_promote_margin_threshold=args.execution_exact_promote_margin_threshold,
         execution_exact_promote_layers=tuple(args.execution_exact_promote_layer),
+        execution_exact_promote_union_rescue_top_k=args.execution_exact_promote_union_rescue_top_k,
+        execution_grouped_decode_compact=args.execution_grouped_decode_compact,
+        execution_grouped_mix_compact=args.execution_grouped_mix_compact,
+        execution_grouped_mix_disable_packed_cuda=args.execution_grouped_mix_disable_packed_cuda,
+        execution_freeze_chunk_budget_during_decode=args.execution_freeze_chunk_budget_during_decode,
+        execution_builtin_selector_cache=args.execution_builtin_selector_cache,
+        execution_builtin_selector_score_all_pages=args.execution_builtin_selector_score_all_pages,
+        execution_builtin_selector_candidate_only=args.execution_builtin_selector_candidate_only,
+        execution_builtin_selector_score_all_pages_min_candidate_fraction=(
+            args.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
+        execution_value_escape_layers=tuple(args.execution_value_escape_layer),
+        execution_value_escape_mode=args.execution_value_escape_mode,
+        execution_value_escape_old_only=args.execution_value_escape_old_only,
+        execution_value_escape_top_k=args.execution_value_escape_top_k,
+        execution_value_escape_prewarm=args.execution_value_escape_prewarm,
+        execution_value_escape_prewarm_min_context=args.execution_value_escape_prewarm_min_context,
         execution_exact_refine_top_k=args.execution_exact_refine_top_k,
         execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
         m2_sketch_dim_k=args.m2_sketch_dim_k,
@@ -420,8 +494,27 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "execution_recent_neighbor_rescue_min_anchor_pages": args.execution_recent_neighbor_rescue_min_anchor_pages,
         "execution_recent_neighbor_rescue_layers": list(args.execution_recent_neighbor_rescue_layer),
         "execution_exact_promote_top_k": args.execution_exact_promote_top_k,
+        "execution_exact_promote_min_margin_threshold": args.execution_exact_promote_min_margin_threshold,
+        "execution_exact_promote_max_context": args.execution_exact_promote_max_context,
         "execution_exact_promote_margin_threshold": args.execution_exact_promote_margin_threshold,
         "execution_exact_promote_layers": list(args.execution_exact_promote_layer),
+        "execution_exact_promote_union_rescue_top_k": args.execution_exact_promote_union_rescue_top_k,
+        "execution_grouped_decode_compact": args.execution_grouped_decode_compact,
+        "execution_grouped_mix_compact": args.execution_grouped_mix_compact,
+        "execution_grouped_mix_disable_packed_cuda": args.execution_grouped_mix_disable_packed_cuda,
+        "execution_freeze_chunk_budget_during_decode": args.execution_freeze_chunk_budget_during_decode,
+        "execution_builtin_selector_cache": args.execution_builtin_selector_cache,
+        "execution_builtin_selector_score_all_pages": args.execution_builtin_selector_score_all_pages,
+        "execution_builtin_selector_candidate_only": args.execution_builtin_selector_candidate_only,
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": (
+            args.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
+        "execution_value_escape_layers": list(args.execution_value_escape_layer),
+        "execution_value_escape_mode": args.execution_value_escape_mode,
+        "execution_value_escape_old_only": bool(args.execution_value_escape_old_only),
+        "execution_value_escape_top_k": int(args.execution_value_escape_top_k),
+        "execution_value_escape_prewarm": bool(args.execution_value_escape_prewarm),
+        "execution_value_escape_prewarm_min_context": int(args.execution_value_escape_prewarm_min_context),
         "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
         "execution_exact_refine_layers": list(args.execution_exact_refine_layer),
         "m2_sketch_dim_k": args.m2_sketch_dim_k,
@@ -445,11 +538,27 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "dotcache_ready": False,
         "hybrid_family": "qwen3_5",
         "profile_backend": bool(args.profile_backend),
+        "trace_python_allocations": bool(args.trace_python_allocations),
+        "blas_num_threads": int(args.blas_num_threads),
     }
 
 
 def main() -> None:
     args = parse_args()
+    if int(args.blas_num_threads) > 0:
+        thread_count = str(int(args.blas_num_threads))
+        os.environ["OMP_NUM_THREADS"] = thread_count
+        os.environ["OPENBLAS_NUM_THREADS"] = thread_count
+        os.environ["MKL_NUM_THREADS"] = thread_count
+
+    import torch
+    from transformers import AutoConfig
+
+    from dotcache.config import DotCacheConfig
+    from dotcache.config_io import load_layer_profile
+    from dotcache.integrations.llama import resolve_hf_auth_kwargs
+    from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
+
     if not transformers_available():
         raise SystemExit("bench_qwen35_attention_subset_dotcache_serving.py requires the optional transformers dependencies")
 

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from dotcache.attention_runtime import decode_step, prepare_pages
 from dotcache.backends import (
@@ -728,6 +729,441 @@ def test_model_paged_kv_cache_adaptive_chunk_budget_tracks_kv_residency() -> Non
     )
     assert summary["prepared_chunk_cache_budget_bytes"] == expected_budget
     assert summary["prepared_chunk_resident_bytes"] <= expected_budget
+
+
+def test_model_paged_kv_cache_can_freeze_chunk_budget_sync_during_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not mps_available():
+        return
+
+    cache = ModelPagedKVCache(
+        config=DotCacheConfig(
+            head_dim=32,
+            group_size=32,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=4,
+            execution_freeze_chunk_budget_during_decode=True,
+        ),
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    budget_compute_calls: list[int] = []
+    budget_override_calls: list[int] = []
+
+    def _fake_budget_bytes(*, kv_resident_bytes: int | None = None) -> int:
+        del kv_resident_bytes
+        budget_compute_calls.append(1)
+        return 1234
+
+    def _fake_budget_override(*, max_resident_bytes: int | None) -> None:
+        budget_override_calls.append(-1 if max_resident_bytes is None else int(max_resident_bytes))
+
+    monkeypatch.setattr(cache, "_prepared_chunk_cache_budget_bytes", _fake_budget_bytes)
+    monkeypatch.setattr("dotcache.model_kv_cache.set_prepared_chunk_cache_budget_override", _fake_budget_override)
+
+    cache._prepared_chunk_cache_budget_dirty = True
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=True)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=True)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1, 1]
+    assert budget_override_calls == [1234, 1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+    summary = cache.chunk_budget_summary()
+    assert summary["execution_chunk_budget_sync_invocations"] == 3
+    assert summary["execution_chunk_budget_override_calls"] == 2
+    assert summary["execution_chunk_budget_freeze_override_calls"] == 1
+
+
+def test_model_paged_kv_cache_reapplies_unchanged_chunk_budget_outside_freeze_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not mps_available():
+        return
+
+    cache = ModelPagedKVCache(
+        config=DotCacheConfig(
+            head_dim=32,
+            group_size=32,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=4,
+        ),
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    budget_compute_calls: list[int] = []
+    budget_override_calls: list[int] = []
+
+    def _fake_budget_bytes(*, kv_resident_bytes: int | None = None) -> int:
+        del kv_resident_bytes
+        budget_compute_calls.append(1)
+        return 1234
+
+    def _fake_budget_override(*, max_resident_bytes: int | None) -> None:
+        budget_override_calls.append(-1 if max_resident_bytes is None else int(max_resident_bytes))
+
+    monkeypatch.setattr(cache, "_prepared_chunk_cache_budget_bytes", _fake_budget_bytes)
+    monkeypatch.setattr("dotcache.model_kv_cache.set_prepared_chunk_cache_budget_override", _fake_budget_override)
+
+    cache._prepared_chunk_cache_budget_dirty = True
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1]
+    assert budget_override_calls == [1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+
+    cache._mark_prepared_chunk_cache_budget_dirty(reason="test_dirty")
+    cache._sync_prepared_chunk_cache_budget(freeze_during_decode=False)
+    assert budget_compute_calls == [1, 1]
+    assert budget_override_calls == [1234, 1234]
+    assert cache._prepared_chunk_cache_budget_dirty is False
+    summary = cache.chunk_budget_summary()
+    assert summary["execution_chunk_budget_sync_invocations"] == 2
+    assert summary["execution_chunk_budget_override_calls"] == 2
+    assert summary["execution_chunk_budget_override_same_budget_calls"] == 1
+
+
+def test_model_paged_kv_cache_execution_value_escape_caches_prepared_pages() -> None:
+    from dotcache.decode_reference import decode_page
+
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31022)
+    dense_values = rng.normal(size=(4, config.head_dim)).astype(np.float32)
+    value_page = encode_page(
+        dense_values,
+        config,
+        kind="V",
+        layer_id=0,
+        kv_head_id=0,
+        token_start=0,
+        mode="M0",
+    )
+    cache._maybe_register_execution_value_escape_source(
+        value_page,
+        dense_values=dense_values,
+        escape_mode="M3",
+    )
+
+    first = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
+    second = cache._prepare_execution_value_escape_page(value_page, escape_mode="M3")
+    reconstructed = decode_page(first.source_page if isinstance(first, PreparedPageTorch) else first)
+
+    assert first is second
+    assert first.header.mode_default == "M3"
+    np.testing.assert_allclose(reconstructed, dense_values.astype(np.float32), atol=5e-3, rtol=5e-3)
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_source_registrations"] == 1
+    assert summary["execution_value_escape_prepared_page_builds"] == 1
+    assert summary["execution_value_escape_builds"] == 2
+    assert summary["execution_value_escape_cache_hits"] == 1
+
+
+def test_model_paged_kv_cache_execution_value_escape_old_only_skips_sink_and_recent_pages() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_old_only=True,
+        execution_recent_window=4,
+        execution_sink_window=4,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31023)
+    key_pages: list = []
+    value_pages: list = []
+    for page_index in range(5):
+        token_start = page_index * config.tokens_per_page
+        dense_keys = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        dense_values = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        key_pages.append(
+            encode_page(
+                dense_keys,
+                config,
+                kind="K",
+                layer_id=0,
+                kv_head_id=0,
+                token_start=token_start,
+                mode="M0",
+            )
+        )
+        value_page = encode_page(
+            dense_values,
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values,
+            escape_mode="M3",
+        )
+        value_pages.append(value_page)
+
+    escaped_groups, any_applied = cache._apply_execution_value_escape(
+        layer_id=0,
+        key_pages_by_group=[key_pages],
+        value_pages_by_group=[value_pages],
+        context_lengths_by_group=[len(key_pages) * config.tokens_per_page],
+    )
+
+    assert any_applied is True
+    escaped_pages = list(escaped_groups[0])
+    escaped_modes = [page.header.mode_default for page in escaped_pages]
+    assert escaped_modes == ["M0", "M3", "M3", "M3", "M0"]
+    assert escaped_pages[0] is value_pages[0]
+    assert escaped_pages[-1] is value_pages[-1]
+
+
+def test_model_paged_kv_cache_execution_value_escape_top_k_uses_relevance_ranking() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_top_k=2,
+        execution_relevance_mode="envelope",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    key_pages: list = []
+    value_pages: list = []
+    query = np.zeros((config.head_dim,), dtype=np.float32)
+    query[:4] = 1.0
+    strengths = [0.1, 0.9, 0.2, 0.8]
+    for page_index, strength in enumerate(strengths):
+        token_start = page_index * config.tokens_per_page
+        dense_keys = np.full((config.tokens_per_page, config.head_dim), strength, dtype=np.float32)
+        dense_values = np.full((config.tokens_per_page, config.head_dim), page_index + 1.0, dtype=np.float32)
+        key_pages.append(
+            encode_page(
+                dense_keys,
+                config,
+                kind="K",
+                layer_id=0,
+                kv_head_id=0,
+                token_start=token_start,
+                mode="M0",
+            )
+        )
+        value_page = encode_page(
+            dense_values,
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values,
+            escape_mode="M3",
+        )
+        value_pages.append(value_page)
+
+    escaped_groups, any_applied = cache._apply_execution_value_escape(
+        layer_id=0,
+        key_pages_by_group=[key_pages],
+        value_pages_by_group=[value_pages],
+        representative_queries_by_group=[query],
+    )
+
+    assert any_applied is True
+    escaped_pages = list(escaped_groups[0])
+    escaped_modes = [page.header.mode_default for page in escaped_pages]
+    assert escaped_modes == ["M0", "M3", "M0", "M3"]
+
+
+def test_model_paged_kv_cache_execution_value_escape_prewarm_builds_before_decode() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_prewarm=True,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    rng = np.random.default_rng(31024)
+    dense_values = rng.normal(size=(8, config.head_dim)).astype(np.float32)
+    for page_index in range(2):
+        token_start = page_index * config.tokens_per_page
+        value_page = encode_page(
+            dense_values[token_start : token_start + config.tokens_per_page],
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values[token_start : token_start + config.tokens_per_page],
+            escape_mode="M3",
+        )
+        cache._state(0, 0).session.value_pages.append(value_page)
+
+    cache._maybe_prewarm_execution_value_escape_pages(cache._state(0, 0))
+    summary = cache.execution_value_escape_summary()
+
+    assert summary["execution_value_escape_prewarm"] is True
+    assert summary["execution_value_escape_prewarm_invocations"] == 1
+    assert summary["execution_value_escape_prewarm_pages"] == 2
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+    assert summary["execution_value_escape_cache_hits"] == 0
+
+    cache._maybe_prewarm_execution_value_escape_pages(cache._state(0, 0))
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 2
+    assert summary["execution_value_escape_prewarm_pages"] == 4
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+    assert summary["execution_value_escape_cache_hits"] == 2
+
+
+def test_model_paged_kv_cache_execution_value_escape_prewarm_respects_min_context() -> None:
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        execution_value_escape_layers=(0,),
+        execution_value_escape_mode="M3",
+        execution_value_escape_prewarm=True,
+        execution_value_escape_prewarm_min_context=16,
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    state = cache._state(0, 0)
+    state.sequence_length = 8
+    rng = np.random.default_rng(31025)
+    for page_index in range(2):
+        token_start = page_index * config.tokens_per_page
+        dense_values = rng.normal(size=(config.tokens_per_page, config.head_dim)).astype(np.float32)
+        value_page = encode_page(
+            dense_values,
+            config,
+            kind="V",
+            layer_id=0,
+            kv_head_id=0,
+            token_start=token_start,
+            mode="M0",
+        )
+        cache._maybe_register_execution_value_escape_source(
+            value_page,
+            dense_values=dense_values,
+            escape_mode="M3",
+        )
+        state.session.value_pages.append(value_page)
+
+    cache._maybe_prewarm_execution_value_escape_pages(state)
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 0
+    assert summary["execution_value_escape_prewarm_pages"] == 0
+    assert summary["execution_value_escape_prepared_page_builds"] == 0
+
+    state.sequence_length = 16
+    cache._maybe_prewarm_execution_value_escape_pages(state)
+    summary = cache.execution_value_escape_summary()
+    assert summary["execution_value_escape_prewarm_invocations"] == 1
+    assert summary["execution_value_escape_prewarm_pages"] == 2
+    assert summary["execution_value_escape_prepared_page_builds"] == 2
+
+
+def test_model_paged_kv_cache_append_step_torch_keeps_budget_clean_when_tail_residency_is_stable() -> None:
+    if not mps_available():
+        return
+    import torch
+
+    rng = np.random.default_rng(31021)
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="torch_mps",
+    )
+    layer_keys = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    layer_values = torch.from_numpy(rng.normal(size=(1, 2, 5, config.head_dim)).astype(np.float32)).to(device="mps")
+    key_step = torch.from_numpy(rng.normal(size=(1, 2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+    value_step = torch.from_numpy(rng.normal(size=(1, 2, 1, config.head_dim)).astype(np.float32)).to(device="mps")
+
+    cache.ingest_prefill_cache_torch(0, layer_keys, layer_values)
+    summary_before_append = cache.resident_byte_summary()
+    cache._prepared_chunk_cache_budget_dirty = False
+
+    cache.append_step_torch(0, key_step, value_step, 5)
+    summary_after_append = cache.resident_byte_summary()
+
+    assert cache._prepared_chunk_cache_budget_dirty is False
+    assert summary_after_append["tail_resident_bytes"] == summary_before_append["tail_resident_bytes"]
+    assert summary_after_append["kv_resident_bytes"] == summary_before_append["kv_resident_bytes"]
+    chunk_budget_summary = cache.chunk_budget_summary()
+    assert chunk_budget_summary["execution_chunk_budget_dirty_reason_counts"] == {
+        "ingest_prefill_cache_torch": 1
+    }
 
 
 def test_model_paged_kv_cache_static_chunk_cache_respects_budget() -> None:

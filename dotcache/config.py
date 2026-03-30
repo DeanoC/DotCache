@@ -124,8 +124,25 @@ class DotCacheConfig:
     execution_recent_neighbor_rescue_min_anchor_pages: int = 0
     execution_recent_neighbor_rescue_layers: tuple[int, ...] = ()
     execution_exact_promote_top_k: int = 0
+    execution_exact_promote_min_margin_threshold: float = 0.0
+    execution_exact_promote_max_context: int = 0
     execution_exact_promote_margin_threshold: float = 0.0
     execution_exact_promote_layers: tuple[int, ...] = ()
+    execution_exact_promote_union_rescue_top_k: int = 0
+    execution_grouped_decode_compact: bool = False
+    execution_grouped_mix_compact: bool = False
+    execution_grouped_mix_disable_packed_cuda: bool = False
+    execution_freeze_chunk_budget_during_decode: bool = False
+    execution_builtin_selector_cache: bool = False
+    execution_builtin_selector_score_all_pages: bool = False
+    execution_builtin_selector_candidate_only: bool = False
+    execution_builtin_selector_score_all_pages_min_candidate_fraction: float = 0.0
+    execution_value_escape_layers: tuple[int, ...] = ()
+    execution_value_escape_mode: str = "M3"
+    execution_value_escape_old_only: bool = False
+    execution_value_escape_top_k: int = 0
+    execution_value_escape_prewarm: bool = False
+    execution_value_escape_prewarm_min_context: int = 0
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"
@@ -229,11 +246,23 @@ class DotCacheConfig:
                 raise ValueError("execution_recent_neighbor_rescue_layers must be non-negative")
         if self.execution_exact_promote_top_k < 0:
             raise ValueError("execution_exact_promote_top_k must be non-negative")
+        if self.execution_exact_promote_min_margin_threshold < 0:
+            raise ValueError("execution_exact_promote_min_margin_threshold must be non-negative")
+        if self.execution_exact_promote_max_context < 0:
+            raise ValueError("execution_exact_promote_max_context must be non-negative")
         if self.execution_exact_promote_margin_threshold < 0:
             raise ValueError("execution_exact_promote_margin_threshold must be non-negative")
         for layer_id in self.execution_exact_promote_layers:
             if int(layer_id) < 0:
                 raise ValueError("execution_exact_promote_layers must be non-negative")
+        if self.execution_exact_promote_union_rescue_top_k < 0:
+            raise ValueError("execution_exact_promote_union_rescue_top_k must be non-negative")
+        for layer_id in self.execution_value_escape_layers:
+            if int(layer_id) < 0:
+                raise ValueError("execution_value_escape_layers must be non-negative")
+        if self.execution_value_escape_mode not in _VALID_VALUE_MODES:
+            allowed = ", ".join(_VALID_VALUE_MODES)
+            raise ValueError(f"execution_value_escape_mode must be one of {allowed}")
         if self.execution_exact_refine_top_k < 0:
             raise ValueError("execution_exact_refine_top_k must be non-negative")
         for layer_id in self.execution_exact_refine_layers:
@@ -433,6 +462,11 @@ class DotCacheConfig:
 
     def execution_grouped_batching_disabled_for_layer(self, *, layer_id: int) -> bool:
         return int(layer_id) in {int(value) for value in self.execution_disable_grouped_batching_layers}
+
+    def execution_value_escape_enabled_for_layer(self, *, layer_id: int) -> bool:
+        if not self.execution_value_escape_layers:
+            return False
+        return int(layer_id) in {int(value) for value in self.execution_value_escape_layers}
 
     def execution_recent_old_bonus_enabled_for_layer(self, *, layer_id: int) -> bool:
         if self.execution_recent_old_bonus_window <= 0 or self.execution_recent_old_bonus_strength <= 0:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Sequence
 
 import numpy as np
@@ -18,6 +19,7 @@ from .backends import (
     set_prepared_chunk_cache_budget_override,
 )
 from .config import DotCacheConfig
+from .decode_reference import decode_page
 from .encode import encode_page
 from .planner import choose_page_mode, observe_page
 from .page_cache import PreparedPageCache
@@ -29,6 +31,55 @@ from .modes.m2_key_sketch import segment_ids_for_token_count
 from .modes.m4_key_project import fit_shared_project_basis
 
 PageLike = EncodedPage | PreparedPageTorch
+
+
+_DECODE_STAGE_TIMING_STAGES = (
+    "prepare_pages_with_tail",
+    "prepare_layout_build",
+    "m2_prefilter",
+    "query_export",
+    "shortlist_selection",
+    "shortlist_base_window",
+    "shortlist_candidate_scoring",
+    "shortlist_candidate_approx_scoring",
+    "shortlist_candidate_ranking",
+    "shortlist_candidate_secondary_scoring",
+    "shortlist_candidate_neighbor_rescue",
+    "shortlist_candidate_builtin_selection",
+    "shortlist_candidate_builtin_candidate_index_build",
+    "shortlist_candidate_builtin_sidecar_stack",
+    "shortlist_candidate_builtin_score_compute",
+    "shortlist_candidate_builtin_ranking",
+    "shortlist_exact_selection",
+    "shortlist_union_rescue",
+    "shortlist_materialization",
+    "grouping_validation",
+    "chunk_budget_sync",
+    "backend_call_wall",
+    "backend_call_non_backend",
+)
+
+
+def _empty_decode_stage_timing_totals() -> dict[str, float]:
+    return {stage: 0.0 for stage in _DECODE_STAGE_TIMING_STAGES}
+
+
+def _decode_stage_summary_key(stage: str) -> str:
+    return f"execution_decode_{stage}_ms_total"
+
+
+def _backend_trace_ms_total(trace: ExecutionTrace | None) -> float:
+    if trace is None:
+        return 0.0
+    return float(
+        trace.prepare_ms_total
+        + trace.score_ms_total
+        + trace.mix_ms_total
+        + trace.softmax_ms_total
+        + trace.unpack_ms_total
+        + trace.fwht_ms_total
+        + trace.chunk_assembly_ms_total
+    )
 
 
 def default_q_head_to_kv_head(num_attention_heads: int, num_key_value_heads: int) -> np.ndarray:
@@ -446,6 +497,24 @@ class _PreparedDecodeViewLayout:
     grouped_batch_signature: tuple[tuple[tuple[Any, ...], tuple[Any, ...]], ...]
     key_chunk_lengths: tuple[int, ...]
     value_chunk_lengths: tuple[int, ...]
+
+
+@dataclass(slots=True)
+class _ExecutionBuiltinSelectorCache:
+    page_signature: tuple[tuple[int, int, int], ...] = ()
+    sketch_matrix: np.ndarray | None = None
+    minima_matrix: np.ndarray | None = None
+    maxima_matrix: np.ndarray | None = None
+
+    def resident_bytes(self) -> int:
+        total = 0
+        if self.sketch_matrix is not None:
+            total += int(self.sketch_matrix.nbytes)
+        if self.minima_matrix is not None:
+            total += int(self.minima_matrix.nbytes)
+        if self.maxima_matrix is not None:
+            total += int(self.maxima_matrix.nbytes)
+        return int(total)
 
 
 def _prepared_page_group_signature(page: PreparedPageTorch) -> tuple[Any, ...]:
@@ -877,11 +946,11 @@ class _PersistentTailPage:
         self.source_page.runtime_page_min = dense.min(axis=0).astype(np.float32, copy=False)
         self.source_page.runtime_page_max = dense.max(axis=0).astype(np.float32, copy=False)
 
-    def _ensure_allocated(self, *, token_start: int) -> None:
+    def _ensure_allocated(self, *, token_start: int) -> bool:
         if self.source_page is not None and self.prepared_page is not None and self.host_buffer is not None:
             self.source_page.header.token_start = int(token_start)
             self.prepared_page.header.token_start = int(token_start)
-            return
+            return False
 
         try:
             import torch
@@ -940,6 +1009,7 @@ class _PersistentTailPage:
         self.resident_nbytes = int(device_payload.numel() * device_payload.element_size()) + (
             0 if device_scales is None else int(device_scales.numel() * device_scales.element_size())
         )
+        return True
 
     def load_rows(
         self,
@@ -1125,12 +1195,16 @@ class _HeadSessionState:
     decode_key_pages_with_tail: list[PageLike] | None = None
     decode_value_pages_with_tail: list[PageLike] | None = None
     decode_view_layout: _PreparedDecodeViewLayout | None = None
+    execution_builtin_selector_cache: _ExecutionBuiltinSelectorCache | None = None
     sequence_length: int = 0
+    tracked_direct_prepared_pages: dict[int, int] = field(default_factory=dict)
+    tracked_tail_resident_bytes: int = 0
 
     def invalidate_decode_views(self) -> None:
         self.decode_key_pages_with_tail = None
         self.decode_value_pages_with_tail = None
         self.decode_view_layout = None
+        self.execution_builtin_selector_cache = None
 
     def clear(self, *, clear_prepared_cache: bool) -> None:
         self.session.key_pages.clear()
@@ -1194,44 +1268,183 @@ class ModelPagedKVCache:
         self._execution_shortlist_grouping_rejections_by_layer: dict[int, int] = {}
         self._execution_shortlist_total_pages_by_layer: dict[int, int] = {}
         self._execution_shortlist_selected_pages_by_layer: dict[int, int] = {}
+        self._execution_shortlist_trace_records: list[dict[str, object]] = []
         self._execution_exact_refine_invocations = 0
         self._execution_exact_refine_candidate_pages = 0
         self._execution_exact_refine_selected_pages = 0
         self._execution_exact_refine_invocations_by_layer: dict[int, int] = {}
         self._execution_exact_refine_candidate_pages_by_layer: dict[int, int] = {}
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
+        self._direct_prepared_page_resident_bytes = 0
+        self._direct_prepared_page_refcounts: dict[int, int] = {}
+        self._direct_prepared_page_sizes: dict[int, int] = {}
+        self._tail_resident_bytes = 0
+        self._chunk_budget_dirty_marks = 0
+        self._chunk_budget_dirty_transitions = 0
+        self._chunk_budget_dirty_reason_counts: dict[str, int] = {}
+        self._chunk_budget_sync_invocations = 0
+        self._chunk_budget_sync_clean_skips = 0
+        self._chunk_budget_sync_dirty_invocations = 0
+        self._chunk_budget_override_calls = 0
+        self._chunk_budget_override_budget_change_calls = 0
+        self._chunk_budget_override_same_budget_calls = 0
+        self._chunk_budget_freeze_override_calls = 0
+        self._builtin_selector_score_all_pages_calls = 0
+        self._builtin_selector_candidate_only_calls = 0
+        self._builtin_selector_candidate_pages = 0
+        self._builtin_selector_total_pages = 0
+        self._builtin_selector_candidate_fraction_sum = 0.0
+        self._builtin_selector_candidate_fraction_max = 0.0
+        self._builtin_selector_cache_hits = 0
+        self._builtin_selector_cache_builds = 0
+        self._builtin_selector_cache_build_bytes = 0
+        self._builtin_selector_cache_build_bytes_max = 0
+        self._execution_value_escape_cache: dict[tuple[int, int, int, str, str], PageLike] = {}
+        self._execution_value_escape_source_pages: dict[tuple[int, str], EncodedPage] = {}
+        self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_source_registrations = 0
+        self._execution_value_escape_prepared_page_builds = 0
+        self._execution_value_escape_prewarm_invocations = 0
+        self._execution_value_escape_prewarm_pages = 0
+        self._execution_value_escape_prewarm_ms_total = 0.0
+        self._execution_value_escape_builds = 0
+        self._execution_value_escape_applied_pages = 0
+        self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
+        self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
 
     @property
     def resident_bytes(self) -> int:
         return self.resident_byte_summary()["resident_bytes"]
 
-    def _kv_resident_byte_summary(self) -> dict[str, int]:
-        static_resident_bytes = 0
-        tail_resident_bytes = 0
-        seen_prepared_pages: set[int] = set()
+    @staticmethod
+    def _prepared_page_resident_bytes(page: PreparedPageTorch) -> int:
+        resident_nbytes = int(page.resident_nbytes)
+        return resident_nbytes if resident_nbytes > 0 else int(page.host_to_device_nbytes)
+
+    def _collect_state_direct_prepared_pages(self, state: _HeadSessionState) -> dict[int, int]:
+        direct_pages: dict[int, int] = {}
+        for page in state.session.key_pages:
+            if isinstance(page, PreparedPageTorch) and not self.cache.owns_prepared_page(page):
+                direct_pages[id(page)] = self._prepared_page_resident_bytes(page)
+        for page in state.session.value_pages:
+            if isinstance(page, PreparedPageTorch) and not self.cache.owns_prepared_page(page):
+                direct_pages[id(page)] = self._prepared_page_resident_bytes(page)
+        return direct_pages
+
+    @staticmethod
+    def _collect_state_tail_resident_bytes(state: _HeadSessionState) -> int:
+        total = 0
+        if state.persistent_key_tail is not None:
+            total += int(state.persistent_key_tail.resident_nbytes)
+        if state.persistent_value_tail is not None:
+            total += int(state.persistent_value_tail.resident_nbytes)
+        return total
+
+    def _reset_resident_accounting(self) -> None:
+        self._direct_prepared_page_resident_bytes = 0
+        self._direct_prepared_page_refcounts.clear()
+        self._direct_prepared_page_sizes.clear()
+        self._tail_resident_bytes = 0
         for state in self._states.values():
-            for page in state.session.key_pages:
-                if not isinstance(page, PreparedPageTorch):
-                    continue
-                page_id = id(page)
-                if page_id in seen_prepared_pages or self.cache.owns_prepared_page(page):
-                    continue
-                seen_prepared_pages.add(page_id)
-                static_resident_bytes += int(page.resident_nbytes) if int(page.resident_nbytes) > 0 else int(page.host_to_device_nbytes)
-            for page in state.session.value_pages:
-                if not isinstance(page, PreparedPageTorch):
-                    continue
-                page_id = id(page)
-                if page_id in seen_prepared_pages or self.cache.owns_prepared_page(page):
-                    continue
-                seen_prepared_pages.add(page_id)
-                static_resident_bytes += int(page.resident_nbytes) if int(page.resident_nbytes) > 0 else int(page.host_to_device_nbytes)
-            if state.persistent_key_tail is not None:
-                tail_resident_bytes += state.persistent_key_tail.resident_nbytes
-            if state.persistent_value_tail is not None:
-                tail_resident_bytes += state.persistent_value_tail.resident_nbytes
-        kv_resident_bytes = self.cache.resident_bytes + static_resident_bytes + tail_resident_bytes
+            state.tracked_direct_prepared_pages.clear()
+            state.tracked_tail_resident_bytes = 0
+
+    def _refresh_state_resident_accounting(self, state: _HeadSessionState) -> bool:
+        resident_bytes_changed = False
+        new_direct_pages = self._collect_state_direct_prepared_pages(state)
+        old_direct_pages = state.tracked_direct_prepared_pages
+
+        removed_page_ids = set(old_direct_pages) - set(new_direct_pages)
+        for page_id in removed_page_ids:
+            refcount = int(self._direct_prepared_page_refcounts.get(page_id, 0)) - 1
+            if refcount <= 0:
+                self._direct_prepared_page_refcounts.pop(page_id, None)
+                removed_size = int(self._direct_prepared_page_sizes.pop(page_id, old_direct_pages[page_id]))
+                self._direct_prepared_page_resident_bytes = max(
+                    0,
+                    int(self._direct_prepared_page_resident_bytes) - removed_size,
+                )
+            else:
+                self._direct_prepared_page_refcounts[page_id] = refcount
+            resident_bytes_changed = True
+
+        added_page_ids = set(new_direct_pages) - set(old_direct_pages)
+        for page_id in added_page_ids:
+            page_size = int(new_direct_pages[page_id])
+            refcount = int(self._direct_prepared_page_refcounts.get(page_id, 0))
+            if refcount <= 0:
+                self._direct_prepared_page_sizes[page_id] = page_size
+                self._direct_prepared_page_resident_bytes += page_size
+                resident_bytes_changed = True
+            self._direct_prepared_page_refcounts[page_id] = refcount + 1
+
+        for page_id, page_size in new_direct_pages.items():
+            if page_id not in old_direct_pages:
+                continue
+            previous_size = int(self._direct_prepared_page_sizes.get(page_id, old_direct_pages[page_id]))
+            if previous_size == int(page_size):
+                continue
+            self._direct_prepared_page_sizes[page_id] = int(page_size)
+            self._direct_prepared_page_resident_bytes += int(page_size) - previous_size
+            resident_bytes_changed = True
+
+        new_tail_resident_bytes = self._collect_state_tail_resident_bytes(state)
+        if new_tail_resident_bytes != int(state.tracked_tail_resident_bytes):
+            self._tail_resident_bytes += int(new_tail_resident_bytes) - int(state.tracked_tail_resident_bytes)
+            state.tracked_tail_resident_bytes = int(new_tail_resident_bytes)
+            resident_bytes_changed = True
+
+        state.tracked_direct_prepared_pages = new_direct_pages
+        return resident_bytes_changed
+
+    def _rebuild_resident_accounting(self) -> None:
+        self._reset_resident_accounting()
+        for state in self._states.values():
+            self._refresh_state_resident_accounting(state)
+
+    def _reset_chunk_budget_tracking(self) -> None:
+        self._chunk_budget_dirty_marks = 0
+        self._chunk_budget_dirty_transitions = 0
+        self._chunk_budget_dirty_reason_counts = {}
+        self._chunk_budget_sync_invocations = 0
+        self._chunk_budget_sync_clean_skips = 0
+        self._chunk_budget_sync_dirty_invocations = 0
+        self._chunk_budget_override_calls = 0
+        self._chunk_budget_override_budget_change_calls = 0
+        self._chunk_budget_override_same_budget_calls = 0
+        self._chunk_budget_freeze_override_calls = 0
+
+    def _reset_builtin_selector_tracking(self) -> None:
+        self._builtin_selector_score_all_pages_calls = 0
+        self._builtin_selector_candidate_only_calls = 0
+        self._builtin_selector_candidate_pages = 0
+        self._builtin_selector_total_pages = 0
+        self._builtin_selector_candidate_fraction_sum = 0.0
+        self._builtin_selector_candidate_fraction_max = 0.0
+        self._builtin_selector_cache_hits = 0
+        self._builtin_selector_cache_builds = 0
+        self._builtin_selector_cache_build_bytes = 0
+        self._builtin_selector_cache_build_bytes_max = 0
+
+    def _reset_execution_value_escape_tracking(self) -> None:
+        self._execution_value_escape_cache.clear()
+        self._execution_value_escape_source_pages.clear()
+        self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_source_registrations = 0
+        self._execution_value_escape_prepared_page_builds = 0
+        self._execution_value_escape_prewarm_invocations = 0
+        self._execution_value_escape_prewarm_pages = 0
+        self._execution_value_escape_prewarm_ms_total = 0.0
+        self._execution_value_escape_builds = 0
+        self._execution_value_escape_applied_pages = 0
+
+    def _kv_resident_byte_summary(self) -> dict[str, int]:
+        static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
+        tail_resident_bytes = int(self._tail_resident_bytes)
+        kv_resident_bytes = int(self.cache.resident_bytes) + static_resident_bytes + tail_resident_bytes
         return {
             "prepared_page_cache_resident_bytes": int(self.cache.resident_bytes),
             "direct_page_resident_bytes": int(static_resident_bytes),
@@ -1253,18 +1466,327 @@ class ModelPagedKVCache:
         )
         return min(int(self.config.prepared_chunk_cache_max_bytes), adaptive_budget)
 
-    def _sync_prepared_chunk_cache_budget(self) -> None:
-        if self._torch_device_type is None or not self._prepared_chunk_cache_budget_dirty:
-            return
-        set_prepared_chunk_cache_budget_override(
-            max_resident_bytes=self._prepared_chunk_cache_budget_bytes(),
-        )
-        self._prepared_chunk_cache_budget_dirty = False
-
-    def _mark_prepared_chunk_cache_budget_dirty(self) -> None:
+    def _sync_prepared_chunk_cache_budget(self, *, freeze_during_decode: bool = False) -> None:
         if self._torch_device_type is None:
             return
+        self._chunk_budget_sync_invocations += 1
+        if not self._prepared_chunk_cache_budget_dirty:
+            self._chunk_budget_sync_clean_skips += 1
+            return
+        self._chunk_budget_sync_dirty_invocations += 1
+        if bool(freeze_during_decode and self.config.execution_freeze_chunk_budget_during_decode):
+            if self._prepared_chunk_cache_frozen_budget_bytes is None:
+                self._prepared_chunk_cache_frozen_budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+            if self._prepared_chunk_cache_applied_budget_bytes != int(self._prepared_chunk_cache_frozen_budget_bytes):
+                applied_budget_bytes = self._prepared_chunk_cache_applied_budget_bytes
+                set_prepared_chunk_cache_budget_override(
+                    max_resident_bytes=self._prepared_chunk_cache_frozen_budget_bytes,
+                )
+                self._chunk_budget_override_calls += 1
+                self._chunk_budget_freeze_override_calls += 1
+                if applied_budget_bytes == int(self._prepared_chunk_cache_frozen_budget_bytes):
+                    self._chunk_budget_override_same_budget_calls += 1
+                else:
+                    self._chunk_budget_override_budget_change_calls += 1
+                self._prepared_chunk_cache_applied_budget_bytes = int(self._prepared_chunk_cache_frozen_budget_bytes)
+            self._prepared_chunk_cache_budget_dirty = False
+            return
+        self._prepared_chunk_cache_frozen_budget_bytes = None
+        budget_bytes = int(self._prepared_chunk_cache_budget_bytes())
+        applied_budget_bytes = self._prepared_chunk_cache_applied_budget_bytes
+        set_prepared_chunk_cache_budget_override(
+            max_resident_bytes=budget_bytes,
+        )
+        self._chunk_budget_override_calls += 1
+        if applied_budget_bytes == budget_bytes:
+            self._chunk_budget_override_same_budget_calls += 1
+        else:
+            self._chunk_budget_override_budget_change_calls += 1
+        self._prepared_chunk_cache_applied_budget_bytes = budget_bytes
+        self._prepared_chunk_cache_budget_dirty = False
+
+    def _mark_prepared_chunk_cache_budget_dirty(self, *, reason: str) -> None:
+        if self._torch_device_type is None:
+            return
+        self._chunk_budget_dirty_marks += 1
+        self._chunk_budget_dirty_reason_counts[str(reason)] = (
+            int(self._chunk_budget_dirty_reason_counts.get(str(reason), 0)) + 1
+        )
+        if not self._prepared_chunk_cache_budget_dirty:
+            self._chunk_budget_dirty_transitions += 1
         self._prepared_chunk_cache_budget_dirty = True
+
+    def chunk_budget_summary(self) -> dict[str, object]:
+        return {
+            "execution_chunk_budget_dirty_marks": int(self._chunk_budget_dirty_marks),
+            "execution_chunk_budget_dirty_transitions": int(self._chunk_budget_dirty_transitions),
+            "execution_chunk_budget_dirty_reason_counts": {
+                reason: int(count) for reason, count in sorted(self._chunk_budget_dirty_reason_counts.items())
+            },
+            "execution_chunk_budget_sync_invocations": int(self._chunk_budget_sync_invocations),
+            "execution_chunk_budget_sync_clean_skips": int(self._chunk_budget_sync_clean_skips),
+            "execution_chunk_budget_sync_dirty_invocations": int(self._chunk_budget_sync_dirty_invocations),
+            "execution_chunk_budget_override_calls": int(self._chunk_budget_override_calls),
+            "execution_chunk_budget_override_budget_change_calls": int(
+                self._chunk_budget_override_budget_change_calls
+            ),
+            "execution_chunk_budget_override_same_budget_calls": int(
+                self._chunk_budget_override_same_budget_calls
+            ),
+            "execution_chunk_budget_freeze_override_calls": int(self._chunk_budget_freeze_override_calls),
+        }
+
+    def builtin_selector_summary(self) -> dict[str, int | float]:
+        return {
+            "execution_builtin_selector_score_all_pages_calls": int(self._builtin_selector_score_all_pages_calls),
+            "execution_builtin_selector_candidate_only_calls": int(self._builtin_selector_candidate_only_calls),
+            "execution_builtin_selector_candidate_pages": int(self._builtin_selector_candidate_pages),
+            "execution_builtin_selector_total_pages": int(self._builtin_selector_total_pages),
+            "execution_builtin_selector_candidate_fraction_sum": float(
+                self._builtin_selector_candidate_fraction_sum
+            ),
+            "execution_builtin_selector_candidate_fraction_max": float(
+                self._builtin_selector_candidate_fraction_max
+            ),
+            "execution_builtin_selector_cache_hits": int(self._builtin_selector_cache_hits),
+            "execution_builtin_selector_cache_builds": int(self._builtin_selector_cache_builds),
+            "execution_builtin_selector_cache_build_bytes": int(self._builtin_selector_cache_build_bytes),
+            "execution_builtin_selector_cache_build_bytes_max": int(self._builtin_selector_cache_build_bytes_max),
+        }
+
+    def execution_value_escape_summary(self) -> dict[str, int | str | list[int]]:
+        return {
+            "execution_value_escape_layers": [int(layer_id) for layer_id in self.config.execution_value_escape_layers],
+            "execution_value_escape_mode": str(self.config.execution_value_escape_mode),
+            "execution_value_escape_old_only": bool(self.config.execution_value_escape_old_only),
+            "execution_value_escape_top_k": int(self.config.execution_value_escape_top_k),
+            "execution_value_escape_prewarm": bool(self.config.execution_value_escape_prewarm),
+            "execution_value_escape_prewarm_min_context": int(self.config.execution_value_escape_prewarm_min_context),
+            "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
+            "execution_value_escape_source_registrations": int(self._execution_value_escape_source_registrations),
+            "execution_value_escape_prepared_page_builds": int(self._execution_value_escape_prepared_page_builds),
+            "execution_value_escape_prewarm_invocations": int(self._execution_value_escape_prewarm_invocations),
+            "execution_value_escape_prewarm_pages": int(self._execution_value_escape_prewarm_pages),
+            "execution_value_escape_prewarm_ms_total": float(self._execution_value_escape_prewarm_ms_total),
+            "execution_value_escape_builds": int(self._execution_value_escape_builds),
+            "execution_value_escape_applied_pages": int(self._execution_value_escape_applied_pages),
+        }
+
+    def _execution_value_escape_cache_key(self, page: PageLike, *, escape_mode: str) -> tuple[int, int, int, str, str]:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        header = source_page.header
+        return (
+            id(source_page),
+            int(header.token_start),
+            int(header.token_count),
+            str(escape_mode),
+            str(self._torch_device_type or "cpu_ref"),
+        )
+
+    def _execution_value_escape_source_key(self, page: PageLike, *, escape_mode: str) -> tuple[int, str]:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        return (id(source_page), str(escape_mode))
+
+    def _maybe_register_execution_value_escape_source(
+        self,
+        source_page: EncodedPage,
+        *,
+        dense_values: np.ndarray,
+        escape_mode: str,
+    ) -> None:
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=int(source_page.header.layer_id)):
+            return
+        if str(source_page.header.kind) != "V":
+            return
+        if str(source_page.header.mode_default) == str(escape_mode):
+            return
+        source_key = self._execution_value_escape_source_key(source_page, escape_mode=escape_mode)
+        if source_key in self._execution_value_escape_source_pages:
+            return
+        self._execution_value_escape_source_pages[source_key] = encode_page(
+            np.asarray(dense_values, dtype=np.float32, copy=False),
+            self.config,
+            kind="V",
+            layer_id=int(source_page.header.layer_id),
+            kv_head_id=int(source_page.header.kv_head_id),
+            token_start=int(source_page.header.token_start),
+            mode=str(escape_mode),
+            build_runtime_metadata=False,
+        )
+        self._execution_value_escape_source_registrations += 1
+        self._execution_value_escape_builds += 1
+
+    def _prepare_execution_value_escape_page(
+        self,
+        page: PageLike,
+        *,
+        escape_mode: str,
+        trace: ExecutionTrace | None = None,
+    ) -> PageLike:
+        source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+        if str(source_page.header.kind) != "V":
+            raise ValueError("execution value escape requires V pages")
+        if str(source_page.header.mode_default) == str(escape_mode):
+            return page
+        source_key = self._execution_value_escape_source_key(page, escape_mode=escape_mode)
+        exact_source_page = self._execution_value_escape_source_pages.get(source_key)
+        if exact_source_page is not None:
+            exact_cache_key = self._execution_value_escape_cache_key(exact_source_page, escape_mode=escape_mode)
+            cached_exact_page = self._execution_value_escape_cache.get(exact_cache_key)
+            if cached_exact_page is not None:
+                self._execution_value_escape_cache_hits += 1
+                return cached_exact_page
+            prepared_exact_page = prepare_pages(
+                [exact_source_page],
+                backend=self.backend,
+                cache=self.cache,
+                trace=trace,
+            )[0]
+            self._execution_value_escape_cache[exact_cache_key] = prepared_exact_page
+            self._execution_value_escape_prepared_page_builds += 1
+            self._execution_value_escape_builds += 1
+            return prepared_exact_page
+        cache_key = self._execution_value_escape_cache_key(page, escape_mode=escape_mode)
+        cached_page = self._execution_value_escape_cache.get(cache_key)
+        if cached_page is not None:
+            self._execution_value_escape_cache_hits += 1
+            return cached_page
+        dense_values = decode_page(source_page).astype(np.float32, copy=False)
+        escaped_page = encode_page(
+            dense_values,
+            self.config,
+            kind="V",
+            layer_id=int(source_page.header.layer_id),
+            kv_head_id=int(source_page.header.kv_head_id),
+            token_start=int(source_page.header.token_start),
+            mode=str(escape_mode),
+            build_runtime_metadata=False,
+        )
+        prepared_escape_page = prepare_pages(
+            [escaped_page],
+            backend=self.backend,
+            cache=self.cache,
+            trace=trace,
+        )[0]
+        self._execution_value_escape_cache[cache_key] = prepared_escape_page
+        self._execution_value_escape_prepared_page_builds += 1
+        self._execution_value_escape_builds += 1
+        return prepared_escape_page
+
+    def _maybe_prewarm_execution_value_escape_pages(
+        self,
+        state: _HeadSessionState,
+        *,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
+        if not bool(self.config.execution_value_escape_prewarm):
+            return
+        layer_id = int(state.tail.layer_id)
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            return
+        min_context = max(0, int(self.config.execution_value_escape_prewarm_min_context))
+        if min_context > 0 and int(state.sequence_length) < min_context:
+            return
+        if bool(self.config.execution_value_escape_old_only) or int(self.config.execution_value_escape_top_k) > 0:
+            return
+        if not state.session.value_pages:
+            return
+        started_at = perf_counter()
+        prewarmed_pages = 0
+        escape_mode = str(self.config.execution_value_escape_mode)
+        for page in state.session.value_pages:
+            source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+            if str(source_page.header.kind) != "V":
+                continue
+            if str(source_page.header.mode_default) == escape_mode:
+                continue
+            prepared_page = self._prepare_execution_value_escape_page(page, escape_mode=escape_mode, trace=trace)
+            if prepared_page is not page:
+                prewarmed_pages += 1
+        if prewarmed_pages <= 0:
+            return
+        self._execution_value_escape_prewarm_invocations += 1
+        self._execution_value_escape_prewarm_pages += int(prewarmed_pages)
+        self._execution_value_escape_prewarm_ms_total += float((perf_counter() - started_at) * 1000.0)
+
+    def _apply_execution_value_escape(
+        self,
+        *,
+        layer_id: int,
+        key_pages_by_group: Sequence[Sequence[PageLike]],
+        value_pages_by_group: Sequence[Sequence[PageLike]],
+        context_lengths_by_group: Sequence[int] | None = None,
+        representative_queries_by_group: Sequence[np.ndarray] | None = None,
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[list[Sequence[PageLike]], bool]:
+        if not self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            return [list(pages) for pages in value_pages_by_group], False
+        escape_mode = str(self.config.execution_value_escape_mode)
+        escape_top_k = max(0, int(self.config.execution_value_escape_top_k))
+        escaped_groups: list[Sequence[PageLike]] = []
+        any_applied = False
+        for group_index, (key_pages, value_pages) in enumerate(zip(key_pages_by_group, value_pages_by_group, strict=True)):
+            escaped_pages: list[PageLike] = []
+            group_applied = False
+            eligible_indices: set[int] | None = None
+            if bool(self.config.execution_value_escape_old_only):
+                context_length = None
+                if context_lengths_by_group is not None and group_index < len(context_lengths_by_group):
+                    context_length = int(context_lengths_by_group[group_index])
+                layer_recent_window = self.config.resolve_execution_recent_window_for_context(
+                    layer_id=layer_id,
+                    context_length=context_length,
+                )
+                eligible_indices = set(range(len(key_pages))) - set(
+                    select_window_page_indices(
+                        key_pages,
+                        recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
+                        sink_window_tokens=int(self.config.execution_sink_window),
+                    )
+                )
+            if escape_top_k > 0:
+                query_slice = None
+                if representative_queries_by_group is not None and group_index < len(representative_queries_by_group):
+                    query_slice = np.asarray(representative_queries_by_group[group_index], dtype=np.float32)
+                ranked_candidate_indices: list[int] = []
+                if query_slice is not None:
+                    scored_indices: list[tuple[float, int]] = []
+                    candidate_pool = range(len(key_pages)) if eligible_indices is None else sorted(eligible_indices)
+                    for page_index in candidate_pool:
+                        score = _score_page_relevance_for_mode(
+                            query_slice,
+                            key_pages[page_index],
+                            relevance_mode=self.config.execution_relevance_mode,
+                        )
+                        if score is not None:
+                            scored_indices.append((float(score), int(page_index)))
+                    if scored_indices:
+                        scored_indices.sort(key=lambda item: item[0], reverse=True)
+                        ranked_candidate_indices = [index for _, index in scored_indices[:escape_top_k]]
+                if ranked_candidate_indices:
+                    eligible_indices = set(ranked_candidate_indices)
+                elif eligible_indices is None:
+                    eligible_indices = set(range(min(len(key_pages), escape_top_k)))
+            for page_index, page in enumerate(value_pages):
+                if eligible_indices is not None and page_index not in eligible_indices:
+                    escaped_pages.append(page)
+                    continue
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if str(source_page.header.mode_default) == escape_mode:
+                    escaped_pages.append(page)
+                    continue
+                escaped_page = self._prepare_execution_value_escape_page(
+                    page,
+                    escape_mode=escape_mode,
+                    trace=trace,
+                )
+                escaped_pages.append(escaped_page)
+                if escaped_page is not page:
+                    group_applied = True
+                    self._execution_value_escape_applied_pages += 1
+            escaped_groups.append(escaped_pages if group_applied else list(value_pages))
+            any_applied = any_applied or group_applied
+        return escaped_groups, any_applied
 
     def resident_byte_summary(self) -> dict[str, int]:
         summary = self._kv_resident_byte_summary()
@@ -1351,6 +1873,228 @@ class ModelPagedKVCache:
             self._execution_exact_refine_selected_pages_by_layer.get(int(layer_id), 0) + int(selected_pages)
         )
 
+    def _record_decode_stage_timing(self, *, layer_id: int, stage: str, ms: float) -> None:
+        if stage not in _DECODE_STAGE_TIMING_STAGES:
+            raise ValueError(f"unknown decode stage timing: {stage}")
+        self._decode_stage_timings[stage] += float(ms)
+        layer_timings = self._decode_stage_timings_by_layer.setdefault(int(layer_id), {})
+        layer_timings[stage] = float(layer_timings.get(stage, 0.0) + float(ms))
+
+    def _record_builtin_selector_stats(
+        self,
+        *,
+        candidate_pages: int,
+        total_pages: int,
+        candidate_fraction: float,
+        used_score_all_pages: bool,
+    ) -> None:
+        if used_score_all_pages:
+            self._builtin_selector_score_all_pages_calls += 1
+        else:
+            self._builtin_selector_candidate_only_calls += 1
+        self._builtin_selector_candidate_pages += int(candidate_pages)
+        self._builtin_selector_total_pages += int(total_pages)
+        self._builtin_selector_candidate_fraction_sum += float(candidate_fraction)
+        self._builtin_selector_candidate_fraction_max = max(
+            float(self._builtin_selector_candidate_fraction_max),
+            float(candidate_fraction),
+        )
+
+    def decode_stage_runtime_totals(self) -> dict[str, float]:
+        return {
+            _decode_stage_summary_key(stage): float(self._decode_stage_timings.get(stage, 0.0))
+            for stage in _DECODE_STAGE_TIMING_STAGES
+        }
+
+    def _execution_builtin_selector_cache_for_state(
+        self,
+        state: _HeadSessionState,
+        *,
+        relevance_mode: str,
+    ) -> _ExecutionBuiltinSelectorCache | None:
+        direct_key_pages = state.session.key_pages
+        if not direct_key_pages:
+            return None
+        page_signature = tuple(
+            (
+                id(page.source_page if isinstance(page, PreparedPageTorch) else page),
+                int(_page_header(page).token_start),
+                int(_page_header(page).token_count),
+            )
+            for page in direct_key_pages
+        )
+        cache = state.execution_builtin_selector_cache
+        if cache is not None and cache.page_signature == page_signature:
+            if relevance_mode == "sketch" and cache.sketch_matrix is not None:
+                self._builtin_selector_cache_hits += 1
+                return cache
+            if relevance_mode == "envelope" and cache.minima_matrix is not None and cache.maxima_matrix is not None:
+                self._builtin_selector_cache_hits += 1
+                return cache
+        if relevance_mode == "sketch":
+            sketches = []
+            for page in direct_key_pages:
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if source_page.runtime_page_sketch is None:
+                    return None
+                sketches.append(np.asarray(source_page.runtime_page_sketch, dtype=np.float32))
+            cache = _ExecutionBuiltinSelectorCache(
+                page_signature=page_signature,
+                sketch_matrix=np.stack(sketches, axis=0),
+            )
+        elif relevance_mode == "envelope":
+            minima = []
+            maxima = []
+            for page in direct_key_pages:
+                source_page = page.source_page if isinstance(page, PreparedPageTorch) else page
+                if source_page.runtime_page_min is None or source_page.runtime_page_max is None:
+                    return None
+                minima.append(np.asarray(source_page.runtime_page_min, dtype=np.float32))
+                maxima.append(np.asarray(source_page.runtime_page_max, dtype=np.float32))
+            cache = _ExecutionBuiltinSelectorCache(
+                page_signature=page_signature,
+                minima_matrix=np.stack(minima, axis=0),
+                maxima_matrix=np.stack(maxima, axis=0),
+            )
+        else:
+            return None
+        build_bytes = int(cache.resident_bytes())
+        self._builtin_selector_cache_builds += 1
+        self._builtin_selector_cache_build_bytes += int(build_bytes)
+        self._builtin_selector_cache_build_bytes_max = max(
+            int(self._builtin_selector_cache_build_bytes_max),
+            int(build_bytes),
+        )
+        state.execution_builtin_selector_cache = cache
+        return cache
+
+    def _should_prewarm_execution_builtin_selector_cache(self) -> bool:
+        return bool(
+            self.config.execution_builtin_selector_cache
+            and (
+                int(self.config.execution_relevance_top_k) > 0
+                or bool(self.config.execution_relevance_top_k_overrides)
+                or bool(self.config.execution_relevance_top_k_context_overrides)
+            )
+        )
+
+    def _maybe_prewarm_execution_builtin_selector_cache(self, state: _HeadSessionState) -> None:
+        if not self._should_prewarm_execution_builtin_selector_cache():
+            return
+        if not state.session.key_pages:
+            return
+        if not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
+            return
+        self._execution_builtin_selector_cache_for_state(
+            state,
+            relevance_mode=self.config.execution_relevance_mode,
+        )
+
+    def _execution_builtin_selector_matrices(
+        self,
+        *,
+        layer_id: int,
+        kv_head_id: int | None,
+        key_pages: Sequence[PageLike],
+        relevance_mode: str,
+        score_all_pages_with_matrices: bool,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+        if not self.config.execution_builtin_selector_cache or kv_head_id is None:
+            return None, None, None, None, None, None
+        state = self._state(layer_id, kv_head_id)
+        cache = self._execution_builtin_selector_cache_for_state(state, relevance_mode=relevance_mode)
+        if cache is None:
+            return None, None, None, None, None, None
+        direct_key_pages = state.session.key_pages
+        direct_count = len(direct_key_pages)
+        if len(key_pages) not in (direct_count, direct_count + 1):
+            return None, None, None, None, None, None
+        if any(key_pages[index] is not direct_key_pages[index] for index in range(direct_count)):
+            return None, None, None, None, None, None
+
+        def _tail_source_page() -> EncodedPage | None:
+            if len(key_pages) != direct_count + 1:
+                return None
+            tail_page = key_pages[-1]
+            return tail_page.source_page if isinstance(tail_page, PreparedPageTorch) else tail_page
+
+        tail_source_page = _tail_source_page()
+        if relevance_mode == "sketch":
+            if cache.sketch_matrix is None:
+                return None, None, None, None, None, None
+            if tail_source_page is None:
+                return cache.sketch_matrix, None, None, None, None, None
+            if tail_source_page.runtime_page_sketch is None:
+                return None, None, None, None, None, None
+            if score_all_pages_with_matrices:
+                return (
+                    cache.sketch_matrix,
+                    None,
+                    None,
+                    np.asarray(tail_source_page.runtime_page_sketch, dtype=np.float32),
+                    None,
+                    None,
+                )
+            return (
+                np.concatenate(
+                    [
+                        cache.sketch_matrix,
+                        np.asarray(tail_source_page.runtime_page_sketch, dtype=np.float32)[None, ...],
+                    ],
+                    axis=0,
+                ),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        if cache.minima_matrix is None or cache.maxima_matrix is None:
+            return None, None, None, None, None, None
+        if tail_source_page is None:
+            return None, cache.minima_matrix, cache.maxima_matrix, None, None, None
+        if tail_source_page.runtime_page_min is None or tail_source_page.runtime_page_max is None:
+            return None, None, None, None, None, None
+        if score_all_pages_with_matrices:
+            return (
+                None,
+                cache.minima_matrix,
+                cache.maxima_matrix,
+                None,
+                np.asarray(tail_source_page.runtime_page_min, dtype=np.float32),
+                np.asarray(tail_source_page.runtime_page_max, dtype=np.float32),
+            )
+        return (
+            None,
+            np.concatenate(
+                [
+                    cache.minima_matrix,
+                    np.asarray(tail_source_page.runtime_page_min, dtype=np.float32)[None, :],
+                ],
+                axis=0,
+            ),
+            np.concatenate(
+                [
+                    cache.maxima_matrix,
+                    np.asarray(tail_source_page.runtime_page_max, dtype=np.float32)[None, :],
+                ],
+                axis=0,
+            ),
+            None,
+            None,
+            None,
+        )
+
+    def decode_stage_summary(self) -> dict[str, object]:
+        summary: dict[str, object] = self.decode_stage_runtime_totals()
+        for stage in _DECODE_STAGE_TIMING_STAGES:
+            summary[f"{_decode_stage_summary_key(stage)}_by_layer"] = {
+                str(layer_id): float(layer_timings.get(stage, 0.0))
+                for layer_id, layer_timings in sorted(self._decode_stage_timings_by_layer.items())
+                if float(layer_timings.get(stage, 0.0)) != 0.0
+            }
+        return summary
+
     def execution_shortlist_summary(self) -> dict[str, object]:
         return {
             "execution_shortlist_invocations": int(self._execution_shortlist_invocations),
@@ -1383,6 +2127,7 @@ class ModelPagedKVCache:
                 str(layer_id): int(count)
                 for layer_id, count in sorted(self._execution_shortlist_selected_pages_by_layer.items())
             },
+            "execution_shortlist_trace_records": list(self._execution_shortlist_trace_records),
             "execution_exact_refine_invocations": int(self._execution_exact_refine_invocations),
             "execution_exact_refine_candidate_pages": int(self._execution_exact_refine_candidate_pages),
             "execution_exact_refine_selected_pages": int(self._execution_exact_refine_selected_pages),
@@ -1407,12 +2152,58 @@ class ModelPagedKVCache:
             return False
         return int(layer_id) in {int(value) for value in self.config.execution_exact_refine_layers}
 
-    def _execution_exact_promote_enabled(self, *, layer_id: int) -> bool:
+    def _execution_exact_promote_enabled(self, *, layer_id: int, context_length: int | None = None) -> bool:
+        enabled, _ = self._execution_exact_promote_policy_status(layer_id=layer_id, context_length=context_length)
+        return enabled
+
+    def _execution_exact_promote_policy_status(
+        self,
+        *,
+        layer_id: int,
+        context_length: int | None = None,
+    ) -> tuple[bool, str | None]:
         if self.config.execution_exact_promote_top_k <= 0:
-            return False
+            return False, "top_k_disabled"
         if not self.config.execution_exact_promote_layers:
-            return False
-        return int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
+            return False, "no_layers_configured"
+        if int(layer_id) not in {int(value) for value in self.config.execution_exact_promote_layers}:
+            return False, "layer_not_selected"
+        if (
+            int(self.config.execution_exact_promote_max_context) > 0
+            and context_length is not None
+            and int(context_length) > int(self.config.execution_exact_promote_max_context)
+        ):
+            return False, "context_exceeds_max_context"
+        return True, None
+
+    def _execution_exact_promote_status(
+        self,
+        *,
+        layer_id: int,
+        context_length: int | None = None,
+        boundary_margin_normalized: float | None = None,
+    ) -> tuple[bool, str | None]:
+        enabled, reason = self._execution_exact_promote_policy_status(
+            layer_id=layer_id,
+            context_length=context_length,
+        )
+        if not enabled:
+            return False, reason
+        if (
+            float(self.config.execution_exact_promote_min_margin_threshold) > 0.0
+            and (
+                boundary_margin_normalized is None
+                or boundary_margin_normalized < float(self.config.execution_exact_promote_min_margin_threshold)
+            )
+        ):
+            return False, "below_min_margin_threshold"
+        if (
+            float(self.config.execution_exact_promote_margin_threshold) > 0.0
+            and boundary_margin_normalized is not None
+            and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
+        ):
+            return False, "above_max_margin_threshold"
+        return True, None
 
     def _execution_secondary_relevance_enabled(self, *, layer_id: int) -> bool:
         return self.config.execution_secondary_relevance_enabled_for_layer(layer_id=layer_id)
@@ -1420,18 +2211,230 @@ class ModelPagedKVCache:
     def _execution_recent_neighbor_rescue_enabled(self, *, layer_id: int) -> bool:
         return self.config.execution_recent_neighbor_rescue_enabled_for_layer(layer_id=layer_id)
 
+    def _execution_exact_promote_union_rescue_enabled(self, *, layer_id: int) -> bool:
+        return (
+            int(self.config.execution_exact_promote_union_rescue_top_k) > 0
+            and int(layer_id) in {int(value) for value in self.config.execution_exact_promote_layers}
+        )
+
+    def _apply_execution_exact_promote_union_rescue(
+        self,
+        *,
+        layer_id: int,
+        selected_indices_by_group: Sequence[list[int] | None],
+        key_pages_by_group: Sequence[Sequence[PageLike]],
+        representative_queries: Sequence[np.ndarray],
+        shortlist_traces_by_group: Sequence[dict[str, object] | None],
+        trace: ExecutionTrace | None = None,
+    ) -> tuple[list[list[int] | None], list[dict[str, object]]]:
+        if not self._execution_exact_promote_union_rescue_enabled(layer_id=layer_id):
+            return [None if indices is None else list(indices) for indices in selected_indices_by_group], []
+
+        adjusted_indices_by_group = [None if indices is None else list(indices) for indices in selected_indices_by_group]
+        baseline_selected_index_sets = [
+            set() if indices is None else {int(index) for index in indices}
+            for indices in selected_indices_by_group
+        ]
+        rescue_records: list[dict[str, object]] = []
+        union_rescue_top_k = int(self.config.execution_exact_promote_union_rescue_top_k)
+        eligible_group_records: list[dict[str, object]] = []
+
+        for group_index, (indices, key_pages, query_slice, shortlist_trace) in enumerate(
+            zip(
+                adjusted_indices_by_group,
+                key_pages_by_group,
+                representative_queries,
+                shortlist_traces_by_group,
+                strict=True,
+            )
+        ):
+            if indices is None:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "no_shortlist",
+                    }
+                )
+                continue
+            if shortlist_trace is None:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "missing_shortlist_trace",
+                    }
+                )
+                continue
+            context_length = shortlist_trace.get("context_length")
+            policy_enabled, policy_disable_reason = self._execution_exact_promote_policy_status(
+                layer_id=layer_id,
+                context_length=None if context_length is None else int(context_length),
+            )
+            if not policy_enabled:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": policy_disable_reason,
+                    }
+                )
+                continue
+
+            base_indices = {int(index) for index in shortlist_trace.get("base_indices", [])}
+            selected_index_set = baseline_selected_index_sets[group_index]
+
+            other_selected_indices = set().union(
+                *[
+                    selected_index_set
+                    for other_group_index, selected_index_set in enumerate(baseline_selected_index_sets)
+                    if other_group_index != group_index
+                ]
+            )
+            novel_candidate_indices = [
+                int(index)
+                for index in range(len(key_pages))
+                if int(index) not in base_indices
+                and int(index) not in selected_index_set
+                and int(index) not in other_selected_indices
+            ]
+            if not novel_candidate_indices:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "no_novel_candidates",
+                        "base_count": int(len(base_indices)),
+                        "selected_count": int(len(selected_index_set)),
+                    }
+                )
+                continue
+
+            eligible_group_records.append(
+                {
+                    "group_index": int(group_index),
+                    "kv_head_id": shortlist_trace.get("kv_head_id"),
+                    "indices": indices,
+                    "key_pages": key_pages,
+                    "query_slice": np.asarray(query_slice, dtype=np.float32),
+                    "base_indices": base_indices,
+                    "selected_index_set": selected_index_set,
+                    "novel_candidate_indices": novel_candidate_indices,
+                }
+            )
+
+        if not eligible_group_records:
+            return adjusted_indices_by_group, rescue_records
+
+        scored_union_candidates: list[tuple[float, int, int]] = []
+        for eligible_group_record in eligible_group_records:
+            novel_candidate_indices = list(eligible_group_record["novel_candidate_indices"])
+            novel_candidate_logits = score_pages(
+                eligible_group_record["query_slice"],
+                [eligible_group_record["key_pages"][index] for index in novel_candidate_indices],
+                backend=self.backend,
+                trace=trace,
+            )
+            for index, logits in zip(novel_candidate_indices, novel_candidate_logits, strict=True):
+                scored_union_candidates.append(
+                    (
+                        float(np.max(np.asarray(logits, dtype=np.float32))),
+                        int(eligible_group_record["group_index"]),
+                        int(index),
+                    )
+                )
+
+        selected_by_group: dict[int, list[int]] = {}
+        seen_indices: set[int] = set()
+        for _, group_index, index in sorted(scored_union_candidates, key=lambda item: item[0], reverse=True):
+            if int(index) in seen_indices:
+                continue
+            selected_by_group.setdefault(int(group_index), []).append(int(index))
+            seen_indices.add(int(index))
+            if len(seen_indices) >= union_rescue_top_k:
+                break
+
+        for eligible_group_record in eligible_group_records:
+            group_index = int(eligible_group_record["group_index"])
+            chosen_novel_indices = selected_by_group.get(group_index, [])
+            if not chosen_novel_indices:
+                rescue_records.append(
+                    {
+                        "record_type": "union_rescue",
+                        "layer_id": int(layer_id),
+                        "group_index": int(group_index),
+                        "applied": False,
+                        "disable_reason": "novel_candidates_not_selected",
+                        "base_count": int(len(eligible_group_record["base_indices"])),
+                        "selected_count": int(len(eligible_group_record["selected_index_set"])),
+                        "novel_candidate_count": int(len(eligible_group_record["novel_candidate_indices"])),
+                    }
+                )
+                continue
+
+            group_indices = eligible_group_record["indices"]
+            group_key_pages = eligible_group_record["key_pages"]
+            adjusted_indices_by_group[group_index] = sorted(
+                set(group_indices).union(chosen_novel_indices)
+            )
+            rescue_records.append(
+                {
+                    "record_type": "union_rescue",
+                    "layer_id": int(layer_id),
+                    "group_index": int(group_index),
+                    "kv_head_id": eligible_group_record["kv_head_id"],
+                    "applied": True,
+                    "disable_reason": None,
+                    "base_count": int(len(eligible_group_record["base_indices"])),
+                    "selected_count": int(len(eligible_group_record["selected_index_set"])),
+                    "novel_candidate_count": int(len(eligible_group_record["novel_candidate_indices"])),
+                    "selected_novel_count": int(len(chosen_novel_indices)),
+                    "selected_novel_indices": [int(index) for index in chosen_novel_indices],
+                    "selected_novel_page_ranges": [
+                        f"{int(index)}:{int(_page_header(group_key_pages[index]).token_start)}-{int(_page_header(group_key_pages[index]).token_start + _page_header(group_key_pages[index]).token_count)}"
+                        for index in chosen_novel_indices
+                    ],
+                }
+            )
+
+        return adjusted_indices_by_group, rescue_records
+
     def _execution_shortlist_page_indices(
         self,
         key_pages: Sequence[PageLike],
         *,
         layer_id: int,
+        kv_head_id: int | None = None,
         query_slice: np.ndarray,
+        context_length_override: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> list[int] | None:
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _stage_start() -> float | None:
+            return perf_counter() if capture_stage_timings else None
+
+        def _stage_finish(stage: str, started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage=stage,
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
+
         if self.config.execution_shortlist_disabled_for_layer(layer_id=layer_id):
             return None
-        context_length = None
-        if key_pages:
+        context_length = int(context_length_override) if context_length_override is not None else None
+        if context_length is None and key_pages:
             context_length = max(
                 int((page.source_page if isinstance(page, PreparedPageTorch) else page).header.token_start)
                 + int((page.source_page if isinstance(page, PreparedPageTorch) else page).header.token_count)
@@ -1455,6 +2458,79 @@ class ModelPagedKVCache:
             and layer_relevance_top_k <= 0
         ):
             return None
+        promote_candidate_expansion_enabled, promote_candidate_expansion_disable_reason = (
+            self._execution_exact_promote_policy_status(
+                layer_id=layer_id,
+                context_length=context_length,
+            )
+        )
+
+        def _page_range_labels(indices: Sequence[int]) -> list[str]:
+            labels: list[str] = []
+            for index in indices:
+                header = _page_header(key_pages[int(index)])
+                labels.append(
+                    f"{int(index)}:{int(header.token_start)}-{int(header.token_start + header.token_count)}"
+                )
+            return labels
+
+        def _record_shortlist_trace(
+            *,
+            base_index_set: set[int],
+            stage1_selected_indices: Sequence[int],
+            final_selected_indices: Sequence[int],
+            promote_enabled: bool,
+            promote_disable_reason: str | None,
+            promote_candidate_indices: Sequence[int] | None = None,
+            promote_selected_indices: Sequence[int] | None = None,
+            promote_target_old_page_count: int | None = None,
+        ) -> None:
+            stage1_old_indices = [int(index) for index in stage1_selected_indices if int(index) not in base_index_set]
+            final_old_indices = [int(index) for index in final_selected_indices if int(index) not in base_index_set]
+            promote_candidate_indices = (
+                [] if promote_candidate_indices is None else [int(index) for index in promote_candidate_indices]
+            )
+            promote_selected_indices = (
+                [] if promote_selected_indices is None else [int(index) for index in promote_selected_indices]
+            )
+            self._execution_shortlist_trace_records.append(
+                {
+                    "record_type": "shortlist_group",
+                    "layer_id": int(layer_id),
+                    "kv_head_id": None if kv_head_id is None else int(kv_head_id),
+                    "context_length": None if context_length is None else int(context_length),
+                    "layer_recent_window": int(layer_recent_window),
+                    "layer_relevance_top_k": int(layer_relevance_top_k),
+                    "candidate_relevance_top_k": int(candidate_relevance_top_k),
+                    "base_count": int(len(base_index_set)),
+                    "stage1_count": int(len(stage1_selected_indices)),
+                    "final_count": int(len(final_selected_indices)),
+                    "stage1_old_count": int(len(stage1_old_indices)),
+                    "final_old_count": int(len(final_old_indices)),
+                    "base_indices": [int(index) for index in sorted(base_index_set)],
+                    "stage1_indices": [int(index) for index in stage1_selected_indices],
+                    "final_indices": [int(index) for index in final_selected_indices],
+                    "base_page_ranges": _page_range_labels(sorted(base_index_set)),
+                    "stage1_old_page_ranges": _page_range_labels(stage1_old_indices),
+                    "final_old_page_ranges": _page_range_labels(final_old_indices),
+                    "exact_promote_candidate_expansion_enabled": bool(promote_candidate_expansion_enabled),
+                    "exact_promote_candidate_expansion_disable_reason": promote_candidate_expansion_disable_reason,
+                    "exact_promote_enabled": bool(promote_enabled),
+                    "exact_promote_disable_reason": promote_disable_reason,
+                    "promote_candidate_count": int(len(promote_candidate_indices)),
+                    "promote_selected_count": int(len(promote_selected_indices)),
+                    "promote_target_old_page_count": (
+                        None if promote_target_old_page_count is None else int(promote_target_old_page_count)
+                    ),
+                    "promote_candidate_indices": [int(index) for index in promote_candidate_indices],
+                    "promote_selected_indices": [int(index) for index in promote_selected_indices],
+                    "promote_candidate_page_ranges": _page_range_labels(promote_candidate_indices),
+                    "promote_selected_page_ranges": _page_range_labels(promote_selected_indices),
+                    "boundary_margin_normalized": (
+                        None if boundary_margin_normalized is None else float(boundary_margin_normalized)
+                    ),
+                }
+            )
         key_page_sketches: list[np.ndarray] = []
         key_page_minima: list[np.ndarray] = []
         key_page_maxima: list[np.ndarray] = []
@@ -1473,7 +2549,7 @@ class ModelPagedKVCache:
                 key_page_minima.append(np.asarray(page_min, dtype=np.float32))
                 key_page_maxima.append(np.asarray(page_max, dtype=np.float32))
         candidate_relevance_top_k = int(layer_relevance_top_k)
-        if self._execution_exact_promote_enabled(layer_id=layer_id):
+        if promote_candidate_expansion_enabled:
             candidate_relevance_top_k = max(
                 candidate_relevance_top_k,
                 int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k) * 2,
@@ -1483,6 +2559,7 @@ class ModelPagedKVCache:
                 candidate_relevance_top_k,
                 int(self.config.execution_exact_refine_top_k) * 2,
             )
+        base_window_started_at = _stage_start()
         base_indices = set(
             select_window_page_indices(
                 key_pages,
@@ -1490,14 +2567,16 @@ class ModelPagedKVCache:
                 sink_window_tokens=int(self.config.execution_sink_window),
             )
         )
+        _stage_finish("shortlist_base_window", base_window_started_at)
         use_recent_old_bonus = self.config.execution_recent_old_bonus_enabled_for_layer(layer_id=layer_id)
         use_secondary_relevance_rescue = self._execution_secondary_relevance_enabled(layer_id=layer_id)
         use_recent_neighbor_rescue = self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
         use_confidence_gated_exact_promote = (
-            self._execution_exact_promote_enabled(layer_id=layer_id)
+            promote_candidate_expansion_enabled
             and float(self.config.execution_exact_promote_margin_threshold) > 0.0
         )
         boundary_margin_normalized = None
+        shortlist_candidate_scoring_started_at = _stage_start()
         if (
             use_recent_old_bonus
             or use_secondary_relevance_rescue
@@ -1508,6 +2587,7 @@ class ModelPagedKVCache:
                 candidate_indices = [index for index in range(len(key_pages)) if index not in base_indices]
                 if candidate_indices:
                     approx_scores: list[float] = []
+                    shortlist_candidate_approx_scoring_started_at = _stage_start()
                     for index in candidate_indices:
                         approx_score = _score_page_relevance_for_mode(
                             np.asarray(query_slice, dtype=np.float32),
@@ -1517,6 +2597,8 @@ class ModelPagedKVCache:
                         if approx_score is None:
                             return None
                         approx_scores.append(float(approx_score))
+                    _stage_finish("shortlist_candidate_approx_scoring", shortlist_candidate_approx_scoring_started_at)
+                    shortlist_candidate_ranking_started_at = _stage_start()
                     score_scale = max(float(np.std(np.asarray(approx_scores, dtype=np.float32))), 1e-6)
                     recent_start = int(context_length) - int(layer_recent_window) if layer_recent_window > 0 and context_length is not None else int(context_length or 0)
                     adjusted_scores = [
@@ -1548,7 +2630,9 @@ class ModelPagedKVCache:
                     ]
                     stage1_ranked_candidates = ranked_candidates[:candidate_relevance_top_k]
                     stage1_indices = sorted(base_indices.union(stage1_ranked_candidates))
+                    _stage_finish("shortlist_candidate_ranking", shortlist_candidate_ranking_started_at)
                     if use_recent_neighbor_rescue and layer_recent_window > 0 and context_length is not None:
+                        shortlist_candidate_neighbor_rescue_started_at = _stage_start()
                         recent_start = int(context_length) - int(layer_recent_window)
                         primary_top_indices = stage1_ranked_candidates[:layer_relevance_top_k]
                         anchor_pages = [
@@ -1586,7 +2670,9 @@ class ModelPagedKVCache:
                                 probe_index -= 1
                             if rescue_indices:
                                 stage1_indices = sorted(stage1_index_set.union(rescue_indices))
+                        _stage_finish("shortlist_candidate_neighbor_rescue", shortlist_candidate_neighbor_rescue_started_at)
                     if use_secondary_relevance_rescue and layer_relevance_top_k > 0:
+                        shortlist_candidate_secondary_scoring_started_at = _stage_start()
                         secondary_scores: list[float] = []
                         for index in candidate_indices:
                             secondary_score = _score_page_relevance_for_mode(
@@ -1625,42 +2711,124 @@ class ModelPagedKVCache:
                                         break
                                 if rescue_indices:
                                     stage1_indices = sorted(set(stage1_indices).union(rescue_indices))
+                        _stage_finish("shortlist_candidate_secondary_scoring", shortlist_candidate_secondary_scoring_started_at)
                 else:
                     stage1_indices = sorted(base_indices)
             else:
                 stage1_indices = sorted(base_indices)
         else:
+            builtin_sketch_matrix = None
+            builtin_minima_matrix = None
+            builtin_maxima_matrix = None
+            builtin_tail_sketch = None
+            builtin_tail_minimum = None
+            builtin_tail_maximum = None
+            builtin_matrix_prepare_started_at = _stage_start()
+            if self.config.execution_builtin_selector_cache:
+                (
+                    builtin_sketch_matrix,
+                    builtin_minima_matrix,
+                    builtin_maxima_matrix,
+                    builtin_tail_sketch,
+                    builtin_tail_minimum,
+                    builtin_tail_maximum,
+                ) = self._execution_builtin_selector_matrices(
+                    layer_id=int(layer_id),
+                    kv_head_id=kv_head_id,
+                    key_pages=key_pages,
+                    relevance_mode=self.config.execution_relevance_mode,
+                    score_all_pages_with_matrices=(
+                        self.config.execution_builtin_selector_score_all_pages
+                        and not self.config.execution_builtin_selector_candidate_only
+                    ),
+                )
+            if (
+                builtin_sketch_matrix is not None
+                or builtin_minima_matrix is not None
+                or builtin_maxima_matrix is not None
+            ):
+                _stage_finish("shortlist_candidate_builtin_sidecar_stack", builtin_matrix_prepare_started_at)
+            shortlist_candidate_builtin_selection_started_at = _stage_start()
             stage1_indices = select_execution_page_indices(
                 key_pages,
                 recent_window_tokens=layer_recent_window if layer_recent_window > 0 else None,
                 sink_window_tokens=int(self.config.execution_sink_window),
                 query_slice=np.asarray(query_slice, dtype=np.float32),
                 key_page_sketches=key_page_sketches if key_page_sketches else None,
+                key_page_sketch_matrix=builtin_sketch_matrix,
+                tail_page_sketch=builtin_tail_sketch,
                 key_page_minima=key_page_minima if key_page_minima else None,
+                key_page_minima_matrix=builtin_minima_matrix,
+                tail_page_minimum=builtin_tail_minimum,
                 key_page_maxima=key_page_maxima if key_page_maxima else None,
+                key_page_maxima_matrix=builtin_maxima_matrix,
+                tail_page_maximum=builtin_tail_maximum,
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
+                score_all_pages_with_matrices=(
+                    self.config.execution_builtin_selector_score_all_pages
+                    and not self.config.execution_builtin_selector_candidate_only
+                ),
+                score_all_pages_min_candidate_fraction=self.config.execution_builtin_selector_score_all_pages_min_candidate_fraction,
+                selector_stats_recorder=lambda stats: self._record_builtin_selector_stats(
+                    candidate_pages=int(stats["candidate_pages"]),
+                    total_pages=int(stats["total_pages"]),
+                    candidate_fraction=float(stats["candidate_fraction"]),
+                    used_score_all_pages=bool(stats["used_score_all_pages"]),
+                ),
+                stage_recorder=lambda stage, ms: self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage=stage,
+                    ms=float(ms),
+                ),
             )
+            _stage_finish("shortlist_candidate_builtin_selection", shortlist_candidate_builtin_selection_started_at)
+        _stage_finish("shortlist_candidate_scoring", shortlist_candidate_scoring_started_at)
         if not self._execution_exact_refine_enabled(layer_id=layer_id):
-            promote_enabled = self._execution_exact_promote_enabled(layer_id=layer_id)
-            if (
-                promote_enabled
-                and float(self.config.execution_exact_promote_margin_threshold) > 0.0
-                and boundary_margin_normalized is not None
-                and boundary_margin_normalized > float(self.config.execution_exact_promote_margin_threshold)
-            ):
-                promote_enabled = False
+            promote_enabled, promote_disable_reason = self._execution_exact_promote_status(
+                layer_id=layer_id,
+                context_length=context_length,
+                boundary_margin_normalized=boundary_margin_normalized,
+            )
             if not promote_enabled:
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=False,
+                    promote_disable_reason=promote_disable_reason,
+                )
                 return stage1_indices
             candidate_indices = [index for index in stage1_indices if index not in base_indices]
             if not candidate_indices:
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=True,
+                    promote_disable_reason=None,
+                    promote_candidate_indices=[],
+                    promote_selected_indices=[],
+                    promote_target_old_page_count=0,
+                )
                 return stage1_indices
             target_old_page_count = min(
                 len(candidate_indices),
                 int(layer_relevance_top_k) + int(self.config.execution_exact_promote_top_k),
             )
             if target_old_page_count >= len(candidate_indices):
+                _record_shortlist_trace(
+                    base_index_set=base_indices,
+                    stage1_selected_indices=stage1_indices,
+                    final_selected_indices=stage1_indices,
+                    promote_enabled=True,
+                    promote_disable_reason=None,
+                    promote_candidate_indices=candidate_indices,
+                    promote_selected_indices=candidate_indices,
+                    promote_target_old_page_count=target_old_page_count,
+                )
                 return stage1_indices
+            shortlist_exact_selection_started_at = _stage_start()
             candidate_logits = score_pages(
                 np.asarray(query_slice, dtype=np.float32),
                 [key_pages[index] for index in candidate_indices],
@@ -1678,7 +2846,19 @@ class ModelPagedKVCache:
                     reverse=True,
                 )[:target_old_page_count]
             ]
-            return sorted(base_indices.union(chosen))
+            final_indices = sorted(base_indices.union(chosen))
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=final_indices,
+                promote_enabled=True,
+                promote_disable_reason=None,
+                promote_candidate_indices=candidate_indices,
+                promote_selected_indices=chosen,
+                promote_target_old_page_count=target_old_page_count,
+            )
+            _stage_finish("shortlist_exact_selection", shortlist_exact_selection_started_at)
+            return final_indices
         base_indices = set(
             select_window_page_indices(
                 key_pages,
@@ -1689,6 +2869,13 @@ class ModelPagedKVCache:
         candidate_indices = [index for index in stage1_indices if index not in base_indices]
         if not candidate_indices:
             self._record_execution_exact_refine(layer_id=layer_id, candidate_pages=0, selected_pages=0)
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=stage1_indices,
+                promote_enabled=False,
+                promote_disable_reason="exact_refine_enabled",
+            )
             return stage1_indices
         top_k = min(int(self.config.execution_exact_refine_top_k), len(candidate_indices))
         if top_k >= len(candidate_indices):
@@ -1697,7 +2884,15 @@ class ModelPagedKVCache:
                 candidate_pages=len(candidate_indices),
                 selected_pages=len(candidate_indices),
             )
+            _record_shortlist_trace(
+                base_index_set=base_indices,
+                stage1_selected_indices=stage1_indices,
+                final_selected_indices=stage1_indices,
+                promote_enabled=False,
+                promote_disable_reason="exact_refine_enabled",
+            )
             return stage1_indices
+        shortlist_exact_selection_started_at = _stage_start()
         candidate_logits = score_pages(
             np.asarray(query_slice, dtype=np.float32),
             [key_pages[index] for index in candidate_indices],
@@ -1720,7 +2915,16 @@ class ModelPagedKVCache:
             candidate_pages=len(candidate_indices),
             selected_pages=len(chosen),
         )
-        return sorted(base_indices.union(chosen))
+        final_indices = sorted(base_indices.union(chosen))
+        _record_shortlist_trace(
+            base_index_set=base_indices,
+            stage1_selected_indices=stage1_indices,
+            final_selected_indices=final_indices,
+            promote_enabled=False,
+            promote_disable_reason="exact_refine_enabled",
+        )
+        _stage_finish("shortlist_exact_selection", shortlist_exact_selection_started_at)
+        return final_indices
 
     def _should_build_execution_runtime_metadata(self, *, kind: str) -> bool:
         if kind != "K":
@@ -1752,12 +2956,21 @@ class ModelPagedKVCache:
         self._execution_shortlist_grouping_rejections_by_layer = {}
         self._execution_shortlist_total_pages_by_layer = {}
         self._execution_shortlist_selected_pages_by_layer = {}
+        self._execution_shortlist_trace_records = []
         self._execution_exact_refine_invocations = 0
         self._execution_exact_refine_candidate_pages = 0
         self._execution_exact_refine_selected_pages = 0
         self._execution_exact_refine_invocations_by_layer = {}
         self._execution_exact_refine_candidate_pages_by_layer = {}
         self._execution_exact_refine_selected_pages_by_layer = {}
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        self._decode_stage_timings_by_layer = {}
+        self._reset_resident_accounting()
+        self._reset_chunk_budget_tracking()
+        self._reset_builtin_selector_tracking()
+        self._reset_execution_value_escape_tracking()
+        self._prepared_chunk_cache_frozen_budget_bytes = None
+        self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
     def clear_layer(self, layer_id: int) -> None:
@@ -1769,6 +2982,7 @@ class ModelPagedKVCache:
             self._states[key].clear(clear_prepared_cache=False)
         self.cache.clear()
         clear_prepared_chunk_cache()
+        self._rebuild_resident_accounting()
         self._decode_path_counts_by_layer.pop(int(layer_id), None)
         self._decode_path_counts = {
             "grouped_batched": 0,
@@ -1787,6 +3001,10 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_candidate_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_selected_pages_by_layer.pop(int(layer_id), None)
+        self._prepared_chunk_cache_frozen_budget_bytes = None
+        self._prepared_chunk_cache_applied_budget_bytes = None
+        self._prepared_chunk_cache_budget_dirty = True
+        self._decode_stage_timings_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_invocations = sum(self._execution_shortlist_invocations_by_layer.values())
         self._execution_shortlist_applied = sum(self._execution_shortlist_applied_by_layer.values())
         self._execution_shortlist_group_union_applied = sum(self._execution_shortlist_group_union_applied_by_layer.values())
@@ -1796,6 +3014,14 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations = sum(self._execution_exact_refine_invocations_by_layer.values())
         self._execution_exact_refine_candidate_pages = sum(self._execution_exact_refine_candidate_pages_by_layer.values())
         self._execution_exact_refine_selected_pages = sum(self._execution_exact_refine_selected_pages_by_layer.values())
+        self._decode_stage_timings = _empty_decode_stage_timing_totals()
+        for layer_timings in self._decode_stage_timings_by_layer.values():
+            for stage, value in layer_timings.items():
+                if stage in self._decode_stage_timings:
+                    self._decode_stage_timings[stage] += float(value)
+        self._reset_builtin_selector_tracking()
+        self._reset_execution_value_escape_tracking()
+        self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 
     def _grouped_query_heads_for_mapping(self, q_head_to_kv_head: Sequence[int] | np.ndarray) -> tuple[tuple[int, ...], ...]:
@@ -1892,25 +3118,30 @@ class ModelPagedKVCache:
                         ),
                     )
                 )
-                value_pages_by_head[kv_head_id].append(
-                    encode_page(
-                        full_values[kv_head_id, page_start:page_end],
-                        self.config,
+                dense_value_page = full_values[kv_head_id, page_start:page_end]
+                value_page = encode_page(
+                    dense_value_page,
+                    self.config,
+                    kind="V",
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=page_start,
+                    page_mode=self._select_page_mode(
+                        dense_value_page,
                         kind="V",
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
                         token_start=page_start,
-                        page_mode=self._select_page_mode(
-                            full_values[kv_head_id, page_start:page_end],
-                            kind="V",
-                            layer_id=layer_id,
-                            kv_head_id=kv_head_id,
-                            token_start=page_start,
-                            sequence_length=sequence_length,
-                        ),
-                        build_runtime_metadata=False,
-                    )
+                        sequence_length=sequence_length,
+                    ),
+                    build_runtime_metadata=False,
                 )
+                self._maybe_register_execution_value_escape_source(
+                    value_page,
+                    dense_values=dense_value_page,
+                    escape_mode=str(self.config.execution_value_escape_mode),
+                )
+                value_pages_by_head[kv_head_id].append(value_page)
         return key_pages_by_head, value_pages_by_head
 
     def _can_direct_prepare_full_prefill_pages_torch(self) -> bool:
@@ -1958,6 +3189,7 @@ class ModelPagedKVCache:
         key_pages: list[PageLike] = []
         value_refs: list[tuple[_HeadSessionState, int]] = []
         value_pages: list[PageLike] = []
+        touched_states: dict[int, _HeadSessionState] = {}
 
         for state in self._states.values():
             for index, page in enumerate(state.session.key_pages):
@@ -1965,11 +3197,13 @@ class ModelPagedKVCache:
                     continue
                 key_refs.append((state, index))
                 key_pages.append(page)
+                touched_states[id(state)] = state
             for index, page in enumerate(state.session.value_pages):
                 if isinstance(page, PreparedPageTorch):
                     continue
                 value_refs.append((state, index))
                 value_pages.append(page)
+                touched_states[id(state)] = state
 
         if key_pages:
             prepared_keys = prepare_pages(key_pages, backend=self.backend, cache=self.cache, trace=trace)
@@ -1981,7 +3215,13 @@ class ModelPagedKVCache:
             for (state, index), prepared in zip(value_refs, prepared_values, strict=True):
                 state.session.value_pages[index] = prepared
                 state.invalidate_decode_views()
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if key_pages or value_pages:
+            for state in touched_states.values():
+                self._refresh_state_resident_accounting(state)
+            self._mark_prepared_chunk_cache_budget_dirty(reason="prepare_static_pages")
+        for state in self._states.values():
+            self._maybe_prewarm_execution_builtin_selector_cache(state)
+            self._maybe_prewarm_execution_value_escape_pages(state, trace=trace)
 
     def _ensure_prepared_static_pages(
         self,
@@ -1991,6 +3231,7 @@ class ModelPagedKVCache:
     ) -> None:
         if self._torch_device_type is None:
             return
+        state_changed = False
         if state.session.key_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.key_pages):
             state.session.key_pages = prepare_pages(
                 state.session.key_pages,
@@ -1999,6 +3240,7 @@ class ModelPagedKVCache:
                 trace=trace,
             )
             state.invalidate_decode_views()
+            state_changed = True
         if state.session.value_pages and not all(isinstance(page, PreparedPageTorch) for page in state.session.value_pages):
             state.session.value_pages = prepare_pages(
                 state.session.value_pages,
@@ -2007,7 +3249,12 @@ class ModelPagedKVCache:
                 trace=trace,
             )
             state.invalidate_decode_views()
-        self._mark_prepared_chunk_cache_budget_dirty()
+            state_changed = True
+        if state_changed:
+            self._refresh_state_resident_accounting(state)
+            self._mark_prepared_chunk_cache_budget_dirty(reason="ensure_prepared_static_pages")
+        self._maybe_prewarm_execution_builtin_selector_cache(state)
+        self._maybe_prewarm_execution_value_escape_pages(state, trace=trace)
 
     def _validate_layer_id(self, layer_id: int) -> None:
         if layer_id < 0 or layer_id >= self.num_hidden_layers:
@@ -2428,7 +3675,8 @@ class ModelPagedKVCache:
                 token_start=full_tokens,
                 trace=trace,
             )
-        self._mark_prepared_chunk_cache_budget_dirty()
+        self._rebuild_resident_accounting()
+        self._mark_prepared_chunk_cache_budget_dirty(reason="ingest_prefill_cache")
 
     def ingest_prefill_cache_torch(
         self,
@@ -2554,7 +3802,8 @@ class ModelPagedKVCache:
                 values[:, full_tokens:],
                 token_start=full_tokens,
             )
-        self._mark_prepared_chunk_cache_budget_dirty()
+        self._rebuild_resident_accounting()
+        self._mark_prepared_chunk_cache_budget_dirty(reason="ingest_prefill_cache_torch")
 
     def append_step(
         self,
@@ -2581,6 +3830,7 @@ class ModelPagedKVCache:
             raise ValueError("key_step and value_step token counts must match")
         token_count = int(keys.shape[1])
 
+        resident_bytes_changed = False
         if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
@@ -2588,12 +3838,18 @@ class ModelPagedKVCache:
                 key_tail = key_tails[kv_head_id]
                 value_tail = value_tails[kv_head_id]
                 if key_tail is not None:
-                    key_tail._ensure_allocated(
-                        token_start=token_index if key_tail.token_count == 0 else key_tail.source_page.header.token_start
+                    resident_bytes_changed = (
+                        key_tail._ensure_allocated(
+                            token_start=token_index if key_tail.token_count == 0 else key_tail.source_page.header.token_start
+                        )
+                        or resident_bytes_changed
                     )
                 if value_tail is not None:
-                    value_tail._ensure_allocated(
-                        token_start=token_index if value_tail.token_count == 0 else value_tail.source_page.header.token_start
+                    resident_bytes_changed = (
+                        value_tail._ensure_allocated(
+                            token_start=token_index if value_tail.token_count == 0 else value_tail.source_page.header.token_start
+                        )
+                        or resident_bytes_changed
                     )
             self._batch_upload_persistent_tail_rows(key_tails, keys, token_start=token_index, trace=trace)
             self._batch_upload_persistent_tail_rows(value_tails, values, token_start=token_index, trace=trace)
@@ -2617,7 +3873,11 @@ class ModelPagedKVCache:
                     state.persistent_key_tail.clear()
                     state.persistent_value_tail.clear()
             state.sequence_length += token_count
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if resident_bytes_changed:
+            for kv_head_id in range(self.num_key_value_heads):
+                self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
+            self._mark_prepared_chunk_cache_budget_dirty(reason="append_step_tail_alloc")
+        return
 
     def append_step_torch(
         self,
@@ -2669,6 +3929,7 @@ class ModelPagedKVCache:
 
         key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
         value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
+        resident_bytes_changed = False
         for kv_head_id in range(self.num_key_value_heads):
             state = self._state(layer_id, kv_head_id)
             if state.sequence_length != token_index:
@@ -2676,16 +3937,22 @@ class ModelPagedKVCache:
                     f"layer {layer_id} kv_head {kv_head_id} expected token_index {state.sequence_length}, received {token_index}"
                 )
             if key_tails[kv_head_id] is not None:
-                key_tails[kv_head_id]._ensure_allocated(
-                    token_start=token_index
-                    if key_tails[kv_head_id].token_count == 0
-                    else key_tails[kv_head_id].source_page.header.token_start
+                resident_bytes_changed = (
+                    key_tails[kv_head_id]._ensure_allocated(
+                        token_start=token_index
+                        if key_tails[kv_head_id].token_count == 0
+                        else key_tails[kv_head_id].source_page.header.token_start
+                    )
+                    or resident_bytes_changed
                 )
             if value_tails[kv_head_id] is not None:
-                value_tails[kv_head_id]._ensure_allocated(
-                    token_start=token_index
-                    if value_tails[kv_head_id].token_count == 0
-                    else value_tails[kv_head_id].source_page.header.token_start
+                resident_bytes_changed = (
+                    value_tails[kv_head_id]._ensure_allocated(
+                        token_start=token_index
+                        if value_tails[kv_head_id].token_count == 0
+                        else value_tails[kv_head_id].source_page.header.token_start
+                    )
+                    or resident_bytes_changed
                 )
 
         self._batch_append_persistent_tail_tensors(key_tails, keys, token_start=token_index)
@@ -2730,7 +3997,10 @@ class ModelPagedKVCache:
                 state.persistent_key_tail.clear()
                 state.persistent_value_tail.clear()
             state.sequence_length += token_count
-        self._mark_prepared_chunk_cache_budget_dirty()
+        if resident_bytes_changed:
+            for kv_head_id in range(self.num_key_value_heads):
+                self._refresh_state_resident_accounting(self._state(layer_id, kv_head_id))
+            self._mark_prepared_chunk_cache_budget_dirty(reason="append_step_torch_tail_alloc")
 
     def _prepared_pages_with_tail(
         self,
@@ -2739,6 +4009,17 @@ class ModelPagedKVCache:
         *,
         trace: ExecutionTrace | None = None,
     ) -> tuple[list[PageLike], list[PageLike], _PreparedDecodeViewLayout | None]:
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _record_layout_build_timing(started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage="prepare_layout_build",
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
+
         state = self._state(layer_id, kv_head_id)
         self._ensure_prepared_static_pages(state, trace=trace)
         if state.persistent_key_tail is not None and state.persistent_value_tail is not None:
@@ -2764,14 +4045,20 @@ class ModelPagedKVCache:
                 value_pages.append(prepared_value_tail)
                 state.decode_key_pages_with_tail = key_pages
                 state.decode_value_pages_with_tail = value_pages
+                layout_started_at = perf_counter() if capture_stage_timings else None
                 state.decode_view_layout = _build_prepared_decode_view_layout(key_pages, value_pages)
+                _record_layout_build_timing(layout_started_at)
                 return key_pages, value_pages, state.decode_view_layout
             state.invalidate_decode_views()
+            layout_started_at = perf_counter() if capture_stage_timings else None
             state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            _record_layout_build_timing(layout_started_at)
             return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_pages = state.tail.build_temp_pages()
         if temp_pages is None:
+            layout_started_at = perf_counter() if capture_stage_timings else None
             state.decode_view_layout = _build_prepared_decode_view_layout(state.session.key_pages, state.session.value_pages)
+            _record_layout_build_timing(layout_started_at)
             return state.session.key_pages, state.session.value_pages, state.decode_view_layout
         temp_key_page, temp_value_page = temp_pages
         # Temporary live-tail pages are rebuilt on demand and should not go
@@ -2782,7 +4069,10 @@ class ModelPagedKVCache:
         value_pages = list(state.session.value_pages)
         key_pages.append(prepared_temp_key_page)
         value_pages.append(prepared_temp_value_page)
-        return key_pages, value_pages, _build_prepared_decode_view_layout(key_pages, value_pages)
+        layout_started_at = perf_counter() if capture_stage_timings else None
+        layout = _build_prepared_decode_view_layout(key_pages, value_pages)
+        _record_layout_build_timing(layout_started_at)
+        return key_pages, value_pages, layout
 
     def decode_layer(
         self,
@@ -2850,6 +4140,7 @@ class ModelPagedKVCache:
         key_pages_by_group: list[list[PageLike]] = []
         window_index_sets_by_group: list[set[int]] = []
         representative_queries: list[np.ndarray] = []
+        shortlist_trace_records_by_group: list[dict[str, object] | None] = []
 
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
@@ -2857,15 +4148,17 @@ class ModelPagedKVCache:
             key_pages, value_pages, _ = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            state = self._state(layer_id, kv_head_id)
             kv_queries = scaled_queries[list(q_head_ids)]
             key_pages, _ = self._m2_prefilter_pages_numpy(kv_queries, key_pages, value_pages)
             representative_query = kv_queries.mean(axis=0).astype(np.float32, copy=False)
             raw_selected_indices = None
-            context_length = (
+            page_max_context_length = (
                 max(_page_header(page).token_start + _page_header(page).token_count for page in key_pages)
                 if key_pages
                 else 0
             )
+            context_length = int(state.sequence_length) if int(state.sequence_length) > 0 else int(page_max_context_length)
             layer_recent_window = int(
                 self.config.resolve_execution_recent_window_for_context(
                     layer_id=layer_id,
@@ -2873,12 +4166,22 @@ class ModelPagedKVCache:
                 )
             )
             if shortlist_enabled:
+                trace_record_count = len(self._execution_shortlist_trace_records)
                 raw_selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
+                    kv_head_id=int(kv_head_id),
                     query_slice=representative_query,
+                    context_length_override=int(context_length) if int(context_length) > 0 else None,
                     trace=trace,
                 )
+                shortlist_trace_record = (
+                    dict(self._execution_shortlist_trace_records[-1])
+                    if len(self._execution_shortlist_trace_records) > trace_record_count
+                    else None
+                )
+            else:
+                shortlist_trace_record = None
             selected_indices = (
                 list(range(len(key_pages))) if raw_selected_indices is None else [int(index) for index in raw_selected_indices]
             )
@@ -2894,6 +4197,9 @@ class ModelPagedKVCache:
                     "kv_head_id": int(kv_head_id),
                     "query_head_ids": list(q_head_ids),
                     "layer_recent_window": int(layer_recent_window),
+                    "context_length_page_max": int(page_max_context_length),
+                    "context_length_effective": int(context_length),
+                    "context_length_override_applied": bool(int(state.sequence_length) > 0),
                 }
             )
             raw_selected_indices_by_group.append(raw_selected_indices)
@@ -2901,8 +4207,28 @@ class ModelPagedKVCache:
             key_pages_by_group.append(key_pages)
             window_index_sets_by_group.append(window_index_set)
             representative_queries.append(representative_query)
+            shortlist_trace_records_by_group.append(shortlist_trace_record)
 
         shortlist_attempted = any(indices is not None for indices in raw_selected_indices_by_group)
+        union_rescue_records: list[dict[str, object]] = []
+        if shortlist_attempted and len(group_entries) > 1 and layer_prefer_grouped_batching:
+            adjusted_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
+                layer_id=layer_id,
+                selected_indices_by_group=full_selected_indices_by_group,
+                key_pages_by_group=key_pages_by_group,
+                representative_queries=representative_queries,
+                shortlist_traces_by_group=shortlist_trace_records_by_group,
+                trace=trace,
+            )
+            full_selected_indices_by_group = [
+                list(range(len(key_pages))) if indices is None else [int(index) for index in indices]
+                for key_pages, indices in zip(key_pages_by_group, adjusted_selected_indices_by_group, strict=True)
+            ]
+            raw_selected_indices_by_group = [
+                None if indices is None else [int(index) for index in indices]
+                for indices in adjusted_selected_indices_by_group
+            ]
+            self._execution_shortlist_trace_records.extend(union_rescue_records)
         union_indices = sorted(
             {
                 index
@@ -2923,6 +4249,14 @@ class ModelPagedKVCache:
         for group_index, entry in enumerate(group_entries):
             key_pages = key_pages_by_group[group_index]
             selected_indices = full_selected_indices_by_group[group_index]
+            union_rescue_record = next(
+                (
+                    record
+                    for record in union_rescue_records
+                    if int(record.get("group_index", -1)) == int(group_index)
+                ),
+                None,
+            )
             if union_active:
                 final_indices = list(union_indices)
                 union_added_indices = sorted(set(union_indices) - set(selected_indices))
@@ -3080,6 +4414,14 @@ class ModelPagedKVCache:
                 secondary_top_indices
                 and secondary_primary_top_recall < float(self.config.execution_secondary_relevance_min_overlap)
             )
+            exact_promote_candidate_expansion_enabled, exact_promote_candidate_expansion_reason = (
+                self._execution_exact_promote_policy_status(layer_id=layer_id, context_length=context_length)
+            )
+            exact_promote_enabled, exact_promote_disable_reason = self._execution_exact_promote_status(
+                layer_id=layer_id,
+                context_length=context_length,
+                boundary_margin_normalized=approx_boundary_margin_normalized,
+            )
             recent_neighbor_rescue_triggered = bool(
                 self._execution_recent_neighbor_rescue_enabled(layer_id=layer_id)
                 and recent_neighbor_anchor_pages >= int(self.config.execution_recent_neighbor_rescue_min_anchor_pages)
@@ -3174,6 +4516,22 @@ class ModelPagedKVCache:
                     "secondary_exact_top_overlap": int(secondary_exact_top_overlap),
                     "secondary_exact_top_recall": float(secondary_exact_top_recall),
                     "secondary_triggered": bool(secondary_triggered),
+                    "exact_promote_candidate_expansion_enabled": bool(exact_promote_candidate_expansion_enabled),
+                    "exact_promote_candidate_expansion_disable_reason": exact_promote_candidate_expansion_reason,
+                    "exact_promote_enabled": bool(exact_promote_enabled),
+                    "exact_promote_disable_reason": exact_promote_disable_reason,
+                    "union_exact_promote_rescue_applied": bool(
+                        union_rescue_record is not None and bool(union_rescue_record.get("applied", False))
+                    ),
+                    "union_exact_promote_rescue_disable_reason": (
+                        None if union_rescue_record is None else union_rescue_record.get("disable_reason")
+                    ),
+                    "union_exact_promote_rescue_selected_novel_count": int(
+                        0 if union_rescue_record is None else union_rescue_record.get("selected_novel_count", 0)
+                    ),
+                    "union_exact_promote_rescue_selected_novel_page_ranges": (
+                        [] if union_rescue_record is None else list(union_rescue_record.get("selected_novel_page_ranges", []))
+                    ),
                     "recent_neighbor_anchor_pages": int(recent_neighbor_anchor_pages),
                     "recent_neighbor_recent_old_pages": int(recent_neighbor_recent_old_pages),
                     "recent_neighbor_rescue_triggered": bool(recent_neighbor_rescue_triggered),
@@ -3260,6 +4618,19 @@ class ModelPagedKVCache:
             bool(prefer_grouped_batching)
             and not self.config.execution_grouped_batching_disabled_for_layer(layer_id=layer_id)
         )
+        capture_stage_timings = bool(trace is not None and trace.capture_timings)
+
+        def _stage_start() -> float | None:
+            return perf_counter() if capture_stage_timings else None
+
+        def _stage_finish(stage: str, started_at: float | None) -> None:
+            if started_at is None:
+                return
+            self._record_decode_stage_timing(
+                layer_id=int(layer_id),
+                stage=stage,
+                ms=(perf_counter() - started_at) * 1000.0,
+            )
 
         outputs = torch.zeros(
             (self.num_attention_heads, self.config.head_dim),
@@ -3271,27 +4642,45 @@ class ModelPagedKVCache:
         active_key_pages: list[Sequence[PageLike]] = []
         active_value_pages: list[Sequence[PageLike]] = []
         active_layouts: list[_PreparedDecodeViewLayout | None] = []
+        active_context_lengths: list[int] = []
+        active_representative_queries: list[np.ndarray] = []
         original_key_pages_by_group: list[Sequence[PageLike]] = []
         original_value_pages_by_group: list[Sequence[PageLike]] = []
         original_layouts: list[_PreparedDecodeViewLayout | None] = []
         shortlist_selected_indices_by_group: list[list[int] | None] = []
+        shortlist_trace_records_by_group: list[dict[str, object] | None] = []
         for kv_head_id, q_head_ids in enumerate(grouped_query_heads):
             if not q_head_ids:
                 continue
+            prepare_started_at = _stage_start()
             key_pages, value_pages, decode_layout = self._prepared_pages_with_tail(layer_id, kv_head_id, trace=trace)
+            _stage_finish("prepare_pages_with_tail", prepare_started_at)
             if not key_pages:
                 raise ValueError(f"layer {layer_id} kv_head {kv_head_id} has no cached tokens to decode against")
+            state = self._state(layer_id, kv_head_id)
             kv_queries = scaled_queries[list(q_head_ids)]
+            m2_prefilter_started_at = _stage_start()
             key_pages, value_pages = self._m2_prefilter_pages_torch(kv_queries, key_pages, value_pages)
+            _stage_finish("m2_prefilter", m2_prefilter_started_at)
             selected_indices = None
+            shortlist_trace_record = None
             if self.config.execution_shortlist_enabled():
+                query_export_started_at = _stage_start()
                 representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                _stage_finish("query_export", query_export_started_at)
+                trace_record_count = len(self._execution_shortlist_trace_records)
+                shortlist_started_at = _stage_start()
                 selected_indices = self._execution_shortlist_page_indices(
                     key_pages,
                     layer_id=layer_id,
+                    kv_head_id=int(kv_head_id),
                     query_slice=representative_query,
+                    context_length_override=int(state.sequence_length) if int(state.sequence_length) > 0 else None,
                     trace=trace,
                 )
+                if len(self._execution_shortlist_trace_records) > trace_record_count:
+                    shortlist_trace_record = dict(self._execution_shortlist_trace_records[-1])
+                _stage_finish("shortlist_selection", shortlist_started_at)
             active_q_head_ids.append(q_head_ids)
             active_queries.append(kv_queries)
             original_key_pages_by_group.append(key_pages)
@@ -3300,7 +4689,10 @@ class ModelPagedKVCache:
             active_key_pages.append(key_pages)
             active_value_pages.append(value_pages)
             active_layouts.append(decode_layout)
+            active_context_lengths.append(int(state.sequence_length))
+            active_representative_queries.append(representative_query)
             shortlist_selected_indices_by_group.append(selected_indices)
+            shortlist_trace_records_by_group.append(shortlist_trace_record)
 
         shortlist_group_union_applied = False
         shortlist_attempted = any(indices is not None for indices in shortlist_selected_indices_by_group)
@@ -3310,6 +4702,25 @@ class ModelPagedKVCache:
         if shortlist_attempted:
             total_pages_per_group = [len(pages) for pages in original_key_pages_by_group]
             shortlist_total_pages = int(sum(total_pages_per_group))
+            if len(active_queries) > 1 and layer_prefer_grouped_batching:
+                query_export_started_at = _stage_start()
+                representative_queries = [
+                    query.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
+                    for query in active_queries
+                ]
+                _stage_finish("query_export", query_export_started_at)
+                union_rescue_started_at = _stage_start()
+                shortlist_selected_indices_by_group, union_rescue_records = self._apply_execution_exact_promote_union_rescue(
+                    layer_id=layer_id,
+                    selected_indices_by_group=shortlist_selected_indices_by_group,
+                    key_pages_by_group=original_key_pages_by_group,
+                    representative_queries=representative_queries,
+                    shortlist_traces_by_group=shortlist_trace_records_by_group,
+                    trace=trace,
+                )
+                self._execution_shortlist_trace_records.extend(union_rescue_records)
+                _stage_finish("shortlist_union_rescue", union_rescue_started_at)
+            shortlist_materialization_started_at = _stage_start()
             union_indices = sorted(
                 {
                     index
@@ -3357,9 +4768,28 @@ class ModelPagedKVCache:
                 active_key_pages = shortlisted_key_pages
                 active_value_pages = shortlisted_value_pages
                 active_layouts = shortlisted_layouts
+            _stage_finish("shortlist_materialization", shortlist_materialization_started_at)
 
-        self._sync_prepared_chunk_cache_budget()
+        value_escape_applied = False
+        if self.config.execution_value_escape_enabled_for_layer(layer_id=layer_id):
+            active_value_pages, value_escape_applied = self._apply_execution_value_escape(
+                layer_id=layer_id,
+                key_pages_by_group=active_key_pages,
+                value_pages_by_group=active_value_pages,
+                context_lengths_by_group=active_context_lengths,
+                representative_queries_by_group=active_representative_queries,
+                trace=trace,
+            )
+            if value_escape_applied:
+                active_layouts = [None] * len(active_layouts)
 
+        chunk_budget_sync_started_at = _stage_start()
+        self._sync_prepared_chunk_cache_budget(
+            freeze_during_decode=bool(self.config.execution_freeze_chunk_budget_during_decode)
+        )
+        _stage_finish("chunk_budget_sync", chunk_budget_sync_started_at)
+
+        grouping_validation_started_at = _stage_start()
         if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:
             shortlisted_can_batch = _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
             if not shortlisted_can_batch:
@@ -3391,22 +4821,43 @@ class ModelPagedKVCache:
                 applied=shortlist_applied,
                 group_union_applied=shortlist_group_union_applied,
             )
-
         cached_group_layout = layer_prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
-        if cached_group_layout or (
+        grouped_path_ready = cached_group_layout or (
             layer_prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
-        ):
+        )
+        _stage_finish("grouping_validation", grouping_validation_started_at)
+
+        if grouped_path_ready:
             self._record_decode_path(layer_id, "grouped_batched")
             key_chunk_lengths = active_layouts[0].key_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
             value_chunk_lengths = active_layouts[0].value_chunk_lengths if cached_group_layout and active_layouts[0] is not None else None
+            backend_started_at = _stage_start()
+            backend_trace_before = _backend_trace_ms_total(trace) if capture_stage_timings else 0.0
             _, _, grouped_outputs = decode_grouped_multiquery_step_prepared_torch_tensor(
                 active_queries,
                 active_key_pages,
                 active_value_pages,
                 key_chunk_lengths=key_chunk_lengths,
                 value_chunk_lengths=value_chunk_lengths,
+                compact_grouped_chunk=bool(self.config.execution_grouped_decode_compact),
+                compact_grouped_mix_chunk=bool(self.config.execution_grouped_mix_compact),
+                disable_packed_grouped_cuda_mix=bool(self.config.execution_grouped_mix_disable_packed_cuda),
                 trace=trace,
             )
+            backend_call_ms = 0.0
+            if backend_started_at is not None:
+                backend_call_ms = (perf_counter() - backend_started_at) * 1000.0
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_wall",
+                    ms=backend_call_ms,
+                )
+                backend_trace_after = _backend_trace_ms_total(trace)
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_non_backend",
+                    ms=backend_call_ms - float(backend_trace_after - backend_trace_before),
+                )
             for q_head_ids, kv_outputs in zip(active_q_head_ids, grouped_outputs, strict=True):
                 outputs[list(q_head_ids)] = kv_outputs
             return outputs
@@ -3419,6 +4870,8 @@ class ModelPagedKVCache:
             active_value_pages,
             strict=True,
         ):
+            backend_started_at = _stage_start()
+            backend_trace_before = _backend_trace_ms_total(trace) if capture_stage_timings else 0.0
             _, _, kv_outputs = decode_multi_query_step_torch_tensor(
                 kv_queries,
                 key_pages,
@@ -3426,5 +4879,18 @@ class ModelPagedKVCache:
                 device_type=self._torch_device_type,
                 trace=trace,
             )
+            if backend_started_at is not None:
+                backend_call_ms = (perf_counter() - backend_started_at) * 1000.0
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_wall",
+                    ms=backend_call_ms,
+                )
+                backend_trace_after = _backend_trace_ms_total(trace)
+                self._record_decode_stage_timing(
+                    layer_id=int(layer_id),
+                    stage="backend_call_non_backend",
+                    ms=backend_call_ms - float(backend_trace_after - backend_trace_before),
+                )
             outputs[list(q_head_ids)] = kv_outputs
         return outputs

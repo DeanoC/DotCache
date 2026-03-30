@@ -2412,6 +2412,8 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         and prepared_chunk.fused_scaled_codes is not None
         and prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="score", variant="fused_generic")
         fused_query = query.reshape(1, header.padded_head_dim).contiguous()
         fused_query_group_sums = query_group_sums.reshape(1, header.num_groups).contiguous()
         return _score_m0_logits_fused_torch(
@@ -2420,6 +2422,8 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
             prepared_chunk.bias_groups,
             fused_query_group_sums,
         ).reshape(-1)
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="score", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -2548,6 +2552,8 @@ def _mix_page_chunk_torch(
         and prepared_chunk.fused_scaled_codes is not None
         and prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="mix", variant="fused_generic")
         output[: header.padded_head_dim] += _mix_m0_contribution_fused_torch(
             weights.reshape(1, page_count, token_count),
             prepared_chunk.fused_scaled_codes,
@@ -2555,6 +2561,8 @@ def _mix_page_chunk_torch(
             group_size=header.group_size,
         ).reshape(-1)
         return output
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="mix", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -2902,6 +2910,8 @@ def _score_page_chunk_multiquery_torch(
         and prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="score", variant="fused_two_group64")
         fused_queries = query_groups.reshape(query_count, header.padded_head_dim).contiguous()
         return _score_m0_logits_two_group64_torch(
             prepared_chunk.fused_scaled_codes,
@@ -2909,6 +2919,8 @@ def _score_page_chunk_multiquery_torch(
             prepared_chunk.bias_groups,
             query_group_sums,
         )
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="score", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3043,12 +3055,16 @@ def _mix_page_chunk_multiquery_torch(
         and prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_per_kv_kernel_variant(section="mix", variant="fused_two_group64")
         output[:, : header.padded_head_dim] += _mix_m0_contribution_two_group64_torch(
             weights,
             prepared_chunk.fused_scaled_codes,
             prepared_chunk.bias_groups,
         )
         return output
+    if trace is not None:
+        trace.record_per_kv_kernel_variant(section="mix", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = prepared_chunk is not None and prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3090,6 +3106,7 @@ def _score_page_chunk_grouped_multiquery_torch(
     *,
     prepared_query_groups_tensor=None,
     query_group_sums=None,
+    compact_grouped_chunk: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -3151,7 +3168,11 @@ def _score_page_chunk_grouped_multiquery_torch(
             ).reshape(batch_size, query_count, header.padded_head_dim)
             query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        grouped_prepared_chunk = (
+            _build_grouped_prepared_chunk_mps(pages_by_group)
+            if compact_grouped_chunk
+            else _get_grouped_prepared_chunk_mps(pages_by_group)
+        )
         if (
             grouped_prepared_chunk is not None
             and grouped_prepared_chunk.m2_sketch_tensor is not None
@@ -3181,8 +3202,12 @@ def _score_page_chunk_grouped_multiquery_torch(
             logits += torch.einsum("bpgtc,bqgc->bqpt", mean_tensor[:, :, :, segment_ids, :], qg)
             return logits.reshape(batch_size, query_count, -1)
         prepared_chunks = None if grouped_prepared_chunk is not None else [
-            _get_prepared_chunk_mps(group_pages) or (
-                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            (
+                _build_prepared_chunk_mps(group_pages)
+                if compact_grouped_chunk
+                else _get_prepared_chunk_mps(group_pages) or (
+                    _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+                )
             )
             for group_pages in pages_by_group
         ]
@@ -3245,7 +3270,11 @@ def _score_page_chunk_grouped_multiquery_torch(
             ).reshape(batch_size, query_count, header.padded_head_dim)
             query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
         logits = torch.zeros((batch_size, query_count, page_count, header.token_count), dtype=torch.float32, device=device_type)
-        grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+        grouped_prepared_chunk = (
+            _build_grouped_prepared_chunk_mps(pages_by_group)
+            if compact_grouped_chunk
+            else _get_grouped_prepared_chunk_mps(pages_by_group)
+        )
         if (
             grouped_prepared_chunk is not None
             and grouped_prepared_chunk.m2_sketch_tensor is not None
@@ -3283,8 +3312,12 @@ def _score_page_chunk_grouped_multiquery_torch(
             logits += torch.einsum("bpgc,bqgc->bqp", mean_tensor, qg)[:, :, :, None]
             return logits.reshape(batch_size, query_count, -1)
         prepared_chunks = None if grouped_prepared_chunk is not None else [
-            _get_prepared_chunk_mps(group_pages) or (
-                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            (
+                _build_prepared_chunk_mps(group_pages)
+                if compact_grouped_chunk
+                else _get_prepared_chunk_mps(group_pages) or (
+                    _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+                )
             )
             for group_pages in pages_by_group
         ]
@@ -3441,10 +3474,18 @@ def _score_page_chunk_grouped_multiquery_torch(
         query_groups_tensor = padded_queries.reshape(batch_size, query_count, header.num_groups, header.group_size)
     query_group_sums_tensor = query_group_sums if query_group_sums is not None else query_groups_tensor.sum(dim=-1)
     logits = torch.zeros((batch_size, query_count, page_count * header.token_count), dtype=torch.float32, device=device_type)
-    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    grouped_prepared_chunk = (
+        _build_grouped_prepared_chunk_mps(pages_by_group)
+        if compact_grouped_chunk
+        else _get_grouped_prepared_chunk_mps(pages_by_group)
+    )
     prepared_chunks = None if grouped_prepared_chunk is not None else [
-        _get_prepared_chunk_mps(group_pages) or (
-            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        (
+            _build_prepared_chunk_mps(group_pages)
+            if compact_grouped_chunk
+            else _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
         )
         for group_pages in pages_by_group
     ]
@@ -3462,6 +3503,8 @@ def _score_page_chunk_grouped_multiquery_torch(
         unpack_mask = pages_by_group[0][0].unpack_mask
         if unpack_shifts is None or unpack_mask is None:
             raise ValueError("packed grouped CUDA path requires unpack metadata")
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="score", variant="packed_cuda")
         for group_start in range(0, header.num_groups, 2):
             group_end = min(header.num_groups, group_start + 2)
             logits += _score_m0_logits_packed32_grouped_torch(
@@ -3481,6 +3524,8 @@ def _score_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="score", variant="fused_two_group64")
         fused_queries = query_groups_tensor.reshape(batch_size, query_count, header.padded_head_dim).contiguous()
         return _score_m0_logits_two_group64_torch(
             grouped_prepared_chunk.fused_scaled_codes,
@@ -3493,6 +3538,8 @@ def _score_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.fused_scaled_codes is not None
         and grouped_prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="score", variant="fused_generic")
         fused_queries = query_groups_tensor.reshape(batch_size, query_count, header.padded_head_dim).contiguous()
         return _score_m0_logits_fused_torch(
             grouped_prepared_chunk.fused_scaled_codes,
@@ -3506,6 +3553,8 @@ def _score_page_chunk_grouped_multiquery_torch(
         and _supports_fused_two_group64(header)
         and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="score", variant="fused_two_group64")
         fused_scaled_codes, bias_groups = _assemble_grouped_fused_two_group64_components(
             prepared_chunks,
             trace=trace,
@@ -3523,6 +3572,8 @@ def _score_page_chunk_grouped_multiquery_torch(
         and prepared_chunks is not None
         and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="score", variant="fused_generic")
         fused_scaled_codes = _trace_timed_call(
             trace,
             "chunk_assembly",
@@ -3548,6 +3599,8 @@ def _score_page_chunk_grouped_multiquery_torch(
             bias_groups,
             query_group_sums_tensor,
         )
+    if trace is not None:
+        trace.record_grouped_kernel_variant(section="score", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3625,6 +3678,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
     pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     *,
     out_acc=None,
+    compact_grouped_chunk: bool = False,
+    disable_packed_grouped_cuda: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -3739,10 +3794,18 @@ def _mix_page_chunk_grouped_multiquery_torch(
             output[:, :, start:end] += torch.einsum("bqpt,bptg->bqg", weights, group)
         return output
 
-    grouped_prepared_chunk = _get_grouped_prepared_chunk_mps(pages_by_group)
+    grouped_prepared_chunk = (
+        _build_grouped_prepared_chunk_mps(pages_by_group)
+        if compact_grouped_chunk
+        else _get_grouped_prepared_chunk_mps(pages_by_group)
+    )
     prepared_chunks = None if grouped_prepared_chunk is not None else [
-        _get_prepared_chunk_mps(group_pages) or (
-            _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+        (
+            _build_prepared_chunk_mps(group_pages)
+            if compact_grouped_chunk
+            else _get_prepared_chunk_mps(group_pages) or (
+                _build_prepared_chunk_mps(group_pages) if _prepared_chunk_cache_key(group_pages) is not None else None
+            )
         )
         for group_pages in pages_by_group
     ]
@@ -3755,11 +3818,14 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.scales_groups_tensor is not None
         and grouped_prepared_chunk.bias_groups_tensor is not None
         and _supports_packed_four_group128_cuda(header, device_type=device_type)
+        and not disable_packed_grouped_cuda
     ):
         unpack_shifts = pages_by_group[0][0].unpack_shifts
         unpack_mask = pages_by_group[0][0].unpack_mask
         if unpack_shifts is None or unpack_mask is None:
             raise ValueError("packed grouped CUDA path requires unpack metadata")
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="mix", variant="packed_cuda")
         for group_start in range(0, header.num_groups, 2):
             group_end = min(header.num_groups, group_start + 2)
             start = group_start * header.group_size
@@ -3780,6 +3846,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.bias_groups is not None
         and _supports_fused_two_group64(header)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="mix", variant="fused_two_group64")
         output[:, :, : header.padded_head_dim] += _mix_m0_contribution_two_group64_torch(
             weights,
             grouped_prepared_chunk.fused_scaled_codes,
@@ -3791,6 +3859,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and grouped_prepared_chunk.fused_scaled_codes is not None
         and grouped_prepared_chunk.bias_groups is not None
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="mix", variant="fused_generic")
         output[:, :, : header.padded_head_dim] += _mix_m0_contribution_fused_torch(
             weights,
             grouped_prepared_chunk.fused_scaled_codes,
@@ -3804,6 +3874,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and _supports_fused_two_group64(header)
         and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="mix", variant="fused_two_group64")
         fused_scaled_codes, bias_groups = _assemble_grouped_fused_two_group64_components(
             prepared_chunks,
             trace=trace,
@@ -3820,6 +3892,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
         and prepared_chunks is not None
         and all(chunk is not None and chunk.fused_scaled_codes is not None and chunk.bias_groups is not None for chunk in prepared_chunks)
     ):
+        if trace is not None:
+            trace.record_grouped_kernel_variant(section="mix", variant="fused_generic")
         fused_scaled_codes = _trace_timed_call(
             trace,
             "chunk_assembly",
@@ -3845,6 +3919,8 @@ def _mix_page_chunk_grouped_multiquery_torch(
             group_size=header.group_size,
         )
         return output
+    if trace is not None:
+        trace.record_grouped_kernel_variant(section="mix", variant="generic")
     for group_index in range(header.num_groups):
         cached_codes = grouped_prepared_chunk is not None and grouped_prepared_chunk.codes_groups is not None
         if cached_codes:
@@ -3925,9 +4001,21 @@ def decode_multi_query_step_torch_tensor(
     prepared_value_pages = prepare_pages_torch(value_pages, device_type=device_type, trace=trace)
     if not prepared_key_pages:
         raise ValueError(f"decode_multi_query_step_{device_type} requires at least one page")
+    if trace is not None:
+        trace.record_per_kv_decode_call()
 
     logits_parts = []
+    if torch.is_tensor(query_slices):
+        query_count = int(query_slices.shape[0])
+    else:
+        query_count = int(np.asarray(query_slices).shape[0])
     for page_chunk in _chunk_compatible_pages(prepared_key_pages):
+        if trace is not None:
+            trace.record_per_kv_score_chunk(
+                query_count=query_count,
+                page_count=len(page_chunk),
+                token_count=page_chunk[0].header.token_count,
+            )
         logits_parts.append(
             _trace_timed_call(
                 trace,
@@ -3943,11 +4031,6 @@ def decode_multi_query_step_torch_tensor(
         device_type=device_type,
         fn=lambda: torch.softmax(logits, dim=1),
     )
-
-    if torch.is_tensor(query_slices):
-        query_count = int(query_slices.shape[0])
-    else:
-        query_count = int(np.asarray(query_slices).shape[0])
     output = torch.zeros(
         (query_count, prepared_value_pages[0].header.padded_head_dim),
         dtype=torch.float32,
@@ -3969,6 +4052,13 @@ def decode_multi_query_step_torch_tensor(
                 page_chunk[0].header.token_count,
             ),
         )
+        if trace is not None:
+            trace.record_per_kv_mix_chunk(
+                query_count=query_count,
+                page_count=len(page_chunk),
+                token_count=page_chunk[0].header.token_count,
+                head_dim=prepared_value_pages[0].header.padded_head_dim,
+            )
         output += _trace_timed_call(
             trace,
             "mix",
@@ -4021,6 +4111,9 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
     *,
     key_chunk_lengths: Sequence[int] | None = None,
     value_chunk_lengths: Sequence[int] | None = None,
+    compact_grouped_chunk: bool = False,
+    compact_grouped_mix_chunk: bool = False,
+    disable_packed_grouped_cuda_mix: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4046,6 +4139,8 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
         if int(group_query.shape[0]) != query_count:
             raise ValueError("all query groups must have the same query count for batched grouped decode")
     stacked_queries = torch.stack(query_tensors, dim=0)
+    if trace is not None:
+        trace.record_grouped_decode_call(output_only=False)
 
     first_key_group = key_pages_by_group[0]
     first_value_group = value_pages_by_group[0]
@@ -4087,6 +4182,13 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 group_pages[key_offset : key_offset + chunk_length] for group_pages in key_pages_by_group
             ],
         )
+        if trace is not None:
+            trace.record_grouped_score_chunk(
+                batch_size=group_count,
+                query_count=query_count,
+                page_count=chunk_length,
+                token_count=first_key_group[0].header.token_count,
+            )
         logits_parts.append(
             _trace_timed_call(
                 trace,
@@ -4097,6 +4199,7 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                     chunk_pages,
                     prepared_query_groups_tensor=prepared_query_groups_tensor,
                     query_group_sums=query_group_sums,
+                    compact_grouped_chunk=compact_grouped_chunk,
                     trace=trace,
                 ),
             )
@@ -4140,6 +4243,14 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 group_pages[value_offset : value_offset + chunk_length] for group_pages in value_pages_by_group
             ],
         )
+        if trace is not None:
+            trace.record_grouped_mix_chunk(
+                batch_size=group_count,
+                query_count=query_count,
+                page_count=chunk_length,
+                token_count=first_value_group[value_offset].header.token_count,
+                head_dim=padded_head_dim,
+            )
         output = _trace_timed_call(
             trace,
             "mix",
@@ -4148,6 +4259,8 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
                 chunk_weights,
                 chunk_pages,
                 out_acc=output,
+                compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
+                disable_packed_grouped_cuda=disable_packed_grouped_cuda_mix,
                 trace=trace,
             ),
         )
@@ -4162,6 +4275,9 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
     key_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     value_pages_by_group: Sequence[Sequence[PreparedPageTorch]],
     *,
+    compact_grouped_chunk: bool = False,
+    compact_grouped_mix_chunk: bool = False,
+    disable_packed_grouped_cuda_mix: bool = False,
     trace: ExecutionTrace | None = None,
 ):
     torch = _load_torch()
@@ -4187,6 +4303,8 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
         if int(group_query.shape[0]) != query_count:
             raise ValueError("all query groups must have the same query count for batched grouped decode")
     stacked_queries = torch.stack(query_tensors, dim=0)
+    if trace is not None:
+        trace.record_grouped_decode_call(output_only=True)
 
     first_key_group = key_pages_by_group[0]
     first_value_group = value_pages_by_group[0]
@@ -4230,9 +4348,17 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 key_chunk_pages,
                 prepared_query_groups_tensor=prepared_query_groups_tensor,
                 query_group_sums=query_group_sums,
+                compact_grouped_chunk=compact_grouped_chunk,
                 trace=trace,
             ),
         )
+        if trace is not None:
+            trace.record_grouped_score_chunk(
+                batch_size=group_count,
+                query_count=query_count,
+                page_count=chunk_length,
+                token_count=first_key_group[0].header.token_count,
+            )
         value_chunk_pages = _trace_timed_call(
             trace,
             "chunk_assembly",
@@ -4280,9 +4406,19 @@ def decode_grouped_multiquery_step_prepared_torch_tensor_output_only(
                 chunk_weights,
                 value_chunk_pages,
                 out_acc=output,
+                compact_grouped_chunk=(compact_grouped_chunk or compact_grouped_mix_chunk),
+                disable_packed_grouped_cuda=disable_packed_grouped_cuda_mix,
                 trace=trace,
             ),
         )
+        if trace is not None:
+            trace.record_grouped_mix_chunk(
+                batch_size=group_count,
+                query_count=query_count,
+                page_count=chunk_length,
+                token_count=chunk_template[0].header.token_count,
+                head_dim=padded_head_dim,
+            )
         running_max = new_max
         key_offset += chunk_length
         value_offset += chunk_length
