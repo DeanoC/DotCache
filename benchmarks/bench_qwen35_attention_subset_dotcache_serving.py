@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None)
     parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
     parser.add_argument("--torch-dtype", default="float16")
+    parser.add_argument("--weight-quantization", choices=["none", "bnb_8bit"], default="none")
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
@@ -511,6 +512,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "backend": args.backend,
         "device": args.device,
         "torch_dtype": args.torch_dtype,
+        "weight_quantization": args.weight_quantization,
         "tokens_per_page": args.tokens_per_page,
         "scorer_diagnostic": bool(args.scorer_diagnostic),
         "recall_analysis": bool(args.recall_analysis),
@@ -635,6 +637,7 @@ def main() -> None:
         backend=args.backend,
         device=args.device,
         torch_dtype=args.torch_dtype,
+        weight_quantization=args.weight_quantization,
     )
     common_record = _common_record(args, max_position_embeddings=max_position_embeddings)
 

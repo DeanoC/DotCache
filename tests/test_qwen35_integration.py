@@ -1980,6 +1980,23 @@ def test_qwen35_value_escape_layer_scan_presets_apply_expected_defaults(
     assert args.selector_modes == ["approx_shortlist", "layer_full_context"]
     assert args.kv_modes == ["exact_m0", "m0_v_escape"]
 
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_9b_initial_scan",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.model_id == "Qwen/Qwen3.5-9B"
+    assert args.weight_quantization == "bnb_8bit"
+    assert args.layers == [3, 7, 11, 15, 19, 23]
+    assert args.contexts == [8192]
+    assert args.selector_modes == ["approx_shortlist"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
 
 def test_qwen35_value_escape_reference_presets_build_expected_commands(
     monkeypatch: pytest.MonkeyPatch,

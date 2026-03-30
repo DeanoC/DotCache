@@ -83,6 +83,7 @@ The promoted scan entrypoint now also has named presets in
 
 - `qwen35_4b_initial_scan`
 - `qwen35_4b_confirm_32768`
+- `qwen35_9b_initial_scan`
 
 So the canonical workflow is now:
 
