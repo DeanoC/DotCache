@@ -1932,6 +1932,55 @@ def test_qwen35_value_escape_layer_scan_builds_layer_specific_commands(
     assert "layer:19=M0" in command
 
 
+def test_qwen35_value_escape_layer_scan_presets_apply_expected_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_layer_scan",
+        repo_root / "scripts" / "run_qwen35_value_escape_layer_scan.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_4b_initial_scan",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.model_id == "Qwen/Qwen3.5-4B"
+    assert args.layer_profile == "none"
+    assert args.layers == [3, 7, 11, 15, 19, 23]
+    assert args.contexts == [16384]
+    assert args.selector_modes == ["approx_shortlist"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_4b_confirm_32768",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.layers == [7, 19]
+    assert args.contexts == [32768]
+    assert args.selector_modes == ["approx_shortlist", "layer_full_context"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
+
 def test_qwen35_value_escape_reference_presets_build_expected_commands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

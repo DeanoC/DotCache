@@ -3628,6 +3628,13 @@ with presets:
 - `qwen35_0p8b_best`
 - `qwen35_4b_best`
 
+The promoted scan entrypoint now lives at
+[run_qwen35_value_escape_layer_scan.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_layer_scan.py)
+with presets:
+
+- `qwen35_4b_initial_scan`
+- `qwen35_4b_confirm_32768`
+
 This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
 
 - scan the candidate full-attention layers

@@ -16,6 +16,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_4B_ATTENTION_LAYERS = (3, 7, 11, 15, 19, 23)
 SELECTOR_MODES = ("approx_shortlist", "layer_full_context")
 KV_MODES = ("exact_m0", "m0_v_escape")
+PRESETS: dict[str, dict[str, Any]] = {
+    "qwen35_4b_initial_scan": {
+        "model_id": "Qwen/Qwen3.5-4B",
+        "layer_profile": "none",
+        "layers": list(DEFAULT_4B_ATTENTION_LAYERS),
+        "contexts": [16384],
+        "selector_modes": ["approx_shortlist"],
+        "kv_modes": ["exact_m0", "m0_v_escape"],
+    },
+    "qwen35_4b_confirm_32768": {
+        "model_id": "Qwen/Qwen3.5-4B",
+        "layer_profile": "none",
+        "layers": [7, 19],
+        "contexts": [32768],
+        "selector_modes": ["approx_shortlist", "layer_full_context"],
+        "kv_modes": ["exact_m0", "m0_v_escape"],
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +43,7 @@ def parse_args() -> argparse.Namespace:
             "This is the cheap transfer/localization runner used before deeper per-layer tuning."
         )
     )
+    parser.add_argument("--preset", choices=sorted(PRESETS), default=None)
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-4B")
     parser.add_argument("--backend", default="torch_cuda")
     parser.add_argument("--device", default="cuda")
@@ -42,7 +61,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--output", default=None, help="Optional JSONL path. Defaults to stdout only.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    _apply_preset_defaults(args)
+    return args
+
+
+def _apply_preset_defaults(args: argparse.Namespace) -> None:
+    if not args.preset:
+        return
+    preset = PRESETS[str(args.preset)]
+    args.model_id = str(preset["model_id"])
+    args.layer_profile = str(preset["layer_profile"])
+    args.layers = [int(layer_id) for layer_id in preset["layers"]]
+    args.contexts = [int(context) for context in preset["contexts"]]
+    args.selector_modes = [str(mode) for mode in preset["selector_modes"]]
+    args.kv_modes = [str(mode) for mode in preset["kv_modes"]]
 
 
 def _normalized_layer_profile(layer_profile: str | None) -> str | None:
@@ -218,6 +251,7 @@ def _run_single_case(
         }
 
     payload = dict(payload)
+    payload["runner_scan_preset"] = str(args.preset) if args.preset else None
     payload["runner_probe_layer_id"] = int(layer_id)
     payload["runner_selector_mode"] = selector_mode
     payload["runner_kv_mode"] = kv_mode

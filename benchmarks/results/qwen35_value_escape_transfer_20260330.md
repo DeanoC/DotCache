@@ -73,6 +73,17 @@ with presets:
 - `qwen35_0p8b_best`
 - `qwen35_4b_best`
 
+The promoted scan entrypoint now also has named presets in
+[run_qwen35_value_escape_layer_scan.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_layer_scan.py):
+
+- `qwen35_4b_initial_scan`
+- `qwen35_4b_confirm_32768`
+
+So the canonical workflow is now:
+
+1. run a scan preset to localize the fragile value-sensitive layer
+2. run the matching reference preset to benchmark the best lane cleanly
+
 ## Current strategy
 
 The repo should now treat value escape as a reusable tuning pattern rather than a fixed-layer rule:
