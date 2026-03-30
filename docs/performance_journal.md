@@ -3516,3 +3516,38 @@ That is the current cleanest way to answer whether `layer 23` is mostly:
 - key-side approximation error
 - value-side approximation error
 - or interaction between them
+
+## 2026-03-30 18:05 UTC - Layer-23 rescue is value-side, full selected-page `V` escape is the current winner, and rank/recency narrowing did not beat it
+
+The layer-`23` ablation matrix and follow-up escape probes converged on a cleaner result than I expected:
+
+- `K`-side exactness on `layer 23` is basically not buying anything useful here
+- `V`-side exactness is the main quality lever
+- the selector/full-context axis matters, but it is smaller than the `V exact` vs `V=M0` move
+
+The corrected benchmark-only `m0_v_escape` path is now the honest best rescue:
+
+- it improves materially over `exact_m0` in every decisive row
+- it closes a meaningful chunk of the gap back to `exact_exact`
+- token agreement stayed `1.0` throughout the matrix
+
+The failed follow-up cuts were also informative:
+
+- `m0_v_escape_old` gave back too much of the recovered quality, so the sensitive `V` signal is not just living in old shortlisted pages
+- rank-capped variants (`top128/256/512`) matched full escape on the shortlist rows but did not lower decode, and were worse on the full-context rows
+
+So the repo should currently treat:
+
+- shortlist lane: current candidate-only selector path
+- layer rescue: full selected-page `layer 23` `V` escape
+
+as the main benchmark-only CUDA candidate, not the narrowed recency/rank variants.
+
+I also separated the escape telemetry so the branch can report something more production-shaped than a single opaque `builds` count:
+
+- exact-source registrations
+- prepared escape-page builds
+- cache hits
+- applied escaped pages
+
+Those counters now flow into the step breakdown as well, which should make it easier to judge whether a future larger-model transfer run is paying mostly for one-time setup, prepared-page construction, or per-step applied-page churn.

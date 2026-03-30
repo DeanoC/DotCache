@@ -5699,6 +5699,14 @@ _MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS = (
     "execution_builtin_selector_cache_build_bytes_max",
 )
 
+_MODEL_KV_CACHE_VALUE_ESCAPE_COUNTER_KEYS = (
+    "execution_value_escape_cache_hits",
+    "execution_value_escape_source_registrations",
+    "execution_value_escape_prepared_page_builds",
+    "execution_value_escape_builds",
+    "execution_value_escape_applied_pages",
+)
+
 
 def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
     snapshot = {
@@ -5720,6 +5728,13 @@ def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter
         {
             key: float(builtin_selector_summary.get(key, 0))
             for key in _MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS
+        }
+    )
+    value_escape_summary = adapter.model_kv_cache.execution_value_escape_summary()
+    snapshot.update(
+        {
+            key: float(value_escape_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_VALUE_ESCAPE_COUNTER_KEYS
         }
     )
     return snapshot
@@ -5953,6 +5968,21 @@ def _summarize_step_runtime_breakdown(
         ),
         "decode_builtin_selector_cache_build_bytes_max": int(
             adapter_delta.get("execution_builtin_selector_cache_build_bytes_max", 0.0)
+        ),
+        "decode_value_escape_cache_hits": int(
+            adapter_delta.get("execution_value_escape_cache_hits", 0.0)
+        ),
+        "decode_value_escape_source_registrations": int(
+            adapter_delta.get("execution_value_escape_source_registrations", 0.0)
+        ),
+        "decode_value_escape_prepared_page_builds": int(
+            adapter_delta.get("execution_value_escape_prepared_page_builds", 0.0)
+        ),
+        "decode_value_escape_builds": int(
+            adapter_delta.get("execution_value_escape_builds", 0.0)
+        ),
+        "decode_value_escape_applied_pages": int(
+            adapter_delta.get("execution_value_escape_applied_pages", 0.0)
         ),
         "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
         "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],

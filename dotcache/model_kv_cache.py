@@ -1304,6 +1304,8 @@ class ModelPagedKVCache:
         self._execution_value_escape_cache: dict[tuple[int, int, int, str, str], PageLike] = {}
         self._execution_value_escape_source_pages: dict[tuple[int, str], EncodedPage] = {}
         self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_source_registrations = 0
+        self._execution_value_escape_prepared_page_builds = 0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
@@ -1428,6 +1430,8 @@ class ModelPagedKVCache:
         self._execution_value_escape_cache.clear()
         self._execution_value_escape_source_pages.clear()
         self._execution_value_escape_cache_hits = 0
+        self._execution_value_escape_source_registrations = 0
+        self._execution_value_escape_prepared_page_builds = 0
         self._execution_value_escape_builds = 0
         self._execution_value_escape_applied_pages = 0
 
@@ -1551,6 +1555,8 @@ class ModelPagedKVCache:
             "execution_value_escape_old_only": bool(self.config.execution_value_escape_old_only),
             "execution_value_escape_top_k": int(self.config.execution_value_escape_top_k),
             "execution_value_escape_cache_hits": int(self._execution_value_escape_cache_hits),
+            "execution_value_escape_source_registrations": int(self._execution_value_escape_source_registrations),
+            "execution_value_escape_prepared_page_builds": int(self._execution_value_escape_prepared_page_builds),
             "execution_value_escape_builds": int(self._execution_value_escape_builds),
             "execution_value_escape_applied_pages": int(self._execution_value_escape_applied_pages),
         }
@@ -1596,6 +1602,7 @@ class ModelPagedKVCache:
             mode=str(escape_mode),
             build_runtime_metadata=False,
         )
+        self._execution_value_escape_source_registrations += 1
         self._execution_value_escape_builds += 1
 
     def _prepare_execution_value_escape_page(
@@ -1613,13 +1620,21 @@ class ModelPagedKVCache:
         source_key = self._execution_value_escape_source_key(page, escape_mode=escape_mode)
         exact_source_page = self._execution_value_escape_source_pages.get(source_key)
         if exact_source_page is not None:
-            self._execution_value_escape_cache_hits += 1
-            return prepare_pages(
+            exact_cache_key = self._execution_value_escape_cache_key(exact_source_page, escape_mode=escape_mode)
+            cached_exact_page = self._execution_value_escape_cache.get(exact_cache_key)
+            if cached_exact_page is not None:
+                self._execution_value_escape_cache_hits += 1
+                return cached_exact_page
+            prepared_exact_page = prepare_pages(
                 [exact_source_page],
                 backend=self.backend,
                 cache=self.cache,
                 trace=trace,
             )[0]
+            self._execution_value_escape_cache[exact_cache_key] = prepared_exact_page
+            self._execution_value_escape_prepared_page_builds += 1
+            self._execution_value_escape_builds += 1
+            return prepared_exact_page
         cache_key = self._execution_value_escape_cache_key(page, escape_mode=escape_mode)
         cached_page = self._execution_value_escape_cache.get(cache_key)
         if cached_page is not None:
@@ -1643,6 +1658,7 @@ class ModelPagedKVCache:
             trace=trace,
         )[0]
         self._execution_value_escape_cache[cache_key] = prepared_escape_page
+        self._execution_value_escape_prepared_page_builds += 1
         self._execution_value_escape_builds += 1
         return prepared_escape_page
 
