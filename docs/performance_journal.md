@@ -3475,3 +3475,44 @@ The important read is simple:
 I intentionally did not promote `32768` into the table yet. The current ad hoc CUDA wrappers for that long-context probe left orphaned benchmark processes behind and polluted later runs, so `32768` still needs a cleaner single-shot runner before it should be treated as benchmark-quality evidence.
 
 I then added that runner as [run_qwen35_cuda_shortlist_probe.py](/workspace/DotCache/scripts/run_qwen35_cuda_shortlist_probe.py). It launches one context and one shortlist config per subprocess, forces exact-length-only probes, and kills the whole process group on timeout. A clean `4096` shortlist smoke run produced a single normalized JSON row, and a forced `5s` timeout at `32768` returned a timeout record with no leaked CUDA children afterward.
+
+## 2026-03-30 14:40 UTC - Candidate-only selector stability is mostly a BLAS/runtime issue, and the next layer-23 matrix is now scripted
+
+The latest CUDA selector work clarified three separate effects:
+
+- selector cache build is real and grows with context, but it happens before decode rather than inside decode steps
+- decode-step Python allocation churn is overwhelmingly a step-0 warmup effect
+- the scary `builtin_score_compute` swings collapse when BLAS threads are pinned, which makes the remaining variance look much more like host BLAS/runtime behavior than selector semantics
+
+The benchmark surface now records the key bookkeeping for this:
+
+- `blas_num_threads`
+- Python allocation deltas/peaks
+- builtin selector cache hits/builds/build-bytes
+
+The current honest CUDA selector read is:
+
+- the candidate-only lane remains viable through `65536`
+- shortlist shape stays flat on the tested prompt family
+- quality stays clean on that lane
+- comparisons are only fair when BLAS thread settings are reported alongside the run
+
+I also added [run_qwen35_layer23_ablation_matrix.py](/workspace/DotCache/scripts/run_qwen35_layer23_ablation_matrix.py) to turn the next `layer 23` experiment into a reproducible matrix instead of a pile of manual commands.
+
+Important caveat:
+
+- the selector axis in that runner is currently `approx_shortlist` vs `layer23_full_context`
+- `layer23_full_context` is an honest stand-in for an exact selector on that layer, but it is not yet a same-budget exact-shortlist switch
+
+So the next matrix should be read as:
+
+- selector: approximate shortlist vs layer-23 full context
+- `K`: exact vs `M0` on layer `23`
+- `V`: exact vs `M0` on layer `23`
+
+That is the current cleanest way to answer whether `layer 23` is mostly:
+
+- shortlist selection error
+- key-side approximation error
+- value-side approximation error
+- or interaction between them
