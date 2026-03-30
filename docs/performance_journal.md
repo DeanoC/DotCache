@@ -3600,6 +3600,19 @@ So the branch should now describe the value-escape strategy this way:
 - `0.8B`: `layer 23` was the right value-side rescue target on the tested prompt family
 - `4B`: the same mechanism transfers, but `layer 7` looks like the better `32768` rescue target than `23`
 
+The follow-up prewarm check also made the policy split explicit instead of universal:
+
+- `0.8B`: thresholded prewarm at `49152+` is the current best benchmark-only operating point
+- `4B`: the same prewarm policy did not transfer cleanly on the tested `layer 7 @ 49152` lane
+  - baseline: decode `831.54 ms/step`, mean abs `0.2790`, RMSE `0.3587`
+  - thresholded prewarm: decode `859.84 ms/step`, same quality
+
+So the production-shaped read is now:
+
+- scan for the fragile value-sensitive layer per model/context regime
+- decide prewarm separately for that model/layer/context regime
+- do not assume one global prewarm rule
+
 This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
 
 - scan the candidate full-attention layers

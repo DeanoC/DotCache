@@ -41,6 +41,18 @@ At `32768`, the clearer winner was `layer 7`:
 
 while `layer 19` was slightly harmful at the same context.
 
+The next scheduling check also showed that the `0.8B` prewarm policy does not transfer automatically:
+
+- `4B @ 49152`, `layer 7`, baseline:
+  - decode `831.54 ms/step`
+  - mean abs `0.2790`
+  - RMSE `0.3587`
+- `4B @ 49152`, `layer 7`, thresholded prewarm:
+  - decode `859.84 ms/step`
+  - same quality
+
+So the mechanism transfers, but the prewarm rule should be treated as model-specific as well.
+
 ## Current strategy
 
 The repo should now treat value escape as a reusable tuning pattern rather than a fixed-layer rule:
@@ -48,5 +60,6 @@ The repo should now treat value escape as a reusable tuning pattern rather than 
 1. scan the candidate full-attention layers for the target model/context
 2. identify the fragile value-sensitive layer
 3. apply the same selected-page `V` escape mechanism there
+4. decide prewarm separately for that model/layer/context regime
 
 That is a stronger systems story than “layer 23 is magic,” because it explains both the successful `0.8B` rescue and the successful `4B` transfer without pretending the layer choice is universal.
