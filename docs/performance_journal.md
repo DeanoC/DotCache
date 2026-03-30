@@ -3606,12 +3606,20 @@ The follow-up prewarm check also made the policy split explicit instead of unive
 - `4B`: the same prewarm policy did not transfer cleanly on the tested `layer 7 @ 49152` lane
   - baseline: decode `831.54 ms/step`, mean abs `0.2790`, RMSE `0.3587`
   - thresholded prewarm: decode `859.84 ms/step`, same quality
+- `4B`: the `65536` control closed the loop the same way
+  - baseline: decode `1024.55 ms/step`, mean abs `0.2712`, RMSE `0.3413`
+  - thresholded prewarm: decode `1048.77 ms/step`, same quality
 
 So the production-shaped read is now:
 
 - scan for the fragile value-sensitive layer per model/context regime
 - decide prewarm separately for that model/layer/context regime
 - do not assume one global prewarm rule
+
+The current benchmark-only operating points are therefore:
+
+- `0.8B`: `layer 23` full selected-page `V` escape with prewarm gated at `49152+`
+- `4B`: `layer 7` full selected-page `V` escape with no prewarm
 
 This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
 

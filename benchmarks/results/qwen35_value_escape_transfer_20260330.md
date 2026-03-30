@@ -51,7 +51,20 @@ The next scheduling check also showed that the `0.8B` prewarm policy does not tr
   - decode `859.84 ms/step`
   - same quality
 
-So the mechanism transfers, but the prewarm rule should be treated as model-specific as well.
+The missing `65536` control closed the loop the same way:
+
+- `4B @ 65536`, `layer 7`, baseline:
+  - decode `1024.55 ms/step`
+  - mean abs `0.2712`
+  - RMSE `0.3413`
+- `4B @ 65536`, `layer 7`, thresholded prewarm:
+  - decode `1048.77 ms/step`
+  - same quality
+
+So the mechanism transfers, but the prewarm rule should be treated as model-specific as well. The current benchmark read is:
+
+- `0.8B`: use the value-escape mechanism with thresholded prewarm at `49152+`
+- `4B`: use the value-escape mechanism on `layer 7`, but keep prewarm off
 
 ## Current strategy
 
