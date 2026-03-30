@@ -66,6 +66,13 @@ So the mechanism transfers, but the prewarm rule should be treated as model-spec
 - `0.8B`: use the value-escape mechanism with thresholded prewarm at `49152+`
 - `4B`: use the value-escape mechanism on `layer 7`, but keep prewarm off
 
+The promoted reference runner for those two benchmark-only lanes now lives at
+[run_qwen35_value_escape_reference.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_reference.py),
+with presets:
+
+- `qwen35_0p8b_best`
+- `qwen35_4b_best`
+
 ## Current strategy
 
 The repo should now treat value escape as a reusable tuning pattern rather than a fixed-layer rule:

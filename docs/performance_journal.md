@@ -3621,6 +3621,13 @@ The current benchmark-only operating points are therefore:
 - `0.8B`: `layer 23` full selected-page `V` escape with prewarm gated at `49152+`
 - `4B`: `layer 7` full selected-page `V` escape with no prewarm
 
+The promoted reference entrypoint for those benchmark lanes now lives at
+[run_qwen35_value_escape_reference.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_value_escape_reference.py)
+with presets:
+
+- `qwen35_0p8b_best`
+- `qwen35_4b_best`
+
 This is a better result than a single magic-layer story. It says the repo has found a reusable tuning pattern:
 
 - scan the candidate full-attention layers

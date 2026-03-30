@@ -1932,6 +1932,63 @@ def test_qwen35_value_escape_layer_scan_builds_layer_specific_commands(
     assert "layer:19=M0" in command
 
 
+def test_qwen35_value_escape_reference_presets_build_expected_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_value_escape_reference",
+        repo_root / "scripts" / "run_qwen35_value_escape_reference.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_reference.py",
+            "--preset",
+            "qwen35_0p8b_best",
+            "--contexts",
+            "49152",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(args, context=49152)
+    assert "Qwen/Qwen3.5-0.8B" in command
+    assert "--layer-profile" in command
+    assert "--execution-value-escape-layer" in command
+    assert "23" in command
+    assert "--execution-value-escape-prewarm" in command
+    assert "--execution-value-escape-prewarm-min-context" in command
+    assert "49152" in command
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_reference.py",
+            "--preset",
+            "qwen35_4b_best",
+            "--contexts",
+            "65536",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(args, context=65536)
+    assert "Qwen/Qwen3.5-4B" in command
+    assert "--layer-profile" not in command
+    assert "--execution-value-escape-layer" in command
+    assert "7" in command
+    assert "--execution-value-escape-prewarm" not in command
+
+
 def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
     from pathlib import Path
