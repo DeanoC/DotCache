@@ -4664,9 +4664,9 @@ class ModelPagedKVCache:
             _stage_finish("m2_prefilter", m2_prefilter_started_at)
             selected_indices = None
             shortlist_trace_record = None
+            representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
             if self.config.execution_shortlist_enabled():
                 query_export_started_at = _stage_start()
-                representative_query = kv_queries.mean(dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
                 _stage_finish("query_export", query_export_started_at)
                 trace_record_count = len(self._execution_shortlist_trace_records)
                 shortlist_started_at = _stage_start()
