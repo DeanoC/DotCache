@@ -987,6 +987,11 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "dotcache_backend_decode_ms_total_from_trace" in result
     assert "dotcache_decode_non_backend_ms_total" in result
     assert "dotcache_model_step_non_adapter_ms_total" in result
+    assert "dotcache_python_allocation_tracing" in result
+    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
+    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
+    assert "dotcache_python_allocated_blocks_delta_total" in result
+    assert "dotcache_python_gc_count_delta_total" in result
     assert "execution_decode_prepare_pages_with_tail_ms_total" in result
     assert "execution_decode_m2_prefilter_ms_total" in result
     assert "execution_decode_shortlist_selection_ms_total" in result
@@ -1014,6 +1019,10 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
     assert "decode_chunk_budget_dirty_reason_counts" in first_step
     assert "decode_chunk_budget_override_calls" in first_step
+    assert "python_tracemalloc_current_bytes_delta" in first_step
+    assert "python_tracemalloc_peak_bytes" in first_step
+    assert "python_allocated_blocks_delta" in first_step
+    assert "python_gc_count_delta" in first_step
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
@@ -1144,6 +1153,11 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "dotcache_backend_decode_ms_total_from_trace" in result
     assert "dotcache_decode_non_backend_ms_total" in result
     assert "dotcache_model_step_non_adapter_ms_total" in result
+    assert "dotcache_python_allocation_tracing" in result
+    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
+    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
+    assert "dotcache_python_allocated_blocks_delta_total" in result
+    assert "dotcache_python_gc_count_delta_total" in result
     assert "execution_decode_prepare_pages_with_tail_ms_total" in result
     assert "execution_decode_m2_prefilter_ms_total" in result
     assert "execution_decode_shortlist_selection_ms_total" in result
@@ -1171,6 +1185,10 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
     assert "decode_chunk_budget_dirty_reason_counts" in first_step
     assert "decode_chunk_budget_override_calls" in first_step
+    assert "python_tracemalloc_current_bytes_delta" in first_step
+    assert "python_tracemalloc_peak_bytes" in first_step
+    assert "python_allocated_blocks_delta" in first_step
+    assert "python_gc_count_delta" in first_step
     first_record = result["scorer_layer_records"][0]
     first_group = first_record["groups"][0]
     assert "context_length_page_max" in first_group
@@ -1495,6 +1513,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
         [
             "bench_qwen35_attention_subset_dotcache_serving.py",
             "--profile-backend",
+            "--trace-python-allocations",
             "--tokens-per-page",
             "8",
             "--execution-recent-window",
@@ -1571,6 +1590,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     )
     serving_args = serving_bench.parse_args()
     assert serving_args.profile_backend is True
+    assert serving_args.trace_python_allocations is True
     assert serving_args.tokens_per_page == 8
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16

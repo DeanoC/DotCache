@@ -95,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--profile-backend", action="store_true")
+    parser.add_argument("--trace-python-allocations", action="store_true")
     parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--recall-analysis", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
@@ -148,6 +149,7 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
+                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         elif bool(base_record.get("recall_analysis", False)):
             record = harness.run_attention_subset_dotcache_serving_recall_analysis(
@@ -155,6 +157,7 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
+                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         elif bool(base_record.get("quality_check", False)):
             record = harness.run_attention_subset_dotcache_serving_quality(
@@ -494,6 +497,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "dotcache_ready": False,
         "hybrid_family": "qwen3_5",
         "profile_backend": bool(args.profile_backend),
+        "trace_python_allocations": bool(args.trace_python_allocations),
     }
 
 

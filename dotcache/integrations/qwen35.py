@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import gc
 import math
 import numpy as np
+import sys
+import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -2307,6 +2310,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         attention_mask=None,
         decode_steps: int = 4,
         profile_backend: bool = False,
+        trace_python_allocations: bool = False,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_quality_harness(
@@ -2318,6 +2322,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
             profile_backend=profile_backend,
+            trace_python_allocations=trace_python_allocations,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -2351,6 +2356,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         attention_mask=None,
         decode_steps: int = 4,
         profile_backend: bool = False,
+        trace_python_allocations: bool = False,
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
@@ -2362,6 +2368,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
             profile_backend=profile_backend,
+            trace_python_allocations=trace_python_allocations,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -5725,6 +5732,28 @@ def _backend_trace_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) 
     return dict(adapter.decode_backend_trace.to_dict())
 
 
+def _ensure_python_allocation_tracing(enabled: bool) -> bool:
+    if not enabled or tracemalloc.is_tracing():
+        return False
+    tracemalloc.start()
+    return True
+
+
+def _python_allocation_snapshot(enabled: bool) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+    allocated_blocks_getter = getattr(sys, "getallocatedblocks", None)
+    allocated_blocks = int(allocated_blocks_getter()) if callable(allocated_blocks_getter) else 0
+    gc_counts = gc.get_count()
+    return {
+        "current_bytes": int(current_bytes),
+        "peak_bytes": int(peak_bytes),
+        "allocated_blocks": int(allocated_blocks),
+        "gc_counts": [int(gc_counts[0]), int(gc_counts[1]), int(gc_counts[2])],
+    }
+
+
 def _numeric_delta_dict(
     before: dict[str, int | float],
     after: dict[str, int | float],
@@ -5761,6 +5790,8 @@ def _summarize_step_runtime_breakdown(
     chunk_budget_reason_counts_after: dict[str, int],
     trace_before: dict[str, int | float],
     trace_after: dict[str, int | float],
+    python_before: dict[str, Any] | None = None,
+    python_after: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     adapter_delta = {key: float(value) for key, value in _numeric_delta_dict(adapter_before, adapter_after).items()}
     trace_delta = _numeric_delta_dict(trace_before, trace_after)
@@ -5768,6 +5799,22 @@ def _summarize_step_runtime_breakdown(
         chunk_budget_reason_counts_before,
         chunk_budget_reason_counts_after,
     )
+    python_current_bytes_delta = 0
+    python_peak_bytes = 0
+    python_allocated_blocks_delta = 0
+    python_gc_count_delta = [0, 0, 0]
+    if python_before is not None and python_after is not None:
+        python_current_bytes_delta = int(python_after["current_bytes"]) - int(python_before["current_bytes"])
+        python_peak_bytes = int(python_after["peak_bytes"])
+        python_allocated_blocks_delta = int(python_after["allocated_blocks"]) - int(python_before["allocated_blocks"])
+        python_gc_count_delta = [
+            int(after_count) - int(before_count)
+            for before_count, after_count in zip(
+                python_before["gc_counts"],
+                python_after["gc_counts"],
+                strict=True,
+            )
+        ]
     backend_ms_total = float(sum(float(trace_delta.get(key, 0.0)) for key in _BACKEND_TRACE_TIMING_KEYS))
     decode_runtime_ms = float(adapter_delta["decode_runtime_ms_total"])
     accounted_model_ms = float(
@@ -5899,6 +5946,10 @@ def _summarize_step_runtime_breakdown(
         ),
         "model_step_accounted_ms_total": accounted_model_ms,
         "model_step_non_adapter_ms_total": float(step_ms - accounted_model_ms),
+        "python_tracemalloc_current_bytes_delta": int(python_current_bytes_delta),
+        "python_tracemalloc_peak_bytes": int(python_peak_bytes),
+        "python_allocated_blocks_delta": int(python_allocated_blocks_delta),
+        "python_gc_count_delta": list(python_gc_count_delta),
     }
 
 
@@ -5912,6 +5963,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     tokenizer=None,
     decode_steps: int = 4,
     profile_backend: bool = False,
+    trace_python_allocations: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
@@ -5952,57 +6004,68 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     dotcache_decode_ms_total = 0.0
     dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
-    if decode_steps > 0:
-        current_attention_mask = torch.cat(
-            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
-            dim=1,
-        )
-        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
-        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
-        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
-            adapter.begin_capture_step(step_index)
-            adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
-            adapter_runtime_before = _adapter_runtime_snapshot(adapter)
-            chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
-            trace_before = _backend_trace_snapshot(adapter)
-            try:
-                outputs, step_ms = _timed_call(
-                    lambda: _run_dense_decode_step(
-                        model,
-                        decode_input_ids=decode_input_ids,
-                        attention_mask=current_attention_mask,
-                        past_key_values=runtime_state.model_past_key_values,
-                        cache_position=cache_position,
-                    ),
-                    device=device,
-                )
-            finally:
-                adapter.set_current_token_index(None)
-            adapter_runtime_after = _adapter_runtime_snapshot(adapter)
-            chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
-            trace_after = _backend_trace_snapshot(adapter)
-            dotcache_decode_ms_total += step_ms
-            dotcache_step_runtime_breakdown.append(
-                _summarize_step_runtime_breakdown(
-                    step_index=step_index,
-                    step_ms=step_ms,
-                    adapter_before=adapter_runtime_before,
-                    adapter_after=adapter_runtime_after,
-                    chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
-                    chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
-                    trace_before=trace_before,
-                    trace_after=trace_after,
-                )
-            )
-            dotcache_records.append(adapter.end_capture_step())
-            dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
-            runtime_state.advance(outputs.past_key_values)
+    managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
+    try:
+        if decode_steps > 0:
             current_attention_mask = torch.cat(
-                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
             )
-            cache_position = cache_position + 1
-        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+            cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+            dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+            for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+                adapter.begin_capture_step(step_index)
+                adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
+                adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_before = _backend_trace_snapshot(adapter)
+                if trace_python_allocations:
+                    tracemalloc.reset_peak()
+                python_before = _python_allocation_snapshot(trace_python_allocations)
+                try:
+                    outputs, step_ms = _timed_call(
+                        lambda: _run_dense_decode_step(
+                            model,
+                            decode_input_ids=decode_input_ids,
+                            attention_mask=current_attention_mask,
+                            past_key_values=runtime_state.model_past_key_values,
+                            cache_position=cache_position,
+                        ),
+                        device=device,
+                    )
+                finally:
+                    adapter.set_current_token_index(None)
+                adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_after = _backend_trace_snapshot(adapter)
+                python_after = _python_allocation_snapshot(trace_python_allocations)
+                dotcache_decode_ms_total += step_ms
+                dotcache_step_runtime_breakdown.append(
+                    _summarize_step_runtime_breakdown(
+                        step_index=step_index,
+                        step_ms=step_ms,
+                        adapter_before=adapter_runtime_before,
+                        adapter_after=adapter_runtime_after,
+                        chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                        chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
+                        trace_before=trace_before,
+                        trace_after=trace_after,
+                        python_before=python_before,
+                        python_after=python_after,
+                    )
+                )
+                dotcache_records.append(adapter.end_capture_step())
+                dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
+                runtime_state.advance(outputs.past_key_values)
+                current_attention_mask = torch.cat(
+                    [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                    dim=1,
+                )
+                cache_position = cache_position + 1
+            dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+    finally:
+        if managed_python_allocation_tracing:
+            tracemalloc.stop()
 
     dense_record_map = {
         (record.step_index, record.layer_id): record
@@ -6109,6 +6172,25 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "dotcache_model_step_non_adapter_ms_total": float(
                 sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
             ),
+            "dotcache_python_allocation_tracing": bool(trace_python_allocations),
+            "dotcache_python_tracemalloc_peak_bytes_max": int(
+                max((int(step["python_tracemalloc_peak_bytes"]) for step in dotcache_step_runtime_breakdown), default=0)
+            ),
+            "dotcache_python_tracemalloc_current_bytes_delta_total": int(
+                sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocated_blocks_delta_total": int(
+                sum(int(step["python_allocated_blocks_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_gc_count_delta_total": [
+                int(
+                    sum(
+                        int(step["python_gc_count_delta"][generation_index])
+                        for step in dotcache_step_runtime_breakdown
+                    )
+                )
+                for generation_index in range(3)
+            ],
             "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
             "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
             "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
@@ -6470,6 +6552,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     tokenizer=None,
     decode_steps: int = 4,
     profile_backend: bool = False,
+    trace_python_allocations: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
@@ -6510,65 +6593,76 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     dotcache_decode_ms_total = 0.0
     dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
-    if decode_steps > 0:
-        current_attention_mask = torch.cat(
-            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
-            dim=1,
-        )
-        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
-        dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
-        for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
-            generated_ids.append(int(decode_input_ids.item()))
-            for dense_record in dense_capture["capture_records"][step_index]:
-                analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
-                    dense_record.layer_id,
-                    dense_record.query_states,
-                    adapter.q_head_to_kv_head,
-                    trace=None,
-                )
-                diagnostic_records.append(
-                    {
-                        "step_index": int(step_index),
-                        "token_index": int(dense_record.token_index),
-                        **analysis_record,
-                    }
-                )
-            adapter_runtime_before = _adapter_runtime_snapshot(adapter)
-            chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
-            trace_before = _backend_trace_snapshot(adapter)
-            outputs, step_ms = _timed_call(
-                lambda: _run_dense_decode_step(
-                    model,
-                    decode_input_ids=decode_input_ids,
-                    attention_mask=current_attention_mask,
-                    past_key_values=runtime_state.model_past_key_values,
-                    cache_position=cache_position,
-                ),
-                device=device,
-            )
-            adapter_runtime_after = _adapter_runtime_snapshot(adapter)
-            chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
-            trace_after = _backend_trace_snapshot(adapter)
-            dotcache_decode_ms_total += step_ms
-            dotcache_step_runtime_breakdown.append(
-                _summarize_step_runtime_breakdown(
-                    step_index=step_index,
-                    step_ms=step_ms,
-                    adapter_before=adapter_runtime_before,
-                    adapter_after=adapter_runtime_after,
-                    chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
-                    chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
-                    trace_before=trace_before,
-                    trace_after=trace_after,
-                )
-            )
-            runtime_state.advance(outputs.past_key_values)
+    managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
+    try:
+        if decode_steps > 0:
             current_attention_mask = torch.cat(
-                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
             )
-            cache_position = cache_position + 1
-        dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+            cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+            dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+            for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+                generated_ids.append(int(decode_input_ids.item()))
+                for dense_record in dense_capture["capture_records"][step_index]:
+                    analysis_record = adapter.model_kv_cache.analyze_execution_shortlist_layer(
+                        dense_record.layer_id,
+                        dense_record.query_states,
+                        adapter.q_head_to_kv_head,
+                        trace=None,
+                    )
+                    diagnostic_records.append(
+                        {
+                            "step_index": int(step_index),
+                            "token_index": int(dense_record.token_index),
+                            **analysis_record,
+                        }
+                    )
+                adapter_runtime_before = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_before = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_before = _backend_trace_snapshot(adapter)
+                if trace_python_allocations:
+                    tracemalloc.reset_peak()
+                python_before = _python_allocation_snapshot(trace_python_allocations)
+                outputs, step_ms = _timed_call(
+                    lambda: _run_dense_decode_step(
+                        model,
+                        decode_input_ids=decode_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=runtime_state.model_past_key_values,
+                        cache_position=cache_position,
+                    ),
+                    device=device,
+                )
+                adapter_runtime_after = _adapter_runtime_snapshot(adapter)
+                chunk_budget_reason_counts_after = _chunk_budget_reason_counts_snapshot(adapter)
+                trace_after = _backend_trace_snapshot(adapter)
+                python_after = _python_allocation_snapshot(trace_python_allocations)
+                dotcache_decode_ms_total += step_ms
+                dotcache_step_runtime_breakdown.append(
+                    _summarize_step_runtime_breakdown(
+                        step_index=step_index,
+                        step_ms=step_ms,
+                        adapter_before=adapter_runtime_before,
+                        adapter_after=adapter_runtime_after,
+                        chunk_budget_reason_counts_before=chunk_budget_reason_counts_before,
+                        chunk_budget_reason_counts_after=chunk_budget_reason_counts_after,
+                        trace_before=trace_before,
+                        trace_after=trace_after,
+                        python_before=python_before,
+                        python_after=python_after,
+                    )
+                )
+                runtime_state.advance(outputs.past_key_values)
+                current_attention_mask = torch.cat(
+                    [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                    dim=1,
+                )
+                cache_position = cache_position + 1
+            dotcache_decode_cuda_memory = _end_cuda_memory_region(device, dotcache_decode_cuda_memory_baseline)
+    finally:
+        if managed_python_allocation_tracing:
+            tracemalloc.stop()
 
     rank_corr_by_layer: dict[str, list[float]] = {}
     value_corr_by_layer: dict[str, list[float]] = {}
@@ -6717,6 +6811,25 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
             "dotcache_model_step_non_adapter_ms_total": float(
                 sum(step["model_step_non_adapter_ms_total"] for step in dotcache_step_runtime_breakdown)
             ),
+            "dotcache_python_allocation_tracing": bool(trace_python_allocations),
+            "dotcache_python_tracemalloc_peak_bytes_max": int(
+                max((int(step["python_tracemalloc_peak_bytes"]) for step in dotcache_step_runtime_breakdown), default=0)
+            ),
+            "dotcache_python_tracemalloc_current_bytes_delta_total": int(
+                sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_allocated_blocks_delta_total": int(
+                sum(int(step["python_allocated_blocks_delta"]) for step in dotcache_step_runtime_breakdown)
+            ),
+            "dotcache_python_gc_count_delta_total": [
+                int(
+                    sum(
+                        int(step["python_gc_count_delta"][generation_index])
+                        for step in dotcache_step_runtime_breakdown
+                    )
+                )
+                for generation_index in range(3)
+            ],
             "scorer_rank_correlation_mean_by_layer": scorer_rank_correlation_mean_by_layer,
             "scorer_value_correlation_mean_by_layer": scorer_value_correlation_mean_by_layer,
             "scorer_approx_exact_top_recall_mean_by_layer": scorer_approx_exact_top_recall_mean_by_layer,
