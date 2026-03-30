@@ -58,6 +58,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _normalized_layer_profile(layer_profile: str | None) -> str | None:
+    if layer_profile is None:
+        return None
+    normalized = str(layer_profile).strip()
+    if normalized.lower() in {"", "none", "null"}:
+        return None
+    return normalized
+
+
 def _selector_args(selector_mode: str) -> list[str]:
     args = [
         "--execution-recent-window",
@@ -154,8 +163,6 @@ def _benchmark_command(
         args.device,
         "--torch-dtype",
         args.torch_dtype,
-        "--layer-profile",
-        args.layer_profile,
         "--default-mode-k",
         "M0",
         "--default-mode-v",
@@ -181,6 +188,9 @@ def _benchmark_command(
         command.append("--quality-check")
     if args.scorer_diagnostic:
         command.append("--scorer-diagnostic")
+    normalized_layer_profile = _normalized_layer_profile(args.layer_profile)
+    if normalized_layer_profile is not None:
+        command.extend(["--layer-profile", normalized_layer_profile])
     command.extend(_selector_args(selector_mode))
     command.extend(_kv_args(kv_mode))
     return command

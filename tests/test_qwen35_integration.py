@@ -1826,6 +1826,50 @@ def test_qwen35_layer23_ablation_matrix_cli_builds_selector_and_kv_modes(
     assert "1" in command
 
 
+def test_qwen35_layer23_ablation_matrix_can_disable_default_layer_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    script_spec = importlib.util.spec_from_file_location(
+        "run_qwen35_layer23_ablation_matrix",
+        repo_root / "scripts" / "run_qwen35_layer23_ablation_matrix.py",
+    )
+    assert script_spec is not None and script_spec.loader is not None
+    script_module = importlib.util.module_from_spec(script_spec)
+    script_spec.loader.exec_module(script_module)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_layer23_ablation_matrix.py",
+            "--model-id",
+            "Qwen/Qwen3.5-4B",
+            "--layer-profile",
+            "none",
+            "--contexts",
+            "16384",
+            "--selector-modes",
+            "approx_shortlist",
+            "--kv-modes",
+            "m0_v_escape",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    command = script_module._benchmark_command(
+        args,
+        context=16384,
+        selector_mode="approx_shortlist",
+        kv_mode="m0_v_escape",
+    )
+    assert "--layer-profile" not in command
+    assert "Qwen/Qwen3.5-4B" in command
+
+
 def test_qwen35_cuda_layer_profile_loads_context_aware_shortlist_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
     from pathlib import Path
