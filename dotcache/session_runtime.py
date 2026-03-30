@@ -224,10 +224,13 @@ def select_execution_page_indices(
     query_slice: np.ndarray | None = None,
     key_page_sketches: Sequence[np.ndarray] | None = None,
     key_page_sketch_matrix: np.ndarray | None = None,
+    tail_page_sketch: np.ndarray | None = None,
     key_page_minima: Sequence[np.ndarray] | None = None,
     key_page_minima_matrix: np.ndarray | None = None,
+    tail_page_minimum: np.ndarray | None = None,
     key_page_maxima: Sequence[np.ndarray] | None = None,
     key_page_maxima_matrix: np.ndarray | None = None,
+    tail_page_maximum: np.ndarray | None = None,
     relevance_top_k: int = 0,
     relevance_mode: RelevanceMode = "sketch",
     stage_recorder: Callable[[str, float], None] | None = None,
@@ -263,6 +266,12 @@ def select_execution_page_indices(
                     if score_all_pages_with_matrices:
                         score_compute_started_at = perf_counter() if stage_recorder is not None else None
                         all_scores = np.max(key_page_sketch_matrix @ query, axis=1).astype(np.float32, copy=False)
+                        if tail_page_sketch is not None:
+                            tail_score = float(np.max(np.asarray(tail_page_sketch, dtype=np.float32) @ query))
+                            all_scores = np.concatenate(
+                                [all_scores, np.asarray([tail_score], dtype=np.float32)],
+                                axis=0,
+                            )
                         scores = np.asarray(all_scores[candidate_indices], dtype=np.float32)
                         _record_stage("shortlist_candidate_builtin_score_compute", score_compute_started_at)
                     else:
@@ -295,6 +304,15 @@ def select_execution_page_indices(
                         all_scores = (
                             key_page_maxima_matrix @ positive_query + key_page_minima_matrix @ negative_query
                         ).astype(np.float32, copy=False)
+                        if tail_page_minimum is not None and tail_page_maximum is not None:
+                            tail_score = float(
+                                np.asarray(tail_page_maximum, dtype=np.float32) @ positive_query
+                                + np.asarray(tail_page_minimum, dtype=np.float32) @ negative_query
+                            )
+                            all_scores = np.concatenate(
+                                [all_scores, np.asarray([tail_score], dtype=np.float32)],
+                                axis=0,
+                            )
                         scores = np.asarray(all_scores[candidate_indices], dtype=np.float32)
                         _record_stage("shortlist_candidate_builtin_score_compute", score_compute_started_at)
                     else:
