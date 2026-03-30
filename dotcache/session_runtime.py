@@ -243,6 +243,15 @@ def select_execution_page_indices(
             return
         stage_recorder(stage, (perf_counter() - started_at) * 1000.0)
 
+    def _materialize_candidate_rows(matrix: np.ndarray, direct_candidate_indices: Sequence[int]) -> np.ndarray:
+        if not direct_candidate_indices:
+            return np.empty((0,) + tuple(matrix.shape[1:]), dtype=np.float32)
+        first_index = int(direct_candidate_indices[0])
+        last_index = int(direct_candidate_indices[-1])
+        if last_index - first_index + 1 == len(direct_candidate_indices):
+            return np.asarray(matrix[first_index : last_index + 1], dtype=np.float32)
+        return np.take(matrix, direct_candidate_indices, axis=0).astype(np.float32, copy=False)
+
     if not key_pages:
         return []
     selected_indices = set(
@@ -297,16 +306,9 @@ def select_execution_page_indices(
                             tail_page_sketch is not None and len(candidate_indices) > len(direct_candidate_indices)
                         )
                         sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
-                        candidate_sketches = (
-                            np.take(key_page_sketch_matrix, direct_candidate_indices, axis=0).astype(
-                                np.float32,
-                                copy=False,
-                            )
-                            if direct_candidate_indices
-                            else np.empty(
-                                (0,) + tuple(key_page_sketch_matrix.shape[1:]),
-                                dtype=np.float32,
-                            )
+                        candidate_sketches = _materialize_candidate_rows(
+                            key_page_sketch_matrix,
+                            direct_candidate_indices,
                         )
                         _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
                         score_compute_started_at = perf_counter() if stage_recorder is not None else None
@@ -372,21 +374,13 @@ def select_execution_page_indices(
                             and len(candidate_indices) > len(direct_candidate_indices)
                         )
                         sidecar_stack_started_at = perf_counter() if stage_recorder is not None else None
-                        candidate_minima = (
-                            np.take(key_page_minima_matrix, direct_candidate_indices, axis=0).astype(
-                                np.float32,
-                                copy=False,
-                            )
-                            if direct_candidate_indices
-                            else np.empty((0, key_page_minima_matrix.shape[1]), dtype=np.float32)
+                        candidate_minima = _materialize_candidate_rows(
+                            key_page_minima_matrix,
+                            direct_candidate_indices,
                         )
-                        candidate_maxima = (
-                            np.take(key_page_maxima_matrix, direct_candidate_indices, axis=0).astype(
-                                np.float32,
-                                copy=False,
-                            )
-                            if direct_candidate_indices
-                            else np.empty((0, key_page_maxima_matrix.shape[1]), dtype=np.float32)
+                        candidate_maxima = _materialize_candidate_rows(
+                            key_page_maxima_matrix,
+                            direct_candidate_indices,
                         )
                         _record_stage("shortlist_candidate_builtin_sidecar_stack", sidecar_stack_started_at)
                         score_compute_started_at = perf_counter() if stage_recorder is not None else None
