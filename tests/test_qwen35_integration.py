@@ -898,6 +898,9 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
     assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
+    assert "execution_builtin_selector_score_all_pages_calls" in result
+    assert "execution_builtin_selector_candidate_only_calls" in result
+    assert "execution_builtin_selector_candidate_fraction_max" in result
     assert "decode_backend_trace" in result
     trace = result["decode_backend_trace"]
     assert "grouped_decode_calls" in trace

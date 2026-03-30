@@ -236,6 +236,7 @@ def select_execution_page_indices(
     stage_recorder: Callable[[str, float], None] | None = None,
     score_all_pages_with_matrices: bool = False,
     score_all_pages_min_candidate_fraction: float = 0.0,
+    selector_stats_recorder: Callable[[dict[str, int | float | bool]], None] | None = None,
 ) -> list[int]:
     def _record_stage(stage: str, started_at: float | None) -> None:
         if stage_recorder is None or started_at is None:
@@ -264,6 +265,15 @@ def select_execution_page_indices(
                 score_all_pages_with_matrices
                 and candidate_fraction >= max(0.0, float(score_all_pages_min_candidate_fraction))
             )
+            if selector_stats_recorder is not None:
+                selector_stats_recorder(
+                    {
+                        "candidate_pages": int(len(candidate_indices)),
+                        "total_pages": int(len(key_pages)),
+                        "candidate_fraction": float(candidate_fraction),
+                        "used_score_all_pages": bool(use_score_all_pages),
+                    }
+                )
             query = np.asarray(query_slice, dtype=np.float32)
             if relevance_mode == "sketch":
                 if key_page_sketch_matrix is not None:

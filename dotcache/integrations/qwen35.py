@@ -5619,6 +5619,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
     result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
@@ -5674,6 +5675,15 @@ _MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS = (
     "execution_chunk_budget_freeze_override_calls",
 )
 
+_MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS = (
+    "execution_builtin_selector_score_all_pages_calls",
+    "execution_builtin_selector_candidate_only_calls",
+    "execution_builtin_selector_candidate_pages",
+    "execution_builtin_selector_total_pages",
+    "execution_builtin_selector_candidate_fraction_sum",
+    "execution_builtin_selector_candidate_fraction_max",
+)
+
 
 def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter) -> dict[str, float]:
     snapshot = {
@@ -5688,6 +5698,13 @@ def _adapter_runtime_snapshot(adapter: Qwen35AttentionSubsetDotCacheModelAdapter
         {
             key: float(chunk_budget_summary.get(key, 0))
             for key in _MODEL_KV_CACHE_CHUNK_BUDGET_COUNTER_KEYS
+        }
+    )
+    builtin_selector_summary = adapter.model_kv_cache.builtin_selector_summary()
+    snapshot.update(
+        {
+            key: float(builtin_selector_summary.get(key, 0))
+            for key in _MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS
         }
     )
     return snapshot
@@ -5851,6 +5868,24 @@ def _summarize_step_runtime_breakdown(
         ),
         "decode_chunk_budget_freeze_override_calls": int(
             adapter_delta.get("execution_chunk_budget_freeze_override_calls", 0.0)
+        ),
+        "decode_builtin_selector_score_all_pages_calls": int(
+            adapter_delta.get("execution_builtin_selector_score_all_pages_calls", 0.0)
+        ),
+        "decode_builtin_selector_candidate_only_calls": int(
+            adapter_delta.get("execution_builtin_selector_candidate_only_calls", 0.0)
+        ),
+        "decode_builtin_selector_candidate_pages": int(
+            adapter_delta.get("execution_builtin_selector_candidate_pages", 0.0)
+        ),
+        "decode_builtin_selector_total_pages": int(
+            adapter_delta.get("execution_builtin_selector_total_pages", 0.0)
+        ),
+        "decode_builtin_selector_candidate_fraction_sum": float(
+            adapter_delta.get("execution_builtin_selector_candidate_fraction_sum", 0.0)
+        ),
+        "decode_builtin_selector_candidate_fraction_max": float(
+            adapter_delta.get("execution_builtin_selector_candidate_fraction_max", 0.0)
         ),
         "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
         "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],
@@ -6145,6 +6180,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
     result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
@@ -6407,6 +6443,7 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
     result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
@@ -6762,6 +6799,7 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
     result.update(adapter.per_layer_runtime_summary())
     result.update(adapter.model_kv_cache.decode_path_summary())
     result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
     result.update(adapter.model_kv_cache.chunk_budget_summary())
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())

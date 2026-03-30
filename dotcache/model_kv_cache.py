@@ -1280,6 +1280,12 @@ class ModelPagedKVCache:
         self._chunk_budget_override_budget_change_calls = 0
         self._chunk_budget_override_same_budget_calls = 0
         self._chunk_budget_freeze_override_calls = 0
+        self._builtin_selector_score_all_pages_calls = 0
+        self._builtin_selector_candidate_only_calls = 0
+        self._builtin_selector_candidate_pages = 0
+        self._builtin_selector_total_pages = 0
+        self._builtin_selector_candidate_fraction_sum = 0.0
+        self._builtin_selector_candidate_fraction_max = 0.0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -1386,6 +1392,14 @@ class ModelPagedKVCache:
         self._chunk_budget_override_same_budget_calls = 0
         self._chunk_budget_freeze_override_calls = 0
 
+    def _reset_builtin_selector_tracking(self) -> None:
+        self._builtin_selector_score_all_pages_calls = 0
+        self._builtin_selector_candidate_only_calls = 0
+        self._builtin_selector_candidate_pages = 0
+        self._builtin_selector_total_pages = 0
+        self._builtin_selector_candidate_fraction_sum = 0.0
+        self._builtin_selector_candidate_fraction_max = 0.0
+
     def _kv_resident_byte_summary(self) -> dict[str, int]:
         static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
         tail_resident_bytes = int(self._tail_resident_bytes)
@@ -1481,6 +1495,20 @@ class ModelPagedKVCache:
             "execution_chunk_budget_freeze_override_calls": int(self._chunk_budget_freeze_override_calls),
         }
 
+    def builtin_selector_summary(self) -> dict[str, int | float]:
+        return {
+            "execution_builtin_selector_score_all_pages_calls": int(self._builtin_selector_score_all_pages_calls),
+            "execution_builtin_selector_candidate_only_calls": int(self._builtin_selector_candidate_only_calls),
+            "execution_builtin_selector_candidate_pages": int(self._builtin_selector_candidate_pages),
+            "execution_builtin_selector_total_pages": int(self._builtin_selector_total_pages),
+            "execution_builtin_selector_candidate_fraction_sum": float(
+                self._builtin_selector_candidate_fraction_sum
+            ),
+            "execution_builtin_selector_candidate_fraction_max": float(
+                self._builtin_selector_candidate_fraction_max
+            ),
+        }
+
     def resident_byte_summary(self) -> dict[str, int]:
         summary = self._kv_resident_byte_summary()
         chunk_resident_bytes = prepared_chunk_cache_resident_bytes() if self._torch_device_type is not None else 0
@@ -1572,6 +1600,26 @@ class ModelPagedKVCache:
         self._decode_stage_timings[stage] += float(ms)
         layer_timings = self._decode_stage_timings_by_layer.setdefault(int(layer_id), {})
         layer_timings[stage] = float(layer_timings.get(stage, 0.0) + float(ms))
+
+    def _record_builtin_selector_stats(
+        self,
+        *,
+        candidate_pages: int,
+        total_pages: int,
+        candidate_fraction: float,
+        used_score_all_pages: bool,
+    ) -> None:
+        if used_score_all_pages:
+            self._builtin_selector_score_all_pages_calls += 1
+        else:
+            self._builtin_selector_candidate_only_calls += 1
+        self._builtin_selector_candidate_pages += int(candidate_pages)
+        self._builtin_selector_total_pages += int(total_pages)
+        self._builtin_selector_candidate_fraction_sum += float(candidate_fraction)
+        self._builtin_selector_candidate_fraction_max = max(
+            float(self._builtin_selector_candidate_fraction_max),
+            float(candidate_fraction),
+        )
 
     def decode_stage_runtime_totals(self) -> dict[str, float]:
         return {
@@ -2428,6 +2476,12 @@ class ModelPagedKVCache:
                 relevance_mode=self.config.execution_relevance_mode,
                 score_all_pages_with_matrices=self.config.execution_builtin_selector_score_all_pages,
                 score_all_pages_min_candidate_fraction=self.config.execution_builtin_selector_score_all_pages_min_candidate_fraction,
+                selector_stats_recorder=lambda stats: self._record_builtin_selector_stats(
+                    candidate_pages=int(stats["candidate_pages"]),
+                    total_pages=int(stats["total_pages"]),
+                    candidate_fraction=float(stats["candidate_fraction"]),
+                    used_score_all_pages=bool(stats["used_score_all_pages"]),
+                ),
                 stage_recorder=lambda stage, ms: self._record_decode_stage_timing(
                     layer_id=int(layer_id),
                     stage=stage,
@@ -2619,6 +2673,7 @@ class ModelPagedKVCache:
         self._decode_stage_timings_by_layer = {}
         self._reset_resident_accounting()
         self._reset_chunk_budget_tracking()
+        self._reset_builtin_selector_tracking()
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -2669,6 +2724,7 @@ class ModelPagedKVCache:
             for stage, value in layer_timings.items():
                 if stage in self._decode_stage_timings:
                     self._decode_stage_timings[stage] += float(value)
+        self._reset_builtin_selector_tracking()
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
 

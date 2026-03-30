@@ -210,6 +210,7 @@ def test_select_execution_page_indices_can_fall_back_to_candidate_only_matrix_sc
     tail_minimum = np.full(config.head_dim, -1.0, dtype=np.float32)
     tail_maximum = np.full(config.head_dim, -1.0, dtype=np.float32)
 
+    stats: dict[str, int | float | bool] = {}
     selected_indices = select_execution_page_indices(
         key_pages,
         recent_window_tokens=4,
@@ -223,9 +224,12 @@ def test_select_execution_page_indices_can_fall_back_to_candidate_only_matrix_sc
         relevance_mode="envelope",
         score_all_pages_with_matrices=True,
         score_all_pages_min_candidate_fraction=0.9,
+        selector_stats_recorder=stats.update,
     )
 
     assert selected_indices == [0, 2, 5]
+    assert stats["used_score_all_pages"] is False
+    assert stats["candidate_pages"] == 4
 
 
 @requires_mps
