@@ -5603,6 +5603,9 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         "execution_builtin_selector_score_all_pages": bool(
             adapter.dotcache_config.execution_builtin_selector_score_all_pages
         ),
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
         "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
         "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6125,6 +6128,9 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "execution_builtin_selector_score_all_pages": bool(
                 adapter.dotcache_config.execution_builtin_selector_score_all_pages
             ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+            ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
             "dotcache_decode_runtime_ms_total": float(adapter.decode_runtime_ms_total),
@@ -6383,6 +6389,9 @@ def run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness(
             "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
             "execution_builtin_selector_score_all_pages": bool(
                 adapter.dotcache_config.execution_builtin_selector_score_all_pages
+            ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
             ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),
@@ -6735,6 +6744,9 @@ def run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness(
             "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
             "execution_builtin_selector_score_all_pages": bool(
                 adapter.dotcache_config.execution_builtin_selector_score_all_pages
+            ),
+            "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+                adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
             ),
             "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
             "dotcache_append_runtime_ms_total": float(adapter.append_runtime_ms_total),

@@ -2427,6 +2427,7 @@ class ModelPagedKVCache:
                 relevance_top_k=candidate_relevance_top_k,
                 relevance_mode=self.config.execution_relevance_mode,
                 score_all_pages_with_matrices=self.config.execution_builtin_selector_score_all_pages,
+                score_all_pages_min_candidate_fraction=self.config.execution_builtin_selector_score_all_pages_min_candidate_fraction,
                 stage_recorder=lambda stage, ms: self._record_decode_stage_timing(
                     layer_id=int(layer_id),
                     stage=stage,

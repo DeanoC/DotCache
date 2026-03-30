@@ -897,6 +897,7 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_freeze_chunk_budget_during_decode" in result
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
     assert "decode_backend_trace" in result
     trace = result["decode_backend_trace"]
     assert "grouped_decode_calls" in trace
@@ -1534,6 +1535,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-freeze-chunk-budget-during-decode",
             "--execution-builtin-selector-cache",
             "--execution-builtin-selector-score-all-pages",
+            "--execution-builtin-selector-score-all-pages-min-candidate-fraction",
+            "0.5",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1597,6 +1600,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_freeze_chunk_budget_during_decode is True
     assert serving_args.execution_builtin_selector_cache is True
     assert serving_args.execution_builtin_selector_score_all_pages is True
+    assert serving_args.execution_builtin_selector_score_all_pages_min_candidate_fraction == 0.5
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]

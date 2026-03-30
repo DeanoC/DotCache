@@ -135,6 +135,7 @@ class DotCacheConfig:
     execution_freeze_chunk_budget_during_decode: bool = False
     execution_builtin_selector_cache: bool = False
     execution_builtin_selector_score_all_pages: bool = False
+    execution_builtin_selector_score_all_pages_min_candidate_fraction: float = 0.0
     execution_exact_refine_top_k: int = 0
     execution_exact_refine_layers: tuple[int, ...] = ()
     store_scales_dtype: str = "float16"

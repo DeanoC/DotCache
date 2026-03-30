@@ -197,6 +197,37 @@ def test_select_execution_page_indices_envelope_admits_spiky_old_page() -> None:
     assert selected_indices == [0, 2, 4]
 
 
+def test_select_execution_page_indices_can_fall_back_to_candidate_only_matrix_scoring() -> None:
+    config = DotCacheConfig(head_dim=8, group_size=8, bits_k=4, tokens_per_page=4)
+    keys = np.zeros((6 * config.tokens_per_page, config.head_dim), dtype=np.float32)
+    key_pages = _encode_paged(keys, config, kind="K")
+    query = np.zeros(config.head_dim, dtype=np.float32)
+    query[0] = 1.0
+
+    minima_matrix = np.full((5, config.head_dim), -1.0, dtype=np.float32)
+    maxima_matrix = np.full((5, config.head_dim), -1.0, dtype=np.float32)
+    maxima_matrix[2, 0] = 10.0
+    tail_minimum = np.full(config.head_dim, -1.0, dtype=np.float32)
+    tail_maximum = np.full(config.head_dim, -1.0, dtype=np.float32)
+
+    selected_indices = select_execution_page_indices(
+        key_pages,
+        recent_window_tokens=4,
+        sink_window_tokens=4,
+        query_slice=query,
+        key_page_minima_matrix=minima_matrix,
+        key_page_maxima_matrix=maxima_matrix,
+        tail_page_minimum=tail_minimum,
+        tail_page_maximum=tail_maximum,
+        relevance_top_k=1,
+        relevance_mode="envelope",
+        score_all_pages_with_matrices=True,
+        score_all_pages_min_candidate_fraction=0.9,
+    )
+
+    assert selected_indices == [0, 2, 5]
+
+
 @requires_mps
 def test_prepare_page_mps_reuses_device_copy() -> None:
     rng = np.random.default_rng(22)
