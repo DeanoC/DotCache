@@ -5692,6 +5692,10 @@ _MODEL_KV_CACHE_BUILTIN_SELECTOR_COUNTER_KEYS = (
     "execution_builtin_selector_total_pages",
     "execution_builtin_selector_candidate_fraction_sum",
     "execution_builtin_selector_candidate_fraction_max",
+    "execution_builtin_selector_cache_hits",
+    "execution_builtin_selector_cache_builds",
+    "execution_builtin_selector_cache_build_bytes",
+    "execution_builtin_selector_cache_build_bytes_max",
 )
 
 
@@ -5936,6 +5940,18 @@ def _summarize_step_runtime_breakdown(
         ),
         "decode_builtin_selector_candidate_fraction_max": float(
             adapter_delta.get("execution_builtin_selector_candidate_fraction_max", 0.0)
+        ),
+        "decode_builtin_selector_cache_hits": int(
+            adapter_delta.get("execution_builtin_selector_cache_hits", 0.0)
+        ),
+        "decode_builtin_selector_cache_builds": int(
+            adapter_delta.get("execution_builtin_selector_cache_builds", 0.0)
+        ),
+        "decode_builtin_selector_cache_build_bytes": int(
+            adapter_delta.get("execution_builtin_selector_cache_build_bytes", 0.0)
+        ),
+        "decode_builtin_selector_cache_build_bytes_max": int(
+            adapter_delta.get("execution_builtin_selector_cache_build_bytes_max", 0.0)
         ),
         "decode_backend_call_wall_ms_total": stage_totals["execution_decode_backend_call_wall_ms_total"],
         "decode_backend_call_non_backend_ms_total": stage_totals["execution_decode_backend_call_non_backend_ms_total"],

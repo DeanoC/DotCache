@@ -505,6 +505,16 @@ class _ExecutionBuiltinSelectorCache:
     minima_matrix: np.ndarray | None = None
     maxima_matrix: np.ndarray | None = None
 
+    def resident_bytes(self) -> int:
+        total = 0
+        if self.sketch_matrix is not None:
+            total += int(self.sketch_matrix.nbytes)
+        if self.minima_matrix is not None:
+            total += int(self.minima_matrix.nbytes)
+        if self.maxima_matrix is not None:
+            total += int(self.maxima_matrix.nbytes)
+        return int(total)
+
 
 def _prepared_page_group_signature(page: PreparedPageTorch) -> tuple[Any, ...]:
     basis = getattr(page, "m2_basis", None)
@@ -1286,6 +1296,10 @@ class ModelPagedKVCache:
         self._builtin_selector_total_pages = 0
         self._builtin_selector_candidate_fraction_sum = 0.0
         self._builtin_selector_candidate_fraction_max = 0.0
+        self._builtin_selector_cache_hits = 0
+        self._builtin_selector_cache_builds = 0
+        self._builtin_selector_cache_build_bytes = 0
+        self._builtin_selector_cache_build_bytes_max = 0
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -1399,6 +1413,10 @@ class ModelPagedKVCache:
         self._builtin_selector_total_pages = 0
         self._builtin_selector_candidate_fraction_sum = 0.0
         self._builtin_selector_candidate_fraction_max = 0.0
+        self._builtin_selector_cache_hits = 0
+        self._builtin_selector_cache_builds = 0
+        self._builtin_selector_cache_build_bytes = 0
+        self._builtin_selector_cache_build_bytes_max = 0
 
     def _kv_resident_byte_summary(self) -> dict[str, int]:
         static_resident_bytes = int(self._direct_prepared_page_resident_bytes)
@@ -1507,6 +1525,10 @@ class ModelPagedKVCache:
             "execution_builtin_selector_candidate_fraction_max": float(
                 self._builtin_selector_candidate_fraction_max
             ),
+            "execution_builtin_selector_cache_hits": int(self._builtin_selector_cache_hits),
+            "execution_builtin_selector_cache_builds": int(self._builtin_selector_cache_builds),
+            "execution_builtin_selector_cache_build_bytes": int(self._builtin_selector_cache_build_bytes),
+            "execution_builtin_selector_cache_build_bytes_max": int(self._builtin_selector_cache_build_bytes_max),
         }
 
     def resident_byte_summary(self) -> dict[str, int]:
@@ -1647,8 +1669,10 @@ class ModelPagedKVCache:
         cache = state.execution_builtin_selector_cache
         if cache is not None and cache.page_signature == page_signature:
             if relevance_mode == "sketch" and cache.sketch_matrix is not None:
+                self._builtin_selector_cache_hits += 1
                 return cache
             if relevance_mode == "envelope" and cache.minima_matrix is not None and cache.maxima_matrix is not None:
+                self._builtin_selector_cache_hits += 1
                 return cache
         if relevance_mode == "sketch":
             sketches = []
@@ -1677,6 +1701,13 @@ class ModelPagedKVCache:
             )
         else:
             return None
+        build_bytes = int(cache.resident_bytes())
+        self._builtin_selector_cache_builds += 1
+        self._builtin_selector_cache_build_bytes += int(build_bytes)
+        self._builtin_selector_cache_build_bytes_max = max(
+            int(self._builtin_selector_cache_build_bytes_max),
+            int(build_bytes),
+        )
         state.execution_builtin_selector_cache = cache
         return cache
 

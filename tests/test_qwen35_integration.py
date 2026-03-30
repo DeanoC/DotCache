@@ -902,6 +902,10 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_builtin_selector_score_all_pages_calls" in result
     assert "execution_builtin_selector_candidate_only_calls" in result
     assert "execution_builtin_selector_candidate_fraction_max" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
     assert "decode_backend_trace" in result
     trace = result["decode_backend_trace"]
     assert "grouped_decode_calls" in trace
@@ -982,6 +986,10 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_freeze_chunk_budget_during_decode" in result
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
     assert "dotcache_step_runtime_breakdown" in result
     assert len(result["dotcache_step_runtime_breakdown"]) == 2
     assert "dotcache_backend_decode_ms_total_from_trace" in result
@@ -1019,6 +1027,10 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
     assert "decode_chunk_budget_dirty_reason_counts" in first_step
     assert "decode_chunk_budget_override_calls" in first_step
+    assert "decode_builtin_selector_cache_hits" in first_step
+    assert "decode_builtin_selector_cache_builds" in first_step
+    assert "decode_builtin_selector_cache_build_bytes" in first_step
+    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
     assert "python_tracemalloc_current_bytes_delta" in first_step
     assert "python_tracemalloc_peak_bytes" in first_step
     assert "python_allocated_blocks_delta" in first_step
@@ -1088,6 +1100,10 @@ def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortl
     assert "execution_freeze_chunk_budget_during_decode" in result
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_builtin_selector_cache_builds" in result
+    assert "execution_builtin_selector_cache_build_bytes" in result
+    assert "execution_builtin_selector_cache_build_bytes_max" in result
 
 
 def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank_metrics() -> None:
@@ -1185,6 +1201,10 @@ def test_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_reports_rank
     assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
     assert "decode_chunk_budget_dirty_reason_counts" in first_step
     assert "decode_chunk_budget_override_calls" in first_step
+    assert "decode_builtin_selector_cache_hits" in first_step
+    assert "decode_builtin_selector_cache_builds" in first_step
+    assert "decode_builtin_selector_cache_build_bytes" in first_step
+    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
     assert "python_tracemalloc_current_bytes_delta" in first_step
     assert "python_tracemalloc_peak_bytes" in first_step
     assert "python_allocated_blocks_delta" in first_step
