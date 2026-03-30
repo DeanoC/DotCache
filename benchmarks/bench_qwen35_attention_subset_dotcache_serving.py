@@ -157,7 +157,6 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
-                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         elif bool(base_record.get("quality_check", False)):
             record = harness.run_attention_subset_dotcache_serving_quality(
@@ -165,6 +164,7 @@ def _run_case(
                 attention_mask=attention_mask,
                 decode_steps=max_new_tokens,
                 profile_backend=bool(base_record.get("profile_backend", False)),
+                trace_python_allocations=bool(base_record.get("trace_python_allocations", False)),
             )
         else:
             record = harness.run_attention_subset_dotcache_serving(

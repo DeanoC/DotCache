@@ -1648,6 +1648,46 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert sweep_args.contexts == [4096, 16384]
 
 
+def test_qwen35_dotcache_serving_run_case_forwards_quality_allocation_trace() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    serving_bench_spec = importlib.util.spec_from_file_location(
+        "bench_qwen35_attention_subset_dotcache_serving",
+        repo_root / "benchmarks" / "bench_qwen35_attention_subset_dotcache_serving.py",
+    )
+    assert serving_bench_spec is not None and serving_bench_spec.loader is not None
+    serving_bench = importlib.util.module_from_spec(serving_bench_spec)
+    serving_bench_spec.loader.exec_module(serving_bench)
+
+    class _FakeHarness:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run_attention_subset_dotcache_serving_quality(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True}
+
+    harness = _FakeHarness()
+    serving_bench._run_case(
+        harness,
+        input_ids=torch.ones((1, 4), dtype=torch.long),
+        attention_mask=torch.ones((1, 4), dtype=torch.long),
+        max_new_tokens=2,
+        base_record={
+            "benchmark": "qwen35_attention_subset_dotcache_serving",
+            "quality_check": True,
+            "profile_backend": True,
+            "trace_python_allocations": True,
+        },
+        continue_on_error=False,
+    )
+    assert len(harness.calls) == 1
+    assert harness.calls[0]["trace_python_allocations"] is True
+    assert harness.calls[0]["profile_backend"] is True
+
+
 def test_qwen35_cuda_shortlist_probe_cli_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
     from pathlib import Path
