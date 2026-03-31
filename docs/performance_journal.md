@@ -5071,3 +5071,78 @@ This is a fixed four-row LongBench-derived QA mini-pack using real benchmark row
   - strong systems wins on named task-style retrieval families
   - a cheap external-style baseline that is fast but collapses task retrieval
   - an initial real-benchmark QA mini-pack showing that quality retention on real benchmark rows is still an open problem rather than a solved claim
+
+## 2026-03-31 15:44 UTC - LongBench QA rescue matrix on the CUDA lane
+
+I pulled the LongBench rescue lane from `37aa54d` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md`
+
+This matrix compares five cases on the same four-row LongBench-derived QA mini-pack:
+
+- `exact`
+- `shortlist_base`
+- `shortlist_l23_ctx`
+- `shortlist_topk8`
+- `shortlist_quality_profile`
+
+It also records cleaned-answer diagnostics so we can separate formatting spillover from real answer loss.
+
+### Positive read
+
+- the rescue matrix completed cleanly with `20` rows and `0` error payloads
+- the new diagnostics are informative even though they did not help the scores:
+  - the cleaned-answer F1 is identical to the raw F1 in every row
+  - that is a useful negative result because it rules out “mostly formatting junk” as the main explanation for the LongBench misses
+- the systems win remains large across all shortlist variants:
+  - `exact` mean decode `743.05 ms/step`
+  - `shortlist_base` mean decode `174.91`
+  - `shortlist_l23_ctx` mean decode `178.86`
+  - `shortlist_topk8` mean decode `183.53`
+  - `shortlist_quality_profile` mean decode `186.30`
+- among the shortlist variants, the baseline remains the fastest mean option in this matrix
+- the only clear per-row quality positive still comes from `multifieldqa_en`, where:
+  - exact F1 `0.1951`
+  - `shortlist_base` / `shortlist_l23_ctx` / `shortlist_quality_profile` each reached `0.2051`
+
+### Negative read
+
+- the central LongBench problem is not formatting:
+  - mean raw F1 equals mean cleaned F1 for every case
+  - the cleaned-answer diagnostics did not rescue a single row
+- none of the rescue variants improved the overall shortlist quality story:
+  - exact mean F1 `0.1425`
+  - `shortlist_base` mean F1 `0.0825`
+  - `shortlist_l23_ctx` mean F1 `0.0825`
+  - `shortlist_topk8` mean F1 `0.0800`
+  - `shortlist_quality_profile` mean F1 `0.0825`
+- `shortlist_topk8` is strictly worse on this pack:
+  - slower than `shortlist_base`
+  - slightly lower mean F1
+- the “quality profile” also failed to buy back quality:
+  - it matches `shortlist_base` on mean F1
+  - but is slower on mean decode
+- `hotpotqa` remains the clearest miss:
+  - exact F1 `0.375`
+  - every shortlist rescue variant stayed at `0.125`
+- `2wikimqa` and `qasper` remained `0.0` across every case in this mini-pack, so the rescue lane does not change the current claim there
+- the layer-23 override still does not earn promotion:
+  - it matches `shortlist_base` on mean F1
+  - but is slightly slower on mean decode in this matrix
+
+### Current interpretation
+
+- this rescue matrix answers the immediate diagnostic question cleanly:
+  - the current LongBench shortlist misses are mostly not caused by chat-format answer junk
+  - they are mostly actual answer-quality / shortlist-recall misses
+- that means the next quality-improvement work should target retrieval/selection behavior, not output post-processing
+- it also narrows the paper story:
+  - LongBench QA is now a real benchmark-family counterexample to any broad “shortlist preserves quality” claim
+  - Needle and passkey remain the cleaner evidence for the current paper-facing systems claim
