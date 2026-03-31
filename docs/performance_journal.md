@@ -4207,3 +4207,70 @@ Current conclusion from the instrumented rerun:
 - the new counters are useful, but this particular Qwen3.5 CUDA lane is bypassing grouped batching before those counters can fire
 - the blocker is now narrower and more concrete than before: the immediate reason we do not see grouped decode on this lane is that grouped batching is explicitly disabled on CUDA for this workload
 - the next meaningful step is therefore not "collect more rejection reasons from the same path"; it is to revisit that CUDA-specific `prefer_grouped_batching=False` decision or add instrumentation around the policy that disables it
+
+## 2026-03-31 17:25 UTC - Forced grouped batching test on CUDA
+
+I added a benchmark-only override in `dotcache/integrations/qwen35.py` so the Qwen3.5 CUDA lane can be forced to use grouped batching without changing the default behavior:
+
+- env flag: `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1`
+
+Then I re-ran the large-context serving wrapper into a separate artifact:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl
+```
+
+I summarized the result with:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`
+
+### What happened
+
+Grouped batching does activate on CUDA when forced.
+
+Exact rows:
+
+- `32768 exact`: decode `2309.26 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback reason `key_value_chunk_signature_mismatch=12`
+- `49152 exact`: decode `3643.76 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback reason `key_value_chunk_signature_mismatch=12`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `1916.62 ms/step`, selected pages `4220`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_value_chunk_signature_mismatch=12`, grouped fallback `key_value_chunk_signature_mismatch=8`
+- `49152 shortlist_base`: decode `2116.18 ms/step`, selected pages `4224`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_value_chunk_signature_mismatch=8`, grouped fallback `key_value_chunk_signature_mismatch=4`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `1843.35 ms/step`, selected pages `4270`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_value_chunk_signature_mismatch=12`, grouped fallback `key_value_chunk_signature_mismatch=8`
+- `49152 shortlist_l23_ctx`: decode `2059.90 ms/step`, selected pages `4276`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_value_chunk_signature_mismatch=8`, grouped fallback `key_value_chunk_signature_mismatch=4`
+
+### Positive result
+
+- the forced test disproves the strongest pessimistic hypothesis; grouped batching is not fundamentally dead on this CUDA lane
+- the new rejection instrumentation is now producing an actual concrete blocker string rather than empty counters
+- the blocker is consistent across shortlist grouping and decode fallback: `key_value_chunk_signature_mismatch`
+
+### Negative result
+
+- forcing grouped batching makes the shortlist runs drastically slower than the default CUDA path
+- compared with the default non-forced rerun:
+  - `32768 shortlist_base`: `632.43 ms/step` -> `1916.62 ms/step`
+  - `49152 shortlist_base`: `752.13 ms/step` -> `2116.18 ms/step`
+  - `32768 shortlist_l23_ctx`: `619.39 ms/step` -> `1843.35 ms/step`
+  - `49152 shortlist_l23_ctx`: `767.97 ms/step` -> `2059.90 ms/step`
+- exact rows also did not improve under forcing
+- forcing grouped batching increased selected page counts in the shortlist rows, which is another practical negative for this configuration
+
+### Current interpretation
+
+- the old CUDA guard was directionally correct for the current workload: forcing grouped batching is worse, not better
+- the immediate technical blocker is now concrete enough to target: `key_value_chunk_signature_mismatch`
+- any future grouped CUDA work on this lane should focus on making chunk signatures line up across the grouped path rather than simply turning grouped batching on globally

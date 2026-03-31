@@ -4,6 +4,7 @@ import copy
 import gc
 import math
 import numpy as np
+import os
 import sys
 import tracemalloc
 from pathlib import Path
@@ -1557,6 +1558,12 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         self.adapter._record_layer_timing(self.adapter.append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
 
         decode_trace = ExecutionTrace(capture_timings=self.adapter.profile_backend) if self.adapter.profile_backend else None
+        force_grouped_batching = os.environ.get("DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         context_states, decode_ms = _timed_call(
             lambda: self.adapter.model_kv_cache.decode_layer_torch(
                 self.layer_idx,
@@ -1567,7 +1574,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 # 8 query heads, 2 KV heads, 4 pages per KV head at exact-64 with
                 # the current profile. The grouped batched decode path is slower
                 # than the per-KV-head fallback for this workload.
-                prefer_grouped_batching=hidden_states.device.type != "cuda",
+                prefer_grouped_batching=force_grouped_batching or hidden_states.device.type != "cuda",
                 trace=decode_trace,
             )
             if _torch_backend_matches_device(self.adapter.backend, hidden_states.device.type)
