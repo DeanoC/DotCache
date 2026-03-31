@@ -61,6 +61,8 @@ Useful existing artifacts:
 - [`docs/qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md)
 - [`benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl)
 - [`benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md)
+- [`benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl)
+- [`benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md)
 
 ### 2. Tier abstraction has cracks
 

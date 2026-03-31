@@ -260,7 +260,7 @@ The current repo still only partially satisfies that standardized contract:
 | shortlist recall / scorer diagnostics | yes | use them as supporting diagnostics rather than substitute evidence |
 | split between calibration and held-out evidence | partial | current paper still relies on some calibration-style anecdotes |
 | named datasets | partial | a four-prompt Needle-in-a-Haystack serving pack now exists, but broader suite coverage and quality-task counterparts are still missing |
-| external baselines | no | the current evidence is still mostly internal-comparison heavy |
+| external baselines | partial | a StreamingLLM-style sink-plus-recent reference lane now exists on the Needle pack, but broader comparator coverage is still missing |
 | one standard table shape across models | no | TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 still use mixed regimes |
 
 That status table is the honest indicator of direction of travel. The project is no longer missing metrics entirely; it is missing consistency, held-out packaging, and external comparators.
@@ -362,6 +362,23 @@ This is materially stronger than the earlier single-prompt Needle run because pr
 - strict exact-match is slightly weaker than retrieval correctness because the `shipment_token` prompt sometimes emits the correct token and then continues with `Question:`
 - the earlier simple story that the layer-23 override is "just slower" is no longer right on this pack, but the prompt-sensitive variance is still too high to justify a confident default switch
 
+The first cheap external-style comparator on that same pack is now also available in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), summarized in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This is a simple StreamingLLM-style sink-plus-recent reference lane with `256` sink tokens, `1024` recent tokens, and no query-aware shortlist expansion.
+
+| Comparator context | Case | Retrieval accuracy | Mean decode ms/step | Read |
+| ---: | --- | ---: | ---: | --- |
+| `32768` | exact | `1.00` | `2521.60` | high-quality, expensive |
+| `32768` | streaming sink+recent | `0.00` | `156.65` | very fast, unusable retrieval |
+| `32768` | shortlist base | `1.00` | `474.23` | slower than streaming, far faster than exact |
+| `49152` | exact | `1.00` | `3909.29` | high-quality, expensive |
+| `49152` | streaming sink+recent | `0.00` | `188.55` | very fast, unusable retrieval |
+| `49152` | shortlist base | `1.00` | `629.46` | slower than streaming, far faster than exact |
+
+This comparator sharpens the systems claim in the right direction:
+
+- a cheap sink-plus-recent reference can be dramatically faster than DotCache shortlist
+- on this Needle pack it also fails retrieval completely, emitting color prefixes like `crimson`, `amber`, `cobalt`, and `silver` instead of the planted tokens
+- DotCache shortlist therefore looks less like "the only thing compared against exact" and more like a middle point on a visible speed-quality frontier
+
 The other obvious follow-up was to force grouped batching on CUDA and see whether the default guard was merely hiding a faster path. The first answer was "not yet": the early forced-grouped serving artifact in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl) shows partial grouped activation but much worse throughput:
 
 | Forced-grouped context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
@@ -408,7 +425,7 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The four-prompt Needle-in-a-Haystack pack also preserves task retrieval at `32768` and `49152` while keeping those large serving wins.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The four-prompt Needle-in-a-Haystack pack also preserves task retrieval at `32768` and `49152` while keeping those large serving wins, and the new streaming-window comparator shows that a much faster simple reference baseline collapses retrieval entirely on the same pack.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
@@ -482,7 +499,11 @@ The biggest remaining gap is that the current artifact still mixes calibration a
 
 ### 7.2. Add Baselines That Match the Claim
 
-The current artifact is strongest on internal comparisons. A publication draft needs external baselines from both sides of the problem:
+The current artifact is still stronger on internal comparisons than on external ones. A publication draft should eventually add external baselines from both sides of the problem, but the first cheap reference lane is now in place:
+
+- a StreamingLLM-style sink-plus-recent reference baseline on the Needle pack
+
+What is still missing:
 
 - low-bit KV quantization baselines
 - query-aware retrieval / sparse attention baselines

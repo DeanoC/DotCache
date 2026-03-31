@@ -204,6 +204,36 @@ Important caveats:
 - the layer-23 override is now mixed rather than cleanly negative: it is faster across all four prompts at `49152`, but the `32768` result is still prompt-sensitive
 - this still does not answer the harder teacher-forced quality-tail issue at `49152`, because Needle is a retrieval-task serving result rather than a loss-tail benchmark
 
+## Streaming Window Reference
+
+The first cheap external-style comparator is now in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), with the rollup in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This lane uses a simple StreamingLLM-style sink-plus-recent reference policy:
+
+- sink window: `256`
+- recent window: `1024`
+- no query-aware shortlist expansion
+
+Reference comparison:
+
+| Context | Case | Retrieval accuracy | Exact-match rate | Mean decode ms/step | 95% CI |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| `32768` | exact | `1.00` | `0.75` | `2521.60` | `370.31` |
+| `32768` | streaming sink+recent | `0.00` | `0.00` | `156.65` | `18.31` |
+| `32768` | shortlist base | `1.00` | `1.00` | `474.23` | `23.75` |
+| `49152` | exact | `1.00` | `0.75` | `3909.29` | `440.31` |
+| `49152` | streaming sink+recent | `0.00` | `0.00` | `188.55` | `3.21` |
+| `49152` | shortlist base | `1.00` | `0.75` | `629.46` | `28.19` |
+
+Why this is useful:
+
+- it gives the paper a real external-style speed/quality frontier instead of only exact-vs-DotCache internal comparisons
+- it shows that the cheap window reference is indeed much faster than DotCache shortlist
+- it also shows that this speed is unusable on the Needle pack because retrieval collapses completely
+
+Why it still needs caveats:
+
+- this is a StreamingLLM-style reference implementation, not a paper-faithful Quest or H2O reproduction
+- the layer-23 override still does not win cleanly enough here to become the promoted default shortlist story
+
 ## 49k `top_k=8` Follow-Up
 
 The obvious next ablation was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow. The clean follow-up artifacts are:
