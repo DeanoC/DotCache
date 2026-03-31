@@ -204,6 +204,34 @@ Important caveats:
 - the layer-23 override is now mixed rather than cleanly negative: it is faster across all four prompts at `49152`, but the `32768` result is still prompt-sensitive
 - this still does not answer the harder teacher-forced quality-tail issue at `49152`, because Needle is a retrieval-task serving result rather than a loss-tail benchmark
 
+## Passkey Pack
+
+The second reusable named benchmark family is now in [`qwen35_cuda_passkey_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl), with the rollup in [`qwen35_cuda_passkey_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md). This is a fixed four-prompt RULER-style passkey retrieval pack at the same two contexts.
+
+Passkey pack summary:
+
+| Context | Case | `n` | Retrieval accuracy | Exact-match rate | Mean decode ms/step | 95% CI |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `32768` | exact | `4` | `1.00` | `0.25` | `2390.28` | `200.40` |
+| `32768` | shortlist base | `4` | `1.00` | `0.25` | `500.58` | `35.57` |
+| `32768` | shortlist `layer:23` ctx | `4` | `1.00` | `0.25` | `511.36` | `40.69` |
+| `49152` | exact | `4` | `1.00` | `0.25` | `3823.87` | `386.65` |
+| `49152` | shortlist base | `4` | `1.00` | `0.25` | `662.52` | `62.46` |
+| `49152` | shortlist `layer:23` ctx | `4` | `1.00` | `0.25` | `657.81` | `40.55` |
+
+What this adds:
+
+- it gives the paper a second named task family rather than a single successful retrieval pack
+- retrieval again stayed correct on all `24/24` rows, including all shortlist rows at `49152`
+- systems performance is consistent with Needle: shortlist is still about `4.7x` to `5.8x` faster than exact
+- shortlist page counts stay stable at `12240` for base and `12336` for `layer:23`
+
+Important caveats:
+
+- strict exact-match is poor even though retrieval is perfect, because the model often emits the correct digits and then continues with prompt text such as `Question: What is` or `Vault record: the`
+- this is a RULER-style passkey family, not a full RULER reproduction
+- the layer-23 override remains mixed rather than clearly promoted, so it still should not become the headline default shortlist story
+
 ## Streaming Window Reference
 
 The first cheap external-style comparator is now in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), with the rollup in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This lane uses a simple StreamingLLM-style sink-plus-recent reference policy:

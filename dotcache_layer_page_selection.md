@@ -191,7 +191,7 @@ The prompt source itself must also be classified. Going forward, DotCache should
 | --- | --- | --- |
 | synthetic exact-length filler | kernel/runtime stability, shortlist scaling, decode-path behavior | implemented today |
 | held-out natural text | quality and mixed systems-quality claims | partially implemented through exact-length teacher-forced harnesses, but not yet packaged as a named suite |
-| standardized long-context tasks | publication-grade long-context task claims | a first four-prompt Needle-in-a-Haystack serving pack now exists; broader suite coverage is still missing |
+| standardized long-context tasks | publication-grade long-context task claims | two fixed four-prompt synthetic retrieval packs now exist (`Needle` and RULER-style `passkey`), but broader suite coverage and non-synthetic task counterparts are still missing |
 
 This matters because several current harnesses still construct prompts by repeating a synthetic filler string (`"Cache locality matters for fast decoding."`) and trimming to exact token length. That is acceptable for systems microbenchmarks, but not for the headline quality claim of a paper.
 
@@ -259,7 +259,7 @@ The current repo still only partially satisfies that standardized contract:
 | teacher-forced quality harness | yes | package it around named held-out prompt suites |
 | shortlist recall / scorer diagnostics | yes | use them as supporting diagnostics rather than substitute evidence |
 | split between calibration and held-out evidence | partial | current paper still relies on some calibration-style anecdotes |
-| named datasets | partial | a four-prompt Needle-in-a-Haystack serving pack now exists, but broader suite coverage and quality-task counterparts are still missing |
+| named datasets | partial | two four-prompt serving packs now exist (`Needle` and RULER-style `passkey`), but broader suite coverage and quality-task counterparts are still missing |
 | external baselines | partial | a StreamingLLM-style sink-plus-recent reference lane now exists on the Needle pack, but broader comparator coverage is still missing |
 | one standard table shape across models | no | TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 still use mixed regimes |
 
@@ -362,6 +362,25 @@ This is materially stronger than the earlier single-prompt Needle run because pr
 - strict exact-match is slightly weaker than retrieval correctness because the `shipment_token` prompt sometimes emits the correct token and then continues with `Question:`
 - the earlier simple story that the layer-23 override is "just slower" is no longer right on this pack, but the prompt-sensitive variance is still too high to justify a confident default switch
 
+The second fixed synthetic retrieval family is now also in place. The held-out serving artifact [`qwen35_cuda_passkey_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl), summarized in [`qwen35_cuda_passkey_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md), evaluates four fixed RULER-style passkey prompts at the same two contexts.
+
+| Passkey context | Case | `n` prompts | Retrieval accuracy | Exact-match rate | Mean decode ms/step | 95% CI |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `32768` | exact | `4` | `1.00` | `0.25` | `2390.28` | `200.40` |
+| `32768` | shortlist base | `4` | `1.00` | `0.25` | `500.58` | `35.57` |
+| `32768` | shortlist `layer:23` ctx | `4` | `1.00` | `0.25` | `511.36` | `40.69` |
+| `49152` | exact | `4` | `1.00` | `0.25` | `3823.87` | `386.65` |
+| `49152` | shortlist base | `4` | `1.00` | `0.25` | `662.52` | `62.46` |
+| `49152` | shortlist `layer:23` ctx | `4` | `1.00` | `0.25` | `657.81` | `40.55` |
+
+This second family is useful for a different reason than Needle:
+
+- retrieval again stayed perfect across all `24/24` rows
+- shortlist again kept a large systems win, roughly `4.7x` to `5.8x` faster than exact
+- shortlist page counts stayed stable at `12240` for base and `12336` for the layer-23 override
+- strict exact-match is much weaker than retrieval correctness because the model often emits the correct digits and then continues into prompt text such as `Question: What is` or `Vault record: the`
+- the layer-23 override remains mixed rather than clearly promoted: it is slightly slower at `32768` and slightly faster at `49152`
+
 The first cheap external-style comparator on that same pack is now also available in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), summarized in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This is a simple StreamingLLM-style sink-plus-recent reference lane with `256` sink tokens, `1024` recent tokens, and no query-aware shortlist expansion.
 
 | Comparator context | Case | Retrieval accuracy | Mean decode ms/step | Read |
@@ -425,7 +444,7 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The four-prompt Needle-in-a-Haystack pack also preserves task retrieval at `32768` and `49152` while keeping those large serving wins, and the new streaming-window comparator shows that a much faster simple reference baseline collapses retrieval entirely on the same pack.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The fixed four-prompt Needle and passkey packs both preserve retrieval at `32768` and `49152` while keeping those large serving wins, and the streaming-window comparator shows that a much faster simple reference baseline collapses retrieval entirely on the same Needle pack.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
@@ -442,11 +461,10 @@ What the paper should **not** claim yet:
 
 What this does **not** yet show:
 
-- benchmark variance
 - end-to-end TTFT
 - batch scaling
 - selector overhead inside the serving loop
-- a broader standardized long-context suite with multiple task families, such as LongBench, RULER, or additional Needle packs beyond the first four-prompt serving set
+- a broader standardized long-context suite beyond these first two synthetic retrieval families, such as LongBench, a fuller RULER integration, or named quality-task counterparts
 
 ## 6. Related Work and Novelty Positioning
 

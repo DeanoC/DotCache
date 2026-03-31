@@ -101,7 +101,7 @@ Decision gate:
 Follow-on breadth step:
 
 - add a second named synthetic retrieval family before claiming benchmark breadth
-- current practical branch pick: a fixed four-prompt RULER-style passkey retrieval pack, wired via [run_qwen35_cuda_passkey_pack_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
+- Status: done in [qwen35_cuda_passkey_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl) and [qwen35_cuda_passkey_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md)
 
 ### Phase 3. Add One External Baseline On The Qwen3.5 Lane
 
