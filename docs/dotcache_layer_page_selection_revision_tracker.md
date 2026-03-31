@@ -51,7 +51,7 @@ Experiment work still needed:
 
 - one held-out benchmark suite with fixed prompt counts and variance
 - one hardware table with exact GPU / backend / dtype / batch size
-- one standard long-context suite: `LongBench`, `RULER`, or `Needle-in-a-Haystack`
+- prompt-count expansion and variance for the new `Needle-in-a-Haystack` lane, or a second named suite such as `LongBench` or `RULER`
 
 Useful existing artifacts:
 
@@ -59,6 +59,7 @@ Useful existing artifacts:
 - [`docs/local_layer_profiles.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/local_layer_profiles.md)
 - [`docs/qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
 - [`docs/qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md)
+- [`benchmarks/results/qwen35_cuda_needle_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_protocol.jsonl)
 
 ### 2. Tier abstraction has cracks
 

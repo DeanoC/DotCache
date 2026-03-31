@@ -177,6 +177,29 @@ Bottom line after these follow-ups:
 - it still does not justify switching the Qwen3.5 CUDA shortlist lane to grouped-by-default
 - the remaining blocker is no longer correctness; it is a narrow performance tradeoff plus the unresolved `49152` quality regime
 
+## First Needle Result
+
+The first named benchmark-style artifact is now in [`qwen35_cuda_needle_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_protocol.jsonl). This is still a small first pass, but it is materially stronger than a filler-only microbenchmark because it asks a real retrieval question against a planted answer.
+
+Needle summary:
+
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Answer read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2217.21` | `453.15` | `471.57` | all rows exact-match the planted answer |
+| `49152` | `3510.51` | `612.97` | `634.09` | all rows exact-match the planted answer |
+
+What this adds:
+
+- the branch now has one named benchmark lane that is plausibly paper-table-worthy rather than purely diagnostic
+- shortlist keeps the large serving win on a task-style prompt, not only on exact-length filler
+- both shortlist variants retrieve the planted answer exactly even at `49152`
+
+What it does not add yet:
+
+- prompt-count robustness, because the current artifact is only `n=1` per `(context, case)`
+- any support for the layer-23 override, because `shortlist_l23_ctx` is slightly slower than `shortlist_base` at both contexts
+- a clean answer to the harder quality-tail issue at `49152`, because this is a retrieval task result rather than a teacher-forced tail-quality result
+
 ## 49k `top_k=8` Follow-Up
 
 The obvious next ablation was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow. The clean follow-up artifacts are:

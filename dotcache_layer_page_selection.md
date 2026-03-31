@@ -181,7 +181,7 @@ The current harnesses already map cleanly onto that structure:
 | Lane | Current harness shape | Current purpose | Publication status |
 | --- | --- | --- | --- |
 | `systems` | [`bench_qwen35_attention_subset_dotcache_serving.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_serving.py) | exact-length serving throughput, resident bytes, shortlist counts, decode path | good for controlled systems probes; not sufficient alone for publication |
-| `quality` | [`bench_qwen35_attention_subset_dotcache_loss.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_loss.py) | teacher-forced loss, logit drift, agreement on fixed slices | good for held-out quality checks; still missing named benchmark ingestion |
+| `quality` | [`bench_qwen35_attention_subset_dotcache_loss.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_loss.py) | teacher-forced loss, logit drift, agreement on fixed slices | good for held-out quality checks; named benchmark quality ingestion is still missing |
 | `diagnostic` | serving harness with `--quality-check`, `--recall-analysis`, or `--scorer-diagnostic` | replay drift, shortlist recall, scorer ranking, timing breakdowns | diagnostic support only |
 | `calibration` | local profile sweeps and layer-specific probe scripts | threshold and override discovery | explicitly non-mainline evidence |
 
@@ -191,7 +191,7 @@ The prompt source itself must also be classified. Going forward, DotCache should
 | --- | --- | --- |
 | synthetic exact-length filler | kernel/runtime stability, shortlist scaling, decode-path behavior | implemented today |
 | held-out natural text | quality and mixed systems-quality claims | partially implemented through exact-length teacher-forced harnesses, but not yet packaged as a named suite |
-| standardized long-context tasks | publication-grade long-context task claims | target only; not yet wired into the repo |
+| standardized long-context tasks | publication-grade long-context task claims | first Needle-in-a-Haystack serving lane is wired and has an initial `n=1` artifact; still not a settled benchmark pack |
 
 This matters because several current harnesses still construct prompts by repeating a synthetic filler string (`"Cache locality matters for fast decoding."`) and trimming to exact token length. That is acceptable for systems microbenchmarks, but not for the headline quality claim of a paper.
 
@@ -259,7 +259,7 @@ The current repo still only partially satisfies that standardized contract:
 | teacher-forced quality harness | yes | package it around named held-out prompt suites |
 | shortlist recall / scorer diagnostics | yes | use them as supporting diagnostics rather than substitute evidence |
 | split between calibration and held-out evidence | partial | current paper still relies on some calibration-style anecdotes |
-| named datasets | no | LongBench, RULER, Needle, or equivalent ingestion is still missing |
+| named datasets | partial | first Needle-in-a-Haystack serving artifact exists, but prompt-count expansion and variance are still missing |
 | external baselines | no | the current evidence is still mostly internal-comparison heavy |
 | one standard table shape across models | no | TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 still use mixed regimes |
 
@@ -344,6 +344,18 @@ The obvious follow-up was to widen the `49152` shortlist from `top_k=4` to `top_
 | shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` |
 | shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` |
 
+The first named benchmark-style lane is now also in place. The held-out serving artifact [`qwen35_cuda_needle_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_protocol.jsonl) evaluates a fixed Needle-in-a-Haystack prompt at `32768` and `49152` for `exact`, `shortlist_base`, and `shortlist_l23_ctx`. All six rows retrieved the planted answer exactly, including both shortlist rows at `49152`:
+
+| Needle context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Retrieval read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2217.21` | `453.15` | `471.57` | all three rows exact-match the planted answer |
+| `49152` | `3510.51` | `612.97` | `634.09` | all three rows exact-match the planted answer |
+
+This is stronger than the earlier synthetic-filler probes because it is a named task-style row rather than a pure diagnostic. But it still carries two important caveats:
+
+- the current Needle artifact is only `n=1` per `(context, case)`
+- `shortlist_l23_ctx` is slightly slower than `shortlist_base` at both contexts, so this task does not support the layer-23 override as a default serving choice
+
 The other obvious follow-up was to force grouped batching on CUDA and see whether the default guard was merely hiding a faster path. The first answer was "not yet": the early forced-grouped serving artifact in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl) shows partial grouped activation but much worse throughput:
 
 | Forced-grouped context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
@@ -390,7 +402,7 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The first Needle-in-a-Haystack artifact also preserves exact retrieval at `32768` and `49152` while keeping those large serving wins.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
@@ -403,7 +415,7 @@ What the paper should **not** claim yet:
 - that DotCache shortlist is a stable throughput win at every tested context
 - that the `49152` configuration is quality-clean
 - that grouped-batched decode is already the right default on the main CUDA lane
-- that page-level observed-stat routing has already beaten simpler fixed-policy baselines on a standardized benchmark suite
+- that page-level observed-stat routing has already beaten simpler fixed-policy baselines on a multi-prompt standardized benchmark suite
 
 What this does **not** yet show:
 
@@ -411,7 +423,7 @@ What this does **not** yet show:
 - end-to-end TTFT
 - batch scaling
 - selector overhead inside the serving loop
-- standardized long-context tasks like LongBench, RULER, or Needle-in-a-Haystack
+- a multi-prompt standardized long-context suite with variance, such as LongBench, RULER, or an expanded Needle pack
 
 ## 6. Related Work and Novelty Positioning
 
