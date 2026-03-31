@@ -98,6 +98,11 @@ Decision gate:
 - if Needle is positive, it becomes the first external task result in the paper
 - if Needle is mixed or negative, it still improves credibility and informs claim narrowing
 
+Follow-on breadth step:
+
+- add a second named synthetic retrieval family before claiming benchmark breadth
+- current practical branch pick: a fixed four-prompt RULER-style passkey retrieval pack, wired via [run_qwen35_cuda_passkey_pack_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
+
 ### Phase 3. Add One External Baseline On The Qwen3.5 Lane
 
 Goal:

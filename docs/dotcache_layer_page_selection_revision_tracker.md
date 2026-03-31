@@ -52,6 +52,7 @@ Experiment work still needed:
 - expand beyond the first four-prompt `Needle-in-a-Haystack` pack so the paper has more than one named long-context task family
 - one hardware table with exact GPU / backend / dtype / batch size
 - one second named suite such as `LongBench` or `RULER`, or a stronger multi-pack Needle section
+  Current practical branch step: a fixed four-prompt RULER-style passkey retrieval pack is now wired and ready for CUDA runs via [`run_qwen35_cuda_passkey_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
 
 Useful existing artifacts:
 
@@ -63,6 +64,10 @@ Useful existing artifacts:
 - [`benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md)
 - [`benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl)
 - [`benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md)
+- [`configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json)
+- [`scripts/run_qwen35_cuda_passkey_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_probe.py)
+- [`scripts/run_qwen35_cuda_passkey_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
+- [`scripts/summarize_qwen35_cuda_passkey_pack.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_passkey_pack.py)
 
 ### 2. Tier abstraction has cracks
 

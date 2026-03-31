@@ -1,0 +1,37 @@
+[
+  {
+    "prompt_id": "ops_digits",
+    "passkey_key": "five-digit passkey",
+    "passkey_value": "58142",
+    "passkey_position_fraction": 0.2,
+    "passkey_template": "Security memo: the {needle_key} is {needle_value}. Memorize the digits exactly.\\n",
+    "question_template": "Question: What is the {needle_key}? Reply with the digits only.\\nAnswer:"
+  },
+  {
+    "prompt_id": "archive_pin",
+    "passkey_key": "archive access pin",
+    "passkey_value": "90317",
+    "passkey_position_fraction": 0.45,
+    "haystack_unit": "Operations log about manifests, schedules, and storage bays. This sentence is filler and not the answer.\\n",
+    "passkey_template": "Archive note: the {needle_key} is {needle_value}. Do not change the digits.\\n",
+    "question_template": "Question: What is the {needle_key}? Return only the numeric pin.\\nAnswer:"
+  },
+  {
+    "prompt_id": "shipment_code",
+    "passkey_key": "shipment override code",
+    "passkey_value": "26488",
+    "passkey_position_fraction": 0.65,
+    "haystack_unit": "Transit update about staging, approvals, and customs routing. This sentence is filler and not the answer.\\n",
+    "passkey_template": "Critical reminder: the {needle_key} is {needle_value}. Keep the code exact.\\n",
+    "question_template": "Question: What is the {needle_key}? Output the code digits only.\\nAnswer:"
+  },
+  {
+    "prompt_id": "vault_sequence",
+    "passkey_key": "vault recovery digits",
+    "passkey_value": "41736",
+    "passkey_position_fraction": 0.82,
+    "haystack_unit": "Facility memo on inspections, staffing, and route planning. This sentence is filler and not the answer.\\n",
+    "passkey_template": "Vault record: the {needle_key} is {needle_value}. Preserve the exact digits.\\n",
+    "question_template": "Question: What is the {needle_key}? Answer with digits only.\\nAnswer:"
+  }
+]
