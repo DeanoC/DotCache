@@ -419,6 +419,15 @@ Rescue-matrix summary:
 | shortlist `top_k=8` | `0.08` | `183.53` | slower and slightly worse |
 | shortlist quality profile | `0.08` | `186.30` | slower without quality gain |
 
+The focused `hotpotqa` follow-up in [`qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl), summarized in [`qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md), sharpens that conclusion further:
+
+- exact still reaches `0.375` QA F1 on the row, while every shortlist variant lands at `0.250`
+- `shortlist_base`, `layer:23` widening, `top_k=8`, and the quality profile all change cost more than they change the answer
+- the repeated-miss diagnostic now points to the same old exact-page ranges being absent over and over, especially `1296:1312`, `5824:5840`, `1376:1392`, `624:640`, and `8800:8816`
+- the worst shortlist layer stays concentrated in the same small set of layers rather than moving to a clearly better regime
+
+So the next LongBench quality-improvement step is no longer "try another generic shortlist knob." It is "explain why these specific old pages keep missing shortlist selection and fix that behavior."
+
 The first cheap external-style comparator on that same pack is now also available in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), summarized in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This is a simple StreamingLLM-style sink-plus-recent reference lane with `256` sink tokens, `1024` recent tokens, and no query-aware shortlist expansion.
 
 | Comparator context | Case | Retrieval accuracy | Mean decode ms/step | Read |
@@ -485,7 +494,7 @@ Different models and tensor kinds really do want different policies. TinyLlama, 
 On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The fixed four-prompt Needle and passkey packs both preserve retrieval at `32768` and `49152` while keeping those large serving wins, and the LongBench-derived QA mini-pack still shows about a `4.2x` systems win on real benchmark rows even though QA F1 retention is not yet good enough. The streaming-window comparator then shows that an even faster simple reference baseline collapses retrieval entirely on the same Needle pack.
 
 3. Long-context quality is now the binding problem.
-The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit, and the LongBench QA mini-pack plus rescue matrix now show the same issue on real benchmark rows rather than only on synthetic probes.
+The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit, and the LongBench QA mini-pack plus rescue matrix now show the same issue on real benchmark rows rather than only on synthetic probes. The focused `hotpotqa` diagnostic narrows that still further: the current shortlist variants repeatedly miss the same old exact-page ranges, so the next quality work should target selection behavior rather than formatting or another generic width increase.
 
 4. Cheap rescue heuristics and backend-path flips are not enough yet.
 Both the layer-23 context-aware widening and the `top_k=8` follow-up improve the story only marginally. Switching the backend path to grouped decode also does not fix the `49152` loss tail or produce a stable serving win. These are useful diagnostics, not final fixes.

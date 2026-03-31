@@ -52,7 +52,7 @@ Experiment work still needed:
 - expand beyond the first three small named task families so the paper has broader long-context task coverage
 - one hardware table with exact GPU / backend / dtype / batch size
 - broader suite breadth such as a fuller `LongBench` sweep, a fuller `RULER` integration, or named held-out quality-task counterparts
-  Current read: the fixed four-row LongBench-derived QA mini-pack and its rescue matrix now show a stable systems win but a persistent benchmark-quality problem driven mainly by real retrieval/selection misses rather than output cleanup
+  Current read: the fixed four-row LongBench-derived QA mini-pack, its rescue matrix, and the focused `hotpotqa` diagnostic now show a stable systems win but a persistent benchmark-quality problem driven mainly by repeated real retrieval/selection misses rather than output cleanup
 
 Useful existing artifacts:
 
@@ -70,13 +70,18 @@ Useful existing artifacts:
 - [`benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md)
 - [`benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl)
 - [`benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md)
+- [`benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl)
+- [`benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md)
 - [`configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json)
+- [`configs/prompt_packs/qwen35_cuda_longbench_hotpot_case_order_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_longbench_hotpot_case_order_v1.json)
 - [`benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py)
 - [`docs/qwen35_cuda_longbench_qa_family_plan.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_longbench_qa_family_plan.md)
+- [`scripts/run_qwen35_cuda_longbench_hotpot_diagnostic.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_hotpot_diagnostic.sh)
 - [`scripts/run_qwen35_cuda_longbench_qa_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py)
 - [`scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh)
 - [`scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh)
 - [`scripts/summarize_qwen35_cuda_longbench_qa_pack.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_longbench_qa_pack.py)
+- [`scripts/summarize_qwen35_cuda_longbench_hotpot_diagnostic.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_longbench_hotpot_diagnostic.py)
 - [`configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json)
 - [`scripts/run_qwen35_cuda_passkey_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_probe.py)
 - [`scripts/run_qwen35_cuda_passkey_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
