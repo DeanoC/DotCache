@@ -137,6 +137,43 @@ What this changes in the paper read:
 - the default guard is no longer justified by "grouped decode is broken"
 - it is still justified by the narrower claim that forced grouped decode has not yet beaten the existing default shortlist path clearly enough to replace it
 
+The two follow-up artifacts after that serving rerun make the story sharper still:
+
+- forced-grouped quality tail from [`qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl)
+- 3x serving reproducibility from [`qwen35_cuda_shortlist_large_context_repro_serving/default_repeat1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat1.jsonl), [`default_repeat2.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat2.jsonl), [`default_repeat3.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat3.jsonl), [`forced_grouped_repeat1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat1.jsonl), [`forced_grouped_repeat2.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat2.jsonl), and [`forced_grouped_repeat3.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat3.jsonl)
+
+Forced-grouped quality-tail summary:
+
+| Context | Base shortlist loss delta / max err | Layer-23 ctx loss delta / max err | Decode-path read |
+| ---: | --- | --- | --- |
+| `32768` | `-1.33765e-05 / 3.4961` | `-1.42405e-05 / 3.4961` | all rows `grouped_decode_calls=18, per_kv_decode_calls=0` |
+| `49152` | `+0.0124781 / 6.9531` | `+0.0121616 / 6.9141` | all rows `grouped_decode_calls=18, per_kv_decode_calls=0` |
+
+What this adds:
+
+- forced grouped decode is now quality-stable enough to evaluate seriously
+- it does not repair the existing `49152` loss-tail problem
+- quality is broadly comparable to the earlier default non-forced shortlist read, so grouped mode is not the missing quality fix
+
+Serving reproducibility summary:
+
+| Context / case | Default mean ms/step | Forced grouped mean ms/step | Read |
+| --- | ---: | ---: | --- |
+| `32768 shortlist_base` | `623.88` | `669.76` | grouped slower by `7.35%` |
+| `49152 shortlist_base` | `741.45` | `775.01` | grouped slower by `4.53%` |
+| `32768 shortlist_l23_ctx` | `626.15` | `672.73` | grouped slower by `7.44%` |
+| `49152 shortlist_l23_ctx` | `792.68` | `788.97` | grouped faster by `0.47%` |
+
+Operational caveat:
+
+- both the forced-grouped quality wrapper and the reproducibility wrapper needed one rerun/cleanup pass after partial output files, so the backend story is cleaner than the wrapper story
+
+Bottom line after these follow-ups:
+
+- grouped CUDA is now real, repeatable, and quality-stable
+- it still does not justify switching the Qwen3.5 CUDA shortlist lane to grouped-by-default
+- the remaining blocker is no longer correctness; it is a narrow performance tradeoff plus the unresolved `49152` quality regime
+
 ## 49k `top_k=8` Follow-Up
 
 The obvious next ablation was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow. The clean follow-up artifacts are:
@@ -167,7 +204,7 @@ So `top_k=8` is a useful negative result, not the missing fix.
 Why these need caveated presentation:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
-- the default path still stays in `per_kv_fallback`, even though the forced-grouped bucketed follow-up now shows grouped CUDA can run end-to-end and reach near-parity shortlist throughput
+- the default path still stays in `per_kv_fallback`, even though the forced-grouped follow-ups now show grouped CUDA can run end-to-end, stay quality-stable, and reach near-parity shortlist throughput
 - the paper should present these larger-context rows as the current best systems evidence, but not as a fully locked result yet
 
 ## Exact Rerun Path For The CUDA Box

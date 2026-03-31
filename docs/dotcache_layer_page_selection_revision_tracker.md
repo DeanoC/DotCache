@@ -31,7 +31,9 @@ Current CUDA paper read:
 - the immediate grouped-decode blocker on the Qwen3.5 CUDA serving lane is now known: [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) passes `prefer_grouped_batching=hidden_states.device.type != "cuda"`, so grouped batching is disabled on CUDA before rejection accounting runs
 - forced grouped batching on CUDA is now operational after the chunk-signature fixes and mixed-signature bucketing patch
 - the previous grouped blockers `key_value_chunk_signature_mismatch` and `key_signature_mismatch_across_groups` are no longer the leading story on the successful rows
-- grouped shortlist throughput is now close to the default CUDA path at `32768/49152`, but not yet a decisive win
+- grouped shortlist throughput is now close to the default CUDA path at `32768/49152`, but the 3x repro pass still does not justify a default switch
+- forced grouped quality is now stable and broadly matches the earlier default shortlist quality read
+- grouped decode is therefore no longer a correctness blocker or a quality rescue; it is a near-parity backend alternative
 
 ## Review Issue -> Fix
 
@@ -140,20 +142,19 @@ Still needed:
 
 Goal:
 
-- improve grouped-path chunk-signature alignment on the Qwen3.5 CUDA lane, because simple forced enablement already works and is slower
+- understand the small remaining grouped/default performance gap on the Qwen3.5 CUDA lane now that grouped decode is fully operational
 
 Why this is first:
 
 - it is now the clearest systems bottleneck in the shortlist story
-- the newer forced-grouped rerun after chunk-signature and bucketing fixes shows grouped batching can now run end-to-end on the shortlist rows
-- the next needed output is no longer just rejection counts; it is reproducibility and quality evidence for the operational grouped lane
+- the newer forced-grouped reruns show grouped batching can now run end-to-end on the shortlist rows
+- the quality-tail and repro follow-ups now show that grouped mode is repeatable and quality-stable, but still not the default choice
 
 Needed outputs:
 
-- decode-path classification per row
-- grouped rejection reason counts per row
 - selector / score / mix timing split inside the serving loop
-- same `32768/49152` table after grouped bucketing, including the direct rerun note for the `32768 shortlist_base` wrapper miss
+- timing split comparisons for default vs grouped on the same shortlist rows
+- one clean rerun table after timing instrumentation, without wrapper interruptions
 
 ### B. One stronger `49152` quality rescue
 
@@ -166,6 +167,7 @@ Negative results already in hand:
 - `layer:23:min_ctx` widening does not materially fix the tail
 - `top_k=8` modestly helps quality but slows serving and still is not clean
 - once `top_k=8` is global, the layer-23 override no longer helps
+- grouped decode also does not make `49152` quality-clean
 
 Candidate directions:
 
@@ -213,7 +215,7 @@ These do not directly strengthen the page-selection paper, but they are now merg
 ## Suggested Order
 
 1. Freeze the manuscript wording cleanup already completed in [`dotcache_layer_page_selection.md`](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md).
-2. Chase grouped-batched activation on the Qwen3.5 CUDA shortlist lane.
-3. Run one stronger `49152` quality rescue experiment that is not just another wider shortlist.
+2. Run one stronger `49152` quality rescue experiment that is not just another wider shortlist.
+3. Add timing splits on the grouped CUDA shortlist lane.
 4. Run one explicit page-routing ablation against fixed per-layer policies.
 5. Only after that, decide whether the paper is still a workshop/system-note submission or ready to target a stronger venue.

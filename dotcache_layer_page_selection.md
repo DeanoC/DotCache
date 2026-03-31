@@ -278,6 +278,14 @@ This newer grouped result changes the systems read in an important way:
 - forced grouped shortlist throughput is now close to the default non-forced path
 - it still does not clearly beat the default path, so the default CUDA guard remains acceptable as a performance choice rather than as a correctness workaround
 
+Two more follow-ups now close the loop on that grouped path. First, the forced-grouped quality-tail artifact in [`qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl) shows that grouped decode is fully active and quality-stable on all six rows. It does not fix the `49152` loss-tail issue, but it also does not materially worsen it relative to the earlier non-forced shortlist read. Second, the 3x serving reproducibility pass in [`qwen35_cuda_shortlist_large_context_repro_serving`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving) shows that grouped decode is repeatable but not a reproducible overall win: three of the four shortlist cases are still slower under forced grouped by about `4.5%` to `7.4%`, while only `49152 shortlist_l23_ctx` edges ahead and only by `0.47%`.
+
+That makes the current grouped-CUDA conclusion much cleaner than before:
+
+- grouped decode is now real, repeatable, and quality-stable on this lane
+- grouped decode is not the missing fix for the `49152` quality regime
+- grouped decode still does not justify replacing the default CUDA shortlist path on performance grounds alone
+
 So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
 
 ### 5.7. What The Current Evidence Actually Supports
@@ -288,13 +296,13 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the latest forced-grouped bucketed rerun shows that grouped CUDA can now execute end-to-end at roughly comparable shortlist throughput.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
 
-4. Cheap rescue heuristics are not enough yet.
-Both the layer-23 context-aware widening and the `top_k=8` follow-up improve the story only marginally. They are useful diagnostics, not final fixes.
+4. Cheap rescue heuristics and backend-path flips are not enough yet.
+Both the layer-23 context-aware widening and the `top_k=8` follow-up improve the story only marginally. Switching the backend path to grouped decode also does not fix the `49152` loss tail or produce a stable serving win. These are useful diagnostics, not final fixes.
 
 What the paper should **not** claim yet:
 
@@ -384,8 +392,8 @@ The paper also needs ablations for:
 
 The current results suggest one priority ordering rather than a broad sweep:
 
-1. measure grouped CUDA reproducibility and quality now that the chunk-signature blockers are gone, because the grouped path is finally operational enough to evaluate as a candidate default rather than just as a debugging lane
-2. one stronger `49152` quality rescue that is not just another `top_k` increase
+1. one stronger `49152` quality rescue that is not just another `top_k` increase, because grouped decode has now been tested and is not the missing fix
+2. add selector / score / mix timing splits on the grouped CUDA path, because the remaining grouped/default gap is now small enough to profile directly
 3. only then a wider ablation grid
 
 ### 7.4. Make the Profile Discovery Scientific
