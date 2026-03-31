@@ -6,6 +6,90 @@ Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/d
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
+## 2026-03-30 ROCm 890M Bring-up And Sweep
+
+This is the current AMD laptop baseline for the shared ROCm lane. The detailed run outputs are split across:
+
+- [benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330/qwen35_0p8b_dense_serving_sweep.jsonl](../benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330/qwen35_0p8b_dense_serving_sweep.jsonl)
+- [benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.jsonl](../benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.jsonl)
+- [benchmarks/results/qwen35_rocm_890m_statecache_20260330/qwen35_0p8b_statecache_serving.jsonl](../benchmarks/results/qwen35_rocm_890m_statecache_20260330/qwen35_0p8b_statecache_serving.jsonl)
+- [benchmarks/results/qwen35_rocm_890m_expandable_segments_20260330](../benchmarks/results/qwen35_rocm_890m_expandable_segments_20260330)
+
+### Setup Read
+
+- Repo-local `.venv` is wired to a shared ROCm environment at `~/venvs/torch-rocm`.
+- Runtime torch is `2.11.0+rocm7.1` with `torch.version.hip == 7.1.52802`.
+- The tested GPU is `AMD Radeon 890M Graphics`.
+- The optional Qwen3.5 fast-path dependencies are installed and active:
+  - `flash-linear-attention==0.4.2`
+  - `fla-core==0.4.2`
+  - `causal-conv1d==1.6.1`
+- Building those extensions on this Fedora laptop required:
+  - `rocm-hip-devel`
+  - `rocm-comgr-devel`
+  - `rocm-runtime-devel`
+  - `hipcub-devel`
+  - `rocprim-devel`
+- The machine still has a mixed toolchain caveat:
+  - PyTorch runtime is ROCm `7.1`
+  - system `hipcc` is ROCm `6.4`
+- Qwen3.5 also needed one repo-side ROCm workaround:
+  - the HIP `flash-linear-attention` gated-delta path was only stable here when float32 `q/k/v` are downcast to fp16 before the fast kernel call
+
+### Current Read
+
+- The shared ROCm lane is now real, not just a smoke path:
+  - `torch_cuda` backend tests pass on the AMD laptop
+  - Qwen3.5 native fast path loads and runs on ROCm
+  - the attention-subset DotCache serving harness also runs on ROCm
+- On this `890M`, attention-subset DotCache is not the best serving path today.
+- The best current decode lane on this GPU depends on context:
+  - `512`: StateCache wins
+  - `2048`: dense native Qwen3.5 wins
+  - `8192`: dense native Qwen3.5 still wins
+- The best current DotCache profile on this ROCm laptop is the shortlist baseline:
+  - [configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml](../configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml)
+  - it materially improved the `8192` ROCm DotCache lane versus the old third-pass profile
+  - it still stayed behind both dense and StateCache on decode
+- StateCache is the more promising compressed-hybrid lane on this machine:
+  - `512`: `42.57 ms/step`
+  - `2048`: `58.73 ms/step`
+  - `8192`: `124.04 ms/step`
+  - fixed-resident compression stayed about `2.91x`
+  - recurrent-state compression stayed about `3.2x`
+
+### Warm Sweep Snapshot
+
+| Prompt | Dense Prefill | Dense Decode | Best DotCache Prefill | Best DotCache Decode | StateCache Prefill | StateCache Decode | Best Lane |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `512` | `680.80 ms` | `56.11 ms/step` | n/a | n/a | `183.74 ms` | `42.57 ms/step` | `StateCache` |
+| `2048` | `987.45 ms` | `51.99 ms/step` | `1517.16 ms` | `189.20 ms/step` | `997.43 ms` | `58.73 ms/step` | `Dense` |
+| `8192` | `9025.29 ms` | `94.41 ms/step` | `9145.40 ms` | `191.36 ms/step` | `11254.54 ms` | `124.04 ms/step` | `Dense` |
+| `16384` | OOM | OOM | OOM | OOM | OOM | OOM | none |
+
+### DotCache Tuning Read
+
+- The old CUDA third-pass profile is not a good ROCm default on this laptop.
+- The shortlist baseline cut DotCache decode time significantly:
+  - `2048`: `220.34 -> 189.20 ms/step`
+  - `8192`: `618.59 -> 191.36 ms/step`
+- The candidate-only value-escape profile reduced resident bytes, but it did not beat the shortlist baseline on decode:
+  - `2048`: `193.95 ms/step`
+  - `8192`: `208.99 ms/step`
+- None of the tested ROCm DotCache profiles reached grouped-batched decode.
+- Every tested ROCm DotCache lane stayed in `per_kv_fallback`, which is the main reason the attention-subset path is not yet competitive here.
+
+### Memory Ceiling Read
+
+- All three lanes still OOM at exact `16384` prompt length on this machine:
+  - dense native Qwen3.5
+  - tuned attention-subset DotCache
+  - StateCache
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is not a usable escape hatch here.
+- ROCm on this torch build reports:
+  - `expandable_segments not supported on this platform`
+- So the `16384` failure is still a real machine-limit problem, not just allocator fragmentation.
+
 ## 2026-03-29 Qwen3.5 Serving Investigation
 
 This is the current serving-performance baseline for the Qwen3.5 shortlist work. The detailed experiment log is split across:

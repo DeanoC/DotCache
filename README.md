@@ -17,6 +17,7 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - [dotcache_full.tex](./dotcache_full.tex)
 - [dotcache_software_implementation_guide.md](./dotcache_software_implementation_guide.md)
 - [dotcache_no_cuda_bootstrap_m4_amd.md](./dotcache_no_cuda_bootstrap_m4_amd.md)
+- [scripts/bootstrap_amd_rocm_dev.sh](./scripts/bootstrap_amd_rocm_dev.sh)
 - [dotcache_nvidia_llama_bootstrap.md](./dotcache_nvidia_llama_bootstrap.md)
 - [docs/benchmark_report.md](./docs/benchmark_report.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
@@ -175,6 +176,77 @@ Run that lane with:
 bash scripts/run_qwen25_compare_cuda_selective.sh
 bash scripts/run_qwen25_7b_compare_cuda_selective.sh
 ```
+
+## Quick start on AMD ROCm Linux
+
+On ROCm, this repo uses the same PyTorch runtime surface as the NVIDIA lane:
+
+- use `--backend torch_cuda` for the shared torch accelerator backend
+- use `--device cuda` for Hugging Face model placement
+- expect `torch.cuda.*` APIs to report the ROCm device, because that is how PyTorch exposes HIP/ROCm
+
+Bootstrap the local environment with:
+
+```bash
+source scripts/env_rocm.sh
+bash scripts/bootstrap_amd_rocm_dev.sh
+```
+
+That flow first looks for an existing ROCm venv at `~/venvs/torch-rocm` or `DOTCACHE_ROCM_VENV=/path/to/venv`. If it finds a HIP-backed torch there, it reuses it by wiring repo-local `.venv` to that environment. Otherwise it creates `.venv`, installs a ROCm PyTorch wheel from the official `rocm7.1` index, installs the repo's dev and Hugging Face dependencies, and verifies that the resulting torch build is actually HIP-backed.
+
+The current laptop setup that this repo is validated against looks like this:
+
+- shared env reused through repo-local `.venv -> ~/venvs/torch-rocm`
+- Python `3.14.3`
+- `torch==2.11.0+rocm7.1`
+- `torch.version.hip == 7.1.52802`
+- device reported through `torch.cuda`: `AMD Radeon 890M Graphics`
+
+For Qwen3.5's optional fast path on this Fedora machine, the following system packages were needed to build the ROCm extensions:
+
+- `rocm-hip-devel`
+- `rocm-comgr-devel`
+- `rocm-runtime-devel`
+- `hipcub-devel`
+- `rocprim-devel`
+
+The Python-side fast path now used by the Qwen3.5 ROCm lane is:
+
+- `flash-linear-attention==0.4.2`
+- `fla-core==0.4.2`
+- `causal-conv1d==1.6.1`
+
+There is still one local caveat worth documenting explicitly:
+
+- PyTorch runtime is ROCm `7.1`
+- system `hipcc` is ROCm `6.4`
+
+And there is one repo-side ROCm workaround in the Qwen3.5 adapter:
+
+- on this laptop, the HIP gated-delta fast path was only stable when float32 `q/k/v` are downcast to fp16 before calling the `flash-linear-attention` fast kernel
+
+For a no-download smoke run on this machine, use:
+
+```bash
+.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cuda --max-new-tokens 4
+```
+
+For the implemented DotCache accelerator path on ROCm, use the same backend flag the CUDA lane uses:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_torch_cuda_backend.py
+.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend torch_cuda --device cuda --max-new-tokens 4
+```
+
+For the Qwen3.5 ROCm path specifically, the useful local smoke / benchmark commands are:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_qwen35_integration.py -k 'rocm_fast_path_wrapper_downcasts_float32_qkv or test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_model'
+.venv/bin/python scripts/run_qwen35_cuda_shortlist_probe.py --backend torch_cuda --device cuda --torch-dtype float16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml --contexts 2048 8192 --cases exact --max-new-tokens 4 --profile-backend
+.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --torch-dtype float16 --target-prompt-lengths 512 2048 8192 --max-new-tokens 4 --bits 8 --state-stage readout_only_m0 --renorm-interval 0 --continue-on-error
+```
+
+The latest measured ROCm results on this `890M` are summarized in [docs/performance_journal.md](./docs/performance_journal.md).
 
 ## Quick start on Apple Silicon
 
@@ -420,6 +492,35 @@ For selective recurrent-state probes on top of the default `8b` lane, the StateC
 ```
 
 That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
+
+### ROCm 890M Snapshot
+
+The first full ROCm laptop sweep on `Qwen/Qwen3.5-0.8B` is now checked in under:
+
+- [benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330](./benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330)
+- [benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330](./benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330)
+- [benchmarks/results/qwen35_rocm_890m_statecache_20260330](./benchmarks/results/qwen35_rocm_890m_statecache_20260330)
+
+The short version is:
+
+- the shared ROCm lane works and the Qwen3.5 fast path is active
+- dense native Qwen3.5 is still the best general serving lane on this `890M` from `2048` through `8192`
+- StateCache is a better compressed-hybrid fit than attention-subset DotCache on this machine
+- the best current ROCm DotCache profile is [qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml](./configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml)
+- all tested lanes still OOM at exact `16384`
+
+Warm-cache serving snapshot on this laptop:
+
+| Prompt | Dense Decode | Best DotCache Decode | StateCache Decode | Best Lane |
+|---|---:|---:|---:|---|
+| `512` | `56.11 ms/step` | n/a | `42.57 ms/step` | `StateCache` |
+| `2048` | `51.99 ms/step` | `189.20 ms/step` | `58.73 ms/step` | `Dense` |
+| `8192` | `94.41 ms/step` | `191.36 ms/step` | `124.04 ms/step` | `Dense` |
+| `16384` | OOM | OOM | OOM | none |
+
+The important implementation read from the ROCm DotCache tuning pass is that shortlist helps a lot on this GPU, but it is still not enough to make the attention-subset path win. The best shortlist baseline improved the old third-pass DotCache lane from `618.59 -> 191.36 ms/step` at `8192`, but it still stayed behind both dense and StateCache.
+
+The important machine-limit read is that `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is not supported on this ROCm stack, so the `16384` OOMs are still real capacity limits rather than an allocator workaround opportunity.
 
 For the external GGUF / `llama.cpp` reference lane, use:
 
