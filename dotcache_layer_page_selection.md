@@ -216,17 +216,17 @@ The important unresolved question is still whether this is genuinely page-level 
 
 ### 5.6. Qwen3.5 0.8B: Hybrid Attention and Shortlisting
 
-Qwen3.5 is the most useful evidence for the read-time selector because only a small subset of layers are full-attention layers. The current CUDA shortlist probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) reports:
+Qwen3.5 is the most useful evidence for the read-time selector because only a small subset of layers are full-attention layers. The latest dedicated rerun artifact in [`qwen35_cuda_shortlist_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_probe.jsonl), summarized in [`performance_journal.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md), gives a more mixed result than the earlier March 29 probe:
 
-| Context | Exact ms/step | Shortlist ms/step | Speedup | Selected pages | Candidate pages |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| `4096` | `416.82` | `205.96` | `2.02x` | `4080` | `12336` |
-| `8192` | `759.04` | `203.75` | `3.73x` | `4080` | `24624` |
-| `16384` | `1496.27` | `251.53` | `5.95x` | `4080` | `49200` |
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Current read |
+| ---: | ---: | ---: | ---: | --- |
+| `4096` | `257.14` | `164.88` | `163.02` | shortlist win |
+| `8192` | `167.94` | `167.37` | `171.77` | essentially flat |
+| `16384` | `194.55` | `198.41` | `201.60` | shortlist slightly worse |
 
-The same note also records that these gains came from page reduction while staying on the same fallback decode path, which is precisely the kind of mechanism-level systems evidence the paper should foreground.
+All nine rerun rows stayed on the same `per_kv_fallback` decode path. That is the current systems lesson: shortlist execution is operational on CUDA, but the expected grouped-batched speed path still is not activating on this lane, so long-context speedups are not yet stable.
 
-For the manuscript, the cleanest subset to cite is now broken out explicitly in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md). That note also separates exploratory `32768` results from the benchmark-grade `4096/8192/16384` table so we do not mix trustworthy and still-fragile evidence.
+The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates those two stories explicitly.
 
 What this does **not** yet show:
 
