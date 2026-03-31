@@ -348,6 +348,14 @@ def _grouped_pages_can_batch(
     value_pages_by_group: Sequence[Sequence[PageLike]],
     query_groups: Sequence[Any],
 ) -> bool:
+    return _grouped_pages_batch_rejection_reason(key_pages_by_group, value_pages_by_group, query_groups) is None
+
+
+def _grouped_pages_batch_rejection_reason(
+    key_pages_by_group: Sequence[Sequence[PageLike]],
+    value_pages_by_group: Sequence[Sequence[PageLike]],
+    query_groups: Sequence[Any],
+) -> str | None:
     def _page_batch_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
         sketch = page.m2_sketch
         basis = page.m2_basis
@@ -396,33 +404,35 @@ def _grouped_pages_can_batch(
         ndim = int(basis.ndim) if hasattr(basis, "ndim") else int(basis.dim())
         return int(basis.shape[1]) if ndim == 4 else 1
 
-    if not key_pages_by_group or len(key_pages_by_group) != len(value_pages_by_group):
-        return False
+    if not key_pages_by_group:
+        return "no_key_groups"
+    if len(key_pages_by_group) != len(value_pages_by_group):
+        return "group_count_mismatch"
     group_count = len(key_pages_by_group)
     if len(query_groups) != group_count:
-        return False
+        return "query_group_count_mismatch"
     try:
         query_count = int(query_groups[0].shape[0])
     except Exception:
-        return False
+        return "query_shape_invalid"
     page_count = len(key_pages_by_group[0])
     if page_count == 0:
-        return False
+        return "page_count_zero"
     for group_index in range(group_count):
         if len(key_pages_by_group[group_index]) != page_count or len(value_pages_by_group[group_index]) != page_count:
-            return False
+            return "page_count_mismatch"
         if int(query_groups[group_index].shape[0]) != query_count:
-            return False
+            return "query_count_mismatch"
         if not all(isinstance(page, PreparedPageTorch) for page in key_pages_by_group[group_index]):
-            return False
+            return "key_page_not_prepared"
         if not all(isinstance(page, PreparedPageTorch) for page in value_pages_by_group[group_index]):
-            return False
+            return "value_page_not_prepared"
         if any(page.device_type != key_pages_by_group[0][0].device_type for page in key_pages_by_group[group_index]):
-            return False
+            return "key_device_mismatch"
         if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
-            return False
+            return "value_device_mismatch"
         if _chunk_length_signature(key_pages_by_group[group_index]) != _chunk_length_signature(value_pages_by_group[group_index]):
-            return False
+            return "key_value_chunk_signature_mismatch"
     for page_index in range(page_count):
         key_signature = (
             key_pages_by_group[0][page_index].header.mode_default,
@@ -472,7 +482,7 @@ def _grouped_pages_can_batch(
                 int(key_page.m2_sketch.shape[-1]) if key_page.m2_sketch is not None else 0,
                 _m2_segment_count(key_page),
             ) != key_signature:
-                return False
+                return "key_signature_mismatch_across_groups"
             if (
                 value_page.header.mode_default,
                 value_page.header.escape_dtype if value_page.header.mode_default == "M3" else "",
@@ -488,8 +498,8 @@ def _grouped_pages_can_batch(
                 int(value_page.m2_sketch.shape[-1]) if value_page.m2_sketch is not None else 0,
                 _m2_segment_count(value_page),
             ) != value_signature:
-                return False
-    return True
+                return "value_signature_mismatch_across_groups"
+    return None
 
 
 @dataclass(slots=True)
@@ -618,22 +628,29 @@ def _grouped_layouts_can_batch(
     layouts: Sequence[_PreparedDecodeViewLayout | None],
     query_groups: Sequence[Any],
 ) -> bool:
+    return _grouped_layout_batch_rejection_reason(layouts, query_groups) is None
+
+
+def _grouped_layout_batch_rejection_reason(
+    layouts: Sequence[_PreparedDecodeViewLayout | None],
+    query_groups: Sequence[Any],
+) -> str | None:
     if not layouts or any(layout is None for layout in layouts):
-        return False
+        return "layout_missing"
     try:
         query_count = int(query_groups[0].shape[0])
     except Exception:
-        return False
+        return "query_shape_invalid"
     first_layout = layouts[0]
     assert first_layout is not None
     for group_index in range(1, len(layouts)):
         layout = layouts[group_index]
         assert layout is not None
         if layout.grouped_batch_signature != first_layout.grouped_batch_signature:
-            return False
+            return "layout_signature_mismatch"
         if int(query_groups[group_index].shape[0]) != query_count:
-            return False
-    return True
+            return "query_count_mismatch"
+    return None
 
 
 def _normalize_prefill_tensor(
@@ -1260,6 +1277,8 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = 0
         self._execution_shortlist_group_union_applied = 0
         self._execution_shortlist_grouping_rejections = 0
+        self._execution_shortlist_grouping_rejection_reason_counts: dict[str, int] = {}
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer: dict[int, dict[str, int]] = {}
         self._execution_shortlist_total_pages = 0
         self._execution_shortlist_selected_pages = 0
         self._execution_shortlist_invocations_by_layer: dict[int, int] = {}
@@ -1275,6 +1294,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer: dict[int, int] = {}
         self._execution_exact_refine_candidate_pages_by_layer: dict[int, int] = {}
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
+        self._decode_grouped_batch_rejection_reason_counts: dict[str, int] = {}
+        self._decode_grouped_batch_rejection_reason_counts_by_layer: dict[int, dict[str, int]] = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
         self._direct_prepared_page_resident_bytes = 0
@@ -1813,6 +1834,13 @@ class ModelPagedKVCache:
                 str(layer_id): dict(sorted(counts.items()))
                 for layer_id, counts in sorted(self._decode_path_counts_by_layer.items())
             },
+            "decode_grouped_batch_rejection_reason_counts": dict(
+                sorted(self._decode_grouped_batch_rejection_reason_counts.items())
+            ),
+            "decode_grouped_batch_rejection_reason_counts_by_layer": {
+                str(layer_id): dict(sorted(counts.items()))
+                for layer_id, counts in sorted(self._decode_grouped_batch_rejection_reason_counts_by_layer.items())
+            },
         }
 
     def _record_execution_shortlist(
@@ -1824,6 +1852,7 @@ class ModelPagedKVCache:
         applied: bool,
         group_union_applied: bool = False,
         grouping_rejected: bool = False,
+        grouping_rejection_reason: str | None = None,
     ) -> None:
         self._execution_shortlist_invocations += 1
         self._execution_shortlist_total_pages += int(total_pages)
@@ -1852,6 +1881,23 @@ class ModelPagedKVCache:
             self._execution_shortlist_grouping_rejections_by_layer[int(layer_id)] = (
                 self._execution_shortlist_grouping_rejections_by_layer.get(int(layer_id), 0) + 1
             )
+            if grouping_rejection_reason:
+                self._execution_shortlist_grouping_rejection_reason_counts[grouping_rejection_reason] = (
+                    self._execution_shortlist_grouping_rejection_reason_counts.get(grouping_rejection_reason, 0) + 1
+                )
+                layer_reason_counts = self._execution_shortlist_grouping_rejection_reason_counts_by_layer.setdefault(
+                    int(layer_id), {}
+                )
+                layer_reason_counts[grouping_rejection_reason] = (
+                    layer_reason_counts.get(grouping_rejection_reason, 0) + 1
+                )
+
+    def _record_decode_grouped_batch_rejection(self, *, layer_id: int, reason: str) -> None:
+        self._decode_grouped_batch_rejection_reason_counts[reason] = (
+            self._decode_grouped_batch_rejection_reason_counts.get(reason, 0) + 1
+        )
+        layer_reason_counts = self._decode_grouped_batch_rejection_reason_counts_by_layer.setdefault(int(layer_id), {})
+        layer_reason_counts[reason] = layer_reason_counts.get(reason, 0) + 1
 
     def _record_execution_exact_refine(
         self,
@@ -2114,6 +2160,13 @@ class ModelPagedKVCache:
             "execution_shortlist_group_union_applied_by_layer": {
                 str(layer_id): int(count)
                 for layer_id, count in sorted(self._execution_shortlist_group_union_applied_by_layer.items())
+            },
+            "execution_shortlist_grouping_rejection_reason_counts": dict(
+                sorted(self._execution_shortlist_grouping_rejection_reason_counts.items())
+            ),
+            "execution_shortlist_grouping_rejection_reason_counts_by_layer": {
+                str(layer_id): dict(sorted(counts.items()))
+                for layer_id, counts in sorted(self._execution_shortlist_grouping_rejection_reason_counts_by_layer.items())
             },
             "execution_shortlist_grouping_rejections_by_layer": {
                 str(layer_id): int(count)
@@ -2948,6 +3001,8 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = 0
         self._execution_shortlist_group_union_applied = 0
         self._execution_shortlist_grouping_rejections = 0
+        self._execution_shortlist_grouping_rejection_reason_counts = {}
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer = {}
         self._execution_shortlist_total_pages = 0
         self._execution_shortlist_selected_pages = 0
         self._execution_shortlist_invocations_by_layer = {}
@@ -2963,6 +3018,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer = {}
         self._execution_exact_refine_candidate_pages_by_layer = {}
         self._execution_exact_refine_selected_pages_by_layer = {}
+        self._decode_grouped_batch_rejection_reason_counts = {}
+        self._decode_grouped_batch_rejection_reason_counts_by_layer = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer = {}
         self._reset_resident_accounting()
@@ -2996,11 +3053,13 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_group_union_applied_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_grouping_rejections_by_layer.pop(int(layer_id), None)
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_total_pages_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_selected_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_invocations_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_candidate_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_selected_pages_by_layer.pop(int(layer_id), None)
+        self._decode_grouped_batch_rejection_reason_counts_by_layer.pop(int(layer_id), None)
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -3009,11 +3068,23 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = sum(self._execution_shortlist_applied_by_layer.values())
         self._execution_shortlist_group_union_applied = sum(self._execution_shortlist_group_union_applied_by_layer.values())
         self._execution_shortlist_grouping_rejections = sum(self._execution_shortlist_grouping_rejections_by_layer.values())
+        self._execution_shortlist_grouping_rejection_reason_counts = {}
+        for layer_reason_counts in self._execution_shortlist_grouping_rejection_reason_counts_by_layer.values():
+            for reason, count in layer_reason_counts.items():
+                self._execution_shortlist_grouping_rejection_reason_counts[reason] = (
+                    self._execution_shortlist_grouping_rejection_reason_counts.get(reason, 0) + int(count)
+                )
         self._execution_shortlist_total_pages = sum(self._execution_shortlist_total_pages_by_layer.values())
         self._execution_shortlist_selected_pages = sum(self._execution_shortlist_selected_pages_by_layer.values())
         self._execution_exact_refine_invocations = sum(self._execution_exact_refine_invocations_by_layer.values())
         self._execution_exact_refine_candidate_pages = sum(self._execution_exact_refine_candidate_pages_by_layer.values())
         self._execution_exact_refine_selected_pages = sum(self._execution_exact_refine_selected_pages_by_layer.values())
+        self._decode_grouped_batch_rejection_reason_counts = {}
+        for layer_reason_counts in self._decode_grouped_batch_rejection_reason_counts_by_layer.values():
+            for reason, count in layer_reason_counts.items():
+                self._decode_grouped_batch_rejection_reason_counts[reason] = (
+                    self._decode_grouped_batch_rejection_reason_counts.get(reason, 0) + int(count)
+                )
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         for layer_timings in self._decode_stage_timings_by_layer.values():
             for stage, value in layer_timings.items():
@@ -4791,7 +4862,12 @@ class ModelPagedKVCache:
 
         grouping_validation_started_at = _stage_start()
         if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:
-            shortlisted_can_batch = _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
+            shortlist_grouping_rejection_reason = _grouped_pages_batch_rejection_reason(
+                active_key_pages,
+                active_value_pages,
+                active_queries,
+            )
+            shortlisted_can_batch = shortlist_grouping_rejection_reason is None
             if not shortlisted_can_batch:
                 self._record_execution_shortlist(
                     layer_id=layer_id,
@@ -4800,6 +4876,7 @@ class ModelPagedKVCache:
                     applied=False,
                     group_union_applied=shortlist_group_union_applied,
                     grouping_rejected=True,
+                    grouping_rejection_reason=shortlist_grouping_rejection_reason,
                 )
                 active_key_pages = list(original_key_pages_by_group)
                 active_value_pages = list(original_value_pages_by_group)
@@ -4821,10 +4898,17 @@ class ModelPagedKVCache:
                 applied=shortlist_applied,
                 group_union_applied=shortlist_group_union_applied,
             )
-        cached_group_layout = layer_prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
-        grouped_path_ready = cached_group_layout or (
-            layer_prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
-        )
+        grouped_layout_rejection_reason = None
+        grouped_page_rejection_reason = None
+        if layer_prefer_grouped_batching:
+            grouped_layout_rejection_reason = _grouped_layout_batch_rejection_reason(active_layouts, active_queries)
+            grouped_page_rejection_reason = _grouped_pages_batch_rejection_reason(
+                active_key_pages,
+                active_value_pages,
+                active_queries,
+            )
+        cached_group_layout = layer_prefer_grouped_batching and grouped_layout_rejection_reason is None
+        grouped_path_ready = cached_group_layout or (layer_prefer_grouped_batching and grouped_page_rejection_reason is None)
         _stage_finish("grouping_validation", grouping_validation_started_at)
 
         if grouped_path_ready:
@@ -4862,6 +4946,18 @@ class ModelPagedKVCache:
                 outputs[list(q_head_ids)] = kv_outputs
             return outputs
 
+        if layer_prefer_grouped_batching:
+            grouped_batch_rejection_reason = grouped_page_rejection_reason
+            if grouped_batch_rejection_reason is None and grouped_layout_rejection_reason is not None:
+                grouped_batch_rejection_reason = f"layout_{grouped_layout_rejection_reason}"
+            if grouped_batch_rejection_reason is None and len(active_queries) <= 1:
+                grouped_batch_rejection_reason = "single_query_group"
+            if grouped_batch_rejection_reason is None:
+                grouped_batch_rejection_reason = "unknown"
+            self._record_decode_grouped_batch_rejection(
+                layer_id=int(layer_id),
+                reason=grouped_batch_rejection_reason,
+            )
         self._record_decode_path(layer_id, "per_kv_fallback")
         for q_head_ids, kv_queries, key_pages, value_pages in zip(
             active_q_head_ids,
