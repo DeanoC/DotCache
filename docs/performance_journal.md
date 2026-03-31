@@ -4157,3 +4157,53 @@ Current follow-up decision:
 - `top_k=8` is not the missing fix for the `49152` quality tail
 - it gives a modest quality improvement, but not enough to make the configuration paper-clean
 - the working blocker remains the same combination as before: shortlist helps throughput, but the long-context quality story is still unstable and grouped decode is still absent
+
+## 2026-03-31 17:05 UTC - Instrumented grouped-decode rerun on CUDA
+
+After the grouped-batch rejection counters landed, I re-ran the large-context serving wrapper:
+
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh`
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl`
+
+I also summarized the new counters with:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl
+```
+
+Fresh serving rows:
+
+- `32768 exact`: decode `2312.64 ms/step`, grouped paths `0`, per-KV fallback `24`
+- `49152 exact`: decode `3580.59 ms/step`, grouped paths `0`, per-KV fallback `24`
+- `32768 shortlist_base`: decode `632.43 ms/step`, selected pages `4080`, grouped paths `0`, per-KV fallback `24`
+- `49152 shortlist_base`: decode `752.13 ms/step`, selected pages `4080`, grouped paths `0`, per-KV fallback `24`
+- `32768 shortlist_l23_ctx`: decode `619.39 ms/step`, selected pages `4112`, grouped paths `0`, per-KV fallback `24`
+- `49152 shortlist_l23_ctx`: decode `767.97 ms/step`, selected pages `4112`, grouped paths `0`, per-KV fallback `24`
+
+Positive read:
+
+- the fresh instrumented rerun reproduced the same overall systems story: shortlist still gives a large decode win versus exact at both long contexts
+- the new rejection-summary script works on the fresh artifact and confirms the counters are being emitted
+
+Negative read:
+
+- every row still stayed on `per_kv_fallback`
+- both new grouped-batch rejection counter families stayed empty in all six rows:
+  - `decode_grouped_batch_rejection_reason_counts = {}`
+  - `execution_shortlist_grouping_rejection_reason_counts = {}`
+
+That empty-counter result is itself diagnostic. It does **not** mean grouped batching was attempted and accepted cleanly. The code path shows why:
+
+- in `dotcache/integrations/qwen35.py`, the CUDA serving lane calls `decode_layer_torch(..., prefer_grouped_batching=hidden_states.device.type != "cuda")`
+- on CUDA, that expression is `False`
+- so the grouped-batch validation and rejection accounting in `model_kv_cache.py` never executes for this lane
+
+Current conclusion from the instrumented rerun:
+
+- the new counters are useful, but this particular Qwen3.5 CUDA lane is bypassing grouped batching before those counters can fire
+- the blocker is now narrower and more concrete than before: the immediate reason we do not see grouped decode on this lane is that grouped batching is explicitly disabled on CUDA for this workload
+- the next meaningful step is therefore not "collect more rejection reasons from the same path"; it is to revisit that CUDA-specific `prefer_grouped_batching=False` decision or add instrumentation around the policy that disables it
