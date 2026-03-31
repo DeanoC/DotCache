@@ -224,7 +224,7 @@ Qwen3.5 is the most useful evidence for the read-time selector because only a sm
 | `8192` | `167.94` | `167.37` | `171.77` | essentially flat |
 | `16384` | `194.55` | `198.41` | `201.60` | shortlist slightly worse |
 
-All nine rerun rows stayed on the same `per_kv_fallback` decode path. The newer instrumented large-context rerun narrowed the blocker further: for this Qwen3.5 CUDA serving lane, [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) calls `decode_layer_torch(..., prefer_grouped_batching=hidden_states.device.type != "cuda")`, so grouped-batch validation and its rejection counters never execute on CUDA for this path. The current systems lesson is therefore sharper than "grouped decode did not activate." On this lane, grouped batching is explicitly disabled before activation can even be tested.
+All nine rerun rows stayed on the same `per_kv_fallback` decode path. The newer instrumented large-context rerun narrowed the blocker further: for this Qwen3.5 CUDA serving lane, [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) calls `decode_layer_torch(..., prefer_grouped_batching=hidden_states.device.type != "cuda")`, so grouped-batch validation and its rejection counters do not normally execute on CUDA for this path. A follow-up forced-grouped ablation behind `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1` then showed that grouped decode is not fundamentally dead on CUDA, but it is clearly worse for this workload and the concrete rejection reason is `key_value_chunk_signature_mismatch`. The current systems lesson is therefore sharper than "grouped decode did not activate." On this lane, the default CUDA guard is directionally right today, while chunk-signature alignment is the more specific technical blocker for any future grouped path.
 
 The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table.
 
@@ -250,6 +250,18 @@ The obvious follow-up was to widen the `49152` shortlist from `top_k=4` to `top_
 | shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` |
 | shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` |
 
+The other obvious follow-up was to force grouped batching on CUDA and see whether the default guard was merely hiding a faster path. It was not. The forced-grouped serving artifact in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl) shows partial grouped activation but much worse throughput:
+
+| Forced-grouped context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2309.26` | `1916.62` | `1843.35` | mixed grouped + fallback |
+| `49152` | `3643.76` | `2116.18` | `2059.90` | mixed grouped + fallback |
+
+That forced run is still useful because it answers two systems questions cleanly:
+
+- grouped batching can execute on this CUDA lane when forced
+- the dominant rejection reason is now concrete: `key_value_chunk_signature_mismatch`
+
 So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
 
 ### 5.7. What The Current Evidence Actually Supports
@@ -260,7 +272,7 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`, even though the current serving integration still disables grouped batching on CUDA and forces the `per_kv_fallback` path.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`, even though the current serving integration defaults to `per_kv_fallback` on CUDA and the forced-grouped ablation is slower.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
@@ -356,7 +368,7 @@ The paper also needs ablations for:
 
 The current results suggest one priority ordering rather than a broad sweep:
 
-1. revisit the CUDA-specific grouped-batching disable in [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py), then benchmark the lane again once grouped batching is actually allowed to compete
+1. target `key_value_chunk_signature_mismatch` on the grouped CUDA path, because forcing grouped batching already showed that simple enablement is not enough and is currently slower
 2. one stronger `49152` quality rescue that is not just another `top_k` increase
 3. only then a wider ablation grid
 

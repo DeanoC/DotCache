@@ -100,6 +100,22 @@ What this adds to the current paper read:
 - the `49152` quality-tail read is not clean enough to present as a settled win
 - the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
+## Forced-Grouped CUDA Negative Result
+
+The natural next question was whether the default CUDA guard was hiding a faster grouped path. The forced-grouped rerun in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl), using `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1`, says no.
+
+| Forced-grouped context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2309.26` | `1916.62` | `1843.35` | mixed grouped + fallback |
+| `49152` | `3643.76` | `2116.18` | `2059.90` | mixed grouped + fallback |
+
+What this resolves:
+
+- grouped batching is not fundamentally dead on this CUDA lane
+- forcing it is dramatically slower than the default path for the shortlist cases
+- the first concrete grouped-path blocker is now visible in the counters: `key_value_chunk_signature_mismatch`
+- the existing default CUDA guard was directionally right for this workload
+
 ## 49k `top_k=8` Follow-Up
 
 The obvious next ablation was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow. The clean follow-up artifacts are:
@@ -130,7 +146,7 @@ So `top_k=8` is a useful negative result, not the missing fix.
 Why these need caveated presentation:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
-- all rows still stay in `per_kv_fallback`, and for this CUDA lane the immediate reason is now known: grouped batching is disabled before the rejection counters can run
+- the default path still stays in `per_kv_fallback`, and the forced-grouped ablation shows that simple grouped enablement is currently slower anyway
 - the paper should present these larger-context rows as the current best systems evidence, but not as a fully locked result yet
 
 ## Exact Rerun Path For The CUDA Box
@@ -161,6 +177,7 @@ The wrapper calls the single-shot runner and regenerates the current `4096/8192/
 - [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
 - [`qwen35_cuda_shortlist_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_probe.jsonl)
 - [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl)
+- [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl)
 - [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl)
 - [`qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl)
 - [`qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl)

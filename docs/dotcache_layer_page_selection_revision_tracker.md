@@ -29,6 +29,7 @@ Current CUDA paper read:
 - `49152`: quality not yet clean
 - layer-23 context widening and `top_k=8` are diagnostics, not final fixes
 - the immediate grouped-decode blocker on the Qwen3.5 CUDA serving lane is now known: [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) passes `prefer_grouped_batching=hidden_states.device.type != "cuda"`, so grouped batching is disabled on CUDA before rejection accounting runs
+- forced grouped batching on CUDA does activate, but it is much slower for this workload and exposes the first concrete grouped-path blocker: `key_value_chunk_signature_mismatch`
 
 ## Review Issue -> Fix
 
@@ -137,18 +138,19 @@ Still needed:
 
 Goal:
 
-- revisit the CUDA-specific `prefer_grouped_batching=False` gate in [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py), then quantify what actually changes once grouped batching is allowed to compete
+- improve grouped-path chunk-signature alignment on the Qwen3.5 CUDA lane, because simple forced enablement already works and is slower
 
 Why this is first:
 
 - it is now the clearest systems bottleneck in the shortlist story
-- the new instrumented rerun showed that the current CUDA lane bypasses grouped-batch validation entirely, so more rejection-counter reruns on the same path will not teach us anything new until that gate is revisited
+- the forced-grouped rerun showed that grouped batching can execute, but the counters now point at `key_value_chunk_signature_mismatch` as the concrete blocker to attack next
 
 Needed outputs:
 
 - decode-path classification per row
+- grouped rejection reason counts per row
 - selector / score / mix timing split inside the serving loop
-- same `32768/49152` table after the backend-path change
+- same `32768/49152` table after chunk-signature alignment work
 
 ### B. One stronger `49152` quality rescue
 
