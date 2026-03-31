@@ -57,6 +57,7 @@ Deliverables:
 Done when:
 
 - Tables 6 and 7 can be populated from committed summary artifacts rather than hand-picked journal prose
+- the first named task section uses the four-prompt Needle pack summary artifact rather than the original single-prompt row
 
 ### Phase 2. Add One Named Benchmark Task
 
@@ -77,9 +78,11 @@ Why first:
 Tasks:
 
 1. add a protocol-tagged Needle harness for the Qwen3.5 attention-subset lane
-   Status: wired via [bench_qwen35_attention_subset_dotcache_needle.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_needle.py), [run_qwen35_cuda_needle_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_probe.py), and [run_qwen35_cuda_needle_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_protocol.sh)
+   Status: done via [bench_qwen35_attention_subset_dotcache_needle.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_needle.py), [run_qwen35_cuda_needle_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_probe.py), and [run_qwen35_cuda_needle_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_protocol.sh)
 2. run exact, shortlist base, and shortlist `layer:23` variants
+   Status: done first as `n=1`, then expanded into the fixed four-prompt pack via [run_qwen35_cuda_needle_pack_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_pack_protocol.sh)
 3. record both retrieval success and systems metrics under the same prompt suite metadata
+   Status: done in [qwen35_cuda_needle_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl) and [qwen35_cuda_needle_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md)
 
 Required outputs:
 

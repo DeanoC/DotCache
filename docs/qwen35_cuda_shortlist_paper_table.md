@@ -177,28 +177,32 @@ Bottom line after these follow-ups:
 - it still does not justify switching the Qwen3.5 CUDA shortlist lane to grouped-by-default
 - the remaining blocker is no longer correctness; it is a narrow performance tradeoff plus the unresolved `49152` quality regime
 
-## First Needle Result
+## Needle Pack
 
-The first named benchmark-style artifact is now in [`qwen35_cuda_needle_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_protocol.jsonl). This is still a small first pass, but it is materially stronger than a filler-only microbenchmark because it asks a real retrieval question against a planted answer.
+The first reusable named benchmark pack is now in [`qwen35_cuda_needle_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl), with the rollup in [`qwen35_cuda_needle_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md). This upgrades the earlier single-prompt Needle row into a fixed four-prompt pack with visible variance.
 
-Needle summary:
+Needle pack summary:
 
-| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Answer read |
-| ---: | ---: | ---: | ---: | --- |
-| `32768` | `2217.21` | `453.15` | `471.57` | all rows exact-match the planted answer |
-| `49152` | `3510.51` | `612.97` | `634.09` | all rows exact-match the planted answer |
+| Context | Case | `n` | Retrieval accuracy | Exact-match rate | Mean decode ms/step | 95% CI |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `32768` | exact | `4` | `1.00` | `0.75` | `2496.10` | `316.83` |
+| `32768` | shortlist base | `4` | `1.00` | `1.00` | `561.51` | `144.72` |
+| `32768` | shortlist `layer:23` ctx | `4` | `1.00` | `1.00` | `509.53` | `26.05` |
+| `49152` | exact | `4` | `1.00` | `0.75` | `3966.83` | `434.54` |
+| `49152` | shortlist base | `4` | `1.00` | `0.75` | `759.82` | `176.56` |
+| `49152` | shortlist `layer:23` ctx | `4` | `1.00` | `0.75` | `641.14` | `25.20` |
 
 What this adds:
 
-- the branch now has one named benchmark lane that is plausibly paper-table-worthy rather than purely diagnostic
-- shortlist keeps the large serving win on a task-style prompt, not only on exact-length filler
-- both shortlist variants retrieve the planted answer exactly even at `49152`
+- the branch now has a small fixed named benchmark pack rather than a single successful exemplar
+- shortlist keeps a large serving win on a task-style prompt family, not only on exact-length filler
+- retrieval stayed correct on all `24/24` rows, including all shortlist rows at `49152`
 
-What it does not add yet:
+Important caveats:
 
-- prompt-count robustness, because the current artifact is only `n=1` per `(context, case)`
-- any support for the layer-23 override, because `shortlist_l23_ctx` is slightly slower than `shortlist_base` at both contexts
-- a clean answer to the harder quality-tail issue at `49152`, because this is a retrieval task result rather than a teacher-forced tail-quality result
+- exact-match is not identical to retrieval correctness on this pack, because the `shipment_token` prompt sometimes appends `Question:` after the correct token
+- the layer-23 override is now mixed rather than cleanly negative: it is faster across all four prompts at `49152`, but the `32768` result is still prompt-sensitive
+- this still does not answer the harder teacher-forced quality-tail issue at `49152`, because Needle is a retrieval-task serving result rather than a loss-tail benchmark
 
 ## 49k `top_k=8` Follow-Up
 

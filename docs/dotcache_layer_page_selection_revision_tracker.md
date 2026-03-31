@@ -49,9 +49,9 @@ Paper fix:
 
 Experiment work still needed:
 
-- one held-out benchmark suite with fixed prompt counts and variance
+- expand beyond the first four-prompt `Needle-in-a-Haystack` pack so the paper has more than one named long-context task family
 - one hardware table with exact GPU / backend / dtype / batch size
-- prompt-count expansion and variance for the new `Needle-in-a-Haystack` lane, or a second named suite such as `LongBench` or `RULER`
+- one second named suite such as `LongBench` or `RULER`, or a stronger multi-pack Needle section
 
 Useful existing artifacts:
 
@@ -59,7 +59,8 @@ Useful existing artifacts:
 - [`docs/local_layer_profiles.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/local_layer_profiles.md)
 - [`docs/qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
 - [`docs/qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md)
-- [`benchmarks/results/qwen35_cuda_needle_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_protocol.jsonl)
+- [`benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl)
+- [`benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md)
 
 ### 2. Tier abstraction has cracks
 
