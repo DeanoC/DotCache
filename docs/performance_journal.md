@@ -4274,3 +4274,79 @@ Layer-23 context-aware rows:
 - the old CUDA guard was directionally correct for the current workload: forcing grouped batching is worse, not better
 - the immediate technical blocker is now concrete enough to target: `key_value_chunk_signature_mismatch`
 - any future grouped CUDA work on this lane should focus on making chunk signatures line up across the grouped path rather than simply turning grouped batching on globally
+
+## 2026-03-31 17:45 UTC - Forced grouped batching after key/value chunk-schedule split
+
+After the follow-up patch that stopped rejecting mismatched key/value chunk schedules up front and carried separate key/value chunk lengths through the grouped backend, I re-ran the same forced-grouped CUDA serving matrix:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl`
+
+Summary command:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl
+```
+
+### What changed
+
+The previous forced-grouped blocker was:
+
+- `key_value_chunk_signature_mismatch`
+
+After the key/value chunk-schedule split patch, the blocker became:
+
+- `key_signature_mismatch_across_groups`
+
+So the patch did remove the original key/value schedule mismatch failure mode.
+
+### Fresh forced-grouped rows
+
+Exact rows:
+
+- `32768 exact`: decode `2296.00 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback `key_signature_mismatch_across_groups=12`
+- `49152 exact`: decode `3616.69 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback `key_signature_mismatch_across_groups=12`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `1486.36 ms/step`, selected pages `4226`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_signature_mismatch_across_groups=8`, grouped fallback `key_signature_mismatch_across_groups=8`
+- `49152 shortlist_base`: decode `1439.28 ms/step`, selected pages `4226`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_signature_mismatch_across_groups=4`, grouped fallback `key_signature_mismatch_across_groups=4`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `1458.24 ms/step`, selected pages `4276`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_signature_mismatch_across_groups=8`, grouped fallback `key_signature_mismatch_across_groups=8`
+- `49152 shortlist_l23_ctx`: decode `1453.39 ms/step`, selected pages `4278`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_signature_mismatch_across_groups=4`, grouped fallback `key_signature_mismatch_across_groups=4`
+
+### Positive read
+
+- the key/value chunk-schedule patch materially improved the forced grouped shortlist path
+- compared with the previous forced-grouped run:
+  - `32768 shortlist_base`: `1916.62 -> 1486.36 ms/step`
+  - `49152 shortlist_base`: `2116.18 -> 1439.28 ms/step`
+  - `32768 shortlist_l23_ctx`: `1843.35 -> 1458.24 ms/step`
+  - `49152 shortlist_l23_ctx`: `2059.90 -> 1453.39 ms/step`
+- the remaining mismatch is now narrower and more actionable than before: key scheduling across groups, not key/value schedule disagreement
+
+### Negative read
+
+- even after this improvement, the forced grouped path is still much slower than the normal non-forced CUDA shortlist path
+- compared with the default non-forced rerun:
+  - `32768 shortlist_base`: default `632.43 ms/step`, forced-after-fix `1486.36 ms/step`
+  - `49152 shortlist_base`: default `752.13 ms/step`, forced-after-fix `1439.28 ms/step`
+  - `32768 shortlist_l23_ctx`: default `619.39 ms/step`, forced-after-fix `1458.24 ms/step`
+  - `49152 shortlist_l23_ctx`: default `767.97 ms/step`, forced-after-fix `1453.39 ms/step`
+- the exact rows also remain essentially unchanged and still do not benefit from forcing grouped batching
+
+### Current interpretation
+
+- the key/value chunk-schedule patch is a real backend improvement; it removed the original grouped-path blocker and made the forced path substantially less bad
+- it is not enough to justify enabling grouped batching on this Qwen3.5 CUDA lane by default
+- the next grouped-CUDA target is now specific: eliminate `key_signature_mismatch_across_groups` and then remeasure whether grouped batching can beat the current per-KV fallback on shortlist workloads
