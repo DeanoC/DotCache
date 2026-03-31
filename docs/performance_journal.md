@@ -4100,3 +4100,60 @@ Current CUDA large-context decision:
 - `shortlist_base` is a real decode-speed story at `32768` and `49152`
 - do not promote the `49152` shortlist configuration as quality-clean
 - do not promote `shortlist_l23_ctx` as the new default from this rerun
+
+## 2026-03-31 16:40 UTC - 49k follow-up ablation with `top_k=8`
+
+The most obvious follow-up after the large-context rerun was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow.
+
+I ran four targeted one-off probes at `49152`:
+
+- base shortlist serving with `execution_relevance_top_k=8`
+- base shortlist loss-tail with `execution_relevance_top_k=8`
+- layer-23 context-aware serving with `execution_relevance_top_k=8`
+- layer-23 context-aware loss-tail with `execution_relevance_top_k=8`
+
+Artifacts written:
+
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl`
+
+Compared with the earlier `top_k=4` large-context rerun:
+
+- `top_k=4` base serving: decode `786.35 ms/step`, selected pages `4080 / 147504`
+- `top_k=8` base serving: decode `819.41 ms/step`, selected pages `4272 / 147504`
+- `top_k=4` base loss-tail: loss delta `+0.0130062`, max logit abs error `7.0`
+- `top_k=8` base loss-tail: loss delta `+0.0113542`, max logit abs error `6.87109375`
+
+Positive follow-up read:
+
+- broadening the shortlist from `4` to `8` did improve the `49152` loss tail modestly
+- max logit error also fell slightly versus the `top_k=4` base run
+- the quality improvement was achieved without blowing up the selected-set size; the increase was small rather than catastrophic
+
+Negative follow-up read:
+
+- the quality problem did not go away; `+0.0113542` is still materially worse than the exact `49152` row
+- serving slowed down versus the already-committed `top_k=4` base run
+- grouped decode still did not activate; serving remained entirely on `per_kv_fallback`
+
+Layer-23 context-aware result at `top_k=8`:
+
+- serving decode: `893.25 ms/step`
+- loss-tail decode: `1062.99 ms/step`
+- loss delta: `+0.0113542`
+- max logit abs error: `6.87109375`
+- selected pages: `3204 / 110628` in the loss harness, `4272 / 147504` in serving
+
+That is a useful negative result:
+
+- once the global shortlist is widened to `top_k=8`, the layer-23 override no longer changes the selected page counts in these `49152` probes
+- it also does not improve the reported quality metrics
+- it is slower than the base `top_k=8` run, so there is no reason to promote it
+
+Current follow-up decision:
+
+- `top_k=8` is not the missing fix for the `49152` quality tail
+- it gives a modest quality improvement, but not enough to make the configuration paper-clean
+- the working blocker remains the same combination as before: shortlist helps throughput, but the long-context quality story is still unstable and grouped decode is still absent
