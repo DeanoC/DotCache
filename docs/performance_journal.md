@@ -4694,3 +4694,79 @@ Tagged rows:
 
 - the repo now has a concrete example of how the new protocol should be used in practice
 - the `49152` rescue story is now both explicit and honest: a held-out quality lane under the local contract, still synthetic, still not quality-clean, and still not a default-switch justification
+
+## 2026-03-31 21:05 UTC - First named Needle-in-a-Haystack protocol run on the CUDA lane
+
+I pulled the new named-benchmark wiring from `c69152d` and ran the wrapper exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_needle_protocol.sh
+```
+
+New artifact:
+
+- `benchmarks/results/qwen35_cuda_needle_protocol.jsonl`
+
+This is the first Qwen3.5 CUDA row-set on the branch that is both:
+
+- tagged under the standardized evaluation contract
+- driven by a named task-style prompt family rather than the synthetic repeated filler sentence
+
+All six rows are tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `needle_in_a_haystack`
+- suite `qwen35_cuda_needle_in_a_haystack_v1`
+- prompt count `1`
+- batch size `1`
+
+### Needle rows
+
+Exact rows:
+
+- `32768 exact`: decode `2217.21 ms/step`, prefill `874.17 ms`, selected pages `0`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 exact`: decode `3510.51 ms/step`, prefill `1004.33 ms`, selected pages `0`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `453.15 ms/step`, prefill `777.13 ms`, selected pages `12240`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 shortlist_base`: decode `612.97 ms/step`, prefill `1006.25 ms`, selected pages `12240`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `471.57 ms/step`, prefill `781.54 ms`, selected pages `12336`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 shortlist_l23_ctx`: decode `634.09 ms/step`, prefill `1006.32 ms`, selected pages `12336`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+The generated first line was the planted answer in every row:
+
+- `crimson-velvet-472.`
+
+### Positive read
+
+- the named Needle lane worked end-to-end on the CUDA box on the first real run
+- retrieval stayed exact in all six rows, including both shortlist rows at `49152`
+- the shortlist systems win also remains real on this named task-style lane:
+  - `32768 shortlist_base` vs `32768 exact`: `2217.21 -> 453.15 ms/step`
+  - `49152 shortlist_base` vs `49152 exact`: `3510.51 -> 612.97 ms/step`
+  - `32768 shortlist_l23_ctx` vs `32768 exact`: `2217.21 -> 471.57 ms/step`
+  - `49152 shortlist_l23_ctx` vs `49152 exact`: `3510.51 -> 634.09 ms/step`
+- unlike the loss-tail lane, this first named benchmark result does not show an immediate quality failure at `49152`
+- this is the first artifact on the branch that plausibly belongs in a paper-facing benchmark table rather than only in claim-narrowing notes
+
+### Negative read
+
+- this is still only `n=1` per `(context, case)`
+- the lane currently measures retrieval correctness from generated text plus serving metrics; it does not yet provide the richer variance and multi-prompt coverage expected for a final main paper table
+- the default CUDA path still remains entirely on `per_kv_fallback`; this run does not change the grouped-decode default story
+- the layer-23 context-aware variant is slightly slower than `shortlist_base` on Needle at both contexts:
+  - `32768`: `453.15 -> 471.57 ms/step`
+  - `49152`: `612.97 -> 634.09 ms/step`
+- because both shortlist variants retrieved correctly, this first run does not provide a reason to prefer the layer-23 override on Needle
+
+### Current interpretation
+
+- the named benchmark lane materially improves the evidence quality of the project
+- Needle currently tells a cleaner story than the synthetic loss-tail lane: shortlist can preserve task retrieval while delivering a large decode-speed win at `32768` and `49152`
+- however, the correct manuscript stance is still disciplined: this is a strong first named-benchmark point, not yet a full benchmark-suite result
+- the next obvious follow-up is to expand this lane from `n=1` into a small prompt pack so the same table can report prompt count and variance instead of a single successful exemplar
