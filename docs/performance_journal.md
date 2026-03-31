@@ -3898,3 +3898,50 @@ So the corrected local read is:
 
 - the earlier `bnb_8bit` failure was an environment issue, not a model/runtime incompatibility on the 890M
 - after installing `bitsandbytes`, the `4B` quantized StateCache readout path runs end-to-end on this machine
+
+## 2026-03-31 15:10 UTC - 890M 4B bnb_8bit serving ladder and practical boundary
+
+I finished the intended local `4B` confirmation on the repaired quantized lane:
+
+- `Qwen/Qwen3.5-4B`
+- `weight_quantization = bnb_8bit`
+- `state_stage = post_update_m0`
+- early recurrent `M3` overrides on layers `0/1/2`
+
+### Readout
+
+Exact-length readout stayed clean:
+
+- `512`: dense `280.13 ms/step`, StateCache `182.70 ms/step`, greedy agreement `1.0`
+- `1024`: dense `220.12 ms/step`, StateCache `217.70 ms/step`, greedy agreement `1.0`
+
+So the quantized readout lane is real, but the gain compresses quickly as context grows:
+
+- clearly positive at `512`
+- essentially parity at `1024`
+
+### Serving
+
+The serving ladder is the more important machine-level read, and it produced a clearer answer than the earlier fp16 fallback.
+
+Exact-length serving:
+
+- `2048`: `223.00 ms/step`, prefill peak `6.19 GB`, decode peak `5.59 GB`
+- `4096`: `242.74 ms/step`, prefill peak `8.33 GB`, decode peak `5.84 GB`
+- `8192`: `OutOfMemoryError`
+
+The fixed-resident StateCache footprint stayed at `21.63 MB`.
+
+Compared with the earlier local fp16 fallback on the same machine:
+
+- `2048` improved from `268.31 ms/step` to `223.00 ms/step`
+- `4096` improved from `338.55 ms/step` to `242.74 ms/step`
+- the prefill peaks dropped materially as well
+
+So the corrected `4B` local serving read is:
+
+- the intended `bnb_8bit` lane is now the preferred local `4B` path on this laptop
+- it is materially better than the fp16 fallback through `4096`
+- the practical exact-length boundary for this lane is still below `8192`
+
+I stopped the ladder after the first exact-length OOM at `8192`, so there is no useful `16384` result to promote from this run.
