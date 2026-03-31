@@ -28,6 +28,18 @@ for _dotcache_hf_env_candidate in "${_dotcache_hf_env_candidates[@]}"; do
   fi
 done
 
+_dotcache_workspace_root="${DOTCACHE_WORKSPACE_ROOT:-/workspace}"
+_dotcache_default_hf_home=""
+_dotcache_default_gguf_models_dir=""
+
+if [[ -d "${_dotcache_workspace_root}" && -w "${_dotcache_workspace_root}" ]]; then
+  _dotcache_default_hf_home="${_dotcache_workspace_root}/.cache/huggingface"
+  _dotcache_default_gguf_models_dir="${_dotcache_workspace_root}/models/gguf"
+else
+  _dotcache_default_hf_home="${HOME}/.cache/huggingface"
+  _dotcache_default_gguf_models_dir="${HOME}/.cache/dotcache/gguf"
+fi
+
 _dotcache_cuda_candidates=()
 if [[ -n "${CUDA_HOME:-}" ]]; then
   _dotcache_cuda_candidates+=("${CUDA_HOME}")
@@ -70,9 +82,9 @@ elif [[ -n "${HUGGINGFACE_HUB_TOKEN:-}" && -z "${HF_TOKEN:-}" ]]; then
   export HF_TOKEN="${HUGGINGFACE_HUB_TOKEN}"
 fi
 
-export HF_HOME="${DOTCACHE_HF_HOME:-/workspace/.cache/huggingface}"
+export HF_HOME="${DOTCACHE_HF_HOME:-${_dotcache_default_hf_home}}"
 export TRANSFORMERS_CACHE="${DOTCACHE_TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
-export GGUF_MODELS_DIR="${DOTCACHE_GGUF_MODELS_DIR:-/workspace/models/gguf}"
+export GGUF_MODELS_DIR="${DOTCACHE_GGUF_MODELS_DIR:-${_dotcache_default_gguf_models_dir}}"
 export LLAMA_CPP_N_GPU_LAYERS="${DOTCACHE_LLAMA_CPP_N_GPU_LAYERS:-999}"
 
 mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}" "${GGUF_MODELS_DIR}"
@@ -92,6 +104,9 @@ if [[ -z "${LLAMA_CPP_CLI:-}" && -x "${_dotcache_llama_cpp_bin}/llama-cli" ]]; t
 fi
 
 unset _dotcache_root_dir
+unset _dotcache_workspace_root
+unset _dotcache_default_hf_home
+unset _dotcache_default_gguf_models_dir
 unset _dotcache_hf_env_file
 unset _dotcache_hf_env_candidate
 unset _dotcache_hf_env_candidates
