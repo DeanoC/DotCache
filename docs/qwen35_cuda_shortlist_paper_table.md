@@ -74,22 +74,35 @@ Layer-23 context-aware override at `16384`:
 
 ## Exploratory, Not Yet Paper-Grade
 
-There are committed `32768` artifacts, but they should not be promoted into the main paper table yet.
+There are now committed larger-context artifacts from the clean wrapper path, but they still belong in a secondary table because the quality read is mixed.
 
-Useful exploratory reads:
+Current large-context serving rerun from [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl):
 
-| Context | Config | Decode ms/step | Tail max abs logit error | Source |
-| ---: | --- | ---: | ---: | --- |
-| `32768` | base shortlist | `1183.58` | `3.5234` | [`qwen35_cuda_shortlist_ladder_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_ladder_quality_tail.jsonl) |
-| `32768` | layer-23 context-aware | `1174.86` | `3.5273` | [`qwen35_cuda_shortlist_ladder_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_ladder_quality_tail.jsonl) |
-| `32768` | base shortlist | `1385.82` | n/a | [`qwen35_cuda_shortlist_32k_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_32k_probe.jsonl) |
-| `32768` | layer-23 context-aware | `1274.62` | n/a | [`qwen35_cuda_shortlist_32k_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_32k_probe.jsonl) |
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2298.36` | `673.12` | `671.80` | all rows `per_kv_fallback` |
+| `49152` | `3675.23` | `786.35` | `844.04` | all rows `per_kv_fallback` |
+
+Current large-context quality-tail rerun from [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl):
+
+| Context | Exact tail max abs logit error | Base shortlist | Layer-23 ctx | Read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `0.8984` | `3.5098` | `3.5137` | shortlist much noisier than exact |
+| `49152` | `4.5742` | `7.0000` | `6.9648` | shortlist still materially worse; layer-23 widening does not cleanly fix it |
+
+What this adds to the current paper read:
+
+- the shortlist path is a real serving-speed win at `32768` and `49152`
+- shortlist page counts remain bounded relative to the full no-shortlist path
+- grouped-batched decode still does not activate
+- the `49152` quality-tail read is not clean enough to present as a settled win
+- the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
 Why these stay out of the main table:
 
-- the older `32768` automation path had wrapper/process leakage issues
-- the exact baseline for the same run family is not yet documented in one clean single-shot comparison note
-- the table would mix benchmark-quality and exploratory evidence
+- the large-context speed story is real, but the quality story is not yet clean at `49152`
+- all rows still stay in `per_kv_fallback`, so the mechanism remains incomplete
+- the paper should not present these larger-context rows as a fully locked systems result yet
 
 ## Exact Rerun Path For The CUDA Box
 
@@ -118,6 +131,8 @@ The wrapper calls the single-shot runner and regenerates the current `4096/8192/
 
 - [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
 - [`qwen35_cuda_shortlist_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_probe.jsonl)
+- [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl)
+- [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl)
 - [`performance_journal.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md)
 - [`qwen35_cuda_shortlist_ladder_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_ladder_quality_tail.jsonl)
 - [`qwen35_cuda_shortlist_32k_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_32k_probe.jsonl)

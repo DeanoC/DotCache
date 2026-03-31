@@ -226,7 +226,23 @@ Qwen3.5 is the most useful evidence for the read-time selector because only a sm
 
 All nine rerun rows stayed on the same `per_kv_fallback` decode path. That is the current systems lesson: shortlist execution is operational on CUDA, but the expected grouped-batched speed path still is not activating on this lane, so long-context speedups are not yet stable.
 
-The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates those two stories explicitly.
+The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table.
+
+At larger context, the newest clean wrapper artifacts add a useful but mixed third datapoint. The serving rerun in [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl) shows that shortlist is a real decode-speed win at both `32768` and `49152`:
+
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step |
+| ---: | ---: | ---: | ---: |
+| `32768` | `2298.36` | `673.12` | `671.80` |
+| `49152` | `3675.23` | `786.35` | `844.04` |
+
+But the quality-tail rerun in [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl) is not clean at `49152`:
+
+| Context | Exact tail max abs logit error | Base shortlist | Layer-23 ctx |
+| ---: | ---: | ---: | ---: |
+| `32768` | `0.8984` | `3.5098` | `3.5137` |
+| `49152` | `4.5742` | `7.0000` | `6.9648` |
+
+So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all three CUDA reads explicitly.
 
 What this does **not** yet show:
 
