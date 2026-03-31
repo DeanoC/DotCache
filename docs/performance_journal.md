@@ -4350,3 +4350,89 @@ Layer-23 context-aware rows:
 - the key/value chunk-schedule patch is a real backend improvement; it removed the original grouped-path blocker and made the forced path substantially less bad
 - it is not enough to justify enabling grouped batching on this Qwen3.5 CUDA lane by default
 - the next grouped-CUDA target is now specific: eliminate `key_signature_mismatch_across_groups` and then remeasure whether grouped batching can beat the current per-KV fallback on shortlist workloads
+
+## 2026-03-31 18:05 UTC - Forced grouped batching after mixed-signature bucketing
+
+After the follow-up patch that buckets mixed-signature grouped chunks instead of rejecting the whole grouped path, I re-ran the same forced-grouped CUDA serving matrix:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl`
+
+Summary command:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl
+```
+
+The first matrix pass came back with one wrapper-level miss on `32768 shortlist_base` (`NoExactRow`), so I re-ran that single case directly:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  .venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache_serving.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --layer-profile /workspace/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml \
+  --repeat-counts \
+  --target-prompt-lengths 32768 \
+  --max-new-tokens 4 \
+  --continue-on-error \
+  --profile-backend \
+  --execution-recent-window 1024 \
+  --execution-sink-window 256 \
+  --execution-relevance-top-k 4 \
+  --execution-relevance-mode envelope
+```
+
+That one-off rerun succeeded, so the missing row was a wrapper capture issue rather than a backend failure.
+
+### Fresh forced-grouped rows
+
+Exact rows:
+
+- `32768 exact`: decode `2335.11 ms/step`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 exact`: decode `3658.27 ms/step`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `716.36 ms/step` on the direct rerun, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 shortlist_base`: decode `777.28 ms/step`, selected pages `4222`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `693.11 ms/step`, selected pages `4282`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 shortlist_l23_ctx`: decode `766.36 ms/step`, selected pages `4274`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+### Positive read
+
+- the mixed-signature bucketing patch is the first grouped-CUDA change that fully removes the grouped fallback reason on this lane
+- the remaining rejection reason from the previous run, `key_signature_mismatch_across_groups`, disappeared entirely in the completed rows
+- grouped decode is now fully active in all successful rows: `grouped_batched=24, per_kv_fallback=0`
+- forced grouped shortlist performance moved dramatically closer to the default non-forced path
+- compared with the previous forced `kvsplit` run:
+  - `32768 shortlist_base`: `1486.36 -> 716.36 ms/step`
+  - `49152 shortlist_base`: `1439.28 -> 777.28 ms/step`
+  - `32768 shortlist_l23_ctx`: `1458.24 -> 693.11 ms/step`
+  - `49152 shortlist_l23_ctx`: `1453.39 -> 766.36 ms/step`
+
+### Negative read
+
+- the exact rows still do not meaningfully benefit from forced grouped batching
+- the successful shortlist rows are now close to, but not clearly better than, the default non-forced CUDA shortlist path
+- the wrapper-level `32768 shortlist_base` miss means the single-shot runner path is cleaner than the wrapper for interpreting this exact row; that operational wrinkle should still be recorded
+
+### Current interpretation
+
+- the new bucketing patch eliminates the signature-mismatch blocker strongly enough that grouped batching now runs end-to-end on the successful shortlist rows
+- this is the first result that makes grouped CUDA look operational rather than purely exploratory on this lane
+- however, it still does not yet prove that grouped decode should replace the current default path, because the grouped shortlist rows are roughly at parity rather than a decisive win
+- the next step should be a clean rerun focused on reproducibility and possibly a quality-tail spot-check under forced grouped mode now that the backend path itself is functioning
