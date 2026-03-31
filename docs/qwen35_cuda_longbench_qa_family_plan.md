@@ -41,6 +41,29 @@ Default outputs:
 - [qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl)
 - [qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md)
 
+## Follow-Up Rescue Matrix
+
+Once the base mini-pack is in place, the next targeted CUDA pass is:
+
+```bash
+scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh
+```
+
+Default outputs:
+
+- [qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl)
+- [qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md)
+
+This rescue matrix compares:
+
+- `exact`
+- `shortlist_base`
+- `shortlist_l23_ctx`
+- `shortlist_topk8`
+- `shortlist_quality_profile`
+
+It also records cleaned-answer diagnostic scores so we can separate chat-format spillover from real answer-quality loss.
+
 ## Honest Caveats
 
 - this is a LongBench-derived mini-pack, not a full LongBench table

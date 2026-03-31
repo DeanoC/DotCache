@@ -32,10 +32,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cases",
         nargs="+",
-        choices=["exact", "shortlist_base", "shortlist_l23_ctx"],
+        choices=["exact", "shortlist_base", "shortlist_l23_ctx", "shortlist_topk8", "shortlist_quality_profile"],
         default=["exact", "shortlist_base", "shortlist_l23_ctx"],
     )
     parser.add_argument("--prompt-pack", required=True, help="JSON file defining LongBench rows to run.")
+    parser.add_argument(
+        "--quality-layer-profile",
+        default=str(
+            REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_shortlist_quality.yaml"
+        ),
+    )
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
@@ -49,6 +55,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluation-notes", default=None)
     parser.add_argument("--output", default=None)
     return parser.parse_args()
+
+
+def _longbench_case_extra_args(case: str) -> list[str]:
+    if case == "shortlist_topk8":
+        return [
+            "--execution-recent-window",
+            "1024",
+            "--execution-sink-window",
+            "256",
+            "--execution-relevance-top-k",
+            "8",
+            "--execution-relevance-mode",
+            "envelope",
+        ]
+    if case == "shortlist_quality_profile":
+        return [
+            "--execution-recent-window",
+            "1024",
+            "--execution-sink-window",
+            "256",
+            "--execution-relevance-top-k",
+            "4",
+            "--execution-relevance-mode",
+            "envelope",
+        ]
+    return _case_extra_args(case)
 
 
 def _load_prompt_specs(path: str) -> list[dict[str, Any]]:
@@ -71,6 +103,9 @@ def _load_prompt_specs(path: str) -> list[dict[str, Any]]:
 
 
 def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict[str, Any]) -> list[str]:
+    layer_profile = args.layer_profile
+    if case == "shortlist_quality_profile":
+        layer_profile = args.quality_layer_profile
     command = [
         sys.executable,
         str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_longbench_qa.py"),
@@ -83,7 +118,7 @@ def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict
         "--torch-dtype",
         args.torch_dtype,
         "--layer-profile",
-        args.layer_profile,
+        layer_profile,
         "--longbench-dataset",
         prompt_spec["dataset"],
         "--longbench-row-index",
@@ -93,7 +128,7 @@ def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict
         command.append("--profile-backend")
     if args.quality_check:
         command.append("--quality-check")
-    command.extend(_case_extra_args(case))
+    command.extend(_longbench_case_extra_args(case))
     return command
 
 

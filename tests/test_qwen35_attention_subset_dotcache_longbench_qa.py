@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.bench_qwen35_attention_subset_dotcache_longbench_qa import (
+    clean_longbench_generated_text,
     normalize_answer,
     qa_f1_score,
     score_longbench_answers,
@@ -31,3 +32,11 @@ def test_score_longbench_answers_tracks_exact_and_best_f1() -> None:
     assert score["longbench_answer_exact_match"] is False
     assert float(score["longbench_qa_f1_max"]) > 0.8
     assert score["longbench_best_matching_answer"] == "extension of the NetVLAD, adds Ghost clusters along with the NetVLAD clusters"
+
+
+def test_clean_longbench_generated_text_removes_chat_artifacts() -> None:
+    raw = "Miller v. California\n</think>\n\nMiller v. California.\nassistant\n<think>\n\n</think>\n\nMiller v. California."
+    cleaned = clean_longbench_generated_text(raw)
+    assert "assistant" not in cleaned
+    assert "<think>" not in cleaned
+    assert "Miller v. California" in cleaned

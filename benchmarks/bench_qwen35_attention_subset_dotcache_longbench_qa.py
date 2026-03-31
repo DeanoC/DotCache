@@ -210,6 +210,15 @@ def score_longbench_answers(prediction: str, answers: list[str]) -> dict[str, ob
     }
 
 
+def clean_longbench_generated_text(text: str) -> str:
+    cleaned = str(text)
+    cleaned = re.sub(r"(?is)<think>.*?</think>", " ", cleaned)
+    cleaned = re.sub(r"(?im)^\s*assistant\s*$", " ", cleaned)
+    cleaned = re.sub(r"(?im)^\s*answer:\s*$", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
 def _ensure_longbench_zip(cache_dir: Path, zip_url: str) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     zip_path = cache_dir / "data.zip"
@@ -345,6 +354,8 @@ def main() -> None:
 
     generated_text = _decode_generated_text(harness.tokenizer, list(result.get("dotcache_generated_ids", [])))
     answer_score = score_longbench_answers(generated_text, list(row["answers"]))
+    cleaned_generated_text = clean_longbench_generated_text(generated_text)
+    cleaned_answer_score = score_longbench_answers(cleaned_generated_text, list(row["answers"]))
     record = _build_base_record(
         args,
         max_position_embeddings=max_position_embeddings,
@@ -355,6 +366,15 @@ def main() -> None:
     )
     record.update(result)
     record.update(answer_score)
+    record.update(
+        {
+            "longbench_generated_text_cleaned": cleaned_generated_text,
+            "longbench_chat_artifact_cleaned": bool(cleaned_generated_text != str(generated_text).strip()),
+            "longbench_answer_exact_match_cleaned": cleaned_answer_score["longbench_answer_exact_match"],
+            "longbench_qa_f1_max_cleaned": cleaned_answer_score["longbench_qa_f1_max"],
+            "longbench_best_matching_answer_cleaned": cleaned_answer_score["longbench_best_matching_answer"],
+        }
+    )
     print(json.dumps(record, sort_keys=True), flush=True)
 
 

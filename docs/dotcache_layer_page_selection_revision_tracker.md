@@ -73,6 +73,7 @@ Useful existing artifacts:
 - [`docs/qwen35_cuda_longbench_qa_family_plan.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_longbench_qa_family_plan.md)
 - [`scripts/run_qwen35_cuda_longbench_qa_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py)
 - [`scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh)
+- [`scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh)
 - [`scripts/summarize_qwen35_cuda_longbench_qa_pack.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_longbench_qa_pack.py)
 - [`configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json)
 - [`scripts/run_qwen35_cuda_passkey_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_probe.py)
