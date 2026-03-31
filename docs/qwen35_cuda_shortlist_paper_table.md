@@ -232,6 +232,31 @@ Important caveats:
 - this is a RULER-style passkey family, not a full RULER reproduction
 - the layer-23 override remains mixed rather than clearly promoted, so it still should not become the headline default shortlist story
 
+## LongBench QA Mini-Pack
+
+The first non-synthetic named benchmark family is now in [`qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl), with the rollup in [`qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md). This pack uses four fixed LongBench QA rows, the official task prompts, and the official QA F1 metric.
+
+LongBench QA summary:
+
+| Case | `n` | Mean QA F1 | Exact-match rate | Mean decode ms/step | 95% CI |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| exact | `4` | `0.14` | `0.00` | `743.41` | `337.48` |
+| shortlist base | `4` | `0.08` | `0.00` | `178.55` | `12.77` |
+| shortlist `layer:23` ctx | `4` | `0.08` | `0.00` | `176.41` | `17.30` |
+
+What this adds:
+
+- it fills the benchmark-breadth gap with real benchmark rows rather than another handcrafted family
+- the systems win is still real on this mini-pack: shortlist is about `4.2x` faster than exact on mean decode
+- it gives the paper its first honest benchmark-quality warning sign: QA F1 does not currently carry over cleanly under shortlist execution
+
+Important caveats:
+
+- this is not a paper-table “win” artifact; it is mixed evidence
+- mean QA F1 drops from `0.14` under exact to `0.08` under both shortlist variants
+- the per-row read is mixed: `multifieldqa_en` improves slightly, `hotpotqa` drops sharply, and `2wikimqa` plus `qasper` stay at `0.0` across all variants
+- the first wrapper pass exposed a real probe bug on `longbench_row_index=0`; that parser bug is now fixed in [run_qwen35_cuda_longbench_qa_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py), and the final canonical artifact has `12` rows with `0` error payloads
+
 ## Streaming Window Reference
 
 The first cheap external-style comparator is now in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), with the rollup in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This lane uses a simple StreamingLLM-style sink-plus-recent reference policy:
