@@ -4170,9 +4170,8 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
         value_chunk_lengths = tuple(int(length) for length in value_chunk_lengths)
     if sum(key_chunk_lengths) != len(first_key_group) or sum(value_chunk_lengths) != len(first_value_group):
         raise ValueError("grouped decode chunk lengths must cover all key/value pages exactly")
-    if key_chunk_lengths != value_chunk_lengths:
-        key_chunk_lengths = aligned_chunk_lengths
-        value_chunk_lengths = aligned_chunk_lengths
+    # Score and mix can use different chunk schedules as long as both cover the
+    # same flattened token stream in order.
 
     logits_parts = []
     key_offset = 0

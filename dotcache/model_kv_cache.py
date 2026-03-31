@@ -382,21 +382,6 @@ def _grouped_pages_batch_rejection_reason(
             centered,
         )
 
-    def _chunk_length_signature(pages: Sequence[PreparedPageTorch]) -> tuple[int, ...]:
-        chunk_lengths: list[int] = []
-        current_signature: tuple[int | str, ...] | None = None
-        current_length = 0
-        for page in pages:
-            signature = _page_batch_signature(page)
-            if current_signature is not None and signature != current_signature:
-                chunk_lengths.append(current_length)
-                current_length = 0
-            current_signature = signature
-            current_length += 1
-        if current_length > 0:
-            chunk_lengths.append(current_length)
-        return tuple(chunk_lengths)
-
     def _m2_segment_count(page: PageLike) -> int:
         basis = getattr(page, "m2_basis", None)
         if basis is None:
@@ -431,8 +416,6 @@ def _grouped_pages_batch_rejection_reason(
             return "key_device_mismatch"
         if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
             return "value_device_mismatch"
-        if _chunk_length_signature(key_pages_by_group[group_index]) != _chunk_length_signature(value_pages_by_group[group_index]):
-            return "key_value_chunk_signature_mismatch"
     for page_index in range(page_count):
         key_signature = (
             key_pages_by_group[0][page_index].header.mode_default,
@@ -613,14 +596,13 @@ def _build_prepared_decode_view_layout(
         return None
     prepared_key_pages = tuple(key_pages)
     prepared_value_pages = tuple(value_pages)
-    aligned_chunk_lengths = _prepared_page_aligned_chunk_lengths(prepared_key_pages, prepared_value_pages)
     return _PreparedDecodeViewLayout(
         grouped_batch_signature=tuple(
             (_prepared_page_group_signature(key_page), _prepared_page_group_signature(value_page))
             for key_page, value_page in zip(prepared_key_pages, prepared_value_pages, strict=True)
         ),
-        key_chunk_lengths=aligned_chunk_lengths,
-        value_chunk_lengths=aligned_chunk_lengths,
+        key_chunk_lengths=_prepared_page_chunk_lengths(prepared_key_pages),
+        value_chunk_lengths=_prepared_page_chunk_lengths(prepared_value_pages),
     )
 
 

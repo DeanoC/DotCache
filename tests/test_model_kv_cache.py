@@ -11,7 +11,12 @@ from dotcache.backends import (
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
-from dotcache.model_kv_cache import ModelPagedKVCache, _grouped_pages_can_batch, default_q_head_to_kv_head
+from dotcache.model_kv_cache import (
+    ModelPagedKVCache,
+    _build_prepared_decode_view_layout,
+    _grouped_pages_can_batch,
+    default_q_head_to_kv_head,
+)
 from dotcache.tracing import ExecutionTrace
 
 
@@ -1244,7 +1249,7 @@ def test_model_paged_kv_cache_static_chunk_cache_can_disable_value_chunks() -> N
     assert resident_after_second_decode == resident_after_first_decode
 
 
-def test_grouped_pages_can_batch_rejects_misaligned_key_value_chunks_on_mps() -> None:
+def test_grouped_pages_can_batch_accepts_misaligned_key_value_chunks_on_mps() -> None:
     if not mps_available():
         return
     import torch
@@ -1292,4 +1297,9 @@ def test_grouped_pages_can_batch_rejects_misaligned_key_value_chunks_on_mps() ->
         torch.from_numpy(rng.normal(size=(2, head_dim)).astype(np.float32)).to(device="mps"),
     ]
 
-    assert not _grouped_pages_can_batch([key_group0, key_group1], [value_group0, value_group1], queries)
+    assert _grouped_pages_can_batch([key_group0, key_group1], [value_group0, value_group1], queries)
+
+    layout = _build_prepared_decode_view_layout(key_group0, value_group0)
+    assert layout is not None
+    assert layout.key_chunk_lengths == (2, 1)
+    assert layout.value_chunk_lengths == (1, 2)
