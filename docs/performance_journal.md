@@ -4928,3 +4928,75 @@ The streaming case is the intended sink-plus-recent reference:
   - but it fails retrieval completely on this pack
   - DotCache shortlist gives back a large fraction of exact quality at a much lower cost than exact, without collapsing the task the way the streaming baseline does
 - this comparator does not justify promoting `shortlist_l23_ctx`; it mainly strengthens the case that `shortlist_base` is the cleanest default shortlist story against a simple external-style baseline
+
+## 2026-03-31 14:18 UTC - First RULER-style passkey family pack on the CUDA lane
+
+I pulled the new passkey family from `9ab4e3b` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_passkey_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md`
+
+This is the second named family on the branch, framed honestly as a fixed four-prompt RULER-style passkey retrieval pack rather than a full RULER reproduction.
+
+All rows are tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `passkey_retrieval`
+- suite `qwen35_cuda_passkey_pack_v1`
+- prompt count `4`
+- batch size `1`
+
+### Positive read
+
+- the passkey family worked end-to-end on the CUDA lane and the final canonical artifact contains `24` successful rows with `0` error payloads
+- retrieval correctness stayed perfect across the entire family:
+  - `24/24` rows were retrieval-correct
+  - retrieval accuracy `1.00` for every `(case, context)` bucket
+- DotCache shortlist again delivered a large systems win versus exact:
+  - `32768 exact`: `2390.28 ms/step`
+  - `32768 shortlist_base`: `500.58 ms/step` (`4.77x` faster than exact)
+  - `32768 shortlist_l23_ctx`: `511.36 ms/step` (`4.67x` faster than exact)
+  - `49152 exact`: `3823.87 ms/step`
+  - `49152 shortlist_base`: `662.52 ms/step` (`5.77x` faster than exact)
+  - `49152 shortlist_l23_ctx`: `657.81 ms/step` (`5.81x` faster than exact)
+- shortlist page counts remained stable and matched the Needle-family behavior:
+  - `shortlist_base`: mean selected pages `12240`
+  - `shortlist_l23_ctx`: mean selected pages `12336`
+- the default CUDA path still stayed entirely on `per_kv_fallback`, so the passkey-family shortlist win also does not depend on grouped decode activation
+
+### Negative read
+
+- strict exact-match is low even though retrieval correctness is perfect:
+  - exact-match rate is only `0.25` in every fully populated `(case, context)` bucket
+- this is not a retrieval failure; it is almost entirely output-format bleed:
+  - `archive_pin` often emitted `90317` and then continued with `Question: What is`
+  - `shipment_code` often emitted `26488` and then continued with `Question: What is` or repeated blank lines
+  - `vault_sequence` often emitted `41736` and then continued with `Question: What is` or `Vault record: the`
+- in other words, the model keeps the right digits but does not reliably stop after the answer on this family
+- the layer-23 override still does not earn a clean recommendation:
+  - at `32768`, it is slightly slower than `shortlist_base` on average (`+10.78 ms/step`)
+  - at `49152`, it is slightly faster on average (`-4.72 ms/step`)
+  - the per-prompt deltas are mixed and too small to justify promoting it as the cleaner default story
+
+### Operational failure
+
+- the first full pass finished with one transient `NoPasskeyRow` failure:
+  - `vault_sequence shortlist_l23_ctx 49152`
+- the error payload carried the same tokenizer-side `protobuf` import complaint seen earlier on the branch
+- I reran just that row and it succeeded cleanly, then rebuilt the canonical branch artifact with the successful rerun while keeping the failure recorded here
+
+### Current interpretation
+
+- the second named family reinforces the same high-level thesis as Needle:
+  - DotCache shortlist preserves task retrieval on a named long-context family while delivering a large decode-speed win versus exact
+- passkey retrieval is in one sense even cleaner than Needle because retrieval correctness is perfect on all rows
+- however, it also exposes a paper-facing evaluation nuance that should be stated honestly:
+  - strict exact-match can be much lower than retrieval correctness when the model repeats parts of the prompt after the correct answer
+- taken together with Needle, the branch now has two named task-style families showing the same core systems story from different prompt constructions
