@@ -4,7 +4,7 @@ _Working manuscript source reconstructed from `dotcache_layer_page_selection.pdf
 
 ## Abstract
 
-DotCache proposes executing attention directly on page-organized, low-bit key-value (KV) caches rather than dequantizing compressed tokens back to full precision before the attention kernel runs. A critical but underexplored part of that design is the selection subsystem that decides which codec, bitwidth, and execution mode to assign to each page. This note describes the current DotCache selection stack: write-time page routing, recent-window escape, and read-time shortlist gating. The current artifact supports six page modes (`M0`, `M1`, `M2`, `M3`, `M4`, `T3`) and has been exercised on TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5. The main engineering conclusion is that layer-aware selection is necessary for compressed-domain execution to remain usable. The main scientific caveat is equally important: the present evidence is still prototype-grade. The selector design is concrete and the failure modes are real, but the empirical story still needs standardized benchmarks, calibration/test splits, and stronger baselines before this can be framed as a publication-ready systems paper.
+DotCache proposes executing attention directly on page-organized, low-bit key-value (KV) caches rather than dequantizing compressed tokens back to full precision before the attention kernel runs. A critical but underexplored part of that design is the selection subsystem that decides which codec, bitwidth, and execution mode to assign to each page. This note describes the current DotCache selection stack: write-time page routing, recent-window escape, and read-time shortlist gating. The current artifact supports six page modes (`M0`, `M1`, `M2`, `M3`, `M4`, `T3`) and has been exercised on TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5. The strongest current systems result is that query-aware shortlisting can produce large serving-speed wins at long context on the Qwen3.5 CUDA lane, including clean serving wins at `32768` and `49152` tokens. The strongest current caveat is that the same lane still shows unstable long-context quality, and simple rescue heuristics such as widening `top_k` or adding a layer-23 override do not make the `49152` regime quality-clean. The main engineering conclusion is therefore narrower than the original draft implied: layer-aware selection is necessary and promising, but the present evidence is still prototype-grade and not yet sufficient for a publication-ready benchmark claim.
 
 ## 1. Introduction
 
@@ -12,7 +12,7 @@ DotCache treats low-bit KV representations as an execution format rather than a 
 
 Compressed-domain execution creates a systems question that storage-only quantization papers can mostly sidestep: which codec should each page use, and when should the runtime bypass compression entirely? In DotCache, the answer propagates into the attention kernel itself because the kernel consumes compressed pages directly. A bad per-layer or per-page choice is not normalized away by a generic dequantization stage later.
 
-This draft focuses on that selection layer: the write-time policy that maps observed page statistics to a page mode, the recent-window escape that keeps the hottest tokens in high precision, and the read-time shortlist that limits which old pages are attended. The core claim is modest and specific. DotCache is interesting because it combines compressed-domain execution with adaptive page routing. The current artifact does not yet prove that this combination beats the best long-context baselines on standard benchmark suites.
+This draft focuses on that selection layer: the write-time policy that maps observed page statistics to a page mode, the recent-window escape that keeps the hottest tokens in high precision, and the read-time shortlist that limits which old pages are attended. The core claim is modest and specific. DotCache is interesting because it combines compressed-domain execution with adaptive page routing. The current artifact does not yet prove that this combination beats the best long-context baselines on standard benchmark suites, but it does show a meaningful systems pattern: once context is large enough, page selection can dominate the runtime story, while quality recovery becomes the new limiting factor.
 
 ## 2. The Page Selection Problem
 
@@ -159,7 +159,7 @@ The artifact is currently a mix of four evaluation lanes rather than one standar
 | TinyLlama 1.1B | local MPS | prefill at `577`, teacher-forced windows around `320/288/16` | page-mode counts, loss delta, token agreement |
 | SmolLM2 360M | local MPS | prefill at `1024`, teacher-forced windows around `1032/1024/8` | page-mode counts, loss delta, token agreement |
 | Qwen2.5 3B | CUDA / RTX 5090 lane | exact prompt lengths `1024`, `2048`, `4096` | greedy agreement, KV memory ratio, decode ms/step |
-| Qwen3.5 0.8B | CUDA / RTX 5090 lane | serving at `4096`, `8192`, `16384`, `4` decode tokens | ms/step, tok/s, selected/candidate pages, replay/logit error |
+| Qwen3.5 0.8B | CUDA / RTX 5090 lane | serving at `4096` through `49152`, `4` decode tokens | ms/step, page counts, loss-tail error, replay/logit error |
 
 The common prompt-construction pattern for several harnesses is a repeated synthetic unit string (`"Cache locality matters for fast decoding."`) trimmed to exact token length. That is fine for development, but a publication draft needs named datasets, prompt counts, and variance.
 
@@ -252,6 +252,29 @@ The obvious follow-up was to widen the `49152` shortlist from `top_k=4` to `top_
 
 So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
 
+### 5.7. What The Current Evidence Actually Supports
+
+At this point the paper can make four concrete claims without overreaching.
+
+1. Layer-aware routing is necessary.
+Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
+
+2. Query-aware shortlisting is a real systems lever.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`, even before grouped-batched decode is working.
+
+3. Long-context quality is now the binding problem.
+The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
+
+4. Cheap rescue heuristics are not enough yet.
+Both the layer-23 context-aware widening and the `top_k=8` follow-up improve the story only marginally. They are useful diagnostics, not final fixes.
+
+What the paper should **not** claim yet:
+
+- that DotCache shortlist is a stable throughput win at every tested context
+- that the `49152` configuration is quality-clean
+- that grouped-batched decode has been unlocked on the main CUDA lane
+- that page-level observed-stat routing has already beaten simpler fixed-policy baselines on a standardized benchmark suite
+
 What this does **not** yet show:
 
 - benchmark variance
@@ -331,6 +354,12 @@ The paper also needs ablations for:
 - selector implementation overhead
 - page size and group size
 
+The current results suggest one priority ordering rather than a broad sweep:
+
+1. grouped-batched activation on the CUDA shortlist lane
+2. one stronger `49152` quality rescue that is not just another `top_k` increase
+3. only then a wider ablation grid
+
 ### 7.4. Make the Profile Discovery Scientific
 
 Right now profile discovery is still manual enough that a reviewer can reasonably call it hand-tuning. A credible next draft needs one of:
@@ -341,6 +370,8 @@ Right now profile discovery is still manual enough that a reviewer can reasonabl
 
 ## 8. Conclusion
 
-The reconstructed artifact already contains a real systems idea: compressed-domain KV execution needs an explicit selection layer. The code and artifacts support that claim. They also support the review's criticism that the current paper overreaches when it presents heuristic, mixed-protocol evidence as though it were already a benchmark-complete conference result.
+The reconstructed artifact already contains a real systems idea: compressed-domain KV execution needs an explicit selection layer. The code and artifacts support that claim. They also support the review's criticism that the earlier draft overreached when it presented heuristic, mixed-protocol evidence as though it were already a benchmark-complete conference result.
 
-The next draft should keep the core idea, tighten the terminology, state selector complexity honestly, and separate what is already demonstrated from what still needs standardized evaluation. That makes the paper narrower, but also much stronger.
+The strongest current result is not "DotCache wins everywhere." It is more specific and more credible: layer-aware shortlisting can create genuine long-context serving-speed wins, but quality recovery becomes the new hard problem, and simple shortlist widening does not solve it. That is a worthwhile systems story, but only if the paper says it plainly.
+
+The next draft should therefore keep the core idea, tighten the terminology, state selector complexity honestly, foreground the mixed `32768/49152` outcome, and separate what is already demonstrated from what still needs standardized evaluation. That makes the paper narrower, but also much stronger.
