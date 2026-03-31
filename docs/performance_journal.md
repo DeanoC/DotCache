@@ -4019,3 +4019,84 @@ So the corrected `4B` local serving read is:
 - the practical exact-length boundary for this lane is still below `8192`
 
 I stopped the ladder after the first exact-length OOM at `8192`, so there is no useful `16384` result to promote from this run.
+
+## 2026-03-31 16:05 UTC - CUDA large-context shortlist rerun at 32k and 49k
+
+I pulled the large-context helper branch state and ran both new wrappers on the CUDA box:
+
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh`
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_quality_tail.sh`
+
+Artifacts written:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl`
+
+### Serving probe
+
+The serving pass was a real systems win for shortlist decode throughput at both target contexts.
+
+`32768` prompt:
+
+- `exact`: decode `2298.36 ms/step`, prefill `9312.56 ms`, selected pages `0 / 0`
+- `shortlist_base`: decode `673.12 ms/step`, prefill `754.54 ms`, selected pages `4080 / 98352`
+- `shortlist_l23_ctx`: decode `671.80 ms/step`, prefill `757.75 ms`, selected pages `4112 / 98352`
+
+`49152` prompt:
+
+- `exact`: decode `3675.23 ms/step`, prefill `9634.22 ms`, selected pages `0 / 0`
+- `shortlist_base`: decode `786.35 ms/step`, prefill `980.81 ms`, selected pages `4080 / 147504`
+- `shortlist_l23_ctx`: decode `844.04 ms/step`, prefill `988.60 ms`, selected pages `4112 / 147504`
+
+Positive serving conclusions:
+
+- the exact rows were truly no-shortlist baselines: `selected_pages = 0`, `total_pages = 0`
+- shortlist stayed bounded at both contexts rather than expanding with total page count
+- `shortlist_base` was a large decode win over exact at both `32768` and `49152`
+- `shortlist_l23_ctx` matched `shortlist_base` at `32768`, but was slower at `49152`
+
+Negative serving conclusions:
+
+- grouped decode batching still did not activate; the path remained `per_kv`
+- the layer-23 context override did not produce a serving win worth promoting
+
+### Quality tail
+
+The quality tail read was materially less clean than the serving-only numbers.
+
+`32768` prompt:
+
+- `exact`: decode `2229.00 ms/step`, loss delta `-1.668e-06`, max logit abs error `0.8984375`, token agreement `1.0`
+- `shortlist_base`: decode `622.16 ms/step`, loss delta `-1.454e-05`, max logit abs error `3.509765625`, token agreement `1.0`, selected pages `3060 / 73764`
+- `shortlist_l23_ctx`: decode `679.91 ms/step`, loss delta `-1.451e-05`, max logit abs error `3.513671875`, token agreement `1.0`, selected pages `3084 / 73764`
+
+`49152` prompt:
+
+- `exact`: decode `3567.01 ms/step`, loss delta `+0.00204764`, max logit abs error `4.57421875`, token agreement `1.0`
+- `shortlist_base`: decode `823.96 ms/step`, loss delta `+0.0130062`, max logit abs error `7.0`, token agreement `1.0`, selected pages `3060 / 110628`
+- `shortlist_l23_ctx`: decode `778.40 ms/step`, loss delta `+0.0128626`, max logit abs error `6.96484375`, token agreement `1.0`, selected pages `3084 / 110628`
+
+Positive quality conclusions:
+
+- all six rows completed successfully with no timeout or OOM
+- target match and token agreement stayed at `1.0` in every row
+- at `32768`, both shortlist variants were slightly better than the exact row on the reported loss delta
+- at `49152`, the layer-23 context override was marginally better than `shortlist_base` on both decode and loss delta
+
+Negative quality conclusions:
+
+- the exact baseline itself already showed nontrivial long-context drift at `49152`
+- shortlist max-logit error was much larger than exact at `32768`
+- at `49152`, both shortlist variants materially worsened the loss tail versus exact
+- the layer-23 context override did not fix the large-context quality problem in a meaningful way
+
+Operational note:
+
+- every wrapper invocation emitted the unauthenticated HF Hub warning; the runs still completed, but the box is not using an `HF_TOKEN`
+
+Current CUDA large-context decision:
+
+- promote the systems result, not a blanket quality claim
+- `shortlist_base` is a real decode-speed story at `32768` and `49152`
+- do not promote the `49152` shortlist configuration as quality-clean
+- do not promote `shortlist_l23_ctx` as the new default from this rerun
