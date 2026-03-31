@@ -38,6 +38,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--needle-position-fraction", type=float, default=0.5)
     parser.add_argument("--needle-key", default="hidden passphrase")
     parser.add_argument("--needle-value", default="crimson-velvet-472")
+    parser.add_argument("--haystack-unit", default=None)
+    parser.add_argument("--needle-template", default=None)
+    parser.add_argument("--question-template", default=None)
+    parser.add_argument("--prompt-pack", default=None, help="Optional JSON file defining multiple needle prompt variants.")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
@@ -51,6 +55,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--evaluation-notes", default=None)
     parser.add_argument("--output", default=None, help="Optional JSONL path. Defaults to stdout only.")
     return parser.parse_args()
+
+
+def _load_prompt_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if not args.prompt_pack:
+        return [
+            {
+                "prompt_id": "default",
+                "needle_key": args.needle_key,
+                "needle_value": args.needle_value,
+                "needle_position_fraction": args.needle_position_fraction,
+                **({"haystack_unit": args.haystack_unit} if args.haystack_unit is not None else {}),
+                **({"needle_template": args.needle_template} if args.needle_template is not None else {}),
+                **({"question_template": args.question_template} if args.question_template is not None else {}),
+            }
+        ]
+
+    pack_path = Path(args.prompt_pack)
+    payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list) or not payload:
+        raise SystemExit(f"prompt pack {pack_path} must be a non-empty JSON list")
+    prompt_specs: list[dict[str, Any]] = []
+    for index, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"prompt pack item #{index} is not an object")
+        prompt_id = str(item.get("prompt_id") or f"prompt_{index}")
+        needle_key = item.get("needle_key")
+        needle_value = item.get("needle_value")
+        if not needle_key or not needle_value:
+            raise SystemExit(f"prompt pack item {prompt_id!r} must define needle_key and needle_value")
+        prompt_specs.append(
+            {
+                "prompt_id": prompt_id,
+                "needle_key": str(needle_key),
+                "needle_value": str(needle_value),
+                "needle_position_fraction": float(item.get("needle_position_fraction", args.needle_position_fraction)),
+                **({"haystack_unit": str(item["haystack_unit"])} if "haystack_unit" in item else {}),
+                **({"needle_template": str(item["needle_template"])} if "needle_template" in item else {}),
+                **({"question_template": str(item["question_template"])} if "question_template" in item else {}),
+            }
+        )
+    return prompt_specs
 
 
 def _case_extra_args(case: str) -> list[str]:
@@ -90,7 +135,7 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
         handle.write("\n")
 
 
-def _benchmark_command(args: argparse.Namespace, *, context: int, case: str) -> list[str]:
+def _benchmark_command(args: argparse.Namespace, *, context: int, case: str, prompt_spec: dict[str, Any]) -> list[str]:
     command = [
         sys.executable,
         str(REPO_ROOT / "benchmarks" / "bench_qwen35_attention_subset_dotcache_needle.py"),
@@ -109,12 +154,18 @@ def _benchmark_command(args: argparse.Namespace, *, context: int, case: str) -> 
         "--max-new-tokens",
         str(args.max_new_tokens),
         "--needle-position-fraction",
-        str(args.needle_position_fraction),
+        str(prompt_spec["needle_position_fraction"]),
         "--needle-key",
-        args.needle_key,
+        prompt_spec["needle_key"],
         "--needle-value",
-        args.needle_value,
+        prompt_spec["needle_value"],
     ]
+    if "haystack_unit" in prompt_spec:
+        command.extend(["--haystack-unit", prompt_spec["haystack_unit"]])
+    if "needle_template" in prompt_spec:
+        command.extend(["--needle-template", prompt_spec["needle_template"]])
+    if "question_template" in prompt_spec:
+        command.extend(["--question-template", prompt_spec["question_template"]])
     if args.profile_backend:
         command.append("--profile-backend")
     if args.quality_check:
@@ -123,8 +174,8 @@ def _benchmark_command(args: argparse.Namespace, *, context: int, case: str) -> 
     return command
 
 
-def _run_single_probe(args: argparse.Namespace, *, context: int, case: str) -> dict[str, Any]:
-    command = _benchmark_command(args, context=context, case=case)
+def _run_single_probe(args: argparse.Namespace, *, context: int, case: str, prompt_spec: dict[str, Any]) -> dict[str, Any]:
+    command = _benchmark_command(args, context=context, case=case, prompt_spec=prompt_spec)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
 
@@ -183,6 +234,7 @@ def _run_single_probe(args: argparse.Namespace, *, context: int, case: str) -> d
 
     payload = dict(payload)
     payload["runner_case"] = case
+    payload["evaluation_prompt_id"] = prompt_spec["prompt_id"]
     payload["runner_timeout_seconds"] = args.timeout_seconds
     payload["runner_wall_time_s"] = elapsed
     payload["runner_command"] = command
@@ -204,16 +256,20 @@ def _run_single_probe(args: argparse.Namespace, *, context: int, case: str) -> d
 
 def main() -> None:
     args = parse_args()
+    prompt_specs = _load_prompt_specs(args)
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists():
         output_path.unlink()
 
-    for case in args.cases:
-        for context in args.contexts:
-            record = _run_single_probe(args, context=context, case=case)
-            if output_path is not None:
-                _append_record(output_path, record)
-            print(json.dumps(record, sort_keys=True), flush=True)
+    for prompt_spec in prompt_specs:
+        for case in args.cases:
+            for context in args.contexts:
+                record = _run_single_probe(args, context=context, case=case, prompt_spec=prompt_spec)
+                record["evaluation_prompt_count"] = len(prompt_specs)
+                record["evaluation_prompt_pack"] = str(args.prompt_pack) if args.prompt_pack else None
+                if output_path is not None:
+                    _append_record(output_path, record)
+                print(json.dumps(record, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

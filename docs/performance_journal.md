@@ -4770,3 +4770,74 @@ The generated first line was the planted answer in every row:
 - Needle currently tells a cleaner story than the synthetic loss-tail lane: shortlist can preserve task retrieval while delivering a large decode-speed win at `32768` and `49152`
 - however, the correct manuscript stance is still disciplined: this is a strong first named-benchmark point, not yet a full benchmark-suite result
 - the next obvious follow-up is to expand this lane from `n=1` into a small prompt pack so the same table can report prompt count and variance instead of a single successful exemplar
+
+## 2026-03-31 23:58 UTC - Needle prompt-pack expansion on the CUDA lane (`n=4`)
+
+I expanded the first named Needle lane from a single prompt into a fixed four-prompt pack and ran it under the standardized contract:
+
+```bash
+bash scripts/run_qwen35_cuda_needle_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md`
+
+The pack rows are all tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `needle_in_a_haystack`
+- suite `qwen35_cuda_needle_in_a_haystack_pack_v1`
+- prompt count `4`
+- batch size `1`
+
+### Positive read
+
+- the branch now has a small fixed prompt pack rather than a single successful Needle exemplar
+- after rerunning the two failed vault rows and rebuilding the canonical artifact, all `24` `(prompt, case, context)` rows completed successfully
+- retrieval correctness stayed perfect across the pack:
+  - retrieval accuracy `1.00` for all six `(case, context)` buckets
+  - all `24/24` rows contained the planted answer
+- the shortlist systems win remains large under prompt variation:
+  - `32768 exact` mean decode `2496.10 ms/step`
+  - `32768 shortlist_base` mean decode `561.51 ms/step` (`4.45x` faster than exact)
+  - `32768 shortlist_l23_ctx` mean decode `509.53 ms/step` (`4.90x` faster than exact)
+  - `49152 exact` mean decode `3966.83 ms/step`
+  - `49152 shortlist_base` mean decode `759.82 ms/step` (`5.22x` faster than exact)
+  - `49152 shortlist_l23_ctx` mean decode `641.14 ms/step` (`6.19x` faster than exact)
+- shortlist page counts were stable across the pack:
+  - `shortlist_base`: mean selected pages `12240`
+  - `shortlist_l23_ctx`: mean selected pages `12336`
+- the default CUDA path still stayed on `per_kv_fallback` for every successful row, so the shortlist win here is independent of grouped decode becoming active
+
+### Negative read
+
+- the first pack wrapper did not finish cleanly; it stopped partway through and left a partial artifact, so I had to recover the missing rows with targeted reruns and then rebuild the canonical JSONL
+- the first vault recovery sweep also produced two `NoNeedleRow` error payloads:
+  - `vault_phrase exact 32768`
+  - `vault_phrase shortlist_l23_ctx 49152`
+- I reran the missing `vault_phrase exact 32768` row successfully and rebuilt the final branch artifact to keep only successful canonical rows, but the operational failure still belongs in the record
+- exact-match is not perfect even though retrieval correctness is:
+  - exact-match rate is `0.75` for `exact @ 32768`, `exact @ 49152`, `shortlist_base @ 49152`, and `shortlist_l23_ctx @ 49152`
+  - the misses all come from the `shipment_token` prompt, where the model emitted the correct token and then continued with `Question:`, so `needle_answer_correct=true` but `needle_answer_exact_match=false`
+- the layer-23 story is now mixed rather than uniformly negative:
+  - at `49152`, `shortlist_l23_ctx` was faster than `shortlist_base` for all four prompts
+  - at `32768`, three of four prompts were slightly slower, and the mean win came from one large `archive_code` outlier (`-281.80 ms/step`)
+  - that is enough to say the earlier single-prompt “layer-23 is just slower” story is too simple, but not enough to justify a confident default switch
+- pack-level variance is still non-trivial, especially for `shortlist_base`:
+  - `32768 shortlist_base`: stddev `147.68 ms`, `95% CI +/- 144.72 ms`
+  - `49152 shortlist_base`: stddev `180.16 ms`, `95% CI +/- 176.56 ms`
+
+### Tooling follow-up
+
+- the first version of `scripts/summarize_qwen35_cuda_needle_pack.py` crashed on error rows because it assumed every JSONL row had decode metrics
+- I fixed it so the summarizer now skips malformed/error rows and reports them in a dedicated section instead of failing outright
+
+### Current interpretation
+
+- the repo now has a more credible named-benchmark result than the original single-row Needle artifact because prompt count and variance are visible
+- the strongest stable claim remains systems-focused: shortlist preserves retrieval on this small fixed Needle pack while producing large decode-speed wins at `32768` and `49152`
+- the exact-match caveat should be stated honestly in paper-facing text if this pack is cited, because correctness and strict exact-match are no longer identical on the `shipment_token` variant
+- the layer-23 override is no longer cleanly dismissible, but the evidence is still too noisy and prompt-sensitive to elevate it beyond a follow-up candidate
