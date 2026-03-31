@@ -13,6 +13,21 @@ This tracker turns the March 2026 review into concrete paper and experiment work
   - added selector-overhead evidence
   - added missing related-work positioning
   - removed table placeholders like `see below`, `see text`, `varies`, and `(est.)`
+- second manuscript pass completed:
+  - narrowed the central claim around the mixed Qwen3.5 shortlist evidence
+  - integrated the March 31 CUDA rerun at `4096/8192/16384`
+  - integrated the large-context CUDA serving and quality-tail reads at `32768/49152`
+  - integrated the `49152 top_k=8` follow-up as a useful negative result
+  - added an explicit section on what the current evidence does and does not support
+
+Current CUDA paper read:
+
+- `4096`: shortlist win
+- `8192`: essentially flat
+- `16384`: shortlist slightly worse on the rerun lane
+- `32768` and `49152`: real serving-speed wins
+- `49152`: quality not yet clean
+- layer-23 context widening and `top_k=8` are diagnostics, not final fixes
 
 ## Review Issue -> Fix
 
@@ -35,6 +50,7 @@ Useful existing artifacts:
 - [`docs/benchmark_report.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/benchmark_report.md)
 - [`docs/local_layer_profiles.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/local_layer_profiles.md)
 - [`docs/qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
+- [`docs/qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md)
 
 ### 2. Tier abstraction has cracks
 
@@ -116,29 +132,42 @@ Still needed:
 
 ## High-Value Next Experiments
 
-### A. Standard Qwen3.5 shortlist table
+### A. Grouped-batched decode activation on Qwen3.5 CUDA
 
 Goal:
 
-- produce one clean table with `TTFT`, decode `ms/step`, `tok/s`, selected pages, candidate pages, and quality error at `4096`, `8192`, `16384`
+- move the real `32768/49152` serving-speed signal off the `per_kv_fallback` path and quantify what the backend unlock changes
 
-Starting point:
+Why this is first:
 
-- [`docs/qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md)
+- it is now the clearest systems bottleneck in the shortlist story
+- it determines whether the large-context win is just a selector-side artifact or the start of the intended fused path
 
-Command:
+Needed outputs:
 
-```bash
-PATH=/Users/deanocalver/Documents/Projects/DotCache/.venv/bin:$PATH \
-PYTHONPATH=/Users/deanocalver/Documents/Projects/DotCache \
-.venv/bin/python scripts/run_qwen35_cuda_shortlist_probe.py \
-  --contexts 4096 8192 16384 \
-  --cases exact shortlist_base shortlist_l23_ctx \
-  --profile-backend \
-  --output benchmarks/results/qwen35_cuda_shortlist_probe.jsonl
-```
+- decode-path classification per row
+- selector / score / mix timing split inside the serving loop
+- same `32768/49152` table after the backend-path change
 
-### B. Page-level adaptivity ablation
+### B. One stronger `49152` quality rescue
+
+Goal:
+
+- find one quality intervention that is meaningfully stronger than `top_k=8`, without turning the shortlist back into near-exact attention
+
+Negative results already in hand:
+
+- `layer:23:min_ctx` widening does not materially fix the tail
+- `top_k=8` modestly helps quality but slows serving and still is not clean
+- once `top_k=8` is global, the layer-23 override no longer helps
+
+Candidate directions:
+
+- selective value escape only on shortlist pages
+- shortlist refine stage on the top few pages
+- query-conditioned rescue rule instead of a fixed wider `top_k`
+
+### C. Page-level adaptivity ablation
 
 Goal:
 
@@ -152,21 +181,6 @@ Minimal models:
 - `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
 - `HuggingFaceTB/SmolLM2-360M-Instruct`
 - `Qwen/Qwen2.5-3B-Instruct`
-
-### C. Selector overhead in the real loop
-
-Goal:
-
-- report selector compute time as a fraction of decode time, not just as an isolated replay microbench
-
-Needed outputs:
-
-- selector compute
-- shortlist materialization
-- score kernel
-- mix kernel
-- softmax
-- total decode
 
 ### D. Calibration/Test profile search
 
@@ -192,7 +206,8 @@ These do not directly strengthen the page-selection paper, but they are now merg
 
 ## Suggested Order
 
-1. Freeze the manuscript wording cleanup already started in [`dotcache_layer_page_selection.md`](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md).
-2. Run one clean Qwen3.5 shortlist table with end-to-end timings and error metrics.
-3. Run one explicit page-routing ablation against fixed per-layer policies.
-4. Only after that, decide whether the paper is still a workshop/system-note submission or ready to target a stronger venue.
+1. Freeze the manuscript wording cleanup already completed in [`dotcache_layer_page_selection.md`](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md).
+2. Chase grouped-batched activation on the Qwen3.5 CUDA shortlist lane.
+3. Run one stronger `49152` quality rescue experiment that is not just another wider shortlist.
+4. Run one explicit page-routing ablation against fixed per-layer policies.
+5. Only after that, decide whether the paper is still a workshop/system-note submission or ready to target a stronger venue.

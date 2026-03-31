@@ -32,14 +32,15 @@ What this means:
 - the wrapper rerun is valid and reproducible
 - the shortlist lane still runs cleanly at all three contexts
 - all nine rerun rows stayed on `per_kv_fallback`
-- the long-context speedup claim is **not** stable enough to cite as a current result
+- this short-context rerun alone is **not** enough to support a stable long-context win claim
 
 So the current safe paper claim is narrower:
 
 - shortlist is operational on CUDA
 - shortlist is helpful at `4096`
-- shortlist is not yet a stable long-context throughput win on this lane
+- the `8192/16384` behavior is still unstable across reruns
 - grouped-batched decode remains the main unresolved systems blocker
+- the large-context `32768/49152` runs need to be presented together with their quality caveat, not as a blanket throughput claim
 
 ## Historical Probe Worth Mentioning, Not Leading With
 
@@ -72,9 +73,9 @@ Layer-23 context-aware override at `16384`:
   - base shortlist: `272.60 ms/step`
   - layer-23 override: `271.63 ms/step`
 
-## Exploratory, Not Yet Paper-Grade
+## Large-Context Mixed Result Worth Reporting
 
-There are now committed larger-context artifacts from the clean wrapper path, but they still belong in a secondary table because the quality read is mixed.
+There are now committed larger-context artifacts from the clean wrapper path. These are strong enough to discuss in the paper because the serving win is real, but they must be presented as mixed results because the quality read is not yet clean.
 
 Current large-context serving rerun from [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl):
 
@@ -125,11 +126,11 @@ Current interpretation:
 
 So `top_k=8` is a useful negative result, not the missing fix.
 
-Why these stay out of the main table:
+Why these need caveated presentation:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
 - all rows still stay in `per_kv_fallback`, so the mechanism remains incomplete
-- the paper should not present these larger-context rows as a fully locked systems result yet
+- the paper should present these larger-context rows as the current best systems evidence, but not as a fully locked result yet
 
 ## Exact Rerun Path For The CUDA Box
 
