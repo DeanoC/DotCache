@@ -1,0 +1,22 @@
+[
+  {
+    "prompt_id": "hotpot_case_order",
+    "dataset": "hotpotqa",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "wikimqa_spouse_birthplace",
+    "dataset": "2wikimqa",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "multifieldqa_isr_transgene",
+    "dataset": "multifieldqa_en",
+    "row_index": 1
+  },
+  {
+    "prompt_id": "qasper_ghostvlad",
+    "dataset": "qasper",
+    "row_index": 1
+  }
+]

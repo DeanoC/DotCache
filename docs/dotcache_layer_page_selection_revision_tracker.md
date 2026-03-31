@@ -52,6 +52,7 @@ Experiment work still needed:
 - expand beyond the first two fixed four-prompt synthetic retrieval packs so the paper has broader long-context task coverage
 - one hardware table with exact GPU / backend / dtype / batch size
 - broader suite breadth such as `LongBench`, a fuller `RULER` integration, or named held-out quality-task counterparts
+  Current practical branch step: a fixed four-row LongBench-derived QA mini-pack is now wired and ready for CUDA runs via [`run_qwen35_cuda_longbench_qa_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh)
 
 Useful existing artifacts:
 
@@ -65,6 +66,12 @@ Useful existing artifacts:
 - [`benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md)
 - [`benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl)
 - [`benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md)
+- [`configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json)
+- [`benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py)
+- [`docs/qwen35_cuda_longbench_qa_family_plan.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_longbench_qa_family_plan.md)
+- [`scripts/run_qwen35_cuda_longbench_qa_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py)
+- [`scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh)
+- [`scripts/summarize_qwen35_cuda_longbench_qa_pack.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_longbench_qa_pack.py)
 - [`configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json`](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_passkey_pack_v1.json)
 - [`scripts/run_qwen35_cuda_passkey_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_probe.py)
 - [`scripts/run_qwen35_cuda_passkey_pack_protocol.sh`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_passkey_pack_protocol.sh)
