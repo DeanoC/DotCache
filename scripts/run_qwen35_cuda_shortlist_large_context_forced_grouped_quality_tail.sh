@@ -16,5 +16,12 @@ export DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1
   --quality-check \
   --quality-mode loss_tail \
   --quality-eval-steps 4 \
+  --evaluation-split held_out \
+  --evaluation-lane quality \
+  --evaluation-prompt-family synthetic_exact_length_filler \
+  --evaluation-prompt-suite-name qwen35_cuda_shortlist_large_context_forced_grouped_quality_tail_synthetic \
+  --evaluation-prompt-count 1 \
+  --evaluation-batch-size 1 \
+  --evaluation-notes "Synthetic exact-length filler only; useful for held-out lane discipline, not publication-grade final quality claims." \
   --profile-backend \
   --output "$OUTPUT_PATH"

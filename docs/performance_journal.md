@@ -4566,3 +4566,131 @@ Forced grouped path, `shortlist_l23_ctx`:
 - the bucketed grouped CUDA path is now real, repeatable, and quality-stable
 - however, the 3-repeat serving pass does not support enabling grouped batching by default for this Qwen3.5 CUDA shortlist workload
 - the strongest defensible statement is narrower: grouped decode has been rehabilitated from “broken/slower with hard fallbacks” to “near-parity, occasionally marginally ahead, but not a consistent win”
+
+## 2026-03-31 20:05 UTC - Standardized evaluation metadata wired into the shortlist probe
+
+I pulled the protocol update from `fd56958` and pushed the contract down into the Qwen3.5 shortlist tooling instead of leaving it only in docs.
+
+Changed runner behavior:
+
+- `scripts/run_qwen35_cuda_shortlist_probe.py` now records:
+  - `evaluation_split`
+  - `evaluation_lane`
+  - `evaluation_prompt_family`
+  - `evaluation_prompt_suite_name`
+  - `evaluation_prompt_count`
+  - `evaluation_batch_size`
+  - `evaluation_protocol_version`
+  - optional `evaluation_notes`
+- the large-context wrappers now pass honest defaults:
+  - quality wrappers mark rows as `held_out` / `quality`
+  - serving wrappers mark rows as `held_out` / `systems`
+  - all current Qwen3.5 large-context wrappers mark the prompt family as `synthetic_exact_length_filler`
+  - the notes field explicitly warns that the synthetic filler is useful for disciplined tracking but is not a publication-grade final quality source
+
+### Positive read
+
+- the protocol is now executable on the CUDA lane instead of just aspirational
+- new rows can be classified immediately as `calibration` or `held_out`, and as `systems`, `quality`, or `diagnostic`
+- prompt count and batch size are now emitted directly into the probe records rather than reconstructed later from filenames or wrapper intent
+
+### Negative read
+
+- this does not solve the missing natural-text held-out pack
+- the current Qwen3.5 large-context evidence is still synthetic-prompt evidence, just now labeled honestly
+
+### Current interpretation
+
+- the next experiment no longer has to rely on implicit provenance
+- the repo now enforces a cleaner distinction between "held-out under this local contract" and "publication-grade benchmark evidence"
+
+## 2026-03-31 20:10 UTC - Systems variance summary artifact added
+
+I added a summary script for the repeated serving lane:
+
+```bash
+.venv/bin/python scripts/summarize_qwen35_cuda_shortlist_repro_serving.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving \
+  --markdown-output benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md
+```
+
+New summary artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md`
+
+The summary now reports, per `(mode, case, context)`:
+
+- `n prompts`
+- mean decode ms/step
+- min and max
+- standard deviation
+- `95%` confidence interval
+- selected-page count
+- decode-path counts
+
+### Positive read
+
+- the main systems comparison now has an actual prompt-count/variance artifact instead of only prose summaries in the journal
+- the default vs forced-grouped comparison can now be cited with explicit `n=3` repeat counts and spread
+
+### Negative read
+
+- this is still a synthetic exact-length filler systems lane, not a named benchmark suite
+- the summary is generated from repeated single-prompt rows, so it improves discipline but does not by itself broaden dataset coverage
+
+### Current interpretation
+
+- the systems lane now satisfies more of the protocol contract: prompt count, repeat statistics, and decode-path provenance are all visible in one place
+- this should be the source for future paper-facing systems tables until a broader prompt pack exists
+
+## 2026-03-31 20:20 UTC - First explicitly tagged `held_out quality` 49152 rescue row-set
+
+With the protocol fields in place, I reran the `49152` quality rescue lane as an explicitly tagged `held_out` / `quality` experiment:
+
+```bash
+.venv/bin/python scripts/run_qwen35_cuda_shortlist_probe.py \
+  --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml \
+  --contexts 49152 \
+  --cases exact shortlist_base shortlist_l23_ctx \
+  --timeout-seconds 900 \
+  --quality-check \
+  --quality-mode loss_tail \
+  --quality-eval-steps 4 \
+  --evaluation-split held_out \
+  --evaluation-lane quality \
+  --evaluation-prompt-family synthetic_exact_length_filler \
+  --evaluation-prompt-suite-name qwen35_cuda_shortlist_49152_rescue_heldout_quality_synthetic \
+  --evaluation-prompt-count 1 \
+  --evaluation-batch-size 1 \
+  --evaluation-notes "Synthetic exact-length filler only; held-out lane discipline run for 49152 rescue tracking." \
+  --profile-backend \
+  --output benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl
+```
+
+New artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl`
+
+Tagged rows:
+
+- `49152 exact`: split `held_out`, lane `quality`, decode `3630.24 ms/step`, loss delta `0.00204764`, max logit abs error `4.57421875`
+- `49152 shortlist_base`: split `held_out`, lane `quality`, decode `768.86 ms/step`, loss delta `0.0130062`, max logit abs error `7.0`
+- `49152 shortlist_l23_ctx`: split `held_out`, lane `quality`, decode `779.43 ms/step`, loss delta `0.0128626`, max logit abs error `6.96484375`
+
+### Positive read
+
+- this is the first Qwen3.5 `49152` rescue artifact on the branch that is clearly self-labeled as `held_out` / `quality`
+- the metadata fields landed exactly as intended on all three rows
+- the result is consistent with the earlier read, which is useful: the tagged run did not introduce a new quality regression or a contradictory story
+
+### Negative read
+
+- the actual quality conclusion does not change
+- `49152 shortlist_base` still sits at `+0.0130062` loss delta
+- `49152 shortlist_l23_ctx` still only modestly improves that to `+0.0128626`
+- because the prompt family is still synthetic filler, this row-set is disciplined held-out tracking, not final publication-grade held-out natural-text evidence
+
+### Current interpretation
+
+- the repo now has a concrete example of how the new protocol should be used in practice
+- the `49152` rescue story is now both explicit and honest: a held-out quality lane under the local contract, still synthetic, still not quality-clean, and still not a default-switch justification

@@ -22,6 +22,13 @@ run_probe() {
       --contexts 32768 49152 \
       --cases shortlist_base shortlist_l23_ctx \
       --timeout-seconds 900 \
+      --evaluation-split held_out \
+      --evaluation-lane systems \
+      --evaluation-prompt-family synthetic_exact_length_filler \
+      --evaluation-prompt-suite-name qwen35_cuda_shortlist_large_context_repro_serving_synthetic \
+      --evaluation-prompt-count 1 \
+      --evaluation-batch-size 1 \
+      --evaluation-notes "Synthetic exact-length filler; use repeat summary for n and variance." \
       --profile-backend \
       --output "$output_path"
   else
@@ -30,6 +37,13 @@ run_probe() {
       --contexts 32768 49152 \
       --cases shortlist_base shortlist_l23_ctx \
       --timeout-seconds 900 \
+      --evaluation-split held_out \
+      --evaluation-lane systems \
+      --evaluation-prompt-family synthetic_exact_length_filler \
+      --evaluation-prompt-suite-name qwen35_cuda_shortlist_large_context_repro_serving_synthetic \
+      --evaluation-prompt-count 1 \
+      --evaluation-batch-size 1 \
+      --evaluation-notes "Synthetic exact-length filler; use repeat summary for n and variance." \
       --profile-backend \
       --output "$output_path"
   fi
