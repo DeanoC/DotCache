@@ -19,6 +19,7 @@ This tracker turns the March 2026 review into concrete paper and experiment work
   - integrated the large-context CUDA serving and quality-tail reads at `32768/49152`
   - integrated the `49152 top_k=8` follow-up as a useful negative result
   - added an explicit section on what the current evidence does and does not support
+- standardized evaluation contract drafted in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) and linked from the manuscript
 
 Current CUDA paper read:
 

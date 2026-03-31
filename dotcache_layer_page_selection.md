@@ -150,31 +150,122 @@ This is useful evidence, but it is still not the end-to-end overhead study a pap
 
 ## 5. Current Empirical Evidence
 
-### 5.1. Current Protocol Snapshot
+### 5.1. Standardized Evaluation Protocol
 
-The artifact is currently a mix of four evaluation lanes rather than one standardized benchmark suite:
+The repo now needs to treat evaluation as a protocol rather than a pile of ad hoc probes. The right standardized contract has four lanes:
 
-| Model family | Backend / hardware | Current prompt regime | Metrics reported today |
+1. `calibration / discovery`
+   Used only to tune bundle thresholds, shortlist heuristics, or rescue rules. These runs are not main-table evidence.
+2. `held-out quality`
+   Teacher-forced exact-length runs on held-out prompts. This lane supports quality claims.
+3. `held-out systems`
+   Serving-style exact-length runs on the same held-out prompt family. This lane supports throughput and memory claims.
+4. `selector diagnostics`
+   Optional recall and timing instrumentation used to explain why a systems result happened. This lane is diagnostic, not a substitute for quality or throughput tables.
+
+The repo-side version of this contract now lives in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) so future experiments can use the same reporting rules as the paper draft.
+
+For DotCache page selection, every reported experiment should therefore declare:
+
+- split: `calibration` or `held_out`
+- lane: `quality`, `systems`, or `diagnostic`
+- prompt source: synthetic exact-length filler, held-out natural text, or standardized long-context task
+- model / backend / device / dtype
+- batch size
+- decode horizon or teacher-forced evaluation horizon
+- number of prompts
+- whether variance or confidence intervals are reported
+
+The current harnesses already map cleanly onto that structure:
+
+| Lane | Current harness shape | Current purpose | Publication status |
 | --- | --- | --- | --- |
-| TinyLlama 1.1B | local MPS | prefill at `577`, teacher-forced windows around `320/288/16` | page-mode counts, loss delta, token agreement |
-| SmolLM2 360M | local MPS | prefill at `1024`, teacher-forced windows around `1032/1024/8` | page-mode counts, loss delta, token agreement |
-| Qwen2.5 3B | CUDA / RTX 5090 lane | exact prompt lengths `1024`, `2048`, `4096` | greedy agreement, KV memory ratio, decode ms/step |
-| Qwen3.5 0.8B | CUDA / RTX 5090 lane | serving at `4096` through `49152`, `4` decode tokens | ms/step, page counts, loss-tail error, replay/logit error |
+| `systems` | [`bench_qwen35_attention_subset_dotcache_serving.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_serving.py) | exact-length serving throughput, resident bytes, shortlist counts, decode path | good for controlled systems probes; not sufficient alone for publication |
+| `quality` | [`bench_qwen35_attention_subset_dotcache_loss.py`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_loss.py) | teacher-forced loss, logit drift, agreement on fixed slices | good for held-out quality checks; still missing named benchmark ingestion |
+| `diagnostic` | serving harness with `--quality-check`, `--recall-analysis`, or `--scorer-diagnostic` | replay drift, shortlist recall, scorer ranking, timing breakdowns | diagnostic support only |
+| `calibration` | local profile sweeps and layer-specific probe scripts | threshold and override discovery | explicitly non-mainline evidence |
 
-The common prompt-construction pattern for several harnesses is a repeated synthetic unit string (`"Cache locality matters for fast decoding."`) trimmed to exact token length. That is fine for development, but a publication draft needs named datasets, prompt counts, and variance.
+The prompt source itself must also be classified. Going forward, DotCache should use three prompt families with different evidentiary weight:
 
-### 5.2. Metric Definitions
+| Prompt family | Allowed claim | Current status |
+| --- | --- | --- |
+| synthetic exact-length filler | kernel/runtime stability, shortlist scaling, decode-path behavior | implemented today |
+| held-out natural text | quality and mixed systems-quality claims | partially implemented through exact-length teacher-forced harnesses, but not yet packaged as a named suite |
+| standardized long-context tasks | publication-grade long-context task claims | target only; not yet wired into the repo |
 
-The paper should define its metrics explicitly:
+This matters because several current harnesses still construct prompts by repeating a synthetic filler string (`"Cache locality matters for fast decoding."`) and trimming to exact token length. That is acceptable for systems microbenchmarks, but not for the headline quality claim of a paper.
 
-- `loss delta`: teacher-forced cross-entropy loss difference between DotCache and the dense or exact-reference run on the same prompt slice
-- `token agreement`: greedy next-token agreement rate over the checked decode horizon
-- `replay_output_max_abs_error`: maximum absolute deviation in replayed layer output tensors against the reference run
-- `teacher_forced_logit_max_abs_error`: maximum absolute deviation in logits under teacher forcing
+### 5.2. Metric Families and Reporting Schema
 
-Those metrics are not interchangeable. A cleaned-up paper should stop placing them in the same summary table unless they were collected under the same protocol.
+The paper should stop mixing incomparable measurements in one summary table. Each run should report one of three metric families.
 
-### 5.3. TinyLlama 1.1B
+`systems` metrics:
+
+- `dotcache_decode_ms_per_step`
+- `prefill_ms` when relevant
+- `resident_bytes`, `kv_resident_bytes`, and any dense-relative byte ratio
+- shortlist load such as `execution_shortlist_selected_pages` and `execution_shortlist_total_pages`
+- decode path counts such as grouped vs `per_kv_fallback`
+- hardware metadata, dtype, batch size, prompt count, and variance
+
+`quality` metrics:
+
+- `teacher_forced_loss_delta`
+- `teacher_forced_perplexity_ratio` when available
+- `teacher_forced_logit_max_abs_error`
+- `teacher_forced_logit_mean_abs_error`
+- `teacher_forced_logit_rmse`
+- `teacher_forced_token_agreement_rate`
+- `teacher_forced_target_match_rate`
+
+`diagnostic` metrics:
+
+- `replay_output_max_abs_error`
+- shortlist recall metrics such as `shortlist_recall_exact_top_recall_mean`
+- runtime breakdowns such as:
+  - `execution_decode_shortlist_selection_ms_total`
+  - `execution_decode_shortlist_materialization_ms_total`
+  - `execution_decode_shortlist_candidate_approx_scoring_ms_total`
+  - `execution_decode_backend_call_non_backend_ms_total`
+
+Those families support different claims:
+
+- a `systems` table supports throughput or memory claims
+- a `quality` table supports fidelity claims
+- a `diagnostic` table explains mechanisms and bottlenecks
+
+They should only be collapsed into one paper figure when the rows come from the same held-out protocol and prompt set.
+
+The minimum metadata schema for every promoted row should therefore be:
+
+- model id and model family
+- backend, device, and torch dtype
+- layer profile or explicit routing config
+- prompt family and dataset name
+- split: `calibration` or `held_out`
+- prompt count
+- prompt length or context bucket
+- batch size
+- decode horizon or eval steps
+- whether the row is `systems`, `quality`, or `diagnostic`
+
+### 5.3. Current Artifact Coverage Against The Protocol
+
+The current repo still only partially satisfies that standardized contract:
+
+| Requirement | Current status | What is still missing |
+| --- | --- | --- |
+| exact-length serving harness | yes | repeat counts and confidence intervals should be reported by default |
+| teacher-forced quality harness | yes | package it around named held-out prompt suites |
+| shortlist recall / scorer diagnostics | yes | use them as supporting diagnostics rather than substitute evidence |
+| split between calibration and held-out evidence | partial | current paper still relies on some calibration-style anecdotes |
+| named datasets | no | LongBench, RULER, Needle, or equivalent ingestion is still missing |
+| external baselines | no | the current evidence is still mostly internal-comparison heavy |
+| one standard table shape across models | no | TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 still use mixed regimes |
+
+That status table is the honest indicator of direction of travel. The project is no longer missing metrics entirely; it is missing consistency, held-out packaging, and external comparators.
+
+### 5.4. TinyLlama 1.1B
 
 TinyLlama remains the cleanest success case in the local profiles:
 
@@ -185,7 +276,7 @@ TinyLlama remains the cleanest success case in the local profiles:
 
 This is good evidence that asymmetric K/V selection is useful. It is not yet enough evidence to claim that the specific TinyLlama profile generalizes.
 
-### 5.4. SmolLM2 360M
+### 5.5. SmolLM2 360M
 
 SmolLM2 remains the strongest argument for cleaning up the bundle terminology:
 
@@ -196,7 +287,7 @@ SmolLM2 remains the strongest argument for cleaning up the bundle terminology:
 
 That result is interesting because it identifies a real planner interaction. It is also a warning that the current profiles are still artisanal.
 
-### 5.5. Qwen2.5 3B: Selective Key Precision
+### 5.6. Qwen2.5 3B: Selective Key Precision
 
 Qwen2.5 3B is currently the clearest argument for explicit page-level or layer-head-level rescue:
 
@@ -214,7 +305,7 @@ This is stronger than the original PDF table because it removes the placeholder 
 
 The important unresolved question is still whether this is genuinely page-level adaptivity or mostly a sparse set of layer/head overrides. Right now the latter story is better supported than the former.
 
-### 5.6. Qwen3.5 0.8B: Hybrid Attention and Shortlisting
+### 5.7. Qwen3.5 0.8B: Hybrid Attention and Shortlisting
 
 Qwen3.5 is the most useful evidence for the read-time selector because only a small subset of layers are full-attention layers. The latest dedicated rerun artifact in [`qwen35_cuda_shortlist_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_probe.jsonl), summarized in [`performance_journal.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md), gives a more mixed result than the earlier March 29 probe:
 
@@ -288,7 +379,7 @@ That makes the current grouped-CUDA conclusion much cleaner than before:
 
 So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
 
-### 5.7. What The Current Evidence Actually Supports
+### 5.8. What The Current Evidence Actually Supports
 
 At this point the paper can make four concrete claims without overreaching.
 
@@ -352,22 +443,21 @@ The right novelty sentence for this paper is therefore:
 
 The review was right that the current draft is not publication-ready. The remaining work is not cosmetic.
 
-### 7.1. Standardize the Empirical Protocol
+### 7.1. Use The Standardized Protocol As The Mainline Contract
 
-Before submission, the paper needs one evaluation table shape with:
+The protocol above is now specific enough to serve as the paper's evaluation contract. What still needs to happen is not to invent another protocol, but to run the mainline tables under it consistently.
 
-- named datasets
-- prompt counts
+Before submission, every promoted result should therefore include:
+
+- named dataset or prompt suite
+- prompt count
 - hardware details
 - batch size
-- decode horizon
+- decode horizon or eval horizon
 - variance or confidence intervals
+- an explicit `calibration` versus `held_out` label
 
-At minimum, that means separating:
-
-- local heuristic profile discovery
-- calibration runs
-- held-out benchmark runs
+The biggest remaining gap is that the current artifact still mixes calibration anecdotes with held-out-style rows. The next draft should separate those cleanly.
 
 ### 7.2. Add Baselines That Match the Claim
 
