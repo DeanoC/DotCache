@@ -612,6 +612,21 @@ def _run_case(
     attention_mask: torch.Tensor,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
+    if bool(getattr(args, "scorer_diagnostic", False)):
+        return harness.run_attention_subset_dotcache_serving_scorer_diagnostic(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decode_steps=args.max_new_tokens,
+            profile_backend=bool(args.profile_backend),
+            trace_python_allocations=bool(args.trace_python_allocations),
+        )
+    if bool(getattr(args, "recall_analysis", False)):
+        return harness.run_attention_subset_dotcache_serving_recall_analysis(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decode_steps=args.max_new_tokens,
+            profile_backend=bool(args.profile_backend),
+        )
     if args.quality_check:
         return harness.run_attention_subset_dotcache_serving_quality(
             input_ids=input_ids,

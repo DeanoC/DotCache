@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
+    parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--evaluation-split", choices=["calibration", "held_out"], default="held_out")
     parser.add_argument("--evaluation-lane", choices=["systems", "quality", "diagnostic"], default="systems")
     parser.add_argument("--evaluation-prompt-family", default="longbench_qa")
@@ -128,6 +129,8 @@ def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict
         command.append("--profile-backend")
     if args.quality_check:
         command.append("--quality-check")
+    if args.scorer_diagnostic:
+        command.append("--scorer-diagnostic")
     command.extend(_longbench_case_extra_args(case))
     return command
 

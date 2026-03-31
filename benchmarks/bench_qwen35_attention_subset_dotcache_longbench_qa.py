@@ -151,6 +151,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--trace-python-allocations", action="store_true")
     parser.add_argument("--quality-check", action="store_true")
+    parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--tokens-per-page", type=int, default=16)
     parser.add_argument("--longbench-dataset", choices=sorted(SUPPORTED_DATASETS), required=True)
     parser.add_argument("--longbench-row-index", type=int, required=True)
@@ -281,6 +282,7 @@ def _build_base_record(
         "prompt_length": prompt_length_tokens,
         "profile_backend": bool(args.profile_backend),
         "quality_check": bool(args.quality_check),
+        "scorer_diagnostic": bool(args.scorer_diagnostic),
         "text_only": True,
         "dotcache_ready": False,
         "hybrid_family": "qwen3_5",
