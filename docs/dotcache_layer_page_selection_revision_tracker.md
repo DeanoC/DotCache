@@ -28,6 +28,7 @@ Current CUDA paper read:
 - `32768` and `49152`: real serving-speed wins
 - `49152`: quality not yet clean
 - layer-23 context widening and `top_k=8` are diagnostics, not final fixes
+- the immediate grouped-decode blocker on the Qwen3.5 CUDA serving lane is now known: [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) passes `prefer_grouped_batching=hidden_states.device.type != "cuda"`, so grouped batching is disabled on CUDA before rejection accounting runs
 
 ## Review Issue -> Fix
 
@@ -136,12 +137,12 @@ Still needed:
 
 Goal:
 
-- move the real `32768/49152` serving-speed signal off the `per_kv_fallback` path and quantify what the backend unlock changes
+- revisit the CUDA-specific `prefer_grouped_batching=False` gate in [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py), then quantify what actually changes once grouped batching is allowed to compete
 
 Why this is first:
 
 - it is now the clearest systems bottleneck in the shortlist story
-- it determines whether the large-context win is just a selector-side artifact or the start of the intended fused path
+- the new instrumented rerun showed that the current CUDA lane bypasses grouped-batch validation entirely, so more rejection-counter reruns on the same path will not teach us anything new until that gate is revisited
 
 Needed outputs:
 

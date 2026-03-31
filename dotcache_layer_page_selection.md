@@ -224,7 +224,7 @@ Qwen3.5 is the most useful evidence for the read-time selector because only a sm
 | `8192` | `167.94` | `167.37` | `171.77` | essentially flat |
 | `16384` | `194.55` | `198.41` | `201.60` | shortlist slightly worse |
 
-All nine rerun rows stayed on the same `per_kv_fallback` decode path. That is the current systems lesson: shortlist execution is operational on CUDA, but the expected grouped-batched speed path still is not activating on this lane, so long-context speedups are not yet stable.
+All nine rerun rows stayed on the same `per_kv_fallback` decode path. The newer instrumented large-context rerun narrowed the blocker further: for this Qwen3.5 CUDA serving lane, [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) calls `decode_layer_torch(..., prefer_grouped_batching=hidden_states.device.type != "cuda")`, so grouped-batch validation and its rejection counters never execute on CUDA for this path. The current systems lesson is therefore sharper than "grouped decode did not activate." On this lane, grouped batching is explicitly disabled before activation can even be tested.
 
 The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table.
 
@@ -232,8 +232,8 @@ At larger context, the newest clean wrapper artifacts add a useful but mixed thi
 
 | Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step |
 | ---: | ---: | ---: | ---: |
-| `32768` | `2298.36` | `673.12` | `671.80` |
-| `49152` | `3675.23` | `786.35` | `844.04` |
+| `32768` | `2312.64` | `632.43` | `619.39` |
+| `49152` | `3580.59` | `752.13` | `767.97` |
 
 But the quality-tail rerun in [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl) is not clean at `49152`:
 
@@ -246,7 +246,7 @@ The obvious follow-up was to widen the `49152` shortlist from `top_k=4` to `top_
 
 | `49152` config | Decode ms/step | Tail loss delta | Tail max abs logit error |
 | --- | ---: | ---: | ---: |
-| shortlist base, `top_k=4` | `786.35` | `+0.0130062` | `7.0000` |
+| shortlist base, `top_k=4` | `752.13` | `+0.0130062` | `7.0000` |
 | shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` |
 | shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` |
 
@@ -260,7 +260,7 @@ At this point the paper can make four concrete claims without overreaching.
 Different models and tensor kinds really do want different policies. TinyLlama, SmolLM2, Qwen2.5, and Qwen3.5 all expose different failure modes under uniform routing.
 
 2. Query-aware shortlisting is a real systems lever.
-On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`, even before grouped-batched decode is working.
+On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`, even though the current serving integration still disables grouped batching on CUDA and forces the `per_kv_fallback` path.
 
 3. Long-context quality is now the binding problem.
 The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit.
@@ -356,7 +356,7 @@ The paper also needs ablations for:
 
 The current results suggest one priority ordering rather than a broad sweep:
 
-1. grouped-batched activation on the CUDA shortlist lane
+1. revisit the CUDA-specific grouped-batching disable in [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py), then benchmark the lane again once grouped batching is actually allowed to compete
 2. one stronger `49152` quality rescue that is not just another `top_k` increase
 3. only then a wider ablation grid
 

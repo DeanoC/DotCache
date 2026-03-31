@@ -33,6 +33,7 @@ What this means:
 - the shortlist lane still runs cleanly at all three contexts
 - all nine rerun rows stayed on `per_kv_fallback`
 - this short-context rerun alone is **not** enough to support a stable long-context win claim
+- on the Qwen3.5 CUDA serving path, grouped batching is currently disabled in [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) before rejection accounting can fire
 
 So the current safe paper claim is narrower:
 
@@ -81,8 +82,8 @@ Current large-context serving rerun from [`qwen35_cuda_shortlist_large_context_p
 
 | Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
 | ---: | ---: | ---: | ---: | --- |
-| `32768` | `2298.36` | `673.12` | `671.80` | all rows `per_kv_fallback` |
-| `49152` | `3675.23` | `786.35` | `844.04` | all rows `per_kv_fallback` |
+| `32768` | `2312.64` | `632.43` | `619.39` | all rows `per_kv_fallback` |
+| `49152` | `3580.59` | `752.13` | `767.97` | all rows `per_kv_fallback` |
 
 Current large-context quality-tail rerun from [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl):
 
@@ -95,7 +96,7 @@ What this adds to the current paper read:
 
 - the shortlist path is a real serving-speed win at `32768` and `49152`
 - shortlist page counts remain bounded relative to the full no-shortlist path
-- grouped-batched decode still does not activate
+- grouped-batched decode still does not activate, and we now know the immediate blocker: the Qwen3.5 CUDA serving integration disables grouped batching up front
 - the `49152` quality-tail read is not clean enough to present as a settled win
 - the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
@@ -112,7 +113,7 @@ Compared with the `top_k=4` rerun at `49152`:
 
 | `49152` config | Decode ms/step | Tail loss delta | Tail max abs logit error | Read |
 | --- | ---: | ---: | ---: | --- |
-| shortlist base, `top_k=4` | `786.35` | `+0.0130062` | `7.0000` | baseline mixed result |
+| shortlist base, `top_k=4` | `752.13` | `+0.0130062` | `7.0000` | baseline mixed result |
 | shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` | modest quality gain, slower serving |
 | shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` | no extra quality benefit, clearly slower |
 
@@ -129,7 +130,7 @@ So `top_k=8` is a useful negative result, not the missing fix.
 Why these need caveated presentation:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
-- all rows still stay in `per_kv_fallback`, so the mechanism remains incomplete
+- all rows still stay in `per_kv_fallback`, and for this CUDA lane the immediate reason is now known: grouped batching is disabled before the rejection counters can run
 - the paper should present these larger-context rows as the current best systems evidence, but not as a fully locked result yet
 
 ## Exact Rerun Path For The CUDA Box
