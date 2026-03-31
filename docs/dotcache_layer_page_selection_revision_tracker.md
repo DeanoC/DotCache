@@ -20,6 +20,7 @@ This tracker turns the March 2026 review into concrete paper and experiment work
   - integrated the `49152 top_k=8` follow-up as a useful negative result
   - added an explicit section on what the current evidence does and does not support
 - standardized evaluation contract drafted in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) and linked from the manuscript
+- ordered submission roadmap drafted in [`dotcache_submission_execution_plan.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_submission_execution_plan.md)
 
 Current CUDA paper read:
 
