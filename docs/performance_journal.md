@@ -4841,3 +4841,90 @@ The pack rows are all tagged as:
 - the strongest stable claim remains systems-focused: shortlist preserves retrieval on this small fixed Needle pack while producing large decode-speed wins at `32768` and `49152`
 - the exact-match caveat should be stated honestly in paper-facing text if this pack is cited, because correctness and strict exact-match are no longer identical on the `shipment_token` variant
 - the layer-23 override is no longer cleanly dismissible, but the evidence is still too noisy and prompt-sensitive to elevate it beyond a follow-up candidate
+
+## 2026-03-31 14:01 UTC - Streaming-window external-style comparator on the Needle pack
+
+I pulled the new comparator lane from `edce32a` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_streaming_window_needle_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md`
+
+This run adds a cheap external-style reference baseline on the same fixed four-prompt Needle pack:
+
+- `exact`
+- `streaming_sink_recent`
+- `shortlist_base`
+- `shortlist_l23_ctx`
+
+The streaming case is the intended sink-plus-recent reference:
+
+- sink window `256`
+- recent window `1024`
+- no query-aware shortlist expansion
+
+### Positive read
+
+- the three-way comparison we were missing is now real on the branch: exact vs streaming-window reference vs DotCache shortlist on the same named pack
+- both DotCache shortlist lanes preserved retrieval across the full pack:
+  - all non-streaming rows were retrieval-correct
+  - `shortlist_base` retrieval accuracy stayed `1.00` at both `32768` and `49152`
+  - `shortlist_l23_ctx` retrieval accuracy stayed `1.00` at both `32768` and `49152`
+- shortlist remained much faster than exact:
+  - at `32768`: `exact 2521.60 ms/step`, `shortlist_base 474.23`, `shortlist_l23_ctx 492.86`
+  - at `49152`: `exact 3909.29 ms/step`, `shortlist_base 629.46`, `shortlist_l23_ctx 636.96`
+  - speedup vs exact:
+    - `32768 shortlist_base`: `5.32x`
+    - `32768 shortlist_l23_ctx`: `5.12x`
+    - `49152 shortlist_base`: `6.21x`
+    - `49152 shortlist_l23_ctx`: `6.14x`
+- the external-style baseline does exactly what an honest reference baseline should do here: it demonstrates the speed/quality tradeoff sharply rather than flattering DotCache accidentally
+
+### Negative read
+
+- the streaming sink-plus-recent reference was catastrophically bad on retrieval:
+  - retrieval accuracy `0.00` at `32768`
+  - retrieval accuracy `0.00` at `49152`
+  - exact-match rate `0.00` at both contexts
+- the generated answers show the failure mode clearly:
+  - `passphrase_red`: `crimson.` / `crimson`
+  - `archive_code`: `amber`
+  - `shipment_token`: `cobalt-100000000` / `cobalt`
+  - `vault_phrase`: `silver`
+- streaming is much faster than every other lane, but that speed is not usable on this task:
+  - `32768 streaming_sink_recent`: `156.65 ms/step`
+  - `49152 streaming_sink_recent`: `188.55 ms/step`
+  - compared with streaming, DotCache shortlist is about `3.0x` to `3.4x` slower on decode, but preserves retrieval while streaming does not
+- the layer-23 override still does not earn a clean recommendation on this comparator run:
+  - it is slightly slower than `shortlist_base` on average at both contexts
+  - `32768`: mean `+18.63 ms/step`
+  - `49152`: mean `+7.50 ms/step`
+- exact-match still has the same `shipment_token` formatting caveat as the earlier Needle pack:
+  - `exact @ 32768`: exact-match `0.75`
+  - `exact @ 49152`: exact-match `0.75`
+  - `shortlist_base @ 49152`: exact-match `0.75`
+  - `shortlist_l23_ctx @ 49152`: exact-match `0.75`
+  - these are formatting misses caused by the model appending `Question:` after the correct token, not retrieval failures
+
+### Operational failures
+
+- the first full comparator pass completed with two transient `NoNeedleRow` failures:
+  - `archive_code shortlist_l23_ctx 49152`
+  - `shipment_token exact 32768`
+- both error payloads carried a `transformers` tokenizer traceback ending in a missing `protobuf` import complaint, but that failure was not stable
+- I reran those two rows individually and both succeeded cleanly
+- the canonical branch artifact now contains the successful reruns only, but the original operational failure remains recorded here because it happened during the first full pass
+
+### Current interpretation
+
+- this is the first branch artifact that supports the paper’s external-baseline framing with real data instead of a placeholder plan
+- the honest claim is now sharper:
+  - a cheap StreamingLLM-style sink-plus-recent reference is faster than DotCache shortlist on Needle
+  - but it fails retrieval completely on this pack
+  - DotCache shortlist gives back a large fraction of exact quality at a much lower cost than exact, without collapsing the task the way the streaming baseline does
+- this comparator does not justify promoting `shortlist_l23_ctx`; it mainly strengthens the case that `shortlist_base` is the cleanest default shortlist story against a simple external-style baseline
