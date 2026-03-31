@@ -5146,3 +5146,66 @@ It also records cleaned-answer diagnostics so we can separate formatting spillov
 - it also narrows the paper story:
   - LongBench QA is now a real benchmark-family counterexample to any broad “shortlist preserves quality” claim
   - Needle and passkey remain the cleaner evidence for the current paper-facing systems claim
+
+## 2026-03-31 16:11 UTC - Focused `hotpotqa` shortlist diagnostic
+
+I pulled the focused hotpot diagnostic lane from `8e38888` and ran it on the CUDA box:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_hotpot_diagnostic.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md`
+
+This is a one-row diagnostic on the real failing `hotpotqa` row (`row 0`), with:
+
+- one `exact` reference row
+- four shortlist diagnostic rows:
+  - `shortlist_base`
+  - `shortlist_l23_ctx`
+  - `shortlist_topk8`
+  - `shortlist_quality_profile`
+
+### Positive read
+
+- the diagnostic lane worked end-to-end and produced the per-layer shortlist traces we were missing
+- it gives a much more concrete answer than the pack average:
+  - exact F1 `0.375`
+  - all four shortlist variants land at `0.250`
+- that means the focused hotpot row is slightly less bad than the earlier rescue-matrix average suggested, but still materially below exact
+- the hotpot systems story remains consistent:
+  - exact decode `1072.73 ms/step`
+  - `shortlist_base` `197.16`
+  - `shortlist_l23_ctx` `210.03`
+  - `shortlist_topk8` `201.97`
+  - `shortlist_quality_profile` `215.41`
+- the dominant repeated miss ranges are now explicit rather than inferred:
+  - `1296:1312`
+  - `5824:5840`
+  - `1376:1392`
+  - `624:640`
+  - `8800:8816`
+
+### Negative read
+
+- none of the rescue variants actually fix the hotpot failure:
+  - `shortlist_base`, `shortlist_l23_ctx`, `shortlist_topk8`, and `shortlist_quality_profile` all stay at `0.250`
+- this is therefore not a “pick the right shortlist knob” problem, at least on this row
+- `shortlist_topk8` does not help the hotpot answer and appears to worsen the repeated miss profile:
+  - same F1 as the other shortlist variants
+  - more concentrated repeated misses on the dominant exact pages
+  - worst layer shifts from `7` to `3`, but the row-level answer does not improve
+- `shortlist_l23_ctx` and the quality profile also fail to improve answer quality, and both are slower than `shortlist_base`
+- the generated shortlist text still contains obvious chat-style spillover such as `assistant` and repeated answer fragments, but the page-miss diagnostics show that formatting is not the whole story
+
+### Diagnostic interpretation
+
+- the hotpot failure is now much less mysterious:
+  - the shortlist scorer repeatedly misses the same old exact pages across steps
+  - the misses are persistent enough that simply widening to `top_k=8` or swapping to the quality profile does not rescue the answer
+- layer `7` is still the most consistently problematic shortlist layer on the baseline, layer-23, and quality-profile variants
+- the best-ranked layer by correlation is not the limiting factor here; the problem is repeated exact-page omission on a small set of pages rather than globally chaotic ranking
+- the next quality-improvement work for LongBench should therefore target why those specific old pages are repeatedly absent from shortlist selection, not answer post-processing
