@@ -242,7 +242,15 @@ But the quality-tail rerun in [`qwen35_cuda_shortlist_large_context_quality_tail
 | `32768` | `0.8984` | `3.5098` | `3.5137` |
 | `49152` | `4.5742` | `7.0000` | `6.9648` |
 
-So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all three CUDA reads explicitly.
+The obvious follow-up was to widen the `49152` shortlist from `top_k=4` to `top_k=8`. That helped only modestly:
+
+| `49152` config | Decode ms/step | Tail loss delta | Tail max abs logit error |
+| --- | ---: | ---: | ---: |
+| shortlist base, `top_k=4` | `786.35` | `+0.0130062` | `7.0000` |
+| shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` |
+| shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` |
+
+So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
 
 What this does **not** yet show:
 

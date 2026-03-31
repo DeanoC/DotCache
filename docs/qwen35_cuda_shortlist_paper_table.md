@@ -98,6 +98,33 @@ What this adds to the current paper read:
 - the `49152` quality-tail read is not clean enough to present as a settled win
 - the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
+## 49k `top_k=8` Follow-Up
+
+The obvious next ablation was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow. The clean follow-up artifacts are:
+
+- [`qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl)
+
+Compared with the `top_k=4` rerun at `49152`:
+
+| `49152` config | Decode ms/step | Tail loss delta | Tail max abs logit error | Read |
+| --- | ---: | ---: | ---: | --- |
+| shortlist base, `top_k=4` | `786.35` | `+0.0130062` | `7.0000` | baseline mixed result |
+| shortlist base, `top_k=8` | `819.41` serving / `793.73` quality | `+0.0113542` | `6.8711` | modest quality gain, slower serving |
+| shortlist `layer:23` ctx, `top_k=8` | `893.25` serving / `1062.99` quality | `+0.0113542` | `6.8711` | no extra quality benefit, clearly slower |
+
+Current interpretation:
+
+- widening from `top_k=4` to `top_k=8` helps the `49152` quality tail a little
+- the improvement is not enough to make the run quality-clean
+- serving slows down
+- grouped decode still does not activate
+- once the global shortlist is widened to `top_k=8`, the layer-23 override stops helping and is just extra cost
+
+So `top_k=8` is a useful negative result, not the missing fix.
+
 Why these stay out of the main table:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
@@ -133,6 +160,10 @@ The wrapper calls the single-shot runner and regenerates the current `4096/8192/
 - [`qwen35_cuda_shortlist_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_probe.jsonl)
 - [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl)
 - [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl)
+- [`qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl)
 - [`performance_journal.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md)
 - [`qwen35_cuda_shortlist_ladder_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_ladder_quality_tail.jsonl)
 - [`qwen35_cuda_shortlist_32k_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_32k_probe.jsonl)
