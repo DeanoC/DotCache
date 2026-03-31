@@ -326,8 +326,19 @@ def _build_llama_cli_command(
     args: argparse.Namespace,
     *,
     config: TurboConfig,
-    prompt_file: str,
+    prompt_file: str | None = None,
+    prompt_text: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
+    if prompt_file is None:
+        if prompt_text is None:
+            raise ValueError("either prompt_file or prompt_text must be provided")
+        prompt_handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".txt", delete=False)
+        try:
+            prompt_handle.write(prompt_text)
+            prompt_handle.flush()
+        finally:
+            prompt_handle.close()
+        prompt_file = prompt_handle.name
     command = [args.llama_cli, *_resolve_model_arg(args.model_id, hf_file=args.hf_file, gguf_models_dir=args.gguf_models_dir)]
     command.extend(
         [

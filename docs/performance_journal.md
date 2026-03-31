@@ -6,6 +6,80 @@ Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/d
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
+## 2026-03-31 CUDA Shortlist Paper-Table Rerun
+
+This rerun was executed on branch `codex/qwen35-9b-value-escape-scan` with:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_paper_table.sh
+```
+
+Primary artifact:
+
+- [benchmarks/results/qwen35_cuda_shortlist_probe.jsonl](../benchmarks/results/qwen35_cuda_shortlist_probe.jsonl)
+
+Repo-side fixes carried onto this branch before the rerun:
+
+- restore the `_build_llama_cli_command(..., prompt_text=...)` helper shape expected by the TurboQuant tests
+- restore `qwen35_4b_hf` to `reference_only` in the model registry
+
+### Positive Results
+
+- The dedicated paper-table wrapper itself works on the CUDA box:
+  - it completed successfully
+  - it emitted the full `9` expected rows
+  - no old leaking-wrapper failure showed up in this rerun
+- The shortlist rows are still valid runnable CUDA lanes at all requested contexts:
+  - `4096`, `8192`, `16384`
+  - both `shortlist_base` and `shortlist_l23_ctx`
+- All nine runs stayed on the same decode path:
+  - `grouped_batched=0`
+  - `per_kv_fallback=24`
+- The shortlist still gives a real decode win at `4096` in this rerun:
+  - exact: `257.14 ms/step`
+  - shortlist base: `164.88 ms/step`
+  - layer-23 context override: `163.02 ms/step`
+  - speedup versus exact: about `1.56x` to `1.58x`
+
+### Negative Results
+
+- This rerun does not reproduce the earlier paper-note claim that the shortlist is clearly faster through `16384`.
+- At `8192`, the rerun is effectively flat:
+  - exact: `167.94 ms/step`
+  - shortlist base: `167.37 ms/step`
+  - layer-23 context override: `171.77 ms/step`
+- At `16384`, the rerun is slightly worse than exact:
+  - exact: `194.55 ms/step`
+  - shortlist base: `198.41 ms/step`
+  - layer-23 context override: `201.60 ms/step`
+- The layer-23 context-aware override is not helping in this rerun:
+  - it slightly increases selected pages at long context: `4080 -> 4112`
+  - it is slower than the plain shortlist at both `8192` and `16384`
+- The full expected grouped-batching speed path still does not activate here:
+  - every row stayed in `per_kv_fallback`
+  - this remains the main negative systems read from the rerun
+- Prefill timings in the exact rows are highly inconsistent with the shortlist rows in this run:
+  - exact `4096` prefill recorded `34777.82 ms`
+  - exact `8192` and `16384` prefill recorded `8653.62 ms` and `8757.75 ms`
+  - shortlist prefill sat around `468-581 ms`
+  - treat the prefill numbers from this rerun as noisy / not paper-grade until revalidated
+- The run was also unauthenticated against the HF Hub:
+  - stderr warned that `HF_TOKEN` was not set
+  - the models still loaded, but this is an avoidable source of external variability
+
+### Current Read
+
+- Keep this rerun as an honest paper-table regeneration artifact, not as clean evidence that shortlist speedup persists through `16384`.
+- The wrapper is now trustworthy enough to use as the rerun entrypoint.
+- The performance conclusion is mixed:
+  - `4096` still looks good
+  - `8192` is neutral
+  - `16384` is slightly negative in this rerun
+- The most important unresolved issue is unchanged:
+  - the shortlist path is still not reaching grouped-batched decode on this CUDA lane
+  - until that changes, long-context wins are not stable enough to treat as locked-in
+  - the paper note should be revised to reflect this rerun if we plan to cite fresh numbers
+
 ## 2026-03-30 ROCm 890M Bring-up And Sweep
 
 This is the current AMD laptop baseline for the shared ROCm lane. The detailed run outputs are split across:
