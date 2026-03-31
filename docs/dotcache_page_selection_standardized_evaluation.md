@@ -145,7 +145,8 @@ Allowed claims:
 
 Current status:
 
-- target only; not yet fully wired into this repo
+- first Needle-in-a-Haystack serving harness is now wired for the Qwen3.5 attention-subset lane
+- benchmark-style result tables are still pending; wiring alone does not count as evidence
 
 ## Required Metadata Per Promoted Row
 

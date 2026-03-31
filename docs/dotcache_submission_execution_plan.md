@@ -77,6 +77,7 @@ Why first:
 Tasks:
 
 1. add a protocol-tagged Needle harness for the Qwen3.5 attention-subset lane
+   Status: wired via [bench_qwen35_attention_subset_dotcache_needle.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_needle.py), [run_qwen35_cuda_needle_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_probe.py), and [run_qwen35_cuda_needle_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_protocol.sh)
 2. run exact, shortlist base, and shortlist `layer:23` variants
 3. record both retrieval success and systems metrics under the same prompt suite metadata
 
