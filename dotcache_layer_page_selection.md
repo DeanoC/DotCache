@@ -319,14 +319,17 @@ All nine rerun rows stayed on the same `per_kv_fallback` decode path. The newer 
 
 The older March 29 probe in [`qwen35_cuda_shortlist_probe_20260329.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_probe_20260329.md) is still worth keeping as a historical result because it showed much larger gains through `16384`. But after the March 31 rerun, it should be treated as an encouraging earlier probe rather than the current paper table.
 
-At larger context, the newest clean wrapper artifacts add a useful but mixed third datapoint. The serving rerun in [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl) shows that shortlist is a real decode-speed win at both `32768` and `49152`:
+At larger context, the newest clean artifacts add a useful but mixed third datapoint. The serving read in [`qwen35_cuda_shortlist_large_context_repro_serving_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md) now gives the shortlist rows as 3-run summaries with variance:
 
-| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step |
-| ---: | ---: | ---: | ---: |
-| `32768` | `2312.64` | `632.43` | `619.39` |
-| `49152` | `3580.59` | `752.13` | `767.97` |
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | `n` |
+| ---: | ---: | ---: | ---: | ---: |
+| `32768` | `2312.64` one-off exact | `623.88 +/- 13.48` | `626.15 +/- 2.88` | `3` |
+| `49152` | `3580.59` one-off exact | `741.45 +/- 26.85` | `792.68 +/- 31.76` | `3` |
 
-But the quality-tail rerun in [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl) is not clean at `49152`:
+But the quality-tail read is still not clean at `49152`. The underlying rows are now split more honestly:
+
+- `32768` quality still comes from [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl)
+- `49152` quality is also preserved in the protocol-tagged held-out artifact [`qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl), which records `evaluation_split=held_out`, `evaluation_lane=quality`, `evaluation_prompt_count=1`, and `evaluation_protocol_version=2026-03-31`
 
 | Context | Exact tail max abs logit error | Base shortlist | Layer-23 ctx |
 | ---: | ---: | ---: | ---: |
@@ -377,7 +380,7 @@ That makes the current grouped-CUDA conclusion much cleaner than before:
 - grouped decode is not the missing fix for the `49152` quality regime
 - grouped decode still does not justify replacing the default CUDA shortlist path on performance grounds alone
 
-So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly.
+So the current paper claim should be: shortlist has a genuine large-context serving-speed signal, but the long-context quality story is still unresolved, widening the shortlist helps only a little, and the layer-23 context-aware widening does not materially solve it. The cleaned-up note in [`qwen35_cuda_shortlist_paper_table.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md) now separates all of these CUDA reads explicitly and uses the repro summary / held-out quality artifacts rather than only one-off journal prose.
 
 ### 5.8. What The Current Evidence Actually Supports
 

@@ -79,26 +79,29 @@ Layer-23 context-aware override at `16384`:
 
 There are now committed larger-context artifacts from the clean wrapper path. These are strong enough to discuss in the paper because the serving win is real, but they must be presented as mixed results because the quality read is not yet clean.
 
-Current large-context serving rerun from [`qwen35_cuda_shortlist_large_context_probe.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl):
+Current large-context serving read from the 3-run summary artifact [`qwen35_cuda_shortlist_large_context_repro_serving_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md):
 
-| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
-| ---: | ---: | ---: | ---: | --- |
-| `32768` | `2312.64` | `632.43` | `619.39` | all rows `per_kv_fallback` |
-| `49152` | `3580.59` | `752.13` | `767.97` | all rows `per_kv_fallback` |
+| Context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | `n` | Decode-path read |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| `32768` | `2312.64` one-off exact | `623.88 +/- 13.48` | `626.15 +/- 2.88` | `3` | shortlist rows all `per_kv_fallback` |
+| `49152` | `3580.59` one-off exact | `741.45 +/- 26.85` | `792.68 +/- 31.76` | `3` | shortlist rows all `per_kv_fallback` |
 
-Current large-context quality-tail rerun from [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl):
+Current large-context quality-tail read:
+
+- `32768` still comes from [`qwen35_cuda_shortlist_large_context_quality_tail.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl)
+- `49152` now also has a protocol-tagged `held_out` row set in [`qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl)
 
 | Context | Exact tail max abs logit error | Base shortlist | Layer-23 ctx | Read |
 | ---: | ---: | ---: | ---: | --- |
 | `32768` | `0.8984` | `3.5098` | `3.5137` | shortlist much noisier than exact |
-| `49152` | `4.5742` | `7.0000` | `6.9648` | shortlist still materially worse; layer-23 widening does not cleanly fix it |
+| `49152` | `4.5742` | `7.0000` | `6.9648` | protocol-tagged `held_out` synthetic filler run; shortlist still materially worse |
 
 What this adds to the current paper read:
 
 - the shortlist path is a real serving-speed win at `32768` and `49152`
 - shortlist page counts remain bounded relative to the full no-shortlist path
 - grouped-batched decode still does not activate, and we now know the immediate blocker: the Qwen3.5 CUDA serving integration disables grouped batching up front
-- the `49152` quality-tail read is not clean enough to present as a settled win
+- the `49152` quality-tail read is still not clean enough to present as a settled win, even after tagging it under the standardized protocol as `held_out / quality`
 - the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
 ## Forced-Grouped CUDA Follow-Up
