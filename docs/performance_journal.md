@@ -4436,3 +4436,133 @@ Layer-23 context-aware rows:
 - this is the first result that makes grouped CUDA look operational rather than purely exploratory on this lane
 - however, it still does not yet prove that grouped decode should replace the current default path, because the grouped shortlist rows are roughly at parity rather than a decisive win
 - the next step should be a clean rerun focused on reproducibility and possibly a quality-tail spot-check under forced grouped mode now that the backend path itself is functioning
+
+## 2026-03-31 19:10 UTC - Forced grouped quality tail at 32768 and 49152
+
+I pulled the forced-grouped follow-up wrappers from `78a3ab4` and ran the quality-tail pass:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_large_context_forced_grouped_quality_tail.sh
+```
+
+Final artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl`
+
+Operational note:
+
+- the first wrapper run stopped after the two `exact` rows and left a partial two-row artifact
+- I re-ran the missing shortlist cases directly through `scripts/run_qwen35_cuda_shortlist_probe.py`, merged the four successful shortlist rows back into the main artifact, and treated the original short output as a wrapper interruption rather than a backend failure
+
+### Forced-grouped quality rows
+
+Exact rows:
+
+- `32768 exact`: decode `2300.76 ms/step`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-6.2546e-07`, max logit abs error `0.890625`
+- `49152 exact`: decode `3701.99 ms/step`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.00199284`, max logit abs error `4.5625`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `718.62 ms/step`, selected pages `3174`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-1.33765e-05`, max logit abs error `3.49609375`
+- `49152 shortlist_base`: decode `776.57 ms/step`, selected pages `3160`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.0124781`, max logit abs error `6.953125`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `680.20 ms/step`, selected pages `3210`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-1.42405e-05`, max logit abs error `3.49609375`
+- `49152 shortlist_l23_ctx`: decode `805.39 ms/step`, selected pages `3204`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.0121616`, max logit abs error `6.9140625`
+
+### Positive read
+
+- forced grouped decode is fully active in all six quality rows; there is no residual per-KV fallback on this path
+- the shortlist quality picture stays materially aligned with the earlier non-forced quality-tail read
+- at `32768`, forced-grouped shortlist remains quality-clean in the same practical sense as the default shortlist path
+- at `49152`, forced-grouped shortlist does not repair the existing loss-tail problem, but it also does not materially worsen it
+- the layer-23 override still gives the better grouped quality-tail read at both contexts:
+  - `32768`: `718.62 -> 680.20 ms/step`, loss delta `-1.33765e-05 -> -1.42405e-05`
+  - `49152`: `776.57 -> 805.39 ms/step`, loss delta `0.0124781 -> 0.0121616`
+
+### Negative read
+
+- the `49152` quality-tail issue remains; grouped decode does not make that read clean
+- compared with the earlier default non-forced quality-tail rows, the grouped numbers are broadly comparable rather than clearly better:
+  - `32768 shortlist_base`: default loss delta `-1.45385e-05`, forced grouped `-1.33765e-05`
+  - `49152 shortlist_base`: default loss delta `0.0130062`, forced grouped `0.0124781`
+  - `32768 shortlist_l23_ctx`: default loss delta `-1.45087e-05`, forced grouped `-1.42405e-05`
+  - `49152 shortlist_l23_ctx`: default loss delta `0.0128626`, forced grouped `0.0121616`
+- the wrapper interruption on the first batch is operational debt that should be recorded separately from model quality
+
+### Current interpretation
+
+- forced grouped batching is now quality-stable enough to test seriously on this lane
+- it does not unlock a new quality regime; the main open problem is still the `49152` shortlist loss tail itself, not grouped decode correctness
+- the next deciding question is reproducibility of the serving-speed story, not whether grouped mode breaks quality
+
+## 2026-03-31 19:35 UTC - 3x serving reproducibility pass for default vs forced grouped
+
+I ran the new reproducibility wrapper:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_large_context_repro_serving.sh
+```
+
+Final artifacts:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat1.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat2.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat3.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat1.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat2.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat3.jsonl`
+
+Operational notes:
+
+- the wrapper exited once with `forced_grouped_repeat3.jsonl` only partially written
+- I re-ran just `forced_grouped_repeat3` directly through `scripts/run_qwen35_cuda_shortlist_probe.py`
+- that filename then contained duplicate rows from the interrupted pass and the rerun, so I cleaned it by keeping the latest row for each `(runner_case, prompt_length)` pair before summarizing
+
+### Repro summary
+
+Default path, `shortlist_base`:
+
+- `32768`: mean `623.88 ms/step`, min `610.76`, max `634.03`, paths always `grouped_batched=0, per_kv_fallback=24`
+- `49152`: mean `741.45 ms/step`, min `722.64`, max `768.11`, paths always `grouped_batched=0, per_kv_fallback=24`
+
+Default path, `shortlist_l23_ctx`:
+
+- `32768`: mean `626.15 ms/step`, min `623.92`, max `628.93`, paths always `grouped_batched=0, per_kv_fallback=24`
+- `49152`: mean `792.68 ms/step`, min `760.28`, max `809.87`, paths always `grouped_batched=0, per_kv_fallback=24`
+
+Forced grouped path, `shortlist_base`:
+
+- `32768`: mean `669.76 ms/step`, min `650.74`, max `688.73`, paths always `grouped_batched=24, per_kv_fallback=0`
+- `49152`: mean `775.01 ms/step`, min `751.77`, max `807.00`, paths always `grouped_batched=24, per_kv_fallback=0`
+
+Forced grouped path, `shortlist_l23_ctx`:
+
+- `32768`: mean `672.73 ms/step`, min `668.41`, max `678.05`, paths always `grouped_batched=24, per_kv_fallback=0`
+- `49152`: mean `788.97 ms/step`, min `775.86`, max `800.22`, paths always `grouped_batched=24, per_kv_fallback=0`
+
+### Positive read
+
+- the grouped path is reproducible in the operational sense: all forced-grouped rows stayed fully grouped across all repeats
+- there was no grouped-to-per-KV regression during the reproducibility pass
+- the grouped path is now close enough to the default path that the comparison is about a narrow speed tradeoff, not a catastrophic backend gap
+- one case did edge out the default mean:
+  - `49152 shortlist_l23_ctx`: default mean `792.68`, forced grouped mean `788.97`, grouped ahead by `3.70 ms/step` (`0.47%`)
+
+### Negative read
+
+- grouped decode is not a reproducible win overall
+- compared with the default means:
+  - `32768 shortlist_base`: grouped slower by `45.88 ms/step` (`7.35%`)
+  - `49152 shortlist_base`: grouped slower by `33.56 ms/step` (`4.53%`)
+  - `32768 shortlist_l23_ctx`: grouped slower by `46.58 ms/step` (`7.44%`)
+  - `49152 shortlist_l23_ctx`: grouped faster by only `3.70 ms/step` (`0.47%`)
+- the only grouped advantage in this repro pass is the narrow `49152 shortlist_l23_ctx` case, and that margin is small enough that it is not a compelling default-switch argument on its own
+- the wrapper-level interruption and dedupe cleanup are additional operational noise that count against claiming this path is production-ready by default
+
+### Current interpretation
+
+- the bucketed grouped CUDA path is now real, repeatable, and quality-stable
+- however, the 3-repeat serving pass does not support enabling grouped batching by default for this Qwen3.5 CUDA shortlist workload
+- the strongest defensible statement is narrower: grouped decode has been rehabilitated from “broken/slower with hard fallbacks” to “near-parity, occasionally marginally ahead, but not a consistent win”
