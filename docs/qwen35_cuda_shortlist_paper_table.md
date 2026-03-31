@@ -40,7 +40,8 @@ So the current safe paper claim is narrower:
 - shortlist is operational on CUDA
 - shortlist is helpful at `4096`
 - the `8192/16384` behavior is still unstable across reruns
-- grouped-batched decode remains the main unresolved systems blocker
+- the default CUDA serving lane still stays on `per_kv_fallback`
+- grouped-batched decode is now operational in the forced ablation lane, but not yet a decisive replacement for the default path
 - the large-context `32768/49152` runs need to be presented together with their quality caveat, not as a blanket throughput claim
 
 ## Historical Probe Worth Mentioning, Not Leading With
@@ -100,9 +101,9 @@ What this adds to the current paper read:
 - the `49152` quality-tail read is not clean enough to present as a settled win
 - the layer-23 context-aware widening is neutral at `32768` and slightly worse on serving speed at `49152`
 
-## Forced-Grouped CUDA Negative Result
+## Forced-Grouped CUDA Follow-Up
 
-The natural next question was whether the default CUDA guard was hiding a faster grouped path. The forced-grouped rerun in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl), using `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1`, says no.
+The natural next question was whether the default CUDA guard was hiding a faster grouped path. The first forced-grouped rerun in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl), using `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1`, was a clear negative result.
 
 | Forced-grouped context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
 | ---: | ---: | ---: | ---: | --- |
@@ -115,6 +116,26 @@ What this resolves:
 - forcing it is dramatically slower than the default path for the shortlist cases
 - the first concrete grouped-path blocker is now visible in the counters: `key_value_chunk_signature_mismatch`
 - the existing default CUDA guard was directionally right for this workload
+
+After the chunk-schedule split and mixed-signature bucketing fixes, the newer forced-grouped artifact in [`qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl) materially changes that read:
+
+| Forced-grouped bucketed context | Exact ms/step | Base shortlist ms/step | Layer-23 ctx ms/step | Decode-path read |
+| ---: | ---: | ---: | ---: | --- |
+| `32768` | `2335.11` | `716.36` | `693.11` | all successful rows `grouped_batched=24, per_kv_fallback=0` |
+| `49152` | `3658.27` | `777.28` | `766.36` | all rows `grouped_batched=24, per_kv_fallback=0` |
+
+Notes for this follow-up:
+
+- the wrapper matrix had a `NoExactRow` capture miss on `32768 shortlist_base`, so that row comes from the clean direct rerun in [`qwen35_cuda_shortlist_32768_forced_grouped_bucketed_base_single.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_32768_forced_grouped_bucketed_base_single.jsonl)
+- the previous blocker `key_signature_mismatch_across_groups` disappears on the successful rows
+- grouped decode is now fully active in the successful shortlist rows rather than mixed grouped plus fallback
+- forced grouped shortlist decode moves much closer to the default non-forced path, but still does not show a decisive win over it
+
+What this changes in the paper read:
+
+- grouped CUDA is now operational on this lane, not merely exploratory
+- the default guard is no longer justified by "grouped decode is broken"
+- it is still justified by the narrower claim that forced grouped decode has not yet beaten the existing default shortlist path clearly enough to replace it
 
 ## 49k `top_k=8` Follow-Up
 
@@ -138,7 +159,7 @@ Current interpretation:
 - widening from `top_k=4` to `top_k=8` helps the `49152` quality tail a little
 - the improvement is not enough to make the run quality-clean
 - serving slows down
-- grouped decode still does not activate
+- the default path still does not activate grouped decode
 - once the global shortlist is widened to `top_k=8`, the layer-23 override stops helping and is just extra cost
 
 So `top_k=8` is a useful negative result, not the missing fix.
@@ -146,7 +167,7 @@ So `top_k=8` is a useful negative result, not the missing fix.
 Why these need caveated presentation:
 
 - the large-context speed story is real, but the quality story is not yet clean at `49152`
-- the default path still stays in `per_kv_fallback`, and the forced-grouped ablation shows that simple grouped enablement is currently slower anyway
+- the default path still stays in `per_kv_fallback`, even though the forced-grouped bucketed follow-up now shows grouped CUDA can run end-to-end and reach near-parity shortlist throughput
 - the paper should present these larger-context rows as the current best systems evidence, but not as a fully locked result yet
 
 ## Exact Rerun Path For The CUDA Box

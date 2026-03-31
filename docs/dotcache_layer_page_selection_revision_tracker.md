@@ -29,7 +29,9 @@ Current CUDA paper read:
 - `49152`: quality not yet clean
 - layer-23 context widening and `top_k=8` are diagnostics, not final fixes
 - the immediate grouped-decode blocker on the Qwen3.5 CUDA serving lane is now known: [`qwen35.py`](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen35.py) passes `prefer_grouped_batching=hidden_states.device.type != "cuda"`, so grouped batching is disabled on CUDA before rejection accounting runs
-- forced grouped batching on CUDA does activate, but it is much slower for this workload and exposes the first concrete grouped-path blocker: `key_value_chunk_signature_mismatch`
+- forced grouped batching on CUDA is now operational after the chunk-signature fixes and mixed-signature bucketing patch
+- the previous grouped blockers `key_value_chunk_signature_mismatch` and `key_signature_mismatch_across_groups` are no longer the leading story on the successful rows
+- grouped shortlist throughput is now close to the default CUDA path at `32768/49152`, but not yet a decisive win
 
 ## Review Issue -> Fix
 
@@ -143,14 +145,15 @@ Goal:
 Why this is first:
 
 - it is now the clearest systems bottleneck in the shortlist story
-- the forced-grouped rerun showed that grouped batching can execute, but the counters now point at `key_value_chunk_signature_mismatch` as the concrete blocker to attack next
+- the newer forced-grouped rerun after chunk-signature and bucketing fixes shows grouped batching can now run end-to-end on the shortlist rows
+- the next needed output is no longer just rejection counts; it is reproducibility and quality evidence for the operational grouped lane
 
 Needed outputs:
 
 - decode-path classification per row
 - grouped rejection reason counts per row
 - selector / score / mix timing split inside the serving loop
-- same `32768/49152` table after chunk-signature alignment work
+- same `32768/49152` table after grouped bucketing, including the direct rerun note for the `32768 shortlist_base` wrapper miss
 
 ### B. One stronger `49152` quality rescue
 
