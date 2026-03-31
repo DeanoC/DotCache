@@ -108,6 +108,7 @@ Baseline candidates:
 
 - `Quest`
 - `H2O`
+- StreamingLLM-style sink-plus-recent window reference baseline
 
 Selection rule:
 
@@ -117,6 +118,7 @@ Selection rule:
 Tasks:
 
 1. pick one baseline and define a memory-budget matching rule
+   Current practical pick: a StreamingLLM-style sink-plus-recent reference lane on the Needle pack, documented in [qwen35_cuda_external_baseline_streaming_window_plan.md](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_external_baseline_streaming_window_plan.md)
 2. run it on the Qwen3.5 lane at the same main contexts used in the paper
 3. compare against exact and shortlist base under the standardized systems table shape
 

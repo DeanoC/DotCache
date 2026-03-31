@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cases",
         nargs="+",
-        choices=["exact", "shortlist_base", "shortlist_l23_ctx"],
+        choices=["exact", "shortlist_base", "shortlist_l23_ctx", "streaming_sink_recent"],
         default=["exact", "shortlist_base", "shortlist_l23_ctx"],
     )
     parser.add_argument("--max-new-tokens", type=int, default=12)
@@ -101,6 +101,13 @@ def _load_prompt_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
 def _case_extra_args(case: str) -> list[str]:
     if case == "exact":
         return []
+    if case == "streaming_sink_recent":
+        return [
+            "--execution-recent-window",
+            "1024",
+            "--execution-sink-window",
+            "256",
+        ]
     if case == "shortlist_base":
         return [
             "--execution-recent-window",
