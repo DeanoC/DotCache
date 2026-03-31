@@ -3731,3 +3731,170 @@ This is a better result than a single magic-layer story. It says the repo has fo
 - then apply the same selected-page `V` escape mechanism there
 
 I also added [run_qwen35_value_escape_layer_scan.py](/workspace/DotCache/scripts/run_qwen35_value_escape_layer_scan.py) so this retuning step is now a first-class benchmark flow rather than an ad hoc pile of one-off commands.
+
+## 2026-03-31 11:35 UTC - 890M StateCache rebaseline, renorm failure, and local serving winner
+
+I reran the StateCache lane on the Ryzen AI 9 HX 370 / Radeon 890M laptop and the local read is stronger and cleaner than the older checked-in snapshot suggested.
+
+The first machine-specific issue was environmental rather than algorithmic:
+
+- the old `scripts/env_cuda.sh` defaults assumed writable `/workspace` paths
+- that failed on this laptop before any benchmark logic ran
+- the helper now falls back to `${HOME}` caches when `/workspace` is not writable
+- I also added [run_qwen35_statecache_890m_research.sh](/workspace/DotCache/scripts/run_qwen35_statecache_890m_research.sh) so the local 890M cases are reproducible without retyping the long commands
+
+The second machine-specific issue was model access:
+
+- `Qwen/Qwen3.5-0.8B` was not cached locally
+- the default Hub transport looked stalled on the large weight blob
+- rerunning the download with `HF_HUB_DISABLE_XET=1` fixed that and let the local rebaseline proceed
+
+### 0.8B readout rebaseline
+
+Exact-length `0.8B`, `8b`, recurrent-only, `renorm=0`, greedy agreement `1.0` throughout:
+
+- `readout_only_m0`
+  - `512`: dense `65.57 ms/step`, StateCache `51.13 ms/step`
+  - `2048`: dense `56.41 ms/step`, StateCache `51.76 ms/step`
+  - `8192`: dense `223.70 ms/step`, StateCache `100.64 ms/step`
+- `post_update_m0`
+  - `512`: dense `69.11 ms/step`, StateCache `39.47 ms/step`
+  - `2048`: dense `72.56 ms/step`, StateCache `52.28 ms/step`
+  - `8192`: dense `95.08 ms/step`, StateCache `101.05 ms/step`
+
+So the honest read is:
+
+- `post_update_m0` is clearly better at short context
+- it is roughly tied at `2048`
+- it is not the best readout-stage choice at `8192`
+- both stages preserve the same fixed-resident saving: `19.76 MB -> 6.78 MB`
+
+### 0.8B real-sweep outcome
+
+The early/mid/late recurrent+conv sweep under
+[qwen35_statecache_prompt32_steps4_summary.json](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_discovery_20260331/real_sweep_outputs/qwen35_statecache_prompt32_steps4_summary.json)
+closed two branches and opened one:
+
+- every sampled recurrent layer recommended `8b / M0`
+- every sampled conv layer also recommended `8b / M0`
+- nothing in the sampled layers justified `4b`
+- nothing in the sampled layers justified `M3` escapes
+- the only new signal was renorm
+  - recurrent layers `0/1/2/22` preferred `renorm_interval = 0`
+  - recurrent layer `12` preferred `renorm_interval = 2`
+  - conv layers preferred `renorm_interval = 2` or `4`
+
+That made renorm the only real candidate knob left to test locally.
+
+### Renorm result
+
+The renorm branch failed the parity gate.
+
+`post_update_m0 + renorm=2` was faster on the readout harness:
+
+- `512`: `40.92 ms/step`
+- `2048`: `50.81 ms/step`
+- `8192`: `95.94 ms/step`
+
+but greedy agreement dropped to `0.75` on all three rows.
+
+So the repo should currently treat this as a useful negative result:
+
+- global renorm can buy speed on this machine
+- but `renorm=2` is not safe enough to promote as the local default
+
+### 0.8B serving result
+
+The serving harness is the decisive machine-level read, and there `post_update_m0` wins cleanly.
+
+Exact-length `0.8B`, recurrent-only, `8b`, `renorm=0`:
+
+- `readout_only_m0`
+  - `512`: `71.31 ms/step`
+  - `2048`: `81.09 ms/step`
+  - `8192`: `186.59 ms/step`
+  - `16384`: OOM
+- `post_update_m0`
+  - `512`: `53.34 ms/step`
+  - `2048`: `64.47 ms/step`
+  - `8192`: `180.79 ms/step`
+  - `16384`: OOM
+
+The fixed-resident accounting stayed unchanged across those serving runs:
+
+- dense fixed resident bytes: `19.76 MB`
+- StateCache fixed resident bytes: `6.78 MB`
+
+So the promoted local `0.8B` serving read is:
+
+- `post_update_m0`
+- recurrent-only
+- `8b / M0`
+- `renorm_interval = 0`
+
+### 0.8B loss check
+
+The teacher-forced loss harness showed no quality reason to reject that promotion:
+
+- `4096`
+  - both stages: teacher-forced target match `1.0`
+  - both stages: `teacher_forced_loss_delta = 3.56e-05`
+- `8192`
+  - both stages: teacher-forced target match `1.0`
+  - both stages: `teacher_forced_loss_delta = 2.48e-06`
+
+The decode timing inside that harness was noisy enough that it should not be used as the primary winner metric here.
+The important thing is that the serving-stage promotion did not cost teacher-forced parity.
+
+### 4B second scale point
+
+The first `4B` result was another useful negative:
+
+- the repo's `bnb_8bit` showcase path does not run here because this environment does not have `bitsandbytes >= 0.46.1`
+
+The fallback `float16` lane was still informative:
+
+- readout, `post_update_m0`, early recurrent `M3` on layers `0/1/2`
+  - `512`: dense `164.42 ms/step`, StateCache `146.48 ms/step`, greedy agreement `1.0`
+  - `1024`: dense `214.56 ms/step`, StateCache `170.76 ms/step`, greedy agreement `1.0`
+- serving, same policy
+  - `2048`: `268.31 ms/step`, prefill peak `10.17 GB`, decode peak `9.57 GB`
+  - `4096`: `338.55 ms/step`, prefill peak `12.32 GB`, decode peak `9.82 GB`
+
+So the honest `4B` local read is:
+
+- `4B` is still a usable second scale point on this laptop
+- but today it is a `float16` StateCache lane, not the cleaner `bnb_8bit` showcase lane from the larger pod
+
+The current machine-level conclusion is therefore:
+
+- `0.8B` local winner: `post_update_m0`, recurrent-only, `8b / M0`, `renorm=0`
+- `renorm=2` is a measured speedup but a failed quality candidate
+- `4B` is viable locally in `float16` with early `M3` escapes, but the missing `bitsandbytes` dependency is still a real limitation for the intended quantized lane
+
+## 2026-03-31 13:20 UTC - 890M bitsandbytes installed and 4B quantized lane rechecked
+
+Follow-up on the same machine after installing `bitsandbytes` into the repo `.venv`:
+
+- installed package: `bitsandbytes 0.49.2`
+- import path verified with `transformers.BitsAndBytesConfig`
+
+That cleared the earlier environment blocker, so the `4B` quantized lane is no longer blocked by a missing dependency on this laptop.
+
+I re-ran a small exact-length `512` readout probe for:
+
+- `Qwen/Qwen3.5-4B`
+- `weight_quantization = bnb_8bit`
+- `state_stage = post_update_m0`
+- early recurrent `M3` overrides on layers `0/1/2`
+
+That probe completed successfully with:
+
+- dense decode: `257.08 ms/step`
+- StateCache decode: `168.30 ms/step`
+- greedy agreement: `1.0`
+
+So the corrected local read is:
+
+- the earlier `bnb_8bit` failure was an environment issue, not a model/runtime incompatibility on the 890M
+- after installing `bitsandbytes`, the `4B` quantized StateCache readout path runs end-to-end on this machine
