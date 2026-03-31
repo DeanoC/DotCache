@@ -5000,3 +5000,74 @@ All rows are tagged as:
 - however, it also exposes a paper-facing evaluation nuance that should be stated honestly:
   - strict exact-match can be much lower than retrieval correctness when the model repeats parts of the prompt after the correct answer
 - taken together with Needle, the branch now has two named task-style families showing the same core systems story from different prompt constructions
+
+## 2026-03-31 15:05 UTC - First LongBench-derived QA mini-pack on the CUDA lane
+
+I pulled the new non-synthetic family from `78e4e22` and ran it on the CUDA box:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md`
+
+This is a fixed four-row LongBench-derived QA mini-pack using real benchmark rows, official task prompts, and official QA F1 scoring:
+
+- `hotpotqa`, row `0`
+- `2wikimqa`, row `0`
+- `multifieldqa_en`, row `1`
+- `qasper`, row `1`
+
+### Positive read
+
+- the branch now has a third named family, and this one is not synthetic retrieval prompting; it uses real benchmark rows and the official LongBench QA F1 metric
+- the systems story still holds:
+  - `exact` mean decode `743.41 ms/step`
+  - `shortlist_base` mean decode `178.55 ms/step`
+  - `shortlist_l23_ctx` mean decode `176.41 ms/step`
+- that translates to roughly:
+  - `shortlist_base`: `4.16x` faster than exact on mean decode
+  - `shortlist_l23_ctx`: `4.21x` faster than exact on mean decode
+- shortlist did not uniformly degrade every row:
+  - on `multifieldqa_en`, exact F1 was `0.1951` while both shortlist variants reached `0.2051`
+  - on `qasper`, `shortlist_l23_ctx` was slightly faster than `shortlist_base` (`153.67` vs `159.73 ms/step`)
+
+### Negative read
+
+- unlike the Needle and passkey families, this LongBench-derived mini-pack does not currently preserve exact-task quality under shortlist:
+  - exact mean QA F1: `0.1425`
+  - shortlist_base mean QA F1: `0.0825`
+  - shortlist_l23_ctx mean QA F1: `0.0825`
+- exact-match rate is `0.00` for every `(case)` bucket in this pack
+- the pack is small and noisy, but the current read is still directionally important:
+  - `hotpotqa`: exact `0.375`, shortlist `0.125`
+  - `2wikimqa`: all variants `0.0`
+  - `multifieldqa_en`: exact `0.1951`, shortlist `0.2051`
+  - `qasper`: all variants `0.0`
+- this is therefore not a paper-table-quality “win” artifact in the same way as Needle or passkey
+- the layer-23 override again does not earn a clean recommendation:
+  - mean F1 is identical to `shortlist_base`
+  - mean decode is only slightly lower
+  - the per-row behavior is too mixed to justify elevating it beyond a follow-up candidate
+
+### Operational failure and fix
+
+- the first attempt at this run exposed a real probe bug rather than a benchmark outcome:
+  - every LongBench row with `row_index=0` came back as `NoLongBenchRow` even though the underlying benchmark command exited successfully
+- root cause:
+  - `run_qwen35_cuda_longbench_qa_probe.py` used `int(candidate.get("longbench_row_index") or -1)`, which collapses a legitimate `0` row index into `-1`
+- I patched that parser bug, reran the pack from scratch, and the final canonical artifact now contains `12` clean rows with `0` error payloads
+
+### Current interpretation
+
+- this run fills an important benchmark-breadth gap because it moves the branch beyond the two synthetic retrieval families into real benchmark rows
+- the honest story is now more nuanced:
+  - DotCache shortlist still delivers the expected decode-speed win
+  - but on this tiny LongBench-derived QA pack, that systems win does not yet carry over into a clear quality-preserving story
+- taken together with Needle, passkey, and LongBench QA, the branch now has a more credible mixed evaluation record:
+  - strong systems wins on named task-style retrieval families
+  - a cheap external-style baseline that is fast but collapses task retrieval
+  - an initial real-benchmark QA mini-pack showing that quality retention on real benchmark rows is still an open problem rather than a solved claim

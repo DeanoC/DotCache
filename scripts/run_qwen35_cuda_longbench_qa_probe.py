@@ -133,7 +133,8 @@ def _run_single_probe(args: argparse.Namespace, *, case: str, prompt_spec: dict[
         if not isinstance(candidate, dict):
             continue
         if candidate.get("prompt_mode") == "longbench_qa" and candidate.get("longbench_dataset") == prompt_spec["dataset"]:
-            if int(candidate.get("longbench_row_index") or -1) == int(prompt_spec["row_index"]):
+            row_index = candidate.get("longbench_row_index")
+            if row_index is not None and int(row_index) == int(prompt_spec["row_index"]):
                 payload = candidate
 
     if payload is None:
