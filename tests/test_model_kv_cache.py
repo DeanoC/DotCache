@@ -1271,7 +1271,7 @@ def test_grouped_pages_can_batch_accepts_misaligned_key_value_chunks_on_mps() ->
     key_group1 = prepare_pages(
         [
             encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=0, mode="M0", quant_scheme="affine"),
-            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=4, mode="M0", quant_scheme="affine"),
+            encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=4, mode="M2", quant_scheme="sketch"),
             encode_page(rng.normal(size=(token_count, head_dim)).astype(np.float32), config, kind="K", kv_head_id=1, token_start=8, mode="M2", quant_scheme="sketch"),
         ],
         backend="torch_mps",

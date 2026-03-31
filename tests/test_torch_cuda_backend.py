@@ -11,6 +11,7 @@ from dotcache.backends import (
     cuda_available,
     decode_grouped_multiquery_step_prepared_cuda_tensor,
     decode_grouped_multiquery_step_prepared_cuda_tensor_output_only,
+    decode_multi_query_step_cuda_tensor,
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
@@ -723,6 +724,109 @@ def test_grouped_prepared_cuda_respects_distinct_key_and_value_chunk_lengths() -
     np.testing.assert_allclose(
         explicit_output.detach().cpu().numpy(),
         aligned_output.detach().cpu().numpy(),
+        atol=3e-3,
+        rtol=3e-3,
+    )
+
+
+@requires_cuda
+def test_grouped_prepared_cuda_handles_key_signature_mismatch_across_groups() -> None:
+    rng = np.random.default_rng(90722)
+    key_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_k="sketch",
+    )
+    value_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_v="lut",
+    )
+    key_pages_by_group = []
+    value_pages_by_group = []
+    query_groups = []
+    expected_outputs = []
+    for kv_head_id in range(2):
+        keys = rng.normal(size=(8, key_config.head_dim)).astype(np.float32)
+        values = rng.normal(size=(8, value_config.head_dim)).astype(np.float32)
+        key_modes = ("M0", "M2") if kv_head_id == 0 else ("M2", "M2")
+        key_pages = [
+            prepare_page(
+                encode_page(
+                    keys[:4],
+                    key_config,
+                    kind="K",
+                    kv_head_id=kv_head_id,
+                    token_start=0,
+                    mode=key_modes[0],
+                    quant_scheme="affine" if key_modes[0] == "M0" else "sketch",
+                ),
+                backend="torch_cuda",
+            ),
+            prepare_page(
+                encode_page(
+                    keys[4:8],
+                    key_config,
+                    kind="K",
+                    kv_head_id=kv_head_id,
+                    token_start=4,
+                    mode=key_modes[1],
+                    quant_scheme="affine" if key_modes[1] == "M0" else "sketch",
+                ),
+                backend="torch_cuda",
+            ),
+        ]
+        value_pages = [
+            prepare_page(
+                encode_page(
+                    values[:4],
+                    value_config,
+                    kind="V",
+                    kv_head_id=kv_head_id,
+                    token_start=0,
+                    mode="M1",
+                ),
+                backend="torch_cuda",
+            ),
+            prepare_page(
+                encode_page(
+                    values[4:8],
+                    value_config,
+                    kind="V",
+                    kv_head_id=kv_head_id,
+                    token_start=4,
+                    mode="M1",
+                ),
+                backend="torch_cuda",
+            ),
+        ]
+        query_group = torch.from_numpy(rng.normal(size=(2, key_config.head_dim)).astype(np.float32)).to(device="cuda")
+        key_pages_by_group.append(key_pages)
+        value_pages_by_group.append(value_pages)
+        query_groups.append(query_group)
+        expected_outputs.append(
+            decode_multi_query_step_cuda_tensor(
+                query_group,
+                key_pages,
+                value_pages,
+            )[2]
+        )
+
+    _, _, grouped_output = decode_grouped_multiquery_step_prepared_cuda_tensor(
+        query_groups,
+        key_pages_by_group,
+        value_pages_by_group,
+    )
+
+    np.testing.assert_allclose(
+        grouped_output.detach().cpu().numpy(),
+        torch.stack(expected_outputs, dim=0).detach().cpu().numpy(),
         atol=3e-3,
         rtol=3e-3,
     )

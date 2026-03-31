@@ -382,13 +382,6 @@ def _grouped_pages_batch_rejection_reason(
             centered,
         )
 
-    def _m2_segment_count(page: PageLike) -> int:
-        basis = getattr(page, "m2_basis", None)
-        if basis is None:
-            return 0
-        ndim = int(basis.ndim) if hasattr(basis, "ndim") else int(basis.dim())
-        return int(basis.shape[1]) if ndim == 4 else 1
-
     if not key_pages_by_group:
         return "no_key_groups"
     if len(key_pages_by_group) != len(value_pages_by_group):
@@ -416,72 +409,6 @@ def _grouped_pages_batch_rejection_reason(
             return "key_device_mismatch"
         if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
             return "value_device_mismatch"
-    for page_index in range(page_count):
-        key_signature = (
-            key_pages_by_group[0][page_index].header.mode_default,
-            key_pages_by_group[0][page_index].header.escape_dtype if key_pages_by_group[0][page_index].header.mode_default == "M3" else "",
-            key_pages_by_group[0][page_index].header.token_count,
-            key_pages_by_group[0][page_index].header.head_dim,
-            key_pages_by_group[0][page_index].header.padded_head_dim,
-            key_pages_by_group[0][page_index].header.group_size,
-            key_pages_by_group[0][page_index].header.num_groups,
-            key_pages_by_group[0][page_index].header.bits,
-            key_pages_by_group[0][page_index].header.words_per_group,
-            key_pages_by_group[0][page_index].header.layout,
-            key_pages_by_group[0][page_index].header.quant_scheme,
-            int(key_pages_by_group[0][page_index].m2_sketch.shape[-1]) if key_pages_by_group[0][page_index].m2_sketch is not None else 0,
-            _m2_segment_count(key_pages_by_group[0][page_index]),
-        )
-        value_signature = (
-            value_pages_by_group[0][page_index].header.mode_default,
-            value_pages_by_group[0][page_index].header.escape_dtype if value_pages_by_group[0][page_index].header.mode_default == "M3" else "",
-            value_pages_by_group[0][page_index].header.token_count,
-            value_pages_by_group[0][page_index].header.head_dim,
-            value_pages_by_group[0][page_index].header.padded_head_dim,
-            value_pages_by_group[0][page_index].header.group_size,
-            value_pages_by_group[0][page_index].header.num_groups,
-            value_pages_by_group[0][page_index].header.bits,
-            value_pages_by_group[0][page_index].header.words_per_group,
-            value_pages_by_group[0][page_index].header.layout,
-            value_pages_by_group[0][page_index].header.quant_scheme,
-            int(value_pages_by_group[0][page_index].m2_sketch.shape[-1]) if value_pages_by_group[0][page_index].m2_sketch is not None else 0,
-            _m2_segment_count(value_pages_by_group[0][page_index]),
-        )
-        for group_index in range(1, group_count):
-            key_page = key_pages_by_group[group_index][page_index]
-            value_page = value_pages_by_group[group_index][page_index]
-            if (
-                key_page.header.mode_default,
-                key_page.header.escape_dtype if key_page.header.mode_default == "M3" else "",
-                key_page.header.token_count,
-                key_page.header.head_dim,
-                key_page.header.padded_head_dim,
-                key_page.header.group_size,
-                key_page.header.num_groups,
-                key_page.header.bits,
-                key_page.header.words_per_group,
-                key_page.header.layout,
-                key_page.header.quant_scheme,
-                int(key_page.m2_sketch.shape[-1]) if key_page.m2_sketch is not None else 0,
-                _m2_segment_count(key_page),
-            ) != key_signature:
-                return "key_signature_mismatch_across_groups"
-            if (
-                value_page.header.mode_default,
-                value_page.header.escape_dtype if value_page.header.mode_default == "M3" else "",
-                value_page.header.token_count,
-                value_page.header.head_dim,
-                value_page.header.padded_head_dim,
-                value_page.header.group_size,
-                value_page.header.num_groups,
-                value_page.header.bits,
-                value_page.header.words_per_group,
-                value_page.header.layout,
-                value_page.header.quant_scheme,
-                int(value_page.m2_sketch.shape[-1]) if value_page.m2_sketch is not None else 0,
-                _m2_segment_count(value_page),
-            ) != value_signature:
-                return "value_signature_mismatch_across_groups"
     return None
 
 

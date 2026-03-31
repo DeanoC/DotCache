@@ -435,6 +435,29 @@ def _chunk_lengths_for_pages(pages: Sequence[PreparedPageTorch]) -> tuple[int, .
     return tuple(len(chunk) for chunk in _chunk_compatible_pages(pages))
 
 
+def _merged_chunk_lengths_for_page_groups(
+    pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+) -> tuple[int, ...]:
+    if not pages_by_group:
+        return ()
+    page_count = len(pages_by_group[0])
+    if page_count == 0:
+        return ()
+    boundaries = {0, page_count}
+    for group_pages in pages_by_group:
+        if len(group_pages) != page_count:
+            raise ValueError("all grouped page streams must have the same page count")
+        offset = 0
+        for chunk_length in _chunk_lengths_for_pages(group_pages):
+            offset += int(chunk_length)
+            boundaries.add(offset)
+    sorted_boundaries = sorted(boundaries)
+    return tuple(
+        int(sorted_boundaries[index + 1] - sorted_boundaries[index])
+        for index in range(len(sorted_boundaries) - 1)
+    )
+
+
 def _aligned_chunk_lengths_for_page_pairs(
     key_pages: Sequence[PreparedPageTorch],
     value_pages: Sequence[PreparedPageTorch],
@@ -463,6 +486,16 @@ def _aligned_chunk_lengths_for_page_pairs(
     if current_length > 0:
         lengths.append(current_length)
     return tuple(lengths)
+
+
+def _signature_buckets_for_page_chunk(
+    pages_by_group: Sequence[Sequence[PreparedPageTorch]],
+) -> tuple[tuple[int, ...], ...]:
+    buckets: dict[tuple[tuple[int | str, ...], ...], list[int]] = {}
+    for group_index, group_pages in enumerate(pages_by_group):
+        signature = tuple(_batched_signature(page) for page in group_pages)
+        buckets.setdefault(signature, []).append(int(group_index))
+    return tuple(tuple(indices) for indices in buckets.values())
 
 
 def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple[int, int], ...] | None:
@@ -3123,9 +3156,6 @@ def _score_page_chunk_grouped_multiquery_torch(
     for group_pages in pages_by_group:
         if len(group_pages) != page_count:
             raise ValueError("all page groups must have the same page count")
-        for page in group_pages:
-            if _batched_signature(page) != _batched_signature(pages_by_group[0][0]):
-                raise ValueError("all grouped pages must share the same page signature within a chunk")
 
     if torch.is_tensor(query_groups):
         queries = query_groups.to(dtype=torch.float32, device=device_type)
@@ -3144,6 +3174,31 @@ def _score_page_chunk_grouped_multiquery_torch(
     query_count = int(queries.shape[1])
     if int(queries.shape[0]) != batch_size:
         raise ValueError("query_groups batch size must align with pages_by_group")
+
+    signature_buckets = _signature_buckets_for_page_chunk(pages_by_group)
+    if len(signature_buckets) > 1:
+        bucket_logits = torch.zeros(
+            (batch_size, query_count, page_count * header.token_count),
+            dtype=torch.float32,
+            device=device_type,
+        )
+        for group_indices in signature_buckets:
+            group_index_list = list(group_indices)
+            sub_prepared_queries = (
+                None
+                if prepared_query_groups_tensor is None
+                else prepared_query_groups_tensor[group_index_list]
+            )
+            sub_query_sums = None if query_group_sums is None else query_group_sums[group_index_list]
+            bucket_logits[group_index_list] = _score_page_chunk_grouped_multiquery_torch(
+                queries[group_index_list],
+                [pages_by_group[group_index] for group_index in group_index_list],
+                prepared_query_groups_tensor=sub_prepared_queries,
+                query_group_sums=sub_query_sums,
+                compact_grouped_chunk=compact_grouped_chunk,
+                trace=trace,
+            )
+        return bucket_logits
 
     if trace is not None:
         trace.record_page_read(
@@ -3694,12 +3749,6 @@ def _mix_page_chunk_grouped_multiquery_torch(
     device_type = pages_by_group[0][0].device_type
     token_count = header.token_count
 
-    if trace is not None:
-        trace.record_page_read(
-            sum(page.payload_nbytes for group_pages in pages_by_group for page in group_pages),
-            sum(page.metadata_nbytes for group_pages in pages_by_group for page in group_pages),
-        )
-
     weights = attn_weights if isinstance(attn_weights, torch.Tensor) else torch.as_tensor(attn_weights, dtype=torch.float32, device=device_type)
     weights = weights.to(dtype=torch.float32, device=device_type)
     if weights.ndim != 4 or tuple(weights.shape[2:]) != (page_count, token_count):
@@ -3714,6 +3763,26 @@ def _mix_page_chunk_grouped_multiquery_torch(
         header.padded_head_dim,
         device_type=device_type,
     )
+
+    signature_buckets = _signature_buckets_for_page_chunk(pages_by_group)
+    if len(signature_buckets) > 1:
+        for group_indices in signature_buckets:
+            group_index_list = list(group_indices)
+            output[group_index_list] = _mix_page_chunk_grouped_multiquery_torch(
+                weights[group_index_list],
+                [pages_by_group[group_index] for group_index in group_index_list],
+                out_acc=output[group_index_list],
+                compact_grouped_chunk=compact_grouped_chunk,
+                disable_packed_grouped_cuda=disable_packed_grouped_cuda,
+                trace=trace,
+            )
+        return output
+
+    if trace is not None:
+        trace.record_page_read(
+            sum(page.payload_nbytes for group_pages in pages_by_group for page in group_pages),
+            sum(page.metadata_nbytes for group_pages in pages_by_group for page in group_pages),
+        )
 
     if header.mode_default == "M3":
         dense = torch.stack(
@@ -4159,13 +4228,12 @@ def decode_grouped_multiquery_step_prepared_torch_tensor(
         ).reshape(group_count, query_count, first_header.num_groups, first_header.group_size),
     )
     query_group_sums = prepared_query_groups_tensor.sum(dim=-1)
-    aligned_chunk_lengths = _aligned_chunk_lengths_for_page_pairs(first_key_group, first_value_group)
     if key_chunk_lengths is None:
-        key_chunk_lengths = aligned_chunk_lengths
+        key_chunk_lengths = _merged_chunk_lengths_for_page_groups(key_pages_by_group)
     else:
         key_chunk_lengths = tuple(int(length) for length in key_chunk_lengths)
     if value_chunk_lengths is None:
-        value_chunk_lengths = aligned_chunk_lengths
+        value_chunk_lengths = _merged_chunk_lengths_for_page_groups(value_pages_by_group)
     else:
         value_chunk_lengths = tuple(int(length) for length in value_chunk_lengths)
     if sum(key_chunk_lengths) != len(first_key_group) or sum(value_chunk_lengths) != len(first_value_group):
