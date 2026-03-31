@@ -402,6 +402,23 @@ Operational note:
 - the first LongBench wrapper pass exposed a real probe bug in [`run_qwen35_cuda_longbench_qa_probe.py`](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py): legitimate `longbench_row_index=0` rows were initially mis-handled
 - that bug is now fixed on-branch, and the final canonical LongBench artifact has `12` rows and `0` error payloads
 
+The targeted LongBench rescue matrix in [`qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl), summarized in [`qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md), makes the next step much clearer:
+
+- none of the tested rescue variants improves the overall LongBench QA story
+- `shortlist_topk8` is strictly worse on this mini-pack, and the quality-biased shortlist profile is only slower
+- the cleaned-answer diagnostics move a few row-level F1 values slightly, but they do not change the ordering or the conclusion
+- the dominant remaining problem is therefore retrieval/selection behavior, not output cleanup
+
+Rescue-matrix summary:
+
+| LongBench rescue case | Mean QA F1 | Mean decode ms/step | Read |
+| --- | ---: | ---: | --- |
+| exact | `0.14` | `743.05` | best quality, slowest |
+| shortlist base | `0.08` | `174.91` | fastest promoted shortlist baseline |
+| shortlist `layer:23` ctx | `0.08` | `178.86` | no net quality gain |
+| shortlist `top_k=8` | `0.08` | `183.53` | slower and slightly worse |
+| shortlist quality profile | `0.08` | `186.30` | slower without quality gain |
+
 The first cheap external-style comparator on that same pack is now also available in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), summarized in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This is a simple StreamingLLM-style sink-plus-recent reference lane with `256` sink tokens, `1024` recent tokens, and no query-aware shortlist expansion.
 
 | Comparator context | Case | Retrieval accuracy | Mean decode ms/step | Read |
@@ -468,7 +485,7 @@ Different models and tensor kinds really do want different policies. TinyLlama, 
 On the Qwen3.5 CUDA lane, shortlist execution produces substantial serving-speed wins once context reaches `32768+`. The default serving integration still runs those rows through `per_kv_fallback`, but the forced-grouped follow-ups now show that grouped CUDA can execute end-to-end with comparable quality and near-parity serving throughput. The fixed four-prompt Needle and passkey packs both preserve retrieval at `32768` and `49152` while keeping those large serving wins, and the LongBench-derived QA mini-pack still shows about a `4.2x` systems win on real benchmark rows even though QA F1 retention is not yet good enough. The streaming-window comparator then shows that an even faster simple reference baseline collapses retrieval entirely on the same Needle pack.
 
 3. Long-context quality is now the binding problem.
-The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit, and the LongBench QA mini-pack now shows the same issue on real benchmark rows rather than only on synthetic probes.
+The systems bottleneck is no longer "can we cut the attended page set?" The harder question is "how do we preserve quality once we do?" The `49152` tail results make that explicit, and the LongBench QA mini-pack plus rescue matrix now show the same issue on real benchmark rows rather than only on synthetic probes.
 
 4. Cheap rescue heuristics and backend-path flips are not enough yet.
 Both the layer-23 context-aware widening and the `top_k=8` follow-up improve the story only marginally. Switching the backend path to grouped decode also does not fix the `49152` loss tail or produce a stable serving win. These are useful diagnostics, not final fixes.

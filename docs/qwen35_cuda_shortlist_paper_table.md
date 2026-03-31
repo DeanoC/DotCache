@@ -257,6 +257,24 @@ Important caveats:
 - the per-row read is mixed: `multifieldqa_en` improves slightly, `hotpotqa` drops sharply, and `2wikimqa` plus `qasper` stay at `0.0` across all variants
 - the first wrapper pass exposed a real probe bug on `longbench_row_index=0`; that parser bug is now fixed in [run_qwen35_cuda_longbench_qa_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py), and the final canonical artifact has `12` rows with `0` error payloads
 
+Targeted rescue follow-up:
+
+The rescue matrix is now in [`qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl), with the rollup in [`qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md). It tests `shortlist_topk8` and the existing quality-biased shortlist profile in addition to the earlier cases.
+
+| Case | Mean QA F1 | Mean decode ms/step | Read |
+| --- | ---: | ---: | --- |
+| exact | `0.14` | `743.05` | quality reference |
+| shortlist base | `0.08` | `174.91` | strongest default shortlist point |
+| shortlist `layer:23` ctx | `0.08` | `178.86` | no overall gain |
+| shortlist `top_k=8` | `0.08` | `183.53` | slower and slightly worse |
+| shortlist quality profile | `0.08` | `186.30` | slower without gain |
+
+What this changes:
+
+- cleanup is not the answer: the cleaned-answer diagnostics move a few row-level F1 values slightly, but do not change the ranking or conclusion
+- the current LongBench misses are therefore mostly real answer-quality / retrieval-selection misses
+- `hotpotqa` remains the clearest binding row: exact stays at `0.375` while every shortlist rescue variant stays at `0.125`
+
 ## Streaming Window Reference
 
 The first cheap external-style comparator is now in [`qwen35_cuda_streaming_window_needle_pack_v1.jsonl`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl), with the rollup in [`qwen35_cuda_streaming_window_needle_pack_v1_summary.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md). This lane uses a simple StreamingLLM-style sink-plus-recent reference policy:
