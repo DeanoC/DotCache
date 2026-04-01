@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import json
 import math
 import numpy as np
 import os
@@ -15,6 +16,7 @@ from ..config import DotCacheConfig
 from ..decode_reference import decode_page
 from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
+from ..page_oracle import PageTraceRecord, save_page_trace
 from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
 from ..tracing import ExecutionTrace
 from .llama import (
@@ -229,6 +231,25 @@ def _extract_attention_subset_prefill_tensors(cache: Any, layer_ids: list[int]) 
             raise ValueError(f"Qwen3.5 attention layer {layer_id} is missing prefill KV tensors")
         extracted[int(layer_id)] = (layer_keys, layer_values)
     return extracted
+
+
+def _clone_attention_subset_prefill_tensors(prefill_tensors: dict[int, tuple[Any, Any]]) -> dict[int, tuple[Any, Any]]:
+    cloned: dict[int, tuple[Any, Any]] = {}
+    for layer_id, (layer_keys, layer_values) in prefill_tensors.items():
+        if torch is not None and torch.is_tensor(layer_keys) and torch.is_tensor(layer_values):
+            cloned[int(layer_id)] = (layer_keys.detach().clone(), layer_values.detach().clone())
+        else:
+            cloned[int(layer_id)] = (
+                np.asarray(layer_keys, dtype=np.float32).copy(),
+                np.asarray(layer_values, dtype=np.float32).copy(),
+            )
+    return cloned
+
+
+def _tensor_to_float32_numpy(value: Any) -> np.ndarray:
+    if torch is not None and torch.is_tensor(value):
+        return np.asarray(value.detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
+    return np.asarray(value, dtype=np.float32)
 
 
 def _replace_attention_subset_cache_with_placeholders(cache: Any, layer_ids: list[int]) -> None:
@@ -1631,12 +1652,18 @@ class DotCacheQwen35AttentionSubset(nn.Module):
 class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
     capture_enabled: bool = False
     capture_step_index: int = -1
+    q_head_to_kv_head: np.ndarray = field(init=False, repr=False)
     _pending_records: list[LlamaReplayRecord] = field(default_factory=list, init=False, repr=False)
     _wrappers: list[DotCacheQwen35AttentionSubset] = field(default_factory=list, init=False, repr=False)
     _current_token_index_override: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35TextModelAdapter.__post_init__(self)
+        text_config = _qwen35_text_config(self.model)
+        self.q_head_to_kv_head = _default_q_head_to_kv_head(
+            int(text_config.num_attention_heads),
+            int(text_config.num_key_value_heads),
+        )
         self._install_wrappers()
 
     def _install_wrappers(self) -> None:
@@ -2221,6 +2248,32 @@ class Qwen35AttentionSubsetHarness:
         return run_qwen35_attention_subset_replay_harness(
             self.model,
             self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def capture_attention_subset_page_traces(
+        self,
+        *,
+        output_dir: str | Path,
+        tokens_per_page: int,
+        kinds: tuple[str, ...] = ("K", "V"),
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_page_trace_capture_harness(
+            self.model,
+            self.adapter,
+            output_dir=output_dir,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
             prompt=prompt,
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -4944,6 +4997,9 @@ def _run_qwen35_attention_subset_dense_capture(
         lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
         device=input_ids.device,
     )
+    prefill_tensors = _clone_attention_subset_prefill_tensors(
+        _extract_attention_subset_prefill_tensors(prefill_outputs.past_key_values, adapter.attention_subset_layer_ids())
+    )
     per_step_records: list[list[LlamaReplayRecord]] = []
     decode_inputs: list[Any] = []
     step_logits: list[np.ndarray] = []
@@ -4987,6 +5043,7 @@ def _run_qwen35_attention_subset_dense_capture(
 
     return {
         "prefill_outputs": prefill_outputs,
+        "prefill_tensors": prefill_tensors,
         "prefill_ms": float(prefill_ms),
         "decode_ms_total": float(dense_decode_ms_total),
         "decode_inputs": decode_inputs,
@@ -5094,6 +5151,299 @@ def _summarize_attention_subset_capture(
     }
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def _aggregate_query_states_by_kv_head(
+    query_states: np.ndarray,
+    q_head_to_kv_head: np.ndarray,
+    *,
+    num_key_value_heads: int,
+) -> np.ndarray:
+    queries = np.asarray(query_states, dtype=np.float32)
+    mapping = np.asarray(q_head_to_kv_head, dtype=np.int32)
+    if queries.ndim != 2:
+        raise ValueError("query_states must have shape [query_heads, head_dim]")
+    if mapping.ndim != 1 or mapping.shape[0] != queries.shape[0]:
+        raise ValueError("q_head_to_kv_head must have shape [query_heads]")
+    kv_queries = np.zeros((int(num_key_value_heads), int(queries.shape[1])), dtype=np.float32)
+    counts = np.zeros((int(num_key_value_heads),), dtype=np.int32)
+    for q_head_id, kv_head_id in enumerate(mapping.tolist()):
+        if kv_head_id < 0 or kv_head_id >= int(num_key_value_heads):
+            raise ValueError("q_head_to_kv_head contains an out-of-range kv head")
+        kv_queries[kv_head_id] += queries[q_head_id]
+        counts[kv_head_id] += 1
+    counts = np.maximum(counts, 1)
+    kv_queries /= counts[:, None].astype(np.float32)
+    return kv_queries
+
+
+def _build_page_traces_from_streams(
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]],
+    *,
+    max_token_index: int,
+    tokens_per_page: int,
+    source: str,
+    stage: str,
+) -> list[PageTraceRecord]:
+    page_traces: list[PageTraceRecord] = []
+    for (layer_id, kv_head_id, kind), entries in sorted(streams.items()):
+        entries.sort(key=lambda item: item[0])
+        for offset in range(0, len(entries), int(tokens_per_page)):
+            chunk = entries[offset : offset + int(tokens_per_page)]
+            token_indices = [token_index for token_index, _, _ in chunk]
+            values = np.stack([value for _, value, _ in chunk], axis=0).astype(np.float32, copy=False)
+            queries = [query_vector for _, _, query_vector in chunk if query_vector is not None]
+            query = None
+            if queries:
+                query = np.mean(np.stack(queries, axis=0), axis=0, dtype=np.float32).astype(np.float32, copy=False)
+            page_traces.append(
+                PageTraceRecord(
+                    source=source,
+                    kind=kind,  # type: ignore[arg-type]
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=int(token_indices[0]),
+                    token_age=max(max_token_index - int(token_indices[-1]), 0),
+                    values=values,
+                    query=query,
+                    notes=[
+                        f"stage={stage}",
+                        "query_aggregation=mean_mapped_q_heads" if query is not None else "query_aggregation=none",
+                        f"token_indices={token_indices[0]}..{token_indices[-1]}",
+                    ],
+                )
+            )
+    return page_traces
+
+
+def build_attention_subset_page_trace_records(
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "qwen35_attention_subset_dense_capture",
+) -> list[PageTraceRecord]:
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+
+    normalized_kinds = tuple(str(kind).upper() for kind in kinds)
+    invalid_kinds = [kind for kind in normalized_kinds if kind not in {"K", "V"}]
+    if invalid_kinds:
+        raise ValueError(f"unsupported capture kinds: {invalid_kinds}")
+
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]] = {}
+    max_token_index = -1
+
+    for step_records in per_step_records:
+        for record in step_records:
+            max_token_index = max(max_token_index, int(record.token_index))
+            kv_head_count = int(record.key_states.shape[0])
+            kv_queries = _aggregate_query_states_by_kv_head(
+                record.query_states,
+                q_head_to_kv_head,
+                num_key_value_heads=kv_head_count,
+            )
+            for kv_head_id in range(kv_head_count):
+                if "K" in normalized_kinds:
+                    streams.setdefault((int(record.layer_id), kv_head_id, "K"), []).append(
+                        (
+                            int(record.token_index),
+                            np.asarray(record.key_states[kv_head_id], dtype=np.float32),
+                            np.asarray(kv_queries[kv_head_id], dtype=np.float32),
+                        )
+                    )
+                if "V" in normalized_kinds:
+                    streams.setdefault((int(record.layer_id), kv_head_id, "V"), []).append(
+                        (
+                            int(record.token_index),
+                            np.asarray(record.value_states[kv_head_id], dtype=np.float32),
+                            np.asarray(kv_queries[kv_head_id], dtype=np.float32),
+                        )
+                    )
+
+    return _build_page_traces_from_streams(
+        streams,
+        max_token_index=max_token_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+        stage="decode",
+    )
+
+
+def build_attention_subset_prefill_page_trace_records(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    *,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "qwen35_attention_subset_dense_capture",
+    max_token_index: int | None = None,
+) -> list[PageTraceRecord]:
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+
+    normalized_kinds = tuple(str(kind).upper() for kind in kinds)
+    invalid_kinds = [kind for kind in normalized_kinds if kind not in {"K", "V"}]
+    if invalid_kinds:
+        raise ValueError(f"unsupported capture kinds: {invalid_kinds}")
+
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]] = {}
+    resolved_max_token_index = -1 if max_token_index is None else int(max_token_index)
+    for layer_id, (layer_keys, layer_values) in sorted(prefill_tensors.items()):
+        key_array = _tensor_to_float32_numpy(layer_keys)
+        value_array = _tensor_to_float32_numpy(layer_values)
+        if key_array.ndim != 4 or value_array.ndim != 4 or key_array.shape[0] != 1 or value_array.shape[0] != 1:
+            raise ValueError("prefill tensors must have shape [1, kv_heads, seq_len, head_dim]")
+        if key_array.shape[:3] != value_array.shape[:3]:
+            raise ValueError("prefill key and value tensors must align on batch, kv_head, and seq_len")
+        _, kv_head_count, seq_len, _ = key_array.shape
+        resolved_max_token_index = max(resolved_max_token_index, int(seq_len) - 1)
+        for kv_head_id in range(int(kv_head_count)):
+            for token_index in range(int(seq_len)):
+                if "K" in normalized_kinds:
+                    streams.setdefault((int(layer_id), kv_head_id, "K"), []).append(
+                        (
+                            int(token_index),
+                            np.asarray(key_array[0, kv_head_id, token_index], dtype=np.float32),
+                            None,
+                        )
+                    )
+                if "V" in normalized_kinds:
+                    streams.setdefault((int(layer_id), kv_head_id, "V"), []).append(
+                        (
+                            int(token_index),
+                            np.asarray(value_array[0, kv_head_id, token_index], dtype=np.float32),
+                            None,
+                        )
+                    )
+    return _build_page_traces_from_streams(
+        streams,
+        max_token_index=resolved_max_token_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+        stage="prefill",
+    )
+
+
+def export_attention_subset_page_traces(
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_dir: str | Path,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "qwen35_attention_subset_dense_capture",
+    prefill_tensors: dict[int, tuple[Any, Any]] | None = None,
+    prefill_token_count: int | None = None,
+) -> dict[str, Any]:
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    page_traces = build_attention_subset_page_trace_records(
+        per_step_records,
+        q_head_to_kv_head=q_head_to_kv_head,
+        tokens_per_page=tokens_per_page,
+        kinds=kinds,
+        source=source,
+    )
+    if prefill_tensors:
+        prefill_length = max(int(prefill_token_count or 0), 0)
+        max_token_index = max(prefill_length - 1 + len(per_step_records), 0)
+        page_traces = build_attention_subset_prefill_page_trace_records(
+            prefill_tensors,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
+            source=source,
+            max_token_index=max_token_index,
+        ) + page_traces
+    trace_paths: list[str] = []
+    counts_by_kind: dict[str, int] = {}
+    counts_by_layer: dict[str, int] = {}
+    counts_by_stage: dict[str, int] = {}
+    for index, trace in enumerate(page_traces):
+        stage = "unknown"
+        for note in trace.notes:
+            if note.startswith("stage="):
+                stage = note.split("=", 1)[1]
+                break
+        trace_name = (
+            f"{stage}_layer{trace.layer_id:02d}_kv{trace.kv_head_id:02d}_{trace.kind.lower()}_"
+            f"t{trace.token_start:06d}_n{trace.token_count:03d}_{index:04d}.npz"
+        )
+        target = output_path / trace_name
+        save_page_trace(trace, target)
+        trace_paths.append(str(target))
+        counts_by_kind[trace.kind] = counts_by_kind.get(trace.kind, 0) + 1
+        counts_by_stage[stage] = counts_by_stage.get(stage, 0) + 1
+        layer_key = str(trace.layer_id)
+        counts_by_layer[layer_key] = counts_by_layer.get(layer_key, 0) + 1
+    manifest = {
+        "output_dir": str(output_path),
+        "page_trace_count": len(page_traces),
+        "page_trace_paths": trace_paths,
+        "page_trace_counts_by_kind": dict(sorted(counts_by_kind.items())),
+        "page_trace_counts_by_stage": dict(sorted(counts_by_stage.items())),
+        "page_trace_counts_by_layer": dict(sorted(counts_by_layer.items())),
+        "tokens_per_page": int(tokens_per_page),
+        "kinds": list(kinds),
+        "source": source,
+    }
+    (output_path / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def run_qwen35_attention_subset_page_trace_capture_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    output_dir: str | Path,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    prefill_tensors = dense_capture["prefill_tensors"]
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        export_attention_subset_page_traces(
+            dense_capture["capture_records"],
+            q_head_to_kv_head=adapter.q_head_to_kv_head,
+            output_dir=output_dir,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
+            prefill_tensors=prefill_tensors,
+            prefill_token_count=int(input_ids.shape[1]),
+        )
+    )
+    result["runtime_mode"] = "dense_attention_subset_page_trace_capture"
     return result
 
 

@@ -163,7 +163,7 @@ The repo now needs to treat evaluation as a protocol rather than a pile of ad ho
 4. `selector diagnostics`
    Optional recall and timing instrumentation used to explain why a systems result happened. This lane is diagnostic, not a substitute for quality or throughput tables.
 
-The repo-side version of this contract now lives in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) so future experiments can use the same reporting rules as the paper draft.
+The repo-side version of this contract now lives in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) so future experiments can use the same reporting rules as the paper draft. The next-stage decision criteria, confidence gates, and implementation order now live in [`dotcache_compressed_page_test_readiness_rfc.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_compressed_page_test_readiness_rfc.md).
 
 For DotCache page selection, every reported experiment should therefore declare:
 

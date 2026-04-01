@@ -21,6 +21,7 @@ This tracker turns the March 2026 review into concrete paper and experiment work
   - added an explicit section on what the current evidence does and does not support
 - standardized evaluation contract drafted in [`dotcache_page_selection_standardized_evaluation.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md) and linked from the manuscript
 - ordered submission roadmap drafted in [`dotcache_submission_execution_plan.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_submission_execution_plan.md)
+- compressed-page test-readiness RFC added in [`dotcache_compressed_page_test_readiness_rfc.md`](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_compressed_page_test_readiness_rfc.md) to define the next-stage decision, gates, benchmark suite, and implementation order
 
 Current CUDA paper read:
 
@@ -164,73 +165,24 @@ Still needed:
 
 - calibration/test split for profile search
 - frozen-policy held-out evaluation
+- an oracle or trace-backed page-format labeling harness so page-format choice becomes the main experiment rather than another profile tweak
 
-## High-Value Next Experiments
+## RFC-Aligned Next Stage
 
-### A. Grouped-batched decode activation on Qwen3.5 CUDA
+The new RFC changes the priority order for the next cycle:
 
-Goal:
+1. freeze the evaluation contract and logging schema
+2. build the full-precision trace recorder and page-oracle replay harness
+3. compare the heterogeneous page menu against the best fixed single-format DotCache variants
+4. add wave-1 external baselines under matched effective budgets
+5. run the hard benchmark suite and keep a page-level failure workbook
+6. promote only selectors that survive the matched-budget bakeoff
 
-- understand the small remaining grouped/default performance gap on the Qwen3.5 CUDA lane now that grouped decode is fully operational
+Implication:
 
-Why this is first:
-
-- it is now the clearest systems bottleneck in the shortlist story
-- the newer forced-grouped reruns show grouped batching can now run end-to-end on the shortlist rows
-- the quality-tail and repro follow-ups now show that grouped mode is repeatable and quality-stable, but still not the default choice
-
-Needed outputs:
-
-- selector / score / mix timing split inside the serving loop
-- timing split comparisons for default vs grouped on the same shortlist rows
-- one clean rerun table after timing instrumentation, without wrapper interruptions
-
-### B. One stronger `49152` quality rescue
-
-Goal:
-
-- find one quality intervention that is meaningfully stronger than `top_k=8`, without turning the shortlist back into near-exact attention
-
-Negative results already in hand:
-
-- `layer:23:min_ctx` widening does not materially fix the tail
-- `top_k=8` modestly helps quality but slows serving and still is not clean
-- once `top_k=8` is global, the layer-23 override no longer helps
-- grouped decode also does not make `49152` quality-clean
-
-Candidate directions:
-
-- selective value escape only on shortlist pages
-- shortlist refine stage on the top few pages
-- query-conditioned rescue rule instead of a fixed wider `top_k`
-
-### C. Page-level adaptivity ablation
-
-Goal:
-
-- compare:
-  - fixed per-layer bundle
-  - fixed per-layer plus explicit rescue overrides
-  - current per-page observed-stat routing
-
-Minimal models:
-
-- `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-- `HuggingFaceTB/SmolLM2-360M-Instruct`
-- `Qwen/Qwen2.5-3B-Instruct`
-
-### D. Calibration/Test profile search
-
-Goal:
-
-- stop hand-tuning until the plots look nice
-
-Minimum viable version:
-
-- pick a fixed calibration prompt set per model
-- search bundle assignments or rescue rules on calibration only
-- freeze the policy
-- evaluate once on held-out prompts
+- page selection is no longer a support component
+- page-format determination is now the main experiment
+- grouped/default timing work remains useful, but only as part of the broader runtime-truth contract rather than the sole next step
 
 ## Mainline Results Pulled From Other Machines
 

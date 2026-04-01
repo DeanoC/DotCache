@@ -1,0 +1,991 @@
+{
+  "anchor_window": 1024,
+  "bad_example_count": 2,
+  "bad_recall_threshold": 0.4,
+  "example_count": 20,
+  "examples": [
+    {
+      "anchor_fraction": 0.25,
+      "anchor_pages": 2,
+      "approx_boundary_margin_normalized": 0.01336438832180394,
+      "approx_exact_top_recall": 0.6,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 8192,
+      "recent_old_fraction": 0.5,
+      "recent_old_pages": 4,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.5,
+      "anchor_pages": 4,
+      "approx_boundary_margin_normalized": 0.055803044166097486,
+      "approx_exact_top_recall": 0.7,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 8192,
+      "recent_old_fraction": 0.5,
+      "recent_old_pages": 4,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.125,
+      "anchor_pages": 1,
+      "approx_boundary_margin_normalized": 0.02151101372492941,
+      "approx_exact_top_recall": 0.7272727272727273,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 8192,
+      "recent_old_fraction": 0.5,
+      "recent_old_pages": 4,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.5,
+      "anchor_pages": 4,
+      "approx_boundary_margin_normalized": 0.08467993893329272,
+      "approx_exact_top_recall": 0.36363636363636365,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 8192,
+      "recent_old_fraction": 0.5,
+      "recent_old_pages": 4,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 0,
+      "prompt_length": 7,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 1,
+      "prompt_length": 7,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 0,
+      "prompt_length": 7,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 1,
+      "prompt_length": 7,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 0,
+      "prompt_length": 224,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 1,
+      "prompt_length": 224,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 0,
+      "prompt_length": 224,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": null,
+      "approx_exact_top_recall": 1.0,
+      "approx_top_budget": 0,
+      "kv_head_id": 1,
+      "prompt_length": 224,
+      "recent_old_fraction": 0.0,
+      "recent_old_pages": 0,
+      "recent_old_run_length": 0,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.005786245996364754,
+      "approx_exact_top_recall": 0.45454545454545453,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 16384,
+      "recent_old_fraction": 0.75,
+      "recent_old_pages": 6,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.16742035813401482,
+      "approx_exact_top_recall": 0.36363636363636365,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 16384,
+      "recent_old_fraction": 0.5,
+      "recent_old_pages": 4,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.006472023618531876,
+      "approx_exact_top_recall": 0.6666666666666666,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 16384,
+      "recent_old_fraction": 0.625,
+      "recent_old_pages": 5,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.03210429738060955,
+      "approx_exact_top_recall": 0.6666666666666666,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 16384,
+      "recent_old_fraction": 0.625,
+      "recent_old_pages": 5,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.009400279063949933,
+      "approx_exact_top_recall": 0.7,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 32768,
+      "recent_old_fraction": 0.625,
+      "recent_old_pages": 5,
+      "recent_old_run_length": 4,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.023555093405895428,
+      "approx_exact_top_recall": 0.5,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 32768,
+      "recent_old_fraction": 0.625,
+      "recent_old_pages": 5,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 0
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.010883516244773074,
+      "approx_exact_top_recall": 0.7,
+      "approx_top_budget": 8,
+      "kv_head_id": 0,
+      "prompt_length": 32768,
+      "recent_old_fraction": 0.75,
+      "recent_old_pages": 6,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    },
+    {
+      "anchor_fraction": 0.0,
+      "anchor_pages": 0,
+      "approx_boundary_margin_normalized": 0.019311991447977656,
+      "approx_exact_top_recall": 0.7,
+      "approx_top_budget": 8,
+      "kv_head_id": 1,
+      "prompt_length": 32768,
+      "recent_old_fraction": 1.0,
+      "recent_old_pages": 8,
+      "recent_old_run_length": 5,
+      "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+      "step_index": 1
+    }
+  ],
+  "input_files": [
+    "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+    "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl"
+  ],
+  "recent_band_window": 1024,
+  "target_layer": 23,
+  "top_rules": [
+    {
+      "clauses": [
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "anchor_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 4",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_run_length >= 0",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_run_length >= 4",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "anchor_fraction >= 0",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_fraction >= 0",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "recent_old_fraction >= 0.5",
+        "approx_boundary_margin_normalized >= 0.0558"
+      ],
+      "f1": 0.8,
+      "false_negative": 0,
+      "false_positive": 1,
+      "precision": 0.6666666666666666,
+      "predicted_examples": [
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.055803044166097486,
+          "approx_exact_top_recall": 0.7,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 0
+        },
+        {
+          "anchor_pages": 4,
+          "approx_boundary_margin_normalized": 0.08467993893329272,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 8192,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_mps_shortlist_20260329/dotcache_exact_m0_default_mps_scorer_diagnostic_8192_v2.jsonl",
+          "step_index": 1
+        },
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    {
+      "clauses": [
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "approx_boundary_margin_normalized >= 0.1674"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "anchor_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "anchor_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.1674"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 0",
+        "approx_boundary_margin_normalized >= 0.1674"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 4",
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_pages >= 4",
+        "approx_boundary_margin_normalized >= 0.1674"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_run_length >= 0",
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_run_length >= 0",
+        "approx_boundary_margin_normalized >= 0.1674"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    },
+    {
+      "clauses": [
+        "recent_old_run_length >= 4",
+        "approx_boundary_margin_normalized >= 0.0847"
+      ],
+      "f1": 0.6666666666666666,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "predicted_examples": [
+        {
+          "anchor_pages": 0,
+          "approx_boundary_margin_normalized": 0.16742035813401482,
+          "approx_exact_top_recall": 0.36363636363636365,
+          "kv_head_id": 1,
+          "prompt_length": 16384,
+          "recent_old_pages": 4,
+          "recent_old_run_length": 4,
+          "source_file": "benchmarks/results/qwen35_cuda_scorer_diagnostic_16384_32768.jsonl",
+          "step_index": 0
+        }
+      ],
+      "recall": 0.5,
+      "true_positive": 1
+    }
+  ]
+}

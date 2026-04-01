@@ -1,6 +1,6 @@
 # DotCache Submission Execution Plan
 
-This plan converts the current review feedback and March 31 protocol work into an ordered submission path. It assumes the working paper source is [dotcache_layer_page_selection.md](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md) and the evaluation contract is [dotcache_page_selection_standardized_evaluation.md](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md).
+This plan converts the current review feedback and March 31 protocol work into an ordered submission path. It assumes the working paper source is [dotcache_layer_page_selection.md](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md), the evaluation contract is [dotcache_page_selection_standardized_evaluation.md](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md), and the next-stage decision framework is [dotcache_compressed_page_test_readiness_rfc.md](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_compressed_page_test_readiness_rfc.md).
 
 ## Current Starting Point
 
@@ -21,243 +21,215 @@ Key current artifacts:
 
 Reach the minimum evidence bar for a credible workshop paper or strong systems preprint:
 
-- one standardized external task
-- one external baseline on the Qwen3.5 lane
-- variance-aware main tables
-- a clean stance on the `49152` quality story
-- one 7B+ standardized data point
-- minimal scientific profile search
-- selector timing decomposition inside the real serving loop
+- page-format selection is evaluated as the main experiment, not a support heuristic
+- the four-lane contract is frozen and used consistently
+- one oracle or trace-backed proof shows heterogeneous page formats beat the best fixed single format
+- matched-budget external baselines exist on one strong quality model and one systems model
+- runtime truth includes `TTFT`, `p95` decode latency, and effective-memory accounting
+- the benchmark suite includes at least one hard realistic long-context family, one controlled stress family, and one decode-heavy reasoning slice
+- the current benchmark misses are explained through a page-level failure workbook
 
 ## Ordered Workstreams
 
-### Phase 1. Lock the Current Qwen3.5 Tables
+### Phase 1. Freeze The Evaluation Contract And Logging Schema
 
 Goal:
 
-- upgrade the current Qwen3.5 CUDA tables from one-off probe summaries to protocol-compliant paper tables
+- make every next-stage run conform to one contract before changing the selector or mode bundles again
 
 Tasks:
 
-1. fold the repro summary into the manuscript tables for the `32768/49152` systems rows
-2. label the `49152` quality rows explicitly as `held_out` and synthetic prompt family
-3. report `n=3`, mean, and `95% CI` for the current systems rows
-4. keep the current claim narrow until a better `49152` rescue exists
-
-Inputs:
-
-- [qwen35_cuda_shortlist_large_context_repro_serving_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md)
-- [qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl)
-
-Deliverables:
-
-- updated [qwen35_cuda_shortlist_paper_table.md](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_shortlist_paper_table.md)
-- updated [dotcache_layer_page_selection.md](/Users/deanocalver/Documents/Projects/DotCache/dotcache_layer_page_selection.md)
-
-Done when:
-
-- Tables 6 and 7 can be populated from committed summary artifacts rather than hand-picked journal prose
-- the first named task section uses the four-prompt Needle pack summary artifact rather than the original single-prompt row
-
-### Phase 2. Add One Named Benchmark Task
-
-Goal:
-
-- add the cheapest recognizable external task under the standardized protocol
-
-Chosen first task:
-
-- Needle-in-a-Haystack
-
-Why first:
-
-- cheapest wiring cost
-- directly relevant to long-context retrieval/selectivity claims
-- gives the paper one named benchmark without waiting for a full LongBench or RULER integration
-
-Tasks:
-
-1. add a protocol-tagged Needle harness for the Qwen3.5 attention-subset lane
-   Status: done via [bench_qwen35_attention_subset_dotcache_needle.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_needle.py), [run_qwen35_cuda_needle_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_probe.py), and [run_qwen35_cuda_needle_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_protocol.sh)
-2. run exact, shortlist base, and shortlist `layer:23` variants
-   Status: done first as `n=1`, then expanded into the fixed four-prompt pack via [run_qwen35_cuda_needle_pack_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_needle_pack_protocol.sh)
-3. record both retrieval success and systems metrics under the same prompt suite metadata
-   Status: done in [qwen35_cuda_needle_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl) and [qwen35_cuda_needle_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md)
+1. require the four-lane tags on every promoted run
+2. require `TTFT`, `p95` decode latency, effective bytes per token, page-format histograms, and selector timing splits
+3. add a hard distinction between `reference_trace` and `paged_runtime`
+4. define one matched-budget accounting rule that counts metadata and fragmentation
 
 Required outputs:
 
-- `benchmarks/results/qwen35_cuda_needle_*.jsonl`
-- `docs/qwen35_cuda_needle_summary.md`
+- updated [dotcache_page_selection_standardized_evaluation.md](/Users/deanocalver/Documents/Projects/DotCache/docs/dotcache_page_selection_standardized_evaluation.md)
+- one shared logging schema note in `docs/` or `benchmarks/`
 
 Success criteria:
 
-- at least one named task appears in the paper with prompt count, context, and variance
+- new rows are promotable without ad hoc explanation
+- future baseline wiring has one budget rule instead of per-method caveats
 
-Decision gate:
-
-- if Needle is positive, it becomes the first external task result in the paper
-- if Needle is mixed or negative, it still improves credibility and informs claim narrowing
-
-Follow-on breadth step:
-
-- add a second named synthetic retrieval family before claiming benchmark breadth
-- Status: done in [qwen35_cuda_passkey_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl) and [qwen35_cuda_passkey_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md)
-- next breadth step: completed as a mixed-result non-synthetic mini-pack in [qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl) and [qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md)
-- immediate follow-up: completed in [qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl) and [qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md)
-- focused row-level diagnostic: completed in [qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl) and [qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md); next work on this lane should target why the same old exact-page ranges keep missing shortlist selection
-
-### Phase 3. Add One External Baseline On The Qwen3.5 Lane
+### Phase 2. Build The Full-Precision Trace Recorder And Oracle Replay Harness
 
 Goal:
 
-- compare DotCache against one non-internal long-context method under a matched memory budget
-
-Baseline candidates:
-
-- `Quest`
-- `H2O`
-- StreamingLLM-style sink-plus-recent window reference baseline
-
-Selection rule:
-
-- choose whichever can be wired fastest with honest budget matching and reproducible runs
-- do not block this phase waiting for the theoretically best baseline if a simpler one is practical now
+- promote page-format determination from a heuristic bundle story to a measurable oracle problem
 
 Tasks:
 
-1. pick one baseline and define a memory-budget matching rule
-   Current practical pick: a StreamingLLM-style sink-plus-recent reference lane on the Needle pack, documented in [qwen35_cuda_external_baseline_streaming_window_plan.md](/Users/deanocalver/Documents/Projects/DotCache/docs/qwen35_cuda_external_baseline_streaming_window_plan.md)
-2. run it on the Qwen3.5 lane at the same main contexts used in the paper
-   Status: done in [qwen35_cuda_streaming_window_needle_pack_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl) and [qwen35_cuda_streaming_window_needle_pack_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md)
-3. compare against exact and shortlist base under the standardized systems table shape
+1. capture full-precision traces for a fixed model roster
+2. replay each page across the current candidate menu:
+   - `M0-2b`
+   - `M0-3b`
+   - `M0-4b`
+   - `M1-4b`
+   - `M2-4b`
+   - `M4-4b`
+   - `M3 exact`
+   - `T3` when stable
+3. label each page with the cheapest safe format under frozen fidelity thresholds
+4. compare:
+   - current heuristics
+   - a static layer or head or age map
+   - a lightweight learned predictor
 
 Required outputs:
 
-- `benchmarks/results/qwen35_cuda_external_baseline_*.jsonl`
-- `docs/qwen35_cuda_external_baseline_summary.md`
+- trace-capture entrypoint in `scripts/` or `benchmarks/`
+- replay harness that emits per-page oracle labels
+- one summary note describing thresholds and freeze rules
 
 Success criteria:
 
-- one external comparator appears in the paper with matched budget and explicit caveats
+- DotCache can answer whether a heterogeneous menu beats the best fixed single format on oracle traces
 
-### Phase 4. Resolve The `49152` Quality Fork
+### Phase 3. Sweep The Existing DotCache Menu Before Inventing New Policies
 
 Goal:
 
-- stop carrying an unresolved half-claim into submission
-
-Two acceptable outcomes:
-
-1. `49152` quality rescue works well enough to promote
-2. the paper is explicitly reframed as a systems-forward paper with unresolved hardest-regime quality
+- establish the true shape of the current page menu over page size, mode, and recent-window choices
 
 Tasks:
 
-1. run one stronger `held_out quality` rescue beyond `top_k=8`
-2. compare it directly against the current protocol-tagged `49152` rows
-3. make an explicit go/no-go decision on the quality claim
-
-Current baseline to beat:
-
-- `shortlist_base`: `loss delta 0.0130062`, `max logit abs error 7.0`
-- `shortlist_l23_ctx`: `loss delta 0.0128626`, `max logit abs error 6.96484375`
+1. run the current menu across page-size sweeps
+2. compare fixed single-format variants against the heterogeneous menu
+3. keep Qwen3.5 0.8B as the wind-tunnel model for selector stress and shortlist behavior
+4. add at least one stronger Qwen or Llama-family model for final quality verdicts
 
 Required outputs:
 
-- `benchmarks/results/qwen35_cuda_shortlist_49152_*_heldout_quality.jsonl`
-- one short decision note in [performance_journal.md](/Users/deanocalver/Documents/Projects/DotCache/docs/performance_journal.md)
+- one fixed-format versus heterogeneous summary table
+- one strong-model held-out quality table
 
-Decision gate:
+Success criteria:
 
-- if no rescue clearly improves the `49152` held-out lane, freeze the paper wording as systems-forward and stop spending cycles pretending a quality fix is imminent
+- the next stage stops treating Qwen3.5 alone as the final quality courtroom
 
-### Phase 5. Add One 7B+ Standardized Point
+### Phase 4. Add Wave-1 External Baselines Under Matched Effective Budgets
 
 Goal:
 
-- show that the story is not limited to a tiny hybrid model
+- test DotCache against the canonical external families before spending more time on internal heuristic tuning
 
-Preferred first target:
+Mandatory first-wave baselines:
 
-- Qwen2.5 7B, because the repo already has relevant CUDA work and quality references
+- compression-side:
+  - `KIVI`
+  - `KVQuant`
+  - `QJL`
+  - `QServe`
+  - `InnerQ`
+  - `RotateKV`
+  - `PM-KVQ`
+  - one saliency-aware representative such as `ZipCache` or `MiKV`
+- read-time comparators:
+  - `Quest`
+  - `H2O`
+  - `SnapKV`
+  - `PQCache`
+  - StreamingLLM sink-plus-recent window
+
+Stretch additions:
+
+- `Expected Attention`
+- `ParisKV`
+- `Self-Indexing KVCache`
+
+Required outputs:
+
+- matched-budget comparison notes
+- one systems-model baseline table
+- one stronger-model quality baseline table
+
+Success criteria:
+
+- DotCache beats at least part of the canonical set on one strong quality model and one systems model, or the paper wording is narrowed accordingly
+
+### Phase 5. Run The Hard Benchmark Suite And Build The Failure Workbook
+
+Goal:
+
+- replace flattering narrow slices with a small benchmark suite that is difficult to game
+
+Near-term suite:
+
+- controlled stress:
+  - `RULER`
+  - `NoLiMa`
+- realistic long-context understanding:
+  - `LongBench v2`
+  - `LongBench Pro`
+  - `InfinityBench`
+- decode-heavy reasoning:
+  - `GSM8K`
+  - `MATH500`
+- deployment gate:
+  - one multi-instruction and prompt-leakage pack
 
 Tasks:
 
-1. choose one standardized context bucket
-2. run one `held_out systems` row and one `held_out quality` row
-3. keep the case count small: exact plus one DotCache operating point
+1. run the suite under the frozen contract
+2. keep page-level miss diagnostics for every failed answer
+3. classify each miss as:
+   - pruned by read-time selection
+   - kept but damaged by write-time format
+   - present and healthy but still under-attended
 
 Required outputs:
 
-- `benchmarks/results/qwen25_7b_*_standardized_*.jsonl`
-- `docs/qwen25_7b_standardized_summary.md`
+- benchmark summaries under the standardized table shape
+- a failure workbook artifact for every promoted benchmark family
 
 Success criteria:
 
-- one 7B+ table row appears under the same reporting contract as Qwen3.5
+- the benchmark-quality pain is reduced to concrete selector, format, or budget failures rather than vague regressions
 
-### Phase 6. Minimal Automated Profile Search
-
-Goal:
-
-- remove the most obvious “hand-tuned until it worked” criticism
-
-Minimum viable version:
-
-1. freeze a calibration prompt set
-2. search a small policy space only on calibration
-3. emit a frozen profile
-4. evaluate once on held-out
-
-Required outputs:
-
-- `scripts/` or `benchmarks/` entrypoint for profile search
-- committed calibration split definition
-- one `docs/` note describing search space and freeze rule
-
-Success criteria:
-
-- the manuscript can say profile search was separated from held-out evaluation, even if the search itself is still simple
-
-### Phase 7. Selector Timing Decomposition In The Real Serving Loop
+### Phase 6. Promote Only Selectors That Survive The Bakeoff
 
 Goal:
 
-- explain the remaining shortlist and grouped-path tradeoffs with end-to-end evidence
+- keep the serving path honest by promoting only selectors that win under the matched-budget and benchmark contract
 
 Tasks:
 
-1. surface selector / ranking / materialization / backend timing totals in the promoted serving rows
-2. compare default shortlist versus grouped shortlist on the same contexts
-3. use this as diagnostic support, not as a substitute for the main systems table
+1. compare oracle-closeness, held-out quality, and held-out systems results
+2. reject selectors that only improve Needle or passkey but fail the hard suite
+3. require no `TTFT` cliff, no `p95` disaster, and no obvious leakage or instruction-following regression
 
-Required outputs:
+Second-wave baselines to add once the canonical set is in place:
 
-- `benchmarks/results/qwen35_cuda_selector_timing_*.jsonl`
-- `docs/qwen35_cuda_selector_timing_summary.md`
+- `TailorKV`
+- `Kitty`
+- `DiffKV`
 
 Success criteria:
 
-- the paper can support its selector-overhead claims with real serving-loop timings rather than only replay microbenchmarks
+- only selectors that survive the matched-budget bakeoff graduate into the real serving path
 
 ## Recommended Execution Order
 
-1. Phase 1: lock the current tables
-2. Phase 2: Needle-in-a-Haystack
-3. Phase 4: resolve the `49152` quality fork
-4. Phase 7: selector timing decomposition
-5. Phase 3: one external baseline
-6. Phase 5: one 7B+ standardized point
-7. Phase 6: minimal automated profile search
+1. Phase 1: freeze the evaluation contract and logging schema
+2. Phase 2: build the full-precision trace recorder and oracle replay harness
+3. Phase 3: sweep the current DotCache menu across page sizes and fixed-format comparisons
+4. Phase 4: add wave-1 external baselines under matched effective budgets
+5. Phase 5: run the benchmark suite and generate the page-level failure workbook
+6. Phase 6: promote only selectors that survive the bakeoff
 
 ## What Counts As Submission-Ready
 
 Minimum bar for a workshop/system-note submission:
 
-- protocolized Qwen3.5 tables with variance
-- one named benchmark task
-- one explicit stance on the `49152` quality issue
-- one external baseline or one 7B+ standardized point
+- protocolized systems and quality tables with variance
+- one oracle-backed proof that heterogeneous page formats beat the best fixed single format
+- one strong-model quality verdict beyond Qwen3.5 0.8B
+- matched-budget external baselines
+- `TTFT` and `p95` runtime truth
+- a benchmark-backed explanation of the current quality failures
 
 Stronger bar for a more ambitious venue:
 
@@ -270,7 +242,7 @@ Stronger bar for a more ambitious venue:
 
 The next concrete move should be:
 
-1. update the manuscript tables from the new repro summary
-2. wire Needle-in-a-Haystack under the standardized protocol
+1. lock the shared logging schema around the expanded evaluation contract
+2. define the first full-precision trace recorder plus oracle-replay harness surface
 
-That path gives the fastest improvement in credibility per unit effort.
+That path creates the foundation for every later baseline, benchmark, and selector bakeoff.

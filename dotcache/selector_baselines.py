@@ -1,0 +1,1350 @@
+from __future__ import annotations
+
+import json
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Sequence
+
+import numpy as np
+
+_BASE_SELECTOR_FEATURE_NAMES = (
+    "stage_decode",
+    "kind_key",
+    "query_present",
+    "layer_fraction",
+    "kv_head_fraction",
+    "log_token_start",
+    "log_token_age",
+    "token_count",
+    "head_dim",
+    "safe_candidate_count",
+    "trace_rms",
+    "log_trace_abs_max",
+    "trace_channel_range_mean",
+    "trace_outlier_fraction",
+    "age_per_token",
+)
+
+_BASE_CANDIDATE_FEATURE_NAMES = (
+    *_BASE_SELECTOR_FEATURE_NAMES,
+    "candidate_mode_m0",
+    "candidate_mode_m1",
+    "candidate_mode_m2",
+    "candidate_mode_m3",
+    "candidate_mode_m4",
+    "candidate_mode_t3",
+    "candidate_bits",
+    "candidate_scheme_affine",
+    "candidate_scheme_lut",
+    "candidate_scheme_sketch",
+    "candidate_scheme_project",
+    "candidate_scheme_turbo3",
+    "log_candidate_total_bytes",
+    "log_candidate_payload_bytes",
+    "log_candidate_metadata_bytes",
+    "candidate_has_escape_dtype",
+)
+
+
+@dataclass(slots=True)
+class SelectorExample:
+    trace_path: str
+    row: dict[str, Any]
+    label: dict[str, Any]
+    candidate_map: dict[str, dict[str, Any]]
+
+    @property
+    def stage(self) -> str:
+        return str(self.row["stage"])
+
+    @property
+    def kind(self) -> str:
+        return str(self.row["kind"])
+
+    @property
+    def layer_id(self) -> int:
+        return int(self.row["layer_id"])
+
+    @property
+    def token_age(self) -> int:
+        return int(self.row["token_age"])
+
+    @property
+    def token_count(self) -> int:
+        return int(self.row["token_count"])
+
+    @property
+    def query_present(self) -> bool:
+        return bool(self.row["query_present"])
+
+    @property
+    def prompt_family(self) -> str | None:
+        value = self.row.get("prompt_family")
+        return None if value in (None, "") else str(value)
+
+    @property
+    def prompt_variant(self) -> str | None:
+        value = self.row.get("prompt_variant")
+        return None if value in (None, "") else str(value)
+
+    @property
+    def target_candidate(self) -> str | None:
+        target = self.row.get("target_candidate")
+        return None if target in (None, "") else str(target)
+
+    @property
+    def best_safe_total_bytes(self) -> int | None:
+        value = self.row.get("best_safe_total_bytes")
+        return None if value is None else int(value)
+
+    @property
+    def safe_candidates(self) -> tuple[str, ...]:
+        return tuple(str(candidate) for candidate in self.label.get("safe_candidates", []))
+
+    @property
+    def target_present(self) -> bool:
+        return bool(self.row.get("target_present", self.target_candidate is not None))
+
+
+@dataclass(slots=True)
+class SelectorCandidateExample:
+    trace_path: str
+    row: dict[str, Any]
+
+    @property
+    def stage(self) -> str:
+        return str(self.row["stage"])
+
+    @property
+    def kind(self) -> str:
+        return str(self.row["kind"])
+
+    @property
+    def layer_id(self) -> int:
+        return int(self.row["layer_id"])
+
+    @property
+    def prompt_family(self) -> str | None:
+        value = self.row.get("prompt_family")
+        return None if value in (None, "") else str(value)
+
+    @property
+    def candidate(self) -> str:
+        return str(self.row["candidate"])
+
+    @property
+    def candidate_safe(self) -> bool:
+        return bool(self.row["candidate_safe"])
+
+    @property
+    def candidate_total_bytes(self) -> int:
+        return int(self.row["candidate_total_bytes"])
+
+    @property
+    def oracle_target_candidate(self) -> str | None:
+        target = self.row.get("target_candidate")
+        return None if target in (None, "") else str(target)
+
+    @property
+    def best_safe_total_bytes(self) -> int | None:
+        value = self.row.get("best_safe_total_bytes")
+        return None if value is None else int(value)
+
+
+@dataclass(frozen=True, slots=True)
+class SelectorSplit:
+    train_indices: tuple[int, ...]
+    test_indices: tuple[int, ...]
+
+
+@dataclass(slots=True)
+class SelectorPrediction:
+    trace_path: str
+    predicted_candidate: str | None
+    oracle_target_candidate: str | None
+    correct_target: bool
+    predicted_safe: bool
+    predicted_total_bytes: int | None
+    best_safe_total_bytes: int | None
+    safe_bytes_regret: int | None
+    stage: str
+    kind: str
+    layer_id: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class SelectorEvaluationSummary:
+    example_count: int
+    targetable_count: int
+    target_accuracy: float
+    safe_prediction_rate: float
+    unsafe_prediction_rate: float
+    mean_safe_bytes_regret: float | None
+    p95_safe_bytes_regret: float | None
+    max_safe_bytes_regret: int | None
+    predicted_candidate_histogram: dict[str, int]
+    oracle_target_histogram: dict[str, int]
+    per_stage_accuracy: dict[str, float]
+    per_kind_accuracy: dict[str, float]
+    predictions: list[SelectorPrediction] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "example_count": self.example_count,
+            "targetable_count": self.targetable_count,
+            "target_accuracy": self.target_accuracy,
+            "safe_prediction_rate": self.safe_prediction_rate,
+            "unsafe_prediction_rate": self.unsafe_prediction_rate,
+            "mean_safe_bytes_regret": self.mean_safe_bytes_regret,
+            "p95_safe_bytes_regret": self.p95_safe_bytes_regret,
+            "max_safe_bytes_regret": self.max_safe_bytes_regret,
+            "predicted_candidate_histogram": dict(self.predicted_candidate_histogram),
+            "oracle_target_histogram": dict(self.oracle_target_histogram),
+            "per_stage_accuracy": dict(self.per_stage_accuracy),
+            "per_kind_accuracy": dict(self.per_kind_accuracy),
+            "predictions": [prediction.to_dict() for prediction in self.predictions],
+        }
+
+
+@dataclass(slots=True)
+class StaticRuleSelectorModel:
+    global_candidate: str | None
+    key_with_age: dict[tuple[str, str, int, int, bool], str]
+    key_without_age: dict[tuple[str, str, int, bool], str]
+    key_stage_kind: dict[tuple[str, str, bool], str]
+
+    def predict(self, example: SelectorExample) -> str | None:
+        age_bucket = _age_bucket(example.token_age)
+        key_with_age = (example.stage, example.kind, example.layer_id, age_bucket, example.query_present)
+        if key_with_age in self.key_with_age:
+            return self.key_with_age[key_with_age]
+        key_without_age = (example.stage, example.kind, example.layer_id, example.query_present)
+        if key_without_age in self.key_without_age:
+            return self.key_without_age[key_without_age]
+        key_stage_kind = (example.stage, example.kind, example.query_present)
+        if key_stage_kind in self.key_stage_kind:
+            return self.key_stage_kind[key_stage_kind]
+        return self.global_candidate
+
+
+@dataclass(slots=True)
+class LinearSelectorModel:
+    classes: tuple[str, ...]
+    weight: np.ndarray
+    bias: np.ndarray
+    feature_mean: np.ndarray
+    feature_std: np.ndarray
+    feature_names: tuple[str, ...]
+
+    def predict(self, example: SelectorExample) -> str | None:
+        if not self.classes:
+            return None
+        features = _feature_vector(example, feature_names=self.feature_names)
+        standardized = (features - self.feature_mean) / self.feature_std
+        logits = standardized @ self.weight + self.bias
+        return self.classes[int(np.argmax(logits))]
+
+
+@dataclass(slots=True)
+class CandidateSafeLinearSelectorModel:
+    weight: np.ndarray
+    bias: float
+    feature_mean: np.ndarray
+    feature_std: np.ndarray
+    feature_names: tuple[str, ...]
+    decision_threshold: float = 0.5
+
+    def predict_probability(self, example: SelectorCandidateExample) -> float:
+        features = _candidate_feature_vector(example, feature_names=self.feature_names)
+        standardized = (features - self.feature_mean) / self.feature_std
+        logit = float(standardized @ self.weight + self.bias)
+        return float(1.0 / (1.0 + np.exp(-logit)))
+
+
+def load_selector_examples(
+    *,
+    labels_path: str | Path,
+    selector_dataset_path: str | Path,
+) -> list[SelectorExample]:
+    labels_by_trace: dict[str, dict[str, Any]] = {}
+    with Path(labels_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            labels_by_trace[str(payload["trace_path"])] = payload
+
+    examples: list[SelectorExample] = []
+    with Path(selector_dataset_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            trace_path = str(row["trace_path"])
+            label = labels_by_trace.get(trace_path)
+            if label is None:
+                raise ValueError(f"selector row is missing matching label: {trace_path}")
+            candidate_map = {
+                str(candidate["candidate"]): dict(candidate)
+                for candidate in label.get("candidate_labels", [])
+            }
+            examples.append(
+                SelectorExample(
+                    trace_path=trace_path,
+                    row=row,
+                    label=label,
+                    candidate_map=candidate_map,
+                )
+            )
+    return examples
+
+
+def load_selector_candidate_examples(
+    *,
+    selector_candidate_dataset_path: str | Path,
+) -> list[SelectorCandidateExample]:
+    examples: list[SelectorCandidateExample] = []
+    with Path(selector_candidate_dataset_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            examples.append(
+                SelectorCandidateExample(
+                    trace_path=str(row["trace_path"]),
+                    row=row,
+                )
+            )
+    return examples
+
+
+def load_selector_split_examples(
+    *,
+    split_dir: str | Path,
+) -> dict[str, Any]:
+    root = Path(split_dir)
+    train_dir = root / "train"
+    test_dir = root / "test"
+    if not train_dir.exists() or not test_dir.exists():
+        raise ValueError(f"split_dir must contain train/ and test/ subdirectories: {root}")
+
+    train_examples = load_selector_examples(
+        labels_path=train_dir / "labels.jsonl",
+        selector_dataset_path=train_dir / "selector_dataset.jsonl",
+    )
+    test_examples = load_selector_examples(
+        labels_path=test_dir / "labels.jsonl",
+        selector_dataset_path=test_dir / "selector_dataset.jsonl",
+    )
+
+    train_candidate_path = train_dir / "selector_candidate_dataset.jsonl"
+    test_candidate_path = test_dir / "selector_candidate_dataset.jsonl"
+    train_candidate_examples = (
+        []
+        if not train_candidate_path.exists()
+        else load_selector_candidate_examples(selector_candidate_dataset_path=train_candidate_path)
+    )
+    test_candidate_examples = (
+        []
+        if not test_candidate_path.exists()
+        else load_selector_candidate_examples(selector_candidate_dataset_path=test_candidate_path)
+    )
+
+    summary_path = root / "split_summary.json"
+    split_summary = None if not summary_path.exists() else json.loads(summary_path.read_text(encoding="utf-8"))
+    return {
+        "split_dir": str(root),
+        "split_summary": split_summary,
+        "train_examples": train_examples,
+        "test_examples": test_examples,
+        "train_candidate_examples": train_candidate_examples,
+        "test_candidate_examples": test_candidate_examples,
+    }
+
+
+def discover_selector_split_dirs(split_root: str | Path) -> list[Path]:
+    root = Path(split_root)
+    if not root.exists():
+        raise ValueError(f"split_root does not exist: {root}")
+    discovered: list[Path] = []
+    if (root / "train").is_dir() and (root / "test").is_dir():
+        discovered.append(root)
+    for candidate in sorted(path for path in root.iterdir() if path.is_dir()):
+        if (candidate / "train").is_dir() and (candidate / "test").is_dir():
+            discovered.append(candidate)
+    return discovered
+
+
+def split_selector_examples(
+    examples: Sequence[SelectorExample],
+    *,
+    test_fraction: float = 0.25,
+    seed: int = 0,
+) -> SelectorSplit:
+    if not 0.0 < float(test_fraction) < 1.0:
+        raise ValueError("test_fraction must be between 0 and 1")
+    key_specs = (
+        lambda example: (example.stage, example.kind, example.target_candidate),
+        lambda example: (example.stage, example.target_candidate),
+        lambda example: (example.target_candidate,),
+    )
+    for key_fn in key_specs:
+        split = _stratified_split_with_key(examples, test_fraction=test_fraction, seed=seed, key_fn=key_fn)
+        if split.train_indices and split.test_indices:
+            return split
+    return _random_split(examples, test_fraction=test_fraction, seed=seed)
+
+
+def train_static_rule_selector(examples: Sequence[SelectorExample]) -> StaticRuleSelectorModel:
+    target_examples = [example for example in examples if example.target_present and example.target_candidate is not None]
+    global_candidate = _majority_target(target_examples)
+
+    key_with_age: dict[tuple[str, str, int, int, bool], str] = {}
+    key_without_age: dict[tuple[str, str, int, bool], str] = {}
+    key_stage_kind: dict[tuple[str, str, bool], str] = {}
+
+    grouped_with_age: dict[tuple[str, str, int, int, bool], list[SelectorExample]] = defaultdict(list)
+    grouped_without_age: dict[tuple[str, str, int, bool], list[SelectorExample]] = defaultdict(list)
+    grouped_stage_kind: dict[tuple[str, str, bool], list[SelectorExample]] = defaultdict(list)
+
+    for example in target_examples:
+        grouped_with_age[(example.stage, example.kind, example.layer_id, _age_bucket(example.token_age), example.query_present)].append(example)
+        grouped_without_age[(example.stage, example.kind, example.layer_id, example.query_present)].append(example)
+        grouped_stage_kind[(example.stage, example.kind, example.query_present)].append(example)
+
+    for key, values in grouped_with_age.items():
+        key_with_age[key] = _majority_target(values)
+    for key, values in grouped_without_age.items():
+        key_without_age[key] = _majority_target(values)
+    for key, values in grouped_stage_kind.items():
+        key_stage_kind[key] = _majority_target(values)
+
+    return StaticRuleSelectorModel(
+        global_candidate=global_candidate,
+        key_with_age=key_with_age,
+        key_without_age=key_without_age,
+        key_stage_kind=key_stage_kind,
+    )
+
+
+def train_linear_selector(
+    examples: Sequence[SelectorExample],
+    *,
+    steps: int = 400,
+    learning_rate: float = 0.2,
+    l2: float = 1e-3,
+) -> LinearSelectorModel:
+    target_examples = [example for example in examples if example.target_present and example.target_candidate is not None]
+    classes = tuple(sorted({str(example.target_candidate) for example in target_examples}))
+    feature_names = _selector_feature_names_from_examples(target_examples)
+    if not target_examples or not classes:
+        feature_dim = len(feature_names)
+        return LinearSelectorModel(
+            classes=(),
+            weight=np.zeros((feature_dim, 0), dtype=np.float32),
+            bias=np.zeros((0,), dtype=np.float32),
+            feature_mean=np.zeros((feature_dim,), dtype=np.float32),
+            feature_std=np.ones((feature_dim,), dtype=np.float32),
+            feature_names=feature_names,
+        )
+
+    class_to_index = {candidate: index for index, candidate in enumerate(classes)}
+    x = np.stack([_feature_vector(example, feature_names=feature_names) for example in target_examples], axis=0).astype(np.float32)
+    y = np.array([class_to_index[str(example.target_candidate)] for example in target_examples], dtype=np.int32)
+    feature_mean = np.mean(x, axis=0, dtype=np.float32)
+    feature_std = np.std(x, axis=0, dtype=np.float32)
+    feature_std = np.where(feature_std < 1e-6, 1.0, feature_std).astype(np.float32)
+    x_std = (x - feature_mean) / feature_std
+
+    weight = np.zeros((x_std.shape[1], len(classes)), dtype=np.float32)
+    bias = np.zeros((len(classes),), dtype=np.float32)
+    targets = np.eye(len(classes), dtype=np.float32)[y]
+
+    for _ in range(int(steps)):
+        logits = x_std @ weight + bias
+        probs = _softmax(logits)
+        error = probs - targets
+        grad_weight = (x_std.T @ error) / max(x_std.shape[0], 1) + float(l2) * weight
+        grad_bias = np.mean(error, axis=0, dtype=np.float32)
+        weight -= float(learning_rate) * grad_weight.astype(np.float32)
+        bias -= float(learning_rate) * grad_bias.astype(np.float32)
+
+    return LinearSelectorModel(
+        classes=classes,
+        weight=weight,
+        bias=bias,
+        feature_mean=feature_mean,
+        feature_std=feature_std,
+        feature_names=feature_names,
+    )
+
+
+def train_candidate_safe_linear_selector(
+    examples: Sequence[SelectorCandidateExample],
+    *,
+    steps: int = 400,
+    learning_rate: float = 0.2,
+    l2: float = 1e-3,
+) -> CandidateSafeLinearSelectorModel:
+    feature_names = _candidate_feature_names_from_examples(examples)
+    feature_dim = len(feature_names)
+    if not examples:
+        return CandidateSafeLinearSelectorModel(
+            weight=np.zeros((feature_dim,), dtype=np.float32),
+            bias=0.0,
+            feature_mean=np.zeros((feature_dim,), dtype=np.float32),
+            feature_std=np.ones((feature_dim,), dtype=np.float32),
+            feature_names=feature_names,
+        )
+
+    x = np.stack([_candidate_feature_vector(example, feature_names=feature_names) for example in examples], axis=0).astype(np.float32)
+    y = np.asarray([1.0 if example.candidate_safe else 0.0 for example in examples], dtype=np.float32)
+    feature_mean = np.mean(x, axis=0, dtype=np.float32)
+    feature_std = np.std(x, axis=0, dtype=np.float32)
+    feature_std = np.where(feature_std < 1e-6, 1.0, feature_std).astype(np.float32)
+    x_std = (x - feature_mean) / feature_std
+
+    weight = np.zeros((x_std.shape[1],), dtype=np.float32)
+    bias = 0.0
+    for _ in range(int(steps)):
+        logits = x_std @ weight + bias
+        probs = 1.0 / (1.0 + np.exp(-logits))
+        error = probs - y
+        grad_weight = (x_std.T @ error) / max(x_std.shape[0], 1) + float(l2) * weight
+        grad_bias = float(np.mean(error, dtype=np.float32))
+        weight -= float(learning_rate) * grad_weight.astype(np.float32)
+        bias -= float(learning_rate) * grad_bias
+
+    return CandidateSafeLinearSelectorModel(
+        weight=weight,
+        bias=float(bias),
+        feature_mean=feature_mean,
+        feature_std=feature_std,
+        feature_names=feature_names,
+    )
+
+
+def evaluate_selector_model(
+    model: StaticRuleSelectorModel | LinearSelectorModel,
+    examples: Sequence[SelectorExample],
+) -> SelectorEvaluationSummary:
+    predictions: list[SelectorPrediction] = []
+    correct_target_count = 0
+    targetable_count = 0
+    safe_prediction_count = 0
+    predicted_histogram: Counter[str] = Counter()
+    oracle_histogram: Counter[str] = Counter()
+    safe_regrets: list[int] = []
+    stage_counts: Counter[str] = Counter()
+    stage_correct: Counter[str] = Counter()
+    kind_counts: Counter[str] = Counter()
+    kind_correct: Counter[str] = Counter()
+
+    for example in examples:
+        predicted_candidate = model.predict(example)
+        if predicted_candidate is not None:
+            predicted_histogram[predicted_candidate] += 1
+        if example.target_candidate is not None:
+            oracle_histogram[str(example.target_candidate)] += 1
+            targetable_count += 1
+        candidate_payload = None if predicted_candidate is None else example.candidate_map.get(predicted_candidate)
+        predicted_safe = bool(candidate_payload is not None and candidate_payload.get("safe", False))
+        predicted_total_bytes = None if candidate_payload is None else int(candidate_payload["total_bytes"])
+        safe_bytes_regret = None
+        if predicted_safe and predicted_total_bytes is not None and example.best_safe_total_bytes is not None:
+            safe_bytes_regret = int(predicted_total_bytes - example.best_safe_total_bytes)
+            safe_regrets.append(safe_bytes_regret)
+            safe_prediction_count += 1
+        correct_target = bool(predicted_candidate is not None and predicted_candidate == example.target_candidate)
+        if correct_target:
+            correct_target_count += 1
+            stage_correct[example.stage] += 1
+            kind_correct[example.kind] += 1
+        stage_counts[example.stage] += 1
+        kind_counts[example.kind] += 1
+        predictions.append(
+            SelectorPrediction(
+                trace_path=example.trace_path,
+                predicted_candidate=predicted_candidate,
+                oracle_target_candidate=example.target_candidate,
+                correct_target=correct_target,
+                predicted_safe=predicted_safe,
+                predicted_total_bytes=predicted_total_bytes,
+                best_safe_total_bytes=example.best_safe_total_bytes,
+                safe_bytes_regret=safe_bytes_regret,
+                stage=example.stage,
+                kind=example.kind,
+                layer_id=example.layer_id,
+            )
+        )
+
+    mean_safe_bytes_regret = None
+    p95_safe_bytes_regret = None
+    max_safe_bytes_regret = None
+    if safe_regrets:
+        mean_safe_bytes_regret = float(np.mean(np.asarray(safe_regrets, dtype=np.float32)))
+        p95_safe_bytes_regret = float(np.percentile(np.asarray(safe_regrets, dtype=np.float32), 95))
+        max_safe_bytes_regret = int(max(safe_regrets))
+
+    return SelectorEvaluationSummary(
+        example_count=len(examples),
+        targetable_count=targetable_count,
+        target_accuracy=float(correct_target_count / max(targetable_count, 1)),
+        safe_prediction_rate=float(safe_prediction_count / max(len(examples), 1)),
+        unsafe_prediction_rate=float(1.0 - (safe_prediction_count / max(len(examples), 1))),
+        mean_safe_bytes_regret=mean_safe_bytes_regret,
+        p95_safe_bytes_regret=p95_safe_bytes_regret,
+        max_safe_bytes_regret=max_safe_bytes_regret,
+        predicted_candidate_histogram=dict(sorted(predicted_histogram.items())),
+        oracle_target_histogram=dict(sorted(oracle_histogram.items())),
+        per_stage_accuracy={
+            stage: float(stage_correct.get(stage, 0) / max(count, 1))
+            for stage, count in sorted(stage_counts.items())
+        },
+        per_kind_accuracy={
+            kind: float(kind_correct.get(kind, 0) / max(count, 1))
+            for kind, count in sorted(kind_counts.items())
+        },
+        predictions=predictions,
+    )
+
+
+def evaluate_candidate_selector_model(
+    model: CandidateSafeLinearSelectorModel,
+    examples: Sequence[SelectorCandidateExample],
+) -> SelectorEvaluationSummary:
+    grouped_examples: dict[str, list[SelectorCandidateExample]] = defaultdict(list)
+    for example in examples:
+        grouped_examples[example.trace_path].append(example)
+
+    collapsed_examples: list[SelectorExample] = []
+    predicted_by_trace: dict[str, str | None] = {}
+    for trace_path, trace_examples in grouped_examples.items():
+        ordered = sorted(trace_examples, key=lambda item: (item.candidate_total_bytes, item.candidate))
+        scored = []
+        for example in ordered:
+            probability = model.predict_probability(example)
+            scored.append((example, probability))
+        predicted_safe = [item for item in scored if item[1] >= model.decision_threshold]
+        if predicted_safe:
+            predicted_safe.sort(key=lambda item: (item[0].candidate_total_bytes, -item[1], item[0].candidate))
+            chosen = predicted_safe[0][0]
+        else:
+            scored.sort(key=lambda item: (-item[1], item[0].candidate_total_bytes, item[0].candidate))
+            chosen = scored[0][0] if scored else None
+        predicted_by_trace[trace_path] = None if chosen is None else chosen.candidate
+        first = ordered[0]
+        candidate_map = {
+            str(candidate_example.candidate): {
+                "candidate": candidate_example.candidate,
+                "safe": candidate_example.candidate_safe,
+                "total_bytes": candidate_example.candidate_total_bytes,
+            }
+            for candidate_example in ordered
+        }
+        label = {
+            "safe_candidates": [candidate_example.candidate for candidate_example in ordered if candidate_example.candidate_safe],
+        }
+        row = {
+            key: value
+            for key, value in first.row.items()
+            if not key.startswith("candidate_")
+        }
+        collapsed_examples.append(
+            SelectorExample(
+                trace_path=trace_path,
+                row=row,
+                label=label,
+                candidate_map=candidate_map,
+            )
+        )
+
+    return evaluate_selector_model(_PredictedSelectorModel(predicted_by_trace), collapsed_examples)
+
+
+def render_selector_bakeoff_markdown(results: dict[str, SelectorEvaluationSummary]) -> str:
+    header = "| baseline | examples | target_accuracy | safe_prediction_rate | mean_safe_bytes_regret | p95_safe_bytes_regret |"
+    separator = "| --- | ---: | ---: | ---: | ---: | ---: |"
+    rows = [header, separator]
+    for baseline_name, summary in results.items():
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    baseline_name,
+                    str(summary.example_count),
+                    f"{summary.target_accuracy:.3f}",
+                    f"{summary.safe_prediction_rate:.3f}",
+                    "n/a" if summary.mean_safe_bytes_regret is None else f"{summary.mean_safe_bytes_regret:.1f}",
+                    "n/a" if summary.p95_safe_bytes_regret is None else f"{summary.p95_safe_bytes_regret:.1f}",
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(rows)
+
+
+def render_selector_aggregate_markdown(results: dict[str, dict[str, Any]]) -> str:
+    header = "| baseline | folds | mean_target_accuracy | std_target_accuracy | mean_safe_prediction_rate | mean_safe_bytes_regret |"
+    separator = "| --- | ---: | ---: | ---: | ---: | ---: |"
+    rows = [header, separator]
+    for baseline_name, summary in results.items():
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    baseline_name,
+                    str(int(summary["fold_count"])),
+                    f"{float(summary['mean_target_accuracy']):.3f}",
+                    f"{float(summary['std_target_accuracy']):.3f}",
+                    f"{float(summary['mean_safe_prediction_rate']):.3f}",
+                    "n/a" if summary["mean_safe_bytes_regret"] is None else f"{float(summary['mean_safe_bytes_regret']):.1f}",
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(rows)
+
+
+def render_selector_fixed_split_batch_markdown(split_payloads: Sequence[dict[str, Any]]) -> str:
+    header = "| split | baseline | test_examples | target_accuracy | safe_prediction_rate | mean_safe_bytes_regret |"
+    separator = "| --- | --- | ---: | ---: | ---: | ---: |"
+    rows = [header, separator]
+    for split_payload in split_payloads:
+        split_name = str(split_payload["split_name"])
+        test_count = int(split_payload["split"]["test_count"])
+        for baseline_name, summary in sorted(dict(split_payload["results"]).items()):
+            rows.append(
+                "| "
+                + " | ".join(
+                    [
+                        split_name,
+                        baseline_name,
+                        str(test_count),
+                        f"{float(summary['target_accuracy']):.3f}",
+                        f"{float(summary['safe_prediction_rate']):.3f}",
+                        "n/a" if summary["mean_safe_bytes_regret"] is None else f"{float(summary['mean_safe_bytes_regret']):.1f}",
+                    ]
+                )
+                + " |"
+            )
+    return "\n".join(rows)
+
+
+def run_selector_baseline_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    test_fraction: float = 0.25,
+    seed: int = 0,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    split = split_selector_examples(examples, test_fraction=test_fraction, seed=seed)
+    train_examples = [examples[index] for index in split.train_indices]
+    test_examples = [examples[index] for index in split.test_indices]
+    results = _evaluate_selector_split(
+        examples,
+        split,
+        candidate_examples=candidate_examples,
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+    return {
+        "split": {
+            "train_count": len(train_examples),
+            "test_count": len(test_examples),
+            "train_indices": list(split.train_indices),
+            "test_indices": list(split.test_indices),
+            "test_fraction": float(test_fraction),
+            "seed": int(seed),
+        },
+        "results": {name: summary.to_dict() for name, summary in results.items()},
+        "summary_markdown": render_selector_bakeoff_markdown(results),
+    }
+
+
+def run_selector_fixed_split_bakeoff(
+    *,
+    train_examples: Sequence[SelectorExample],
+    test_examples: Sequence[SelectorExample],
+    train_candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    test_candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+    split_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    results = _evaluate_selector_train_test_examples(
+        train_examples=train_examples,
+        test_examples=test_examples,
+        train_candidate_examples=train_candidate_examples,
+        test_candidate_examples=test_candidate_examples,
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+    return {
+        "split": {
+            "split_type": "fixed",
+            "train_count": len(train_examples),
+            "test_count": len(test_examples),
+            "split_metadata": {} if split_metadata is None else dict(split_metadata),
+        },
+        "results": {name: summary.to_dict() for name, summary in results.items()},
+        "summary_markdown": render_selector_bakeoff_markdown(results),
+    }
+
+
+def run_selector_fixed_split_batch_bakeoff(
+    *,
+    split_dirs: Sequence[str | Path],
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    split_payloads: list[dict[str, Any]] = []
+    for split_dir in split_dirs:
+        split_examples = load_selector_split_examples(split_dir=split_dir)
+        split_summary = split_examples["split_summary"] or {}
+        split_name = str(split_summary.get("split_name") or Path(split_examples["split_dir"]).name)
+        payload = run_selector_fixed_split_bakeoff(
+            train_examples=split_examples["train_examples"],
+            test_examples=split_examples["test_examples"],
+            train_candidate_examples=split_examples["train_candidate_examples"],
+            test_candidate_examples=split_examples["test_candidate_examples"],
+            linear_steps=linear_steps,
+            linear_learning_rate=linear_learning_rate,
+            linear_l2=linear_l2,
+            split_metadata=split_summary,
+        )
+        split_payloads.append(
+            {
+                "split_name": split_name,
+                "split_dir": str(split_examples["split_dir"]),
+                "split": payload["split"],
+                "results": payload["results"],
+                "summary_markdown": payload["summary_markdown"],
+            }
+        )
+    aggregate_results = _aggregate_bakeoff_results([split_payload["results"] for split_payload in split_payloads])
+    return {
+        "split_count": len(split_payloads),
+        "splits": split_payloads,
+        "aggregate_results": aggregate_results,
+        "summary_markdown": render_selector_fixed_split_batch_markdown(split_payloads),
+        "aggregate_markdown": render_selector_aggregate_markdown(aggregate_results),
+    }
+
+
+def run_selector_multiseed_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    seeds: Sequence[int],
+    test_fraction: float = 0.25,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    resolved_seeds = [int(seed) for seed in seeds]
+    folds: list[dict[str, Any]] = []
+    for seed in resolved_seeds:
+        payload = run_selector_baseline_bakeoff(
+            examples,
+            candidate_examples=candidate_examples,
+            test_fraction=test_fraction,
+            seed=seed,
+            linear_steps=linear_steps,
+            linear_learning_rate=linear_learning_rate,
+            linear_l2=linear_l2,
+        )
+        folds.append({"fold_name": f"seed_{seed}", **payload})
+    aggregate_results = _aggregate_bakeoff_results([fold["results"] for fold in folds])
+    return {
+        "evaluation_mode": "multiseed",
+        "seeds": resolved_seeds,
+        "test_fraction": float(test_fraction),
+        "folds": folds,
+        "aggregate_results": aggregate_results,
+        "summary_markdown": render_selector_aggregate_markdown(aggregate_results),
+    }
+
+
+def run_selector_leave_layer_out_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    return _run_selector_group_holdout_bakeoff(
+        examples,
+        candidate_examples=candidate_examples,
+        group_values=sorted({int(example.layer_id) for example in examples}),
+        group_key=lambda example: int(example.layer_id),
+        group_label="layer",
+        group_values_label="held_out_layers",
+        evaluation_mode="leave_layer_out",
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+
+
+def run_selector_leave_prompt_family_out_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    normalized_families = sorted({_group_token(example.prompt_family) for example in examples})
+    return _run_selector_group_holdout_bakeoff(
+        examples,
+        candidate_examples=candidate_examples,
+        group_values=normalized_families,
+        group_key=lambda example: _group_token(example.prompt_family),
+        group_label="prompt_family",
+        group_values_label="held_out_prompt_families",
+        evaluation_mode="leave_prompt_family_out",
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+
+
+def run_selector_leave_prompt_variant_out_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    normalized_variants = sorted({_group_token(example.prompt_variant) for example in examples})
+    return _run_selector_group_holdout_bakeoff(
+        examples,
+        candidate_examples=candidate_examples,
+        group_values=normalized_variants,
+        group_key=lambda example: _group_token(example.prompt_variant),
+        group_label="prompt_variant",
+        group_values_label="held_out_prompt_variants",
+        evaluation_mode="leave_prompt_variant_out",
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+
+
+def run_selector_leave_prompt_family_layer_out_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None = None,
+    linear_steps: int = 400,
+    linear_learning_rate: float = 0.2,
+    linear_l2: float = 1e-3,
+) -> dict[str, Any]:
+    grouped_values = sorted(
+        {
+            (_group_token(example.prompt_family), int(example.layer_id))
+            for example in examples
+        }
+    )
+    return _run_selector_group_holdout_bakeoff(
+        examples,
+        candidate_examples=candidate_examples,
+        group_values=grouped_values,
+        group_key=lambda example: (_group_token(example.prompt_family), int(example.layer_id)),
+        group_label="prompt_family_layer",
+        group_values_label="held_out_prompt_family_layers",
+        evaluation_mode="leave_prompt_family_layer_out",
+        fold_name_fn=lambda value: f"prompt_family_{value[0]}_layer_{value[1]}",
+        fold_metadata_builder=lambda value: {
+            "held_out_prompt_family": value[0],
+            "held_out_layer": int(value[1]),
+        },
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+
+
+def _run_selector_group_holdout_bakeoff(
+    examples: Sequence[SelectorExample],
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None,
+    group_values: Sequence[Any],
+    group_key,
+    group_label: str,
+    group_values_label: str,
+    evaluation_mode: str,
+    fold_name_fn=None,
+    fold_metadata_builder=None,
+    linear_steps: int,
+    linear_learning_rate: float,
+    linear_l2: float,
+) -> dict[str, Any]:
+    folds: list[dict[str, Any]] = []
+    for held_out_group in group_values:
+        train_indices = tuple(index for index, example in enumerate(examples) if group_key(example) != held_out_group)
+        test_indices = tuple(index for index, example in enumerate(examples) if group_key(example) == held_out_group)
+        if not train_indices or not test_indices:
+            continue
+        split = SelectorSplit(train_indices=train_indices, test_indices=test_indices)
+        results = _evaluate_selector_split(
+            examples,
+            split,
+            candidate_examples=candidate_examples,
+            linear_steps=linear_steps,
+            linear_learning_rate=linear_learning_rate,
+            linear_l2=linear_l2,
+        )
+        fold_name = f"{group_label}_{held_out_group}" if fold_name_fn is None else str(fold_name_fn(held_out_group))
+        fold_metadata = (
+            {f"held_out_{group_label}": held_out_group}
+            if fold_metadata_builder is None
+            else dict(fold_metadata_builder(held_out_group))
+        )
+        folds.append(
+            {
+                "fold_name": fold_name,
+                **fold_metadata,
+                "split": {
+                    "train_count": len(train_indices),
+                    "test_count": len(test_indices),
+                    "train_indices": list(train_indices),
+                    "test_indices": list(test_indices),
+                },
+                "results": {name: summary.to_dict() for name, summary in results.items()},
+                "summary_markdown": render_selector_bakeoff_markdown(results),
+            }
+        )
+    aggregate_results = _aggregate_bakeoff_results([fold["results"] for fold in folds])
+    held_out_groups = (
+        [
+            {
+                key: value
+                for key, value in fold.items()
+                if key.startswith("held_out_")
+            }
+            for fold in folds
+        ]
+        if fold_metadata_builder is not None
+        else [fold[f"held_out_{group_label}"] for fold in folds]
+    )
+    return {
+        "evaluation_mode": evaluation_mode,
+        group_values_label: held_out_groups,
+        "folds": folds,
+        "aggregate_results": aggregate_results,
+        "summary_markdown": render_selector_aggregate_markdown(aggregate_results),
+    }
+
+
+def _majority_target(examples: Sequence[SelectorExample]) -> str | None:
+    counter = Counter(str(example.target_candidate) for example in examples if example.target_candidate is not None)
+    if not counter:
+        return None
+    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _age_bucket(token_age: int) -> int:
+    return int(np.floor(np.log2(max(int(token_age), 0) + 1)))
+
+
+def _evaluate_selector_split(
+    examples: Sequence[SelectorExample],
+    split: SelectorSplit,
+    *,
+    candidate_examples: Sequence[SelectorCandidateExample] | None,
+    linear_steps: int,
+    linear_learning_rate: float,
+    linear_l2: float,
+) -> dict[str, SelectorEvaluationSummary]:
+    train_examples = [examples[index] for index in split.train_indices]
+    test_examples = [examples[index] for index in split.test_indices]
+    train_candidate_examples = None
+    test_candidate_examples = None
+    if candidate_examples is not None:
+        train_trace_paths = {examples[index].trace_path for index in split.train_indices}
+        test_trace_paths = {examples[index].trace_path for index in split.test_indices}
+        train_candidate_examples = [example for example in candidate_examples if example.trace_path in train_trace_paths]
+        test_candidate_examples = [example for example in candidate_examples if example.trace_path in test_trace_paths]
+
+    return _evaluate_selector_train_test_examples(
+        train_examples=train_examples,
+        test_examples=test_examples,
+        train_candidate_examples=train_candidate_examples,
+        test_candidate_examples=test_candidate_examples,
+        linear_steps=linear_steps,
+        linear_learning_rate=linear_learning_rate,
+        linear_l2=linear_l2,
+    )
+
+
+def _evaluate_selector_train_test_examples(
+    *,
+    train_examples: Sequence[SelectorExample],
+    test_examples: Sequence[SelectorExample],
+    train_candidate_examples: Sequence[SelectorCandidateExample] | None,
+    test_candidate_examples: Sequence[SelectorCandidateExample] | None,
+    linear_steps: int,
+    linear_learning_rate: float,
+    linear_l2: float,
+) -> dict[str, SelectorEvaluationSummary]:
+    static_model = train_static_rule_selector(train_examples)
+    linear_model = train_linear_selector(
+        train_examples,
+        steps=linear_steps,
+        learning_rate=linear_learning_rate,
+        l2=linear_l2,
+    )
+    results: dict[str, SelectorEvaluationSummary] = {
+        "static_rule": evaluate_selector_model(static_model, test_examples),
+        "linear_softmax": evaluate_selector_model(linear_model, test_examples),
+    }
+    if train_candidate_examples is not None and test_candidate_examples is not None:
+        candidate_model = train_candidate_safe_linear_selector(
+            train_candidate_examples,
+            steps=linear_steps,
+            learning_rate=linear_learning_rate,
+            l2=linear_l2,
+        )
+        results["candidate_linear_safe"] = evaluate_candidate_selector_model(candidate_model, test_candidate_examples)
+    return results
+
+
+def _aggregate_bakeoff_results(results_payloads: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    baseline_names = sorted({baseline_name for payload in results_payloads for baseline_name in payload.keys()})
+    aggregate_results: dict[str, dict[str, Any]] = {}
+    for baseline_name in baseline_names:
+        rows = [payload[baseline_name] for payload in results_payloads if baseline_name in payload]
+        if not rows:
+            continue
+        target_accuracies = np.asarray([float(row["target_accuracy"]) for row in rows], dtype=np.float32)
+        safe_prediction_rates = np.asarray([float(row["safe_prediction_rate"]) for row in rows], dtype=np.float32)
+        safe_regrets = [row["mean_safe_bytes_regret"] for row in rows if row.get("mean_safe_bytes_regret") is not None]
+        aggregate_results[baseline_name] = {
+            "fold_count": len(rows),
+            "mean_target_accuracy": float(np.mean(target_accuracies)),
+            "std_target_accuracy": float(np.std(target_accuracies)),
+            "mean_safe_prediction_rate": float(np.mean(safe_prediction_rates)),
+            "std_safe_prediction_rate": float(np.std(safe_prediction_rates)),
+            "mean_safe_bytes_regret": None if not safe_regrets else float(np.mean(np.asarray(safe_regrets, dtype=np.float32))),
+            "std_safe_bytes_regret": None if not safe_regrets else float(np.std(np.asarray(safe_regrets, dtype=np.float32))),
+        }
+    return aggregate_results
+
+
+def _stratified_split_with_key(
+    examples: Sequence[SelectorExample],
+    *,
+    test_fraction: float,
+    seed: int,
+    key_fn,
+) -> SelectorSplit:
+    rng = np.random.default_rng(int(seed))
+    grouped_indices: dict[tuple[Any, ...], list[int]] = defaultdict(list)
+    for index, example in enumerate(examples):
+        key = key_fn(example)
+        grouped_indices[tuple(key) if isinstance(key, tuple) else (key,)].append(index)
+
+    train_indices: list[int] = []
+    test_indices: list[int] = []
+    for key in sorted(grouped_indices):
+        indices = list(grouped_indices[key])
+        if len(indices) > 1:
+            order = rng.permutation(len(indices)).tolist()
+            indices = [indices[position] for position in order]
+        test_count = int(round(len(indices) * float(test_fraction)))
+        if test_count <= 0 and len(indices) > 1:
+            test_count = 1
+        if test_count >= len(indices):
+            test_count = max(len(indices) - 1, 0)
+        test_indices.extend(indices[:test_count])
+        train_indices.extend(indices[test_count:])
+
+    train_indices.sort()
+    test_indices.sort()
+    return SelectorSplit(train_indices=tuple(train_indices), test_indices=tuple(test_indices))
+
+
+def _random_split(
+    examples: Sequence[SelectorExample],
+    *,
+    test_fraction: float,
+    seed: int,
+) -> SelectorSplit:
+    if len(examples) <= 1:
+        return SelectorSplit(train_indices=tuple(range(len(examples))), test_indices=())
+    rng = np.random.default_rng(int(seed))
+    order = rng.permutation(len(examples)).tolist()
+    test_count = int(round(len(examples) * float(test_fraction)))
+    test_count = min(max(test_count, 1), len(examples) - 1)
+    test_indices = tuple(sorted(order[:test_count]))
+    train_indices = tuple(sorted(order[test_count:]))
+    return SelectorSplit(train_indices=train_indices, test_indices=test_indices)
+
+
+def _feature_vector(example: SelectorExample, *, feature_names: Sequence[str]) -> np.ndarray:
+    values = {
+        "stage_decode": 1.0 if example.stage == "decode" else 0.0,
+        "kind_key": 1.0 if example.kind == "K" else 0.0,
+        "query_present": 1.0 if example.query_present else 0.0,
+        "layer_fraction": float(example.row["layer_fraction"]),
+        "kv_head_fraction": float(example.row["kv_head_fraction"]),
+        "log_token_start": float(np.log1p(float(example.row["token_start"]))),
+        "log_token_age": float(np.log1p(float(example.row["token_age"]))),
+        "token_count": float(example.row["token_count"]),
+        "head_dim": float(example.row["head_dim"]),
+        "safe_candidate_count": float(example.row["safe_candidate_count"]),
+        "trace_rms": float(example.row["trace_rms"]),
+        "log_trace_abs_max": float(np.log1p(float(example.row["trace_abs_max"]))),
+        "trace_channel_range_mean": float(example.row["trace_channel_range_mean"]),
+        "trace_outlier_fraction": float(example.row["trace_outlier_fraction"]),
+        "age_per_token": float(example.row["age_per_token"]),
+    }
+    prompt_family = _normalize_categorical_token(example.row.get("prompt_family"))
+    prompt_variant = _normalize_categorical_token(example.row.get("prompt_variant"))
+    return np.asarray(
+        [_resolve_feature_value(values, name, prompt_family=prompt_family, prompt_variant=prompt_variant) for name in feature_names],
+        dtype=np.float32,
+    )
+
+
+def _candidate_feature_vector(example: SelectorCandidateExample, *, feature_names: Sequence[str]) -> np.ndarray:
+    values = {
+        "stage_decode": 1.0 if example.stage == "decode" else 0.0,
+        "kind_key": 1.0 if example.kind == "K" else 0.0,
+        "query_present": 1.0 if bool(example.row["query_present"]) else 0.0,
+        "layer_fraction": float(example.row["layer_fraction"]),
+        "kv_head_fraction": float(example.row["kv_head_fraction"]),
+        "log_token_start": float(np.log1p(float(example.row["token_start"]))),
+        "log_token_age": float(np.log1p(float(example.row["token_age"]))),
+        "token_count": float(example.row["token_count"]),
+        "head_dim": float(example.row["head_dim"]),
+        "safe_candidate_count": float(example.row["safe_candidate_count"]),
+        "trace_rms": float(example.row["trace_rms"]),
+        "log_trace_abs_max": float(np.log1p(float(example.row["trace_abs_max"]))),
+        "trace_channel_range_mean": float(example.row["trace_channel_range_mean"]),
+        "trace_outlier_fraction": float(example.row["trace_outlier_fraction"]),
+        "age_per_token": float(example.row["age_per_token"]),
+        "candidate_mode_m0": 1.0 if str(example.row["candidate_mode"]) == "M0" else 0.0,
+        "candidate_mode_m1": 1.0 if str(example.row["candidate_mode"]) == "M1" else 0.0,
+        "candidate_mode_m2": 1.0 if str(example.row["candidate_mode"]) == "M2" else 0.0,
+        "candidate_mode_m3": 1.0 if str(example.row["candidate_mode"]) == "M3" else 0.0,
+        "candidate_mode_m4": 1.0 if str(example.row["candidate_mode"]) == "M4" else 0.0,
+        "candidate_mode_t3": 1.0 if str(example.row["candidate_mode"]) == "T3" else 0.0,
+        "candidate_bits": float(example.row["candidate_bits"]),
+        "candidate_scheme_affine": 1.0 if str(example.row["candidate_quant_scheme"]) == "affine" else 0.0,
+        "candidate_scheme_lut": 1.0 if str(example.row["candidate_quant_scheme"]) == "lut" else 0.0,
+        "candidate_scheme_sketch": 1.0 if str(example.row["candidate_quant_scheme"]) == "sketch" else 0.0,
+        "candidate_scheme_project": 1.0 if str(example.row["candidate_quant_scheme"]) == "project" else 0.0,
+        "candidate_scheme_turbo3": 1.0 if str(example.row["candidate_quant_scheme"]) == "turbo3" else 0.0,
+        "log_candidate_total_bytes": float(np.log1p(float(example.row["candidate_total_bytes"]))),
+        "log_candidate_payload_bytes": float(np.log1p(float(example.row["candidate_payload_bytes"]))),
+        "log_candidate_metadata_bytes": float(np.log1p(float(example.row["candidate_metadata_bytes"]))),
+        "candidate_has_escape_dtype": 1.0 if bool(example.row["candidate_has_escape_dtype"]) else 0.0,
+    }
+    prompt_family = _normalize_categorical_token(example.row.get("prompt_family"))
+    prompt_variant = _normalize_categorical_token(example.row.get("prompt_variant"))
+    return np.asarray(
+        [_resolve_feature_value(values, name, prompt_family=prompt_family, prompt_variant=prompt_variant) for name in feature_names],
+        dtype=np.float32,
+    )
+
+
+def _selector_feature_names_from_examples(examples: Sequence[SelectorExample]) -> tuple[str, ...]:
+    prompt_families = sorted(
+        {
+            normalized
+            for normalized in (_normalize_categorical_token(example.row.get("prompt_family")) for example in examples)
+            if normalized is not None
+        }
+    )
+    prompt_variants = sorted(
+        {
+            normalized
+            for normalized in (_normalize_categorical_token(example.row.get("prompt_variant")) for example in examples)
+            if normalized is not None
+        }
+    )
+    return (
+        *tuple(_BASE_SELECTOR_FEATURE_NAMES),
+        *tuple(f"family_{family}" for family in prompt_families),
+        *tuple(f"variant_{variant}" for variant in prompt_variants),
+    )
+
+
+def _candidate_feature_names_from_examples(examples: Sequence[SelectorCandidateExample]) -> tuple[str, ...]:
+    prompt_families = sorted(
+        {
+            normalized
+            for normalized in (_normalize_categorical_token(example.row.get("prompt_family")) for example in examples)
+            if normalized is not None
+        }
+    )
+    prompt_variants = sorted(
+        {
+            normalized
+            for normalized in (_normalize_categorical_token(example.row.get("prompt_variant")) for example in examples)
+            if normalized is not None
+        }
+    )
+    return (
+        *tuple(_BASE_CANDIDATE_FEATURE_NAMES),
+        *tuple(f"family_{family}" for family in prompt_families),
+        *tuple(f"variant_{variant}" for variant in prompt_variants),
+    )
+
+
+def _normalize_categorical_token(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    normalized = "".join(character if str(character).isalnum() else "_" for character in str(value).strip().lower())
+    normalized = normalized.strip("_")
+    return normalized or None
+
+
+def _group_token(value: Any) -> str:
+    normalized = _normalize_categorical_token(value)
+    return "__none__" if normalized is None else normalized
+
+
+def _resolve_feature_value(
+    base_values: dict[str, float],
+    feature_name: str,
+    *,
+    prompt_family: str | None,
+    prompt_variant: str | None,
+) -> float:
+    if feature_name in base_values:
+        return float(base_values[feature_name])
+    if feature_name.startswith("family_"):
+        return 1.0 if prompt_family == feature_name.removeprefix("family_") else 0.0
+    if feature_name.startswith("variant_"):
+        return 1.0 if prompt_variant == feature_name.removeprefix("variant_") else 0.0
+    raise KeyError(f"unknown feature name: {feature_name}")
+
+
+@dataclass(slots=True)
+class _PredictedSelectorModel:
+    predictions: dict[str, str | None]
+
+    def predict(self, example: SelectorExample) -> str | None:
+        return self.predictions.get(example.trace_path)
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    stabilized = logits - np.max(logits, axis=1, keepdims=True)
+    exp_logits = np.exp(stabilized).astype(np.float32, copy=False)
+    return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)

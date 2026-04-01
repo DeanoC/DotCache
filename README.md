@@ -12,6 +12,70 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - streaming `score_page` and `mix_page` that avoid full-page materialization by default
 - tests that compare compressed-domain execution against an explicit dequantized baseline built from the same quantized pages
 
+## Selector smoke suite
+
+For the local selector-oracle path, the checked-in smoke suite config lives at:
+
+- [configs/selector_split_suites/local_smoke_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/local_smoke_suite.json)
+
+If you already have an oracle label bundle with `labels.jsonl`, `selector_dataset.jsonl`, and `selector_candidate_dataset.jsonl`, the shortest end-to-end command is:
+
+```bash
+bash scripts/run_page_selector_local_smoke_suite.sh /path/to/oracle_bundle
+```
+
+That wrapper materializes the checked-in local smoke split suite, runs the manifest-driven batch selector eval, and prints the resulting summary paths.
+
+## Larger-machine selector suite
+
+For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:
+
+- [configs/selector_split_suites/larger_machine_comprehensive_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/larger_machine_comprehensive_suite.json)
+
+The fastest way to run the full capture-to-bakeoff path on a CUDA box is:
+
+```bash
+bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root
+```
+
+If Qwen3.5 4B is the first stronger-model lane you want to standardize on, there is also a dedicated wrapper:
+
+```bash
+bash scripts/run_page_selector_qwen35_4b_suite.sh /path/to/output_root
+```
+
+By default that wrapper runs:
+
+- model `Qwen/Qwen3.5-4B`
+- device `cuda`
+- dtype `float16`
+- prompt families `cache`, `reasoning`, `instruction`, `retrieval`
+- prompt lengths `128`, `256`, `512`, `1024`
+- decode steps `4`, `8`
+- `tokens_per_page=16`
+- oracle sampling cap `max_per_stage_kind=256`
+
+It writes a stable output layout under the chosen root:
+
+- `capture/`
+  merged trace manifest plus per-run trace directories
+- `labels/`
+  oracle labels, selector datasets, and label summary
+- `suite/`
+  frozen comprehensive split suite plus split manifest
+- `batch_eval/`
+  aggregate and per-split selector bakeoff reports
+
+If you want a lighter first pass on a new GPU box, start with:
+
+```bash
+bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root \
+  --prompt-length 128 \
+  --prompt-length 256 \
+  --decode-steps 4 \
+  --max-per-stage-kind 128
+```
+
 ## Reference docs
 
 - [dotcache_full.tex](./dotcache_full.tex)

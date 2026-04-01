@@ -1,0 +1,82 @@
+{
+  "suite_name": "prompt_generalization_suite",
+  "splits": [
+    {
+      "split_name": "family_cache_holdout",
+      "output_subdir": "family_cache",
+      "holdout_prompt_families": ["cache"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "family",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "family_instruction_holdout",
+      "output_subdir": "family_instruction",
+      "holdout_prompt_families": ["instruction"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "family",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "family_reasoning_holdout",
+      "output_subdir": "family_reasoning",
+      "holdout_prompt_families": ["reasoning"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "family",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "family_retrieval_holdout",
+      "output_subdir": "family_retrieval",
+      "holdout_prompt_families": ["retrieval"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "family",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "variant_bandwidth_holdout",
+      "output_subdir": "variant_bandwidth",
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": ["bandwidth"],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "variant",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "variant_logic_holdout",
+      "output_subdir": "variant_logic",
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": ["logic"],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "variant",
+        "track": "generalization"
+      }
+    },
+    {
+      "split_name": "variant_transcript_holdout",
+      "output_subdir": "variant_transcript",
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": ["transcript"],
+      "holdout_layers": [],
+      "annotations": {
+        "tier": "variant",
+        "track": "generalization"
+      }
+    }
+  ]
+}
