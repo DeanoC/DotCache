@@ -28,6 +28,8 @@ def test_parse_ppl_extracts_value() -> None:
 def test_build_llama_cli_command_sets_layer_adaptive_env(tmp_path) -> None:
     model_path = tmp_path / "model.gguf"
     model_path.write_bytes(b"gguf")
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("hello", encoding="utf-8")
     args = Namespace(
         llama_cli="llama-cli",
         model_id=str(model_path),
@@ -41,7 +43,7 @@ def test_build_llama_cli_command_sets_layer_adaptive_env(tmp_path) -> None:
     command, env = _build_llama_cli_command(
         args,
         config=_CONFIGS["turbo3_la1"],
-        prompt_text="hello",
+        prompt_file=str(prompt_file),
     )
     assert command[:9] == [
         "llama-cli",
@@ -60,6 +62,8 @@ def test_build_llama_cli_command_sets_layer_adaptive_env(tmp_path) -> None:
 def test_build_llama_cli_command_unsets_layer_adaptive_for_uniform(tmp_path) -> None:
     model_path = tmp_path / "model.gguf"
     model_path.write_bytes(b"gguf")
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("hello", encoding="utf-8")
     args = Namespace(
         llama_cli="llama-cli",
         model_id=str(model_path),
@@ -73,7 +77,7 @@ def test_build_llama_cli_command_unsets_layer_adaptive_for_uniform(tmp_path) -> 
     _, env = _build_llama_cli_command(
         args,
         config=_CONFIGS["q8_0"],
-        prompt_text="hello",
+        prompt_file=str(prompt_file),
     )
     assert "TURBO_LAYER_ADAPTIVE" not in env
 
