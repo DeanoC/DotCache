@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Any, Literal, Sequence
 
 import numpy as np
@@ -10,6 +12,7 @@ import numpy as np
 from ..config import DotCacheConfig
 from ..model_kv_cache import ModelPagedKVCache
 from ..page_cache import PreparedPageCache
+from ..page_oracle import PageTraceRecord, save_page_trace
 from ..tracing import ExecutionTrace
 
 
@@ -215,6 +218,12 @@ def _ensure_attention_mask(input_ids, attention_mask, *, device) -> Any:
     if mask.shape != input_ids.shape:
         raise ValueError("attention_mask must match input_ids shape")
     return mask
+
+
+def _tensor_to_float32_numpy(value: Any) -> np.ndarray:
+    if torch.is_tensor(value):
+        return value.detach().to(dtype=torch.float32).cpu().numpy()
+    return np.asarray(value, dtype=np.float32)
 
 
 def _can_skip_decode_attention_mask(attention_mask) -> bool:
@@ -740,6 +749,30 @@ class LlamaDotCacheHarness:
             tokenizer=self.tokenizer,
         )
 
+    def capture_page_traces(
+        self,
+        *,
+        output_dir: str | Path,
+        tokens_per_page: int,
+        kinds: tuple[str, ...] = ("K", "V"),
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+    ) -> dict[str, Any]:
+        return run_llama_page_trace_capture_harness(
+            self.model,
+            self.adapter,
+            output_dir=output_dir,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+        )
+
     def generate_greedy(
         self,
         *,
@@ -1083,6 +1116,308 @@ def _run_dotcache_greedy_decode(
         "step_count": step_count,
         "trace": trace_total,
     }
+
+
+def _aggregate_query_states_by_kv_head(
+    query_states: np.ndarray,
+    q_head_to_kv_head: np.ndarray,
+    *,
+    num_key_value_heads: int,
+) -> np.ndarray:
+    queries = np.asarray(query_states, dtype=np.float32)
+    mapping = np.asarray(q_head_to_kv_head, dtype=np.int32)
+    if queries.ndim != 2:
+        raise ValueError("query_states must have shape [query_heads, head_dim]")
+    if mapping.ndim != 1 or mapping.shape[0] != queries.shape[0]:
+        raise ValueError("q_head_to_kv_head must have shape [query_heads]")
+    kv_queries = np.zeros((int(num_key_value_heads), int(queries.shape[1])), dtype=np.float32)
+    counts = np.zeros((int(num_key_value_heads),), dtype=np.int32)
+    for q_head_id, kv_head_id in enumerate(mapping.tolist()):
+        if kv_head_id < 0 or kv_head_id >= int(num_key_value_heads):
+            raise ValueError("q_head_to_kv_head contains an out-of-range kv head")
+        kv_queries[kv_head_id] += queries[q_head_id]
+        counts[kv_head_id] += 1
+    counts = np.maximum(counts, 1)
+    kv_queries /= counts[:, None].astype(np.float32)
+    return kv_queries
+
+
+def _build_page_traces_from_streams(
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]],
+    *,
+    max_token_index: int,
+    tokens_per_page: int,
+    source: str,
+    stage: str,
+) -> list[PageTraceRecord]:
+    page_traces: list[PageTraceRecord] = []
+    for (layer_id, kv_head_id, kind), entries in sorted(streams.items()):
+        entries.sort(key=lambda item: item[0])
+        for offset in range(0, len(entries), int(tokens_per_page)):
+            chunk = entries[offset : offset + int(tokens_per_page)]
+            token_indices = [token_index for token_index, _, _ in chunk]
+            values = np.stack([value for _, value, _ in chunk], axis=0).astype(np.float32, copy=False)
+            queries = [query_vector for _, _, query_vector in chunk if query_vector is not None]
+            query = None
+            if queries:
+                query = np.mean(np.stack(queries, axis=0), axis=0, dtype=np.float32).astype(np.float32, copy=False)
+            page_traces.append(
+                PageTraceRecord(
+                    source=source,
+                    kind=kind,  # type: ignore[arg-type]
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    token_start=int(token_indices[0]),
+                    token_age=max(max_token_index - int(token_indices[-1]), 0),
+                    values=values,
+                    query=query,
+                    notes=[
+                        f"stage={stage}",
+                        "query_aggregation=mean_mapped_q_heads" if query is not None else "query_aggregation=none",
+                        f"token_indices={token_indices[0]}..{token_indices[-1]}",
+                    ],
+                )
+            )
+    return page_traces
+
+
+def build_llama_page_trace_records(
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "llama_dense_capture",
+) -> list[PageTraceRecord]:
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+
+    normalized_kinds = tuple(str(kind).upper() for kind in kinds)
+    invalid_kinds = [kind for kind in normalized_kinds if kind not in {"K", "V"}]
+    if invalid_kinds:
+        raise ValueError(f"unsupported capture kinds: {invalid_kinds}")
+
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]] = {}
+    max_token_index = -1
+    for step_records in per_step_records:
+        for record in step_records:
+            max_token_index = max(max_token_index, int(record.token_index))
+            kv_head_count = int(record.key_states.shape[0])
+            kv_queries = _aggregate_query_states_by_kv_head(
+                record.query_states,
+                q_head_to_kv_head,
+                num_key_value_heads=kv_head_count,
+            )
+            for kv_head_id in range(kv_head_count):
+                if "K" in normalized_kinds:
+                    streams.setdefault((int(record.layer_id), kv_head_id, "K"), []).append(
+                        (
+                            int(record.token_index),
+                            np.asarray(record.key_states[kv_head_id], dtype=np.float32),
+                            np.asarray(kv_queries[kv_head_id], dtype=np.float32),
+                        )
+                    )
+                if "V" in normalized_kinds:
+                    streams.setdefault((int(record.layer_id), kv_head_id, "V"), []).append(
+                        (
+                            int(record.token_index),
+                            np.asarray(record.value_states[kv_head_id], dtype=np.float32),
+                            np.asarray(kv_queries[kv_head_id], dtype=np.float32),
+                        )
+                    )
+
+    return _build_page_traces_from_streams(
+        streams,
+        max_token_index=max_token_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+        stage="decode",
+    )
+
+
+def build_llama_prefill_page_trace_records(
+    prefill_layers: Sequence[tuple[Any, Any]],
+    *,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "llama_dense_capture",
+    max_token_index: int | None = None,
+) -> list[PageTraceRecord]:
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+
+    normalized_kinds = tuple(str(kind).upper() for kind in kinds)
+    invalid_kinds = [kind for kind in normalized_kinds if kind not in {"K", "V"}]
+    if invalid_kinds:
+        raise ValueError(f"unsupported capture kinds: {invalid_kinds}")
+
+    streams: dict[tuple[int, int, str], list[tuple[int, np.ndarray, np.ndarray | None]]] = {}
+    resolved_max_token_index = -1 if max_token_index is None else int(max_token_index)
+    for layer_id, (layer_keys, layer_values) in enumerate(prefill_layers):
+        key_array = _tensor_to_float32_numpy(layer_keys)
+        value_array = _tensor_to_float32_numpy(layer_values)
+        if key_array.ndim != 4 or value_array.ndim != 4 or key_array.shape[0] != 1 or value_array.shape[0] != 1:
+            raise ValueError("prefill layers must have shape [1, kv_heads, seq_len, head_dim]")
+        if key_array.shape[:3] != value_array.shape[:3]:
+            raise ValueError("prefill key and value tensors must align on batch, kv_head, and seq_len")
+        _, kv_head_count, seq_len, _ = key_array.shape
+        resolved_max_token_index = max(resolved_max_token_index, int(seq_len) - 1)
+        for kv_head_id in range(int(kv_head_count)):
+            for token_index in range(int(seq_len)):
+                if "K" in normalized_kinds:
+                    streams.setdefault((int(layer_id), kv_head_id, "K"), []).append(
+                        (
+                            int(token_index),
+                            np.asarray(key_array[0, kv_head_id, token_index], dtype=np.float32),
+                            None,
+                        )
+                    )
+                if "V" in normalized_kinds:
+                    streams.setdefault((int(layer_id), kv_head_id, "V"), []).append(
+                        (
+                            int(token_index),
+                            np.asarray(value_array[0, kv_head_id, token_index], dtype=np.float32),
+                            None,
+                        )
+                    )
+    return _build_page_traces_from_streams(
+        streams,
+        max_token_index=resolved_max_token_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+        stage="prefill",
+    )
+
+
+def export_llama_page_traces(
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_dir: str | Path,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    source: str = "llama_dense_capture",
+    prefill_layers: Sequence[tuple[Any, Any]] | None = None,
+    prefill_token_count: int | None = None,
+) -> dict[str, Any]:
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    page_traces = build_llama_page_trace_records(
+        per_step_records,
+        q_head_to_kv_head=q_head_to_kv_head,
+        tokens_per_page=tokens_per_page,
+        kinds=kinds,
+        source=source,
+    )
+    if prefill_layers:
+        prefill_length = max(int(prefill_token_count or 0), 0)
+        max_token_index = max(prefill_length - 1 + len(per_step_records), 0)
+        page_traces = build_llama_prefill_page_trace_records(
+            prefill_layers,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
+            source=source,
+            max_token_index=max_token_index,
+        ) + page_traces
+
+    trace_paths: list[str] = []
+    counts_by_kind: dict[str, int] = {}
+    counts_by_layer: dict[str, int] = {}
+    counts_by_stage: dict[str, int] = {}
+    for index, trace in enumerate(page_traces):
+        stage = "unknown"
+        for note in trace.notes:
+            if note.startswith("stage="):
+                stage = note.split("=", 1)[1]
+                break
+        trace_name = (
+            f"{stage}_layer{trace.layer_id:02d}_kv{trace.kv_head_id:02d}_{trace.kind.lower()}_"
+            f"t{trace.token_start:06d}_n{trace.token_count:03d}_{index:04d}.npz"
+        )
+        target = output_path / trace_name
+        save_page_trace(trace, target)
+        trace_paths.append(str(target))
+        counts_by_kind[trace.kind] = counts_by_kind.get(trace.kind, 0) + 1
+        counts_by_stage[stage] = counts_by_stage.get(stage, 0) + 1
+        layer_key = str(trace.layer_id)
+        counts_by_layer[layer_key] = counts_by_layer.get(layer_key, 0) + 1
+    manifest = {
+        "output_dir": str(output_path),
+        "page_trace_count": len(page_traces),
+        "page_trace_paths": trace_paths,
+        "page_trace_counts_by_kind": dict(sorted(counts_by_kind.items())),
+        "page_trace_counts_by_stage": dict(sorted(counts_by_stage.items())),
+        "page_trace_counts_by_layer": dict(sorted(counts_by_layer.items())),
+        "tokens_per_page": int(tokens_per_page),
+        "kinds": list(kinds),
+        "source": source,
+    }
+    (output_path / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def run_llama_page_trace_capture_harness(
+    model,
+    adapter: LlamaDotCacheModelAdapter,
+    *,
+    output_dir: str | Path,
+    tokens_per_page: int,
+    kinds: tuple[str, ...] = ("K", "V"),
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+) -> dict[str, Any]:
+    _require_transformers()
+    if prompt is not None:
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when prompt text is provided")
+        encoded = tokenizer(prompt, return_tensors="pt")
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded["attention_mask"]
+    input_ids = _normalize_input_ids(input_ids, device=adapter.device)
+    attention_mask = _ensure_attention_mask(input_ids, attention_mask, device=adapter.device)
+    dense_result = _run_dense_greedy_decode(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=decode_steps + 1,
+        capture=True,
+    )
+    result: dict[str, Any] = {
+        "runtime_mode": "dense_llama_page_trace_capture",
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": max(0, int(decode_steps)),
+        "prefill_ms": float(dense_result["prefill_ms"]),
+        "dense_decode_ms_per_step": float(
+            dense_result.get("dense_decode_ms_total", 0.0) / max(max(int(decode_steps), 0), 1)
+        ),
+        "capture_record_count": int(sum(len(step_records) for step_records in dense_result["capture_records"])),
+        "capture_step_count": int(len(dense_result["capture_records"])),
+        "capture_layer_count": int(
+            len(
+                {
+                    int(record.layer_id)
+                    for step_records in dense_result["capture_records"]
+                    for record in step_records
+                }
+            )
+        ),
+    }
+    result.update(
+        export_llama_page_traces(
+            dense_result["capture_records"],
+            q_head_to_kv_head=adapter.q_head_to_kv_head,
+            output_dir=output_dir,
+            tokens_per_page=tokens_per_page,
+            kinds=kinds,
+            prefill_layers=dense_result["prefill_layers"],
+            prefill_token_count=int(input_ids.shape[1]),
+        )
+    )
+    return result
 
 
 def run_llama_replay_harness(

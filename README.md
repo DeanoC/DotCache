@@ -44,6 +44,14 @@ If Qwen3.5 4B is the first stronger-model lane you want to standardize on, there
 bash scripts/run_page_selector_qwen35_4b_suite.sh /path/to/output_root
 ```
 
+For the first non-Qwen replication lane, use the dedicated Llama 3.2 3B wrapper:
+
+```bash
+bash scripts/run_page_selector_llama32_3b_suite.sh /path/to/output_root
+```
+
+That path requires `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` because `meta-llama/Llama-3.2-3B-Instruct` is gated.
+
 By default that wrapper runs:
 
 - model `Qwen/Qwen3.5-4B`

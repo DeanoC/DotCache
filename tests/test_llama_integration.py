@@ -13,6 +13,7 @@ from dotcache.integrations.llama import (
     resolve_hf_auth_kwargs,
     run_llama_loss_harness,
     run_llama_generation_harness,
+    run_llama_page_trace_capture_harness,
     run_llama_replay_harness,
 )
 
@@ -183,6 +184,25 @@ def test_llama_loss_harness_runs_on_tiny_random_model() -> None:
     assert np.isfinite(result["dotcache_teacher_forced_loss"])
     assert np.isfinite(result["teacher_forced_loss_delta"])
     assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
+
+
+def test_llama_page_trace_capture_harness_runs_on_tiny_random_model(tmp_path) -> None:
+    model, adapter = _tiny_llama_model()
+    input_ids = torch.tensor([[7, 8, 9, 10, 11, 12]], dtype=torch.long)
+
+    result = run_llama_page_trace_capture_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        decode_steps=2,
+        output_dir=tmp_path,
+        tokens_per_page=2,
+    )
+
+    assert result["runtime_mode"] == "dense_llama_page_trace_capture"
+    assert result["capture_step_count"] == 2
+    assert result["page_trace_count"] > 0
+    assert (tmp_path / "manifest.json").exists()
 
 
 def test_prewarm_torch_decode_layers_warms_each_populated_cuda_layer(monkeypatch: pytest.MonkeyPatch) -> None:

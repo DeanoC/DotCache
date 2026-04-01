@@ -52,6 +52,12 @@ If you want the first stronger-model lane pinned to Qwen3.5 4B, use:
 bash scripts/run_page_selector_qwen35_4b_suite.sh /path/to/output_root
 ```
 
+For the first non-Qwen replication lane, use:
+
+```bash
+bash scripts/run_page_selector_llama32_3b_suite.sh /path/to/output_root
+```
+
 That wrapper runs capture, oracle labeling, suite materialization, and batch
 selector evaluation using `larger_machine_comprehensive_suite.json`, with a
 stable output layout under `capture/`, `labels/`, `suite/`, and `batch_eval/`.
