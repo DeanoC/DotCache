@@ -17,6 +17,7 @@ from dotcache.model_kv_cache import (
     _grouped_pages_can_batch,
     default_q_head_to_kv_head,
 )
+from dotcache.selector_baselines import LinearSelectorModel, RUNTIME_SELECTOR_FEATURE_NAMES, save_linear_selector_model
 from dotcache.tracing import ExecutionTrace
 
 
@@ -212,6 +213,52 @@ def test_model_paged_kv_cache_reports_page_mode_summary() -> None:
     assert float(summary["m1_trial_token_p95_error_max"]) > 0.0
     assert float(summary["k_m1_trial_token_p95_error_max"]) > 0.0
     assert float(summary["v_m1_trial_token_p95_error_max"]) > 0.0
+
+
+def test_model_paged_kv_cache_can_use_learned_page_selector_artifact(tmp_path) -> None:
+    rng = np.random.default_rng(30411)
+    artifact_path = tmp_path / "linear_selector_model.json"
+    feature_dim = len(RUNTIME_SELECTOR_FEATURE_NAMES)
+    save_linear_selector_model(
+        LinearSelectorModel(
+            classes=("M0/affine/4", "M3/affine/4/float16"),
+            weight=np.zeros((feature_dim, 2), dtype=np.float32),
+            bias=np.asarray([0.0, 1.0], dtype=np.float32),
+            feature_mean=np.zeros((feature_dim,), dtype=np.float32),
+            feature_std=np.ones((feature_dim,), dtype=np.float32),
+            feature_names=tuple(RUNTIME_SELECTOR_FEATURE_NAMES),
+        ),
+        artifact_path,
+    )
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        learned_page_selector_path=str(artifact_path),
+        learned_page_selector_prompt_family="cache",
+        learned_page_selector_prompt_variant="locality",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+
+    assert cache._states[(0, 0)].session.key_pages[0].header.mode_default == "M3"
+    assert cache._states[(0, 0)].session.value_pages[0].header.mode_default == "M3"
+    assert bool(summary["learned_page_selector_enabled"]) is True
+    assert int(summary["learned_page_selector_invocations"]) == int(summary["total_static_pages"])
+    assert int(summary["learned_page_selector_fallbacks"]) == 0
+    assert summary["learned_page_selector_prediction_counts"] == {"M3/affine/4/float16": int(summary["total_static_pages"])}
 
 
 def test_dotcache_config_resolves_specific_mode_overrides() -> None:

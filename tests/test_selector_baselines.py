@@ -4,13 +4,16 @@ import json
 from pathlib import Path
 
 from dotcache.selector_baselines import (
+    RUNTIME_SELECTOR_FEATURE_NAMES,
     discover_selector_split_dirs,
     load_selector_candidate_examples,
+    load_linear_selector_model,
     load_selector_examples,
     load_selector_split_examples,
     render_selector_fixed_split_batch_markdown,
     run_selector_baseline_bakeoff,
     run_selector_fixed_split_batch_bakeoff,
+    save_linear_selector_model,
     run_selector_fixed_split_bakeoff,
     run_selector_leave_prompt_family_layer_out_bakeoff,
     run_selector_leave_prompt_family_out_bakeoff,
@@ -20,6 +23,7 @@ from dotcache.selector_baselines import (
     split_selector_examples,
     train_candidate_safe_linear_selector,
     train_linear_selector,
+    train_runtime_linear_selector,
 )
 
 
@@ -464,3 +468,21 @@ def test_learned_selector_models_include_prompt_variant_features(tmp_path) -> No
     assert "variant_logic" in linear_model.feature_names
     assert "variant_locality" in candidate_model.feature_names
     assert "variant_logic" in candidate_model.feature_names
+
+
+def test_runtime_linear_selector_artifact_round_trips(tmp_path) -> None:
+    labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+
+    model = train_runtime_linear_selector(examples, steps=100, learning_rate=0.1, l2=1e-4)
+    target_path = tmp_path / "linear_selector_model.json"
+    save_linear_selector_model(model, target_path)
+    loaded = load_linear_selector_model(target_path)
+
+    assert loaded.classes == model.classes
+    assert loaded.feature_names == tuple(RUNTIME_SELECTOR_FEATURE_NAMES)
+    assert "query_present" not in loaded.feature_names
+    assert "safe_candidate_count" not in loaded.feature_names

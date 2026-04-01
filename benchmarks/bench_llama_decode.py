@@ -25,6 +25,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--tokens-per-page", type=int, default=256)
+    parser.add_argument("--learned-page-selector-path", default=None)
+    parser.add_argument("--learned-page-selector-prompt-family", default=None)
+    parser.add_argument("--learned-page-selector-prompt-variant", default=None)
     parser.add_argument("--random-tiny", action="store_true")
     parser.add_argument("--profile", action="store_true")
     return parser.parse_args()
@@ -52,6 +55,9 @@ def _build_random_harness(args: argparse.Namespace):
         bits_k=args.bits_k,
         bits_v=args.bits_v,
         tokens_per_page=args.tokens_per_page,
+        learned_page_selector_path=args.learned_page_selector_path,
+        learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
+        learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
     )
     adapter = LlamaDotCacheModelAdapter(model, dotcache_config, backend=args.backend)
     input_ids = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.long, device=args.device)
@@ -77,6 +83,9 @@ def main() -> None:
                 "backend": args.backend,
                 "benchmark": "llama_decode",
                 "device": args.device,
+                "learned_page_selector_path": args.learned_page_selector_path,
+                "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+                "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
                 "model_id": "tiny-random-llama",
                 "tokens_per_page": args.tokens_per_page,
             }
@@ -93,6 +102,9 @@ def main() -> None:
             bits_k=args.bits_k,
             bits_v=args.bits_v,
             tokens_per_page=args.tokens_per_page,
+            learned_page_selector_path=args.learned_page_selector_path,
+            learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
+            learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
         )
         harness = LlamaDotCacheHarness.from_pretrained(
             args.model_id,
@@ -110,6 +122,9 @@ def main() -> None:
                 "model_id": args.model_id,
                 "tokens_per_page": args.tokens_per_page,
                 "prompt": args.prompt,
+                "learned_page_selector_path": args.learned_page_selector_path,
+                "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+                "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
                 "torch_dtype": args.torch_dtype,
             }
         )

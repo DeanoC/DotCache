@@ -90,6 +90,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m1-fallback-to-m0", action="store_true")
     parser.add_argument("--m1-error-threshold", type=float, default=0.2)
     parser.add_argument("--m1-token-p95-error-threshold", type=float, default=0.55)
+    parser.add_argument("--learned-page-selector-path", default=None)
+    parser.add_argument("--learned-page-selector-prompt-family", default=None)
+    parser.add_argument("--learned-page-selector-prompt-variant", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
@@ -502,6 +505,9 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         m1_error_threshold=args.m1_error_threshold,
         m1_token_p95_error_threshold=args.m1_token_p95_error_threshold,
         tokens_per_page=args.tokens_per_page,
+        learned_page_selector_path=args.learned_page_selector_path,
+        learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
+        learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
     )
 
 
@@ -596,6 +602,9 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "m1_fallback_to_m0": bool(args.m1_fallback_to_m0),
         "m1_error_threshold": args.m1_error_threshold,
         "m1_token_p95_error_threshold": args.m1_token_p95_error_threshold,
+        "learned_page_selector_path": args.learned_page_selector_path,
+        "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+        "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
         "model_max_position_embeddings": max_position_embeddings,
         "text_only": True,
         "dotcache_ready": False,

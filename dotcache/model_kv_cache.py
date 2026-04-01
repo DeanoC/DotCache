@@ -21,9 +21,10 @@ from .backends import (
 from .config import DotCacheConfig
 from .decode_reference import decode_page
 from .encode import encode_page
-from .planner import choose_page_mode, observe_page
+from .planner import PageModeSpec, choose_page_mode, observe_page, parse_page_mode_token
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
+from .selector_baselines import LinearSelectorModel, load_linear_selector_model
 from .session_runtime import PagedDecodeSession, score_page_relevance, select_execution_page_indices, select_window_page_indices
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
@@ -713,30 +714,26 @@ class _TailPageBuilder:
             dense_keys = np.stack(self.key_rows, axis=0).astype(np.float32, copy=False)
             dense_values = np.stack(self.value_rows, axis=0).astype(np.float32, copy=False)
             current_sequence_length = int(sequence_length if sequence_length is not None else (token_start + key_rows.shape[0]))
-            if self.config.has_policy_overrides(kind="K") or self.config.has_mode_overrides(kind="K"):
-                key_page_mode = choose_page_mode(
-                    self.layer_id,
-                    "K",
-                    max(0, current_sequence_length - int(self.token_start) - 1),
-                    observe_page(dense_keys),
-                    layer_policy=self.config.resolve_layer_policy(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
-                )
-                key_mode = None
-            else:
-                key_page_mode = None
-                key_mode = self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
-            if self.config.has_policy_overrides(kind="V") or self.config.has_mode_overrides(kind="V"):
-                value_page_mode = choose_page_mode(
-                    self.layer_id,
-                    "V",
-                    max(0, current_sequence_length - int(self.token_start) - 1),
-                    observe_page(dense_values),
-                    layer_policy=self.config.resolve_layer_policy(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
-                )
-                value_mode = None
-            else:
-                value_page_mode = None
-                value_mode = self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
+            key_page_mode = self._select_page_mode(
+                dense_keys,
+                kind="K",
+                layer_id=self.layer_id,
+                kv_head_id=self.kv_head_id,
+                token_start=self.token_start,
+                sequence_length=current_sequence_length,
+                stage="decode",
+            )
+            key_mode = None if key_page_mode is not None else self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
+            value_page_mode = self._select_page_mode(
+                dense_values,
+                kind="V",
+                layer_id=self.layer_id,
+                kv_head_id=self.kv_head_id,
+                token_start=self.token_start,
+                sequence_length=current_sequence_length,
+                stage="decode",
+            )
+            value_mode = None if value_page_mode is not None else self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
             finalized_key_pages.append(
                 encode_page(
                     dense_keys,
@@ -1244,6 +1241,12 @@ class ModelPagedKVCache:
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
+        self._learned_page_selector_model: LinearSelectorModel | None = None
+        self._learned_page_selector_invocations = 0
+        self._learned_page_selector_predictions: dict[str, int] = {}
+        self._learned_page_selector_fallbacks = 0
+        if self.config.learned_page_selector_enabled():
+            self._learned_page_selector_model = load_linear_selector_model(str(self.config.learned_page_selector_path))
 
     @property
     def resident_bytes(self) -> int:
@@ -3046,6 +3049,7 @@ class ModelPagedKVCache:
                 kv_head_id=kv_head_id,
                 token_start=0,
                 sequence_length=sequence_length,
+                stage="prefill",
             )
             key_mode_name = (
                 key_page_mode.mode
@@ -3071,6 +3075,7 @@ class ModelPagedKVCache:
                     kv_head_id=kv_head_id,
                     token_start=page_start,
                     sequence_length=sequence_length,
+                    stage="prefill",
                 )
                 key_pages_by_head[kv_head_id].append(
                     encode_page(
@@ -3113,6 +3118,7 @@ class ModelPagedKVCache:
                         kv_head_id=kv_head_id,
                         token_start=page_start,
                         sequence_length=sequence_length,
+                        stage="prefill",
                     ),
                     build_runtime_metadata=False,
                 )
@@ -3126,6 +3132,8 @@ class ModelPagedKVCache:
 
     def _can_direct_prepare_full_prefill_pages_torch(self) -> bool:
         if not self._use_persistent_torch_tail:
+            return False
+        if self.config.learned_page_selector_enabled():
             return False
         if int(self.config.m2_prefilter_top_k) > 0:
             return False
@@ -3148,7 +3156,19 @@ class ModelPagedKVCache:
         kv_head_id: int,
         token_start: int,
         sequence_length: int,
-    ):
+        stage: str = "unknown",
+    ) -> PageModeSpec | None:
+        learned_page_mode = self._select_page_mode_with_learned_selector(
+            values,
+            kind=kind,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            sequence_length=sequence_length,
+            stage=stage,
+        )
+        if learned_page_mode is not None:
+            return learned_page_mode
         if not self.config.has_policy_overrides(kind=kind) and not self.config.has_mode_overrides(kind=kind):
             return None
         layer_policy = self.config.resolve_layer_policy(kind=kind, layer_id=layer_id, kv_head_id=kv_head_id)
@@ -3161,6 +3181,56 @@ class ModelPagedKVCache:
             page_stats,
             layer_policy=layer_policy,
         )
+
+    def _select_page_mode_with_learned_selector(
+        self,
+        values: np.ndarray,
+        *,
+        kind: str,
+        layer_id: int,
+        kv_head_id: int,
+        token_start: int,
+        sequence_length: int,
+        stage: str,
+    ) -> PageModeSpec | None:
+        model = self._learned_page_selector_model
+        if model is None:
+            return None
+        page_stats = observe_page(values)
+        row = {
+            "stage": str(stage),
+            "kind": str(kind),
+            "prompt_family": self.config.learned_page_selector_prompt_family,
+            "prompt_variant": self.config.learned_page_selector_prompt_variant,
+            "query_present": False,
+            "layer_fraction": float(int(layer_id) / max(self.num_hidden_layers - 1, 1)),
+            "kv_head_fraction": float(int(kv_head_id) / max(self.num_key_value_heads - 1, 1)),
+            "token_start": int(token_start),
+            "token_age": max(0, int(sequence_length) - int(token_start) - int(values.shape[0])),
+            "token_count": int(values.shape[0]),
+            "head_dim": int(values.shape[1]),
+            "safe_candidate_count": 0.0,
+            "trace_rms": float(page_stats.rms),
+            "trace_abs_max": float(page_stats.abs_max),
+            "trace_channel_range_mean": float(page_stats.channel_range_mean),
+            "trace_outlier_fraction": float(page_stats.outlier_fraction),
+            "age_per_token": float(max(0, int(sequence_length) - int(token_start) - int(values.shape[0])) / max(int(values.shape[0]), 1)),
+        }
+        predicted = model.predict_row(row)
+        self._learned_page_selector_invocations += 1
+        if predicted is None:
+            self._learned_page_selector_fallbacks += 1
+            return None
+        try:
+            page_mode = parse_page_mode_token(predicted)
+        except ValueError:
+            self._learned_page_selector_fallbacks += 1
+            return None
+        token = f"{page_mode.mode}/{page_mode.quant_scheme}/{page_mode.bits}" + (
+            "" if page_mode.escape_dtype is None else f"/{page_mode.escape_dtype}"
+        )
+        self._learned_page_selector_predictions[token] = self._learned_page_selector_predictions.get(token, 0) + 1
+        return page_mode
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
         if self._torch_device_type is None:
@@ -3527,6 +3597,28 @@ class ModelPagedKVCache:
         summary["m2_prefilter_invocations"] = int(self._m2_prefilter_invocations)
         summary["m2_prefilter_candidate_pages"] = int(self._m2_prefilter_candidate_pages)
         summary["m2_prefilter_selected_pages"] = int(self._m2_prefilter_selected_pages)
+        summary["learned_page_selector_enabled"] = bool(self._learned_page_selector_model is not None)
+        summary["learned_page_selector_path"] = (
+            None
+            if self.config.learned_page_selector_path is None
+            else str(self.config.learned_page_selector_path)
+        )
+        summary["learned_page_selector_prompt_family"] = (
+            None
+            if self.config.learned_page_selector_prompt_family is None
+            else str(self.config.learned_page_selector_prompt_family)
+        )
+        summary["learned_page_selector_prompt_variant"] = (
+            None
+            if self.config.learned_page_selector_prompt_variant is None
+            else str(self.config.learned_page_selector_prompt_variant)
+        )
+        summary["learned_page_selector_invocations"] = int(self._learned_page_selector_invocations)
+        summary["learned_page_selector_fallbacks"] = int(self._learned_page_selector_fallbacks)
+        summary["learned_page_selector_prediction_counts"] = {
+            token: int(count)
+            for token, count in sorted(self._learned_page_selector_predictions.items())
+        }
         return summary
 
     def _batch_upload_persistent_tail_rows(
@@ -3955,7 +4047,18 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
-                    mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
+                    mode=None,
+                    page_mode=(
+                        self._select_page_mode(
+                            dense_keys,
+                            kind="K",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=token_start_full,
+                            sequence_length=int(token_index + token_count),
+                            stage="decode",
+                        )
+                    ),
                     build_runtime_metadata=self._should_build_execution_runtime_metadata(kind="K"),
                     build_m2_sidecar=(
                         self.config.m2_prefilter_top_k > 0
@@ -3969,7 +4072,18 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
-                    mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
+                    mode=None,
+                    page_mode=(
+                        self._select_page_mode(
+                            dense_values,
+                            kind="V",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=token_start_full,
+                            sequence_length=int(token_index + token_count),
+                            stage="decode",
+                        )
+                    ),
                     build_runtime_metadata=False,
                 )
                 state.session.append([finalized_key_page], [finalized_value_page], trace=trace)

@@ -185,6 +185,9 @@ class DotCacheConfig:
     value_layer_sensitivity: tuple[str, ...] = ()
     key_policy_overrides: tuple[str, ...] = ()
     value_policy_overrides: tuple[str, ...] = ()
+    learned_page_selector_path: str | None = None
+    learned_page_selector_prompt_family: str | None = None
+    learned_page_selector_prompt_variant: str | None = None
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -357,6 +360,12 @@ class DotCacheConfig:
             _parse_layer_candidate_spec(spec, field_name="key_policy_overrides")
         for spec in self.value_policy_overrides:
             _parse_layer_candidate_spec(spec, field_name="value_policy_overrides")
+        if self.learned_page_selector_path is not None and not str(self.learned_page_selector_path).strip():
+            raise ValueError("learned_page_selector_path must be a non-empty string when provided")
+        if self.learned_page_selector_prompt_family is not None and not str(self.learned_page_selector_prompt_family).strip():
+            raise ValueError("learned_page_selector_prompt_family must be a non-empty string when provided")
+        if self.learned_page_selector_prompt_variant is not None and not str(self.learned_page_selector_prompt_variant).strip():
+            raise ValueError("learned_page_selector_prompt_variant must be a non-empty string when provided")
 
     @property
     def num_groups(self) -> int:
@@ -386,6 +395,9 @@ class DotCacheConfig:
             or self.key_policy_tier != "exact"
             or self.value_policy_tier != "exact"
         )
+
+    def learned_page_selector_enabled(self) -> bool:
+        return self.learned_page_selector_path is not None and bool(str(self.learned_page_selector_path).strip())
 
     def resolve_page_mode(self, *, kind: str, layer_id: int, kv_head_id: int) -> str:
         if kind == "K":

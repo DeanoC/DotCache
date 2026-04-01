@@ -68,6 +68,7 @@ from .state_cache_sim import (
 from .selector_baselines import (
     CandidateSafeLinearSelectorModel,
     LinearSelectorModel,
+    RUNTIME_SELECTOR_FEATURE_NAMES,
     SelectorCandidateExample,
     SelectorEvaluationSummary,
     SelectorExample,
@@ -91,9 +92,11 @@ from .selector_baselines import (
     run_selector_leave_prompt_variant_out_bakeoff,
     run_selector_leave_layer_out_bakeoff,
     run_selector_multiseed_bakeoff,
+    save_linear_selector_model,
     split_selector_examples,
     train_candidate_safe_linear_selector,
     train_linear_selector,
+    train_runtime_linear_selector,
     train_static_rule_selector,
 )
 
@@ -129,6 +132,7 @@ __all__ = [
     "PageHeader",
     "PagedDecodeSession",
     "PreparedPageCache",
+    "RUNTIME_SELECTOR_FEATURE_NAMES",
     "SelectorCandidateExample",
     "SelectorEvaluationSummary",
     "SelectorExample",
@@ -198,11 +202,13 @@ __all__ = [
     "save_selector_candidate_training_rows",
     "save_selector_training_rows",
     "save_page_trace",
+    "save_linear_selector_model",
     "select_page_trace_paths",
     "upsert_oracle_dataset_split_manifest_entry",
     "split_selector_examples",
     "train_candidate_safe_linear_selector",
     "train_linear_selector",
+    "train_runtime_linear_selector",
     "train_static_rule_selector",
 ]
 

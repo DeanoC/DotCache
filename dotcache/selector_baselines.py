@@ -26,6 +26,22 @@ _BASE_SELECTOR_FEATURE_NAMES = (
     "age_per_token",
 )
 
+RUNTIME_SELECTOR_FEATURE_NAMES = (
+    "stage_decode",
+    "kind_key",
+    "layer_fraction",
+    "kv_head_fraction",
+    "log_token_start",
+    "log_token_age",
+    "token_count",
+    "head_dim",
+    "trace_rms",
+    "log_trace_abs_max",
+    "trace_channel_range_mean",
+    "trace_outlier_fraction",
+    "age_per_token",
+)
+
 _BASE_CANDIDATE_FEATURE_NAMES = (
     *_BASE_SELECTOR_FEATURE_NAMES,
     "candidate_mode_m0",
@@ -243,10 +259,41 @@ class LinearSelectorModel:
     def predict(self, example: SelectorExample) -> str | None:
         if not self.classes:
             return None
-        features = _feature_vector(example, feature_names=self.feature_names)
-        standardized = (features - self.feature_mean) / self.feature_std
-        logits = standardized @ self.weight + self.bias
+        logits = self.predict_logits_for_row(example.row)
         return self.classes[int(np.argmax(logits))]
+
+    def predict_logits_for_row(self, row: dict[str, Any]) -> np.ndarray:
+        features = selector_feature_vector_from_row(row, feature_names=self.feature_names)
+        standardized = (features - self.feature_mean) / self.feature_std
+        return standardized @ self.weight + self.bias
+
+    def predict_row(self, row: dict[str, Any]) -> str | None:
+        if not self.classes:
+            return None
+        logits = self.predict_logits_for_row(row)
+        return self.classes[int(np.argmax(logits))]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifact_type": "linear_selector_model",
+            "classes": list(self.classes),
+            "weight": self.weight.tolist(),
+            "bias": self.bias.tolist(),
+            "feature_mean": self.feature_mean.tolist(),
+            "feature_std": self.feature_std.tolist(),
+            "feature_names": list(self.feature_names),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "LinearSelectorModel":
+        return cls(
+            classes=tuple(str(value) for value in payload.get("classes", [])),
+            weight=np.asarray(payload.get("weight", []), dtype=np.float32),
+            bias=np.asarray(payload.get("bias", []), dtype=np.float32),
+            feature_mean=np.asarray(payload.get("feature_mean", []), dtype=np.float32),
+            feature_std=np.asarray(payload.get("feature_std", []), dtype=np.float32),
+            feature_names=tuple(str(value) for value in payload.get("feature_names", [])),
+        )
 
 
 @dataclass(slots=True)
@@ -301,6 +348,47 @@ def load_selector_examples(
                 )
             )
     return examples
+
+
+def save_linear_selector_model(model: LinearSelectorModel, path: str | Path) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(model.to_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def load_linear_selector_model(path: str | Path) -> LinearSelectorModel:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return LinearSelectorModel.from_dict(payload)
+
+
+def selector_feature_vector_from_row(
+    row: dict[str, Any],
+    *,
+    feature_names: Sequence[str],
+) -> np.ndarray:
+    values = {
+        "stage_decode": 1.0 if str(row.get("stage", "")) == "decode" else 0.0,
+        "kind_key": 1.0 if str(row.get("kind", "")) == "K" else 0.0,
+        "query_present": 1.0 if bool(row.get("query_present", False)) else 0.0,
+        "layer_fraction": float(row.get("layer_fraction", 0.0)),
+        "kv_head_fraction": float(row.get("kv_head_fraction", 0.0)),
+        "log_token_start": float(np.log1p(float(row.get("token_start", 0.0)))),
+        "log_token_age": float(np.log1p(float(row.get("token_age", 0.0)))),
+        "token_count": float(row.get("token_count", 0.0)),
+        "head_dim": float(row.get("head_dim", 0.0)),
+        "safe_candidate_count": float(row.get("safe_candidate_count", 0.0)),
+        "trace_rms": float(row.get("trace_rms", 0.0)),
+        "log_trace_abs_max": float(np.log1p(float(row.get("trace_abs_max", 0.0)))),
+        "trace_channel_range_mean": float(row.get("trace_channel_range_mean", 0.0)),
+        "trace_outlier_fraction": float(row.get("trace_outlier_fraction", 0.0)),
+        "age_per_token": float(row.get("age_per_token", 0.0)),
+    }
+    prompt_family = _normalize_categorical_token(row.get("prompt_family"))
+    prompt_variant = _normalize_categorical_token(row.get("prompt_variant"))
+    return np.asarray(
+        [_resolve_feature_value(values, name, prompt_family=prompt_family, prompt_variant=prompt_variant) for name in feature_names],
+        dtype=np.float32,
+    )
 
 
 def load_selector_candidate_examples(
@@ -437,23 +525,24 @@ def train_linear_selector(
     steps: int = 400,
     learning_rate: float = 0.2,
     l2: float = 1e-3,
+    feature_names: Sequence[str] | None = None,
 ) -> LinearSelectorModel:
     target_examples = [example for example in examples if example.target_present and example.target_candidate is not None]
     classes = tuple(sorted({str(example.target_candidate) for example in target_examples}))
-    feature_names = _selector_feature_names_from_examples(target_examples)
+    resolved_feature_names = tuple(feature_names) if feature_names is not None else _selector_feature_names_from_examples(target_examples)
     if not target_examples or not classes:
-        feature_dim = len(feature_names)
+        feature_dim = len(resolved_feature_names)
         return LinearSelectorModel(
             classes=(),
             weight=np.zeros((feature_dim, 0), dtype=np.float32),
             bias=np.zeros((0,), dtype=np.float32),
             feature_mean=np.zeros((feature_dim,), dtype=np.float32),
             feature_std=np.ones((feature_dim,), dtype=np.float32),
-            feature_names=feature_names,
+            feature_names=resolved_feature_names,
         )
 
     class_to_index = {candidate: index for index, candidate in enumerate(classes)}
-    x = np.stack([_feature_vector(example, feature_names=feature_names) for example in target_examples], axis=0).astype(np.float32)
+    x = np.stack([_feature_vector(example, feature_names=resolved_feature_names) for example in target_examples], axis=0).astype(np.float32)
     y = np.array([class_to_index[str(example.target_candidate)] for example in target_examples], dtype=np.int32)
     feature_mean = np.mean(x, axis=0, dtype=np.float32)
     feature_std = np.std(x, axis=0, dtype=np.float32)
@@ -479,7 +568,23 @@ def train_linear_selector(
         bias=bias,
         feature_mean=feature_mean,
         feature_std=feature_std,
-        feature_names=feature_names,
+        feature_names=resolved_feature_names,
+    )
+
+
+def train_runtime_linear_selector(
+    examples: Sequence[SelectorExample],
+    *,
+    steps: int = 400,
+    learning_rate: float = 0.2,
+    l2: float = 1e-3,
+) -> LinearSelectorModel:
+    return train_linear_selector(
+        examples,
+        steps=steps,
+        learning_rate=learning_rate,
+        l2=l2,
+        feature_names=RUNTIME_SELECTOR_FEATURE_NAMES,
     )
 
 
@@ -1196,29 +1301,7 @@ def _random_split(
 
 
 def _feature_vector(example: SelectorExample, *, feature_names: Sequence[str]) -> np.ndarray:
-    values = {
-        "stage_decode": 1.0 if example.stage == "decode" else 0.0,
-        "kind_key": 1.0 if example.kind == "K" else 0.0,
-        "query_present": 1.0 if example.query_present else 0.0,
-        "layer_fraction": float(example.row["layer_fraction"]),
-        "kv_head_fraction": float(example.row["kv_head_fraction"]),
-        "log_token_start": float(np.log1p(float(example.row["token_start"]))),
-        "log_token_age": float(np.log1p(float(example.row["token_age"]))),
-        "token_count": float(example.row["token_count"]),
-        "head_dim": float(example.row["head_dim"]),
-        "safe_candidate_count": float(example.row["safe_candidate_count"]),
-        "trace_rms": float(example.row["trace_rms"]),
-        "log_trace_abs_max": float(np.log1p(float(example.row["trace_abs_max"]))),
-        "trace_channel_range_mean": float(example.row["trace_channel_range_mean"]),
-        "trace_outlier_fraction": float(example.row["trace_outlier_fraction"]),
-        "age_per_token": float(example.row["age_per_token"]),
-    }
-    prompt_family = _normalize_categorical_token(example.row.get("prompt_family"))
-    prompt_variant = _normalize_categorical_token(example.row.get("prompt_variant"))
-    return np.asarray(
-        [_resolve_feature_value(values, name, prompt_family=prompt_family, prompt_variant=prompt_variant) for name in feature_names],
-        dtype=np.float32,
-    )
+    return selector_feature_vector_from_row(example.row, feature_names=feature_names)
 
 
 def _candidate_feature_vector(example: SelectorCandidateExample, *, feature_names: Sequence[str]) -> np.ndarray:
