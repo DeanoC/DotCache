@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
+import math
 
 from .modes.m4_key_project import valid_m4_basis_families
 from .planner import LayerPolicy, PageModeSpec, make_explicit_policy, make_tier_candidates, parse_page_mode_token
@@ -189,6 +190,8 @@ class DotCacheConfig:
     learned_page_selector_prompt_family: str | None = None
     learned_page_selector_prompt_variant: str | None = None
     learned_page_selector_scope: str = "KV"
+    learned_page_selector_target_candidate: str = "M3/affine/4/float16"
+    learned_page_selector_logit_offset: float = 0.0
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -369,6 +372,10 @@ class DotCacheConfig:
             raise ValueError("learned_page_selector_prompt_variant must be a non-empty string when provided")
         if str(self.learned_page_selector_scope) not in {"KV", "K", "V"}:
             raise ValueError("learned_page_selector_scope must be KV, K, or V")
+        if not str(self.learned_page_selector_target_candidate).strip():
+            raise ValueError("learned_page_selector_target_candidate must be a non-empty string")
+        if not math.isfinite(float(self.learned_page_selector_logit_offset)):
+            raise ValueError("learned_page_selector_logit_offset must be finite")
 
     @property
     def num_groups(self) -> int:

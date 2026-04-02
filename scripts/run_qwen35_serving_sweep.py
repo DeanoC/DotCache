@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
     parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=None)
     parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
+    parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
+    parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
     parser.add_argument("--warmup-runs", type=int, default=0)
     parser.add_argument("--measured-runs", type=int, default=1)
     return parser.parse_args()
@@ -251,6 +253,14 @@ def main() -> None:
             )
         if args.learned_page_selector_scope != "KV":
             dotcache_command.extend(["--learned-page-selector-scope", args.learned_page_selector_scope])
+        if args.learned_page_selector_target_candidate != "M3/affine/4/float16":
+            dotcache_command.extend(
+                ["--learned-page-selector-target-candidate", args.learned_page_selector_target_candidate]
+            )
+        if args.learned_page_selector_logit_offset != 0.0:
+            dotcache_command.extend(
+                ["--learned-page-selector-logit-offset", str(args.learned_page_selector_logit_offset)]
+            )
         if args.warmup_runs > 0:
             dotcache_command.extend(["--warmup-runs", str(args.warmup_runs)])
         if args.measured_runs != 1:

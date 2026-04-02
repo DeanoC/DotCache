@@ -24,7 +24,7 @@ from .encode import encode_page
 from .planner import PageModeSpec, choose_page_mode, observe_page, parse_page_mode_token
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
-from .selector_baselines import LinearSelectorModel, load_linear_selector_model
+from .selector_baselines import adjust_linear_selector_model_logits, LinearSelectorModel, load_linear_selector_model
 from .session_runtime import PagedDecodeSession, score_page_relevance, select_execution_page_indices, select_window_page_indices
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
@@ -1252,6 +1252,15 @@ class ModelPagedKVCache:
         self._learned_page_selector_predictions_by_stage: dict[str, dict[str, int]] = {}
         if self.config.learned_page_selector_enabled():
             self._learned_page_selector_model = load_linear_selector_model(str(self.config.learned_page_selector_path))
+            if float(self.config.learned_page_selector_logit_offset) != 0.0:
+                self._learned_page_selector_model = adjust_linear_selector_model_logits(
+                    self._learned_page_selector_model,
+                    candidate_logit_offsets={
+                        str(self.config.learned_page_selector_target_candidate): float(
+                            self.config.learned_page_selector_logit_offset
+                        )
+                    },
+                )
 
     @property
     def resident_bytes(self) -> int:
@@ -3639,6 +3648,8 @@ class ModelPagedKVCache:
             else str(self.config.learned_page_selector_prompt_variant)
         )
         summary["learned_page_selector_scope"] = str(self.config.learned_page_selector_scope)
+        summary["learned_page_selector_target_candidate"] = str(self.config.learned_page_selector_target_candidate)
+        summary["learned_page_selector_logit_offset"] = float(self.config.learned_page_selector_logit_offset)
         summary["learned_page_selector_invocations"] = int(self._learned_page_selector_invocations)
         summary["learned_page_selector_fallbacks"] = int(self._learned_page_selector_fallbacks)
         summary["learned_page_selector_ms_total"] = float(self._learned_page_selector_ms_total)

@@ -27,7 +27,8 @@ shift
 
 LEARNED_SELECTOR_ARTIFACT="${LEARNED_SELECTOR_ARTIFACT:-$REPO_ROOT/benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json}"
 TARGET_CANDIDATE="${TARGET_CANDIDATE:-M3/affine/4/float16}"
-OFFSETS=(${SELECTOR_LOGIT_OFFSETS:-"-2.0 -1.0 -0.5 0.0 0.5 1.0 2.0"})
+OFFSET_STRING="${SELECTOR_LOGIT_OFFSETS:--2.0 -1.0 -0.5 0.0 0.5 1.0 2.0}"
+read -r -a OFFSETS <<< "$OFFSET_STRING"
 
 ARTIFACT_DIR="$OUTPUT_DIR/artifacts"
 RESULTS_DIR="$OUTPUT_DIR/results"
