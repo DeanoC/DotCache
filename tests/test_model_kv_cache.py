@@ -258,7 +258,14 @@ def test_model_paged_kv_cache_can_use_learned_page_selector_artifact(tmp_path) -
     assert bool(summary["learned_page_selector_enabled"]) is True
     assert int(summary["learned_page_selector_invocations"]) == int(summary["total_static_pages"])
     assert int(summary["learned_page_selector_fallbacks"]) == 0
+    assert float(summary["learned_page_selector_ms_total"]) >= 0.0
+    assert summary["learned_page_selector_invocations_by_stage"] == {"prefill": int(summary["total_static_pages"])}
+    assert summary["learned_page_selector_fallbacks_by_stage"] == {}
+    assert set(summary["learned_page_selector_ms_total_by_stage"]) == {"prefill"}
     assert summary["learned_page_selector_prediction_counts"] == {"M3/affine/4/float16": int(summary["total_static_pages"])}
+    assert summary["learned_page_selector_prediction_counts_by_stage"] == {
+        "prefill": {"M3/affine/4/float16": int(summary["total_static_pages"])}
+    }
 
 
 def test_dotcache_config_resolves_specific_mode_overrides() -> None:

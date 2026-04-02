@@ -1245,6 +1245,11 @@ class ModelPagedKVCache:
         self._learned_page_selector_invocations = 0
         self._learned_page_selector_predictions: dict[str, int] = {}
         self._learned_page_selector_fallbacks = 0
+        self._learned_page_selector_ms_total = 0.0
+        self._learned_page_selector_invocations_by_stage: dict[str, int] = {}
+        self._learned_page_selector_fallbacks_by_stage: dict[str, int] = {}
+        self._learned_page_selector_ms_total_by_stage: dict[str, float] = {}
+        self._learned_page_selector_predictions_by_stage: dict[str, dict[str, int]] = {}
         if self.config.learned_page_selector_enabled():
             self._learned_page_selector_model = load_linear_selector_model(str(self.config.learned_page_selector_path))
 
@@ -3196,9 +3201,11 @@ class ModelPagedKVCache:
         model = self._learned_page_selector_model
         if model is None:
             return None
+        stage_name = str(stage)
+        started_at = perf_counter()
         page_stats = observe_page(values)
         row = {
-            "stage": str(stage),
+            "stage": stage_name,
             "kind": str(kind),
             "prompt_family": self.config.learned_page_selector_prompt_family,
             "prompt_variant": self.config.learned_page_selector_prompt_variant,
@@ -3217,19 +3224,35 @@ class ModelPagedKVCache:
             "age_per_token": float(max(0, int(sequence_length) - int(token_start) - int(values.shape[0])) / max(int(values.shape[0]), 1)),
         }
         predicted = model.predict_row(row)
+        elapsed_ms = float((perf_counter() - started_at) * 1000.0)
+        self._learned_page_selector_ms_total += elapsed_ms
         self._learned_page_selector_invocations += 1
+        self._learned_page_selector_invocations_by_stage[stage_name] = (
+            self._learned_page_selector_invocations_by_stage.get(stage_name, 0) + 1
+        )
+        self._learned_page_selector_ms_total_by_stage[stage_name] = (
+            float(self._learned_page_selector_ms_total_by_stage.get(stage_name, 0.0)) + elapsed_ms
+        )
         if predicted is None:
             self._learned_page_selector_fallbacks += 1
+            self._learned_page_selector_fallbacks_by_stage[stage_name] = (
+                self._learned_page_selector_fallbacks_by_stage.get(stage_name, 0) + 1
+            )
             return None
         try:
             page_mode = parse_page_mode_token(predicted)
         except ValueError:
             self._learned_page_selector_fallbacks += 1
+            self._learned_page_selector_fallbacks_by_stage[stage_name] = (
+                self._learned_page_selector_fallbacks_by_stage.get(stage_name, 0) + 1
+            )
             return None
         token = f"{page_mode.mode}/{page_mode.quant_scheme}/{page_mode.bits}" + (
             "" if page_mode.escape_dtype is None else f"/{page_mode.escape_dtype}"
         )
         self._learned_page_selector_predictions[token] = self._learned_page_selector_predictions.get(token, 0) + 1
+        stage_predictions = self._learned_page_selector_predictions_by_stage.setdefault(stage_name, {})
+        stage_predictions[token] = stage_predictions.get(token, 0) + 1
         return page_mode
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
@@ -3615,9 +3638,26 @@ class ModelPagedKVCache:
         )
         summary["learned_page_selector_invocations"] = int(self._learned_page_selector_invocations)
         summary["learned_page_selector_fallbacks"] = int(self._learned_page_selector_fallbacks)
+        summary["learned_page_selector_ms_total"] = float(self._learned_page_selector_ms_total)
+        summary["learned_page_selector_invocations_by_stage"] = {
+            stage: int(count)
+            for stage, count in sorted(self._learned_page_selector_invocations_by_stage.items())
+        }
+        summary["learned_page_selector_fallbacks_by_stage"] = {
+            stage: int(count)
+            for stage, count in sorted(self._learned_page_selector_fallbacks_by_stage.items())
+        }
+        summary["learned_page_selector_ms_total_by_stage"] = {
+            stage: float(ms)
+            for stage, ms in sorted(self._learned_page_selector_ms_total_by_stage.items())
+        }
         summary["learned_page_selector_prediction_counts"] = {
             token: int(count)
             for token, count in sorted(self._learned_page_selector_predictions.items())
+        }
+        summary["learned_page_selector_prediction_counts_by_stage"] = {
+            stage: {token: int(count) for token, count in sorted(stage_counts.items())}
+            for stage, stage_counts in sorted(self._learned_page_selector_predictions_by_stage.items())
         }
         return summary
 
