@@ -53,6 +53,7 @@ mkdir -p "$OUTPUT_DIR"
   --execution-sink-window 256 \
   --execution-relevance-top-k 4 \
   --execution-relevance-mode envelope \
+  "$@" \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_shortlist_base_serving.jsonl"
 
 "$PYTHON_BIN" "$REPO_ROOT/benchmarks/bench_qwen35_attention_subset_dotcache_serving.py" \
@@ -69,6 +70,7 @@ mkdir -p "$OUTPUT_DIR"
   --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
+  "$@" \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_serving.jsonl"
 
 "$PYTHON_BIN" "$REPO_ROOT/scripts/report_qwen35_backend_truth.py" \

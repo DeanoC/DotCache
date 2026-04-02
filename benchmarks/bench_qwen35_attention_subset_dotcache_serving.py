@@ -93,6 +93,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--prepared-chunk-cache-budget-ratio", type=float, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
@@ -423,91 +427,100 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
 def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCacheConfig:
     from dotcache.config import DotCacheConfig
 
-    return DotCacheConfig(
-        head_dim=head_dim,
-        group_size=args.group_size,
-        bits_k=args.bits_k,
-        bits_v=args.bits_v,
-        default_mode_k=args.default_mode_k,
-        default_mode_v=args.default_mode_v,
-        key_policy_tier=args.key_policy_tier,
-        value_policy_tier=args.value_policy_tier,
-        key_mode_overrides=tuple(args.key_mode_override),
-        value_mode_overrides=tuple(args.value_mode_override),
-        key_layer_sensitivity=tuple(args.key_layer_sensitivity),
-        value_layer_sensitivity=tuple(args.value_layer_sensitivity),
-        key_policy_overrides=tuple(args.key_policy_override),
-        value_policy_overrides=tuple(args.value_policy_override),
-        quant_scheme_k=args.quant_scheme_k,
-        quant_scheme_v=args.quant_scheme_v,
-        escape_dtype=args.escape_dtype,
-        recent_page_escape_dtype=args.recent_page_escape_dtype,
-        recent_window=args.recent_window,
-        execution_recent_window=args.execution_recent_window,
-        execution_sink_window=args.execution_sink_window,
-        execution_recent_window_overrides=tuple(args.execution_recent_window_layer),
-        execution_recent_window_context_overrides=tuple(args.execution_recent_window_context_layer),
-        execution_relevance_top_k=args.execution_relevance_top_k,
-        execution_relevance_top_k_overrides=tuple(args.execution_relevance_top_k_layer),
-        execution_relevance_top_k_context_overrides=tuple(args.execution_relevance_top_k_context_layer),
-        execution_full_context_layers=tuple(args.execution_full_context_layer),
-        execution_disable_grouped_batching_layers=tuple(args.execution_disable_grouped_batching_layer),
-        execution_recent_old_bonus_window=args.execution_recent_old_bonus_window,
-        execution_recent_old_bonus_strength=args.execution_recent_old_bonus_strength,
-        execution_recent_old_bonus_layers=tuple(args.execution_recent_old_bonus_layer),
-        execution_relevance_mode=args.execution_relevance_mode,
-        execution_secondary_relevance_mode=args.execution_secondary_relevance_mode,
-        execution_secondary_relevance_top_k=args.execution_secondary_relevance_top_k,
-        execution_secondary_relevance_min_overlap=args.execution_secondary_relevance_min_overlap,
-        execution_secondary_relevance_layers=tuple(args.execution_secondary_relevance_layer),
-        execution_recent_neighbor_rescue_top_k=args.execution_recent_neighbor_rescue_top_k,
-        execution_recent_neighbor_rescue_anchor_window=args.execution_recent_neighbor_rescue_anchor_window,
-        execution_recent_neighbor_rescue_min_anchor_pages=args.execution_recent_neighbor_rescue_min_anchor_pages,
-        execution_recent_neighbor_rescue_layers=tuple(args.execution_recent_neighbor_rescue_layer),
-        execution_exact_promote_top_k=args.execution_exact_promote_top_k,
-        execution_exact_promote_min_margin_threshold=args.execution_exact_promote_min_margin_threshold,
-        execution_exact_promote_max_context=args.execution_exact_promote_max_context,
-        execution_exact_promote_margin_threshold=args.execution_exact_promote_margin_threshold,
-        execution_exact_promote_layers=tuple(args.execution_exact_promote_layer),
-        execution_exact_promote_union_rescue_top_k=args.execution_exact_promote_union_rescue_top_k,
-        execution_grouped_decode_compact=args.execution_grouped_decode_compact,
-        execution_grouped_mix_compact=args.execution_grouped_mix_compact,
-        execution_grouped_mix_disable_packed_cuda=args.execution_grouped_mix_disable_packed_cuda,
-        execution_freeze_chunk_budget_during_decode=args.execution_freeze_chunk_budget_during_decode,
-        execution_builtin_selector_cache=args.execution_builtin_selector_cache,
-        execution_builtin_selector_score_all_pages=args.execution_builtin_selector_score_all_pages,
-        execution_builtin_selector_candidate_only=args.execution_builtin_selector_candidate_only,
-        execution_builtin_selector_score_all_pages_min_candidate_fraction=(
+    config_kwargs: dict[str, object] = {
+        "head_dim": head_dim,
+        "group_size": args.group_size,
+        "bits_k": args.bits_k,
+        "bits_v": args.bits_v,
+        "default_mode_k": args.default_mode_k,
+        "default_mode_v": args.default_mode_v,
+        "key_policy_tier": args.key_policy_tier,
+        "value_policy_tier": args.value_policy_tier,
+        "key_mode_overrides": tuple(args.key_mode_override),
+        "value_mode_overrides": tuple(args.value_mode_override),
+        "key_layer_sensitivity": tuple(args.key_layer_sensitivity),
+        "value_layer_sensitivity": tuple(args.value_layer_sensitivity),
+        "key_policy_overrides": tuple(args.key_policy_override),
+        "value_policy_overrides": tuple(args.value_policy_override),
+        "quant_scheme_k": args.quant_scheme_k,
+        "quant_scheme_v": args.quant_scheme_v,
+        "escape_dtype": args.escape_dtype,
+        "recent_page_escape_dtype": args.recent_page_escape_dtype,
+        "recent_window": args.recent_window,
+        "execution_recent_window": args.execution_recent_window,
+        "execution_sink_window": args.execution_sink_window,
+        "execution_recent_window_overrides": tuple(args.execution_recent_window_layer),
+        "execution_recent_window_context_overrides": tuple(args.execution_recent_window_context_layer),
+        "execution_relevance_top_k": args.execution_relevance_top_k,
+        "execution_relevance_top_k_overrides": tuple(args.execution_relevance_top_k_layer),
+        "execution_relevance_top_k_context_overrides": tuple(args.execution_relevance_top_k_context_layer),
+        "execution_full_context_layers": tuple(args.execution_full_context_layer),
+        "execution_disable_grouped_batching_layers": tuple(args.execution_disable_grouped_batching_layer),
+        "execution_recent_old_bonus_window": args.execution_recent_old_bonus_window,
+        "execution_recent_old_bonus_strength": args.execution_recent_old_bonus_strength,
+        "execution_recent_old_bonus_layers": tuple(args.execution_recent_old_bonus_layer),
+        "execution_relevance_mode": args.execution_relevance_mode,
+        "execution_secondary_relevance_mode": args.execution_secondary_relevance_mode,
+        "execution_secondary_relevance_top_k": args.execution_secondary_relevance_top_k,
+        "execution_secondary_relevance_min_overlap": args.execution_secondary_relevance_min_overlap,
+        "execution_secondary_relevance_layers": tuple(args.execution_secondary_relevance_layer),
+        "execution_recent_neighbor_rescue_top_k": args.execution_recent_neighbor_rescue_top_k,
+        "execution_recent_neighbor_rescue_anchor_window": args.execution_recent_neighbor_rescue_anchor_window,
+        "execution_recent_neighbor_rescue_min_anchor_pages": args.execution_recent_neighbor_rescue_min_anchor_pages,
+        "execution_recent_neighbor_rescue_layers": tuple(args.execution_recent_neighbor_rescue_layer),
+        "execution_exact_promote_top_k": args.execution_exact_promote_top_k,
+        "execution_exact_promote_min_margin_threshold": args.execution_exact_promote_min_margin_threshold,
+        "execution_exact_promote_max_context": args.execution_exact_promote_max_context,
+        "execution_exact_promote_margin_threshold": args.execution_exact_promote_margin_threshold,
+        "execution_exact_promote_layers": tuple(args.execution_exact_promote_layer),
+        "execution_exact_promote_union_rescue_top_k": args.execution_exact_promote_union_rescue_top_k,
+        "execution_grouped_decode_compact": args.execution_grouped_decode_compact,
+        "execution_grouped_mix_compact": args.execution_grouped_mix_compact,
+        "execution_grouped_mix_disable_packed_cuda": args.execution_grouped_mix_disable_packed_cuda,
+        "execution_freeze_chunk_budget_during_decode": args.execution_freeze_chunk_budget_during_decode,
+        "execution_builtin_selector_cache": args.execution_builtin_selector_cache,
+        "execution_builtin_selector_score_all_pages": args.execution_builtin_selector_score_all_pages,
+        "execution_builtin_selector_candidate_only": args.execution_builtin_selector_candidate_only,
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": (
             args.execution_builtin_selector_score_all_pages_min_candidate_fraction
         ),
-        execution_value_escape_layers=tuple(args.execution_value_escape_layer),
-        execution_value_escape_mode=args.execution_value_escape_mode,
-        execution_value_escape_old_only=args.execution_value_escape_old_only,
-        execution_value_escape_top_k=args.execution_value_escape_top_k,
-        execution_value_escape_prewarm=args.execution_value_escape_prewarm,
-        execution_value_escape_prewarm_min_context=args.execution_value_escape_prewarm_min_context,
-        execution_exact_refine_top_k=args.execution_exact_refine_top_k,
-        execution_exact_refine_layers=tuple(args.execution_exact_refine_layer),
-        m2_sketch_dim_k=args.m2_sketch_dim_k,
-        m2_center_k=args.m2_center_k,
-        m2_segment_count_k=args.m2_segment_count_k,
-        m2_adaptive_segments_k=args.m2_adaptive_segments_k,
-        m2_adaptive_min_improvement_k=args.m2_adaptive_min_improvement_k,
-        m2_prefilter_top_k=args.m2_prefilter_top_k,
-        m2_prefilter_min_pages=args.m2_prefilter_min_pages,
-        prefer_m4_project_k=args.prefer_m4_project_k,
-        lut_refine_steps=args.lut_refine_steps,
-        preconditioner=args.preconditioner,
-        precondition_strength=args.precondition_strength,
-        m1_segment_count_k=args.m1_segment_count_k,
-        m1_segment_count_v=args.m1_segment_count_v,
-        m1_fallback_to_m0=args.m1_fallback_to_m0,
-        m1_error_threshold=args.m1_error_threshold,
-        m1_token_p95_error_threshold=args.m1_token_p95_error_threshold,
-        tokens_per_page=args.tokens_per_page,
-        learned_page_selector_path=args.learned_page_selector_path,
-        learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
-        learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
+        "execution_value_escape_layers": tuple(args.execution_value_escape_layer),
+        "execution_value_escape_mode": args.execution_value_escape_mode,
+        "execution_value_escape_old_only": args.execution_value_escape_old_only,
+        "execution_value_escape_top_k": args.execution_value_escape_top_k,
+        "execution_value_escape_prewarm": args.execution_value_escape_prewarm,
+        "execution_value_escape_prewarm_min_context": args.execution_value_escape_prewarm_min_context,
+        "execution_exact_refine_top_k": args.execution_exact_refine_top_k,
+        "execution_exact_refine_layers": tuple(args.execution_exact_refine_layer),
+        "m2_sketch_dim_k": args.m2_sketch_dim_k,
+        "m2_center_k": args.m2_center_k,
+        "m2_segment_count_k": args.m2_segment_count_k,
+        "m2_adaptive_segments_k": args.m2_adaptive_segments_k,
+        "m2_adaptive_min_improvement_k": args.m2_adaptive_min_improvement_k,
+        "m2_prefilter_top_k": args.m2_prefilter_top_k,
+        "m2_prefilter_min_pages": args.m2_prefilter_min_pages,
+        "prefer_m4_project_k": args.prefer_m4_project_k,
+        "lut_refine_steps": args.lut_refine_steps,
+        "preconditioner": args.preconditioner,
+        "precondition_strength": args.precondition_strength,
+        "m1_segment_count_k": args.m1_segment_count_k,
+        "m1_segment_count_v": args.m1_segment_count_v,
+        "m1_fallback_to_m0": args.m1_fallback_to_m0,
+        "m1_error_threshold": args.m1_error_threshold,
+        "m1_token_p95_error_threshold": args.m1_token_p95_error_threshold,
+        "tokens_per_page": args.tokens_per_page,
+        "learned_page_selector_path": args.learned_page_selector_path,
+        "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+        "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+    }
+    if args.prepared_chunk_cache_budget_ratio is not None:
+        config_kwargs["prepared_chunk_cache_budget_ratio"] = args.prepared_chunk_cache_budget_ratio
+    if args.prepared_chunk_cache_min_bytes is not None:
+        config_kwargs["prepared_chunk_cache_min_bytes"] = args.prepared_chunk_cache_min_bytes
+    if args.prepared_chunk_cache_max_bytes is not None:
+        config_kwargs["prepared_chunk_cache_max_bytes"] = args.prepared_chunk_cache_max_bytes
+    return DotCacheConfig(
+        **config_kwargs,
     )
 
 
@@ -605,6 +618,10 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "prepared_chunk_cache_budget_ratio": args.prepared_chunk_cache_budget_ratio,
+        "prepared_chunk_cache_min_bytes": args.prepared_chunk_cache_min_bytes,
+        "prepared_chunk_cache_max_bytes": args.prepared_chunk_cache_max_bytes,
+        "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
         "model_max_position_embeddings": max_position_embeddings,
         "text_only": True,
         "dotcache_ready": False,
@@ -626,7 +643,7 @@ def main() -> None:
     import torch
     from transformers import AutoConfig
 
-    from dotcache.config import DotCacheConfig
+    from dotcache.backends import configure_prepared_chunk_cache
     from dotcache.config_io import load_layer_profile
     from dotcache.integrations.llama import resolve_hf_auth_kwargs
     from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
@@ -639,6 +656,8 @@ def main() -> None:
     max_position_embeddings = int(getattr(text_config, "max_position_embeddings", 0) or 0)
     head_dim = int(text_config.hidden_size) // int(text_config.num_attention_heads)
     _resolve_args_from_layer_profile(args)
+    if args.prepared_chunk_cache_min_page_count is not None:
+        configure_prepared_chunk_cache(min_page_count=args.prepared_chunk_cache_min_page_count, clear=False)
 
     harness = Qwen35AttentionSubsetDotCacheHarness.from_pretrained(
         args.model_id,

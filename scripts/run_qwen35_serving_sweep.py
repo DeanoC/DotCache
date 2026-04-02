@@ -41,6 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-statecache", action="store_true")
     parser.add_argument("--skip-turboquant", action="store_true")
     parser.add_argument("--dotcache-profile-backend", action="store_true")
+    parser.add_argument("--prepared-chunk-cache-budget-ratio", type=float, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=None)
     return parser.parse_args()
 
 
@@ -226,6 +230,22 @@ def main() -> None:
         ]
         if args.dotcache_profile_backend:
             dotcache_command.append("--profile-backend")
+        if args.prepared_chunk_cache_budget_ratio is not None:
+            dotcache_command.extend(
+                ["--prepared-chunk-cache-budget-ratio", str(args.prepared_chunk_cache_budget_ratio)]
+            )
+        if args.prepared_chunk_cache_min_bytes is not None:
+            dotcache_command.extend(
+                ["--prepared-chunk-cache-min-bytes", str(args.prepared_chunk_cache_min_bytes)]
+            )
+        if args.prepared_chunk_cache_max_bytes is not None:
+            dotcache_command.extend(
+                ["--prepared-chunk-cache-max-bytes", str(args.prepared_chunk_cache_max_bytes)]
+            )
+        if args.prepared_chunk_cache_min_page_count is not None:
+            dotcache_command.extend(
+                ["--prepared-chunk-cache-min-page-count", str(args.prepared_chunk_cache_min_page_count)]
+            )
         _run_jsonl_command(
             command=dotcache_command,
             output_path=dotcache_path,
