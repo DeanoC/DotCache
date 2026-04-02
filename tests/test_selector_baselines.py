@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from dotcache.selector_baselines import (
     RUNTIME_SELECTOR_FEATURE_NAMES,
+    LinearSelectorModel,
+    adjust_linear_selector_model_logits,
     discover_selector_split_dirs,
     load_selector_candidate_examples,
     load_linear_selector_model,
@@ -214,6 +218,22 @@ def test_selector_baseline_bakeoff_reaches_perfect_accuracy_on_separable_bundle(
     assert candidate_result["safe_prediction_rate"] == 1.0
     assert candidate_result["mean_safe_bytes_regret"] == 0.0
     assert "baseline | examples | target_accuracy" in payload["summary_markdown"]
+
+
+def test_adjust_linear_selector_model_logits_updates_only_target_bias() -> None:
+    model = LinearSelectorModel(
+        classes=("M0/affine/4", "M3/affine/4/float16"),
+        weight=np.zeros((len(RUNTIME_SELECTOR_FEATURE_NAMES), 2), dtype=np.float32),
+        bias=np.asarray([0.0, 1.0], dtype=np.float32),
+        feature_mean=np.zeros((len(RUNTIME_SELECTOR_FEATURE_NAMES),), dtype=np.float32),
+        feature_std=np.ones((len(RUNTIME_SELECTOR_FEATURE_NAMES),), dtype=np.float32),
+        feature_names=tuple(RUNTIME_SELECTOR_FEATURE_NAMES),
+    )
+    adjusted = adjust_linear_selector_model_logits(model, candidate_logit_offsets={"M3/affine/4/float16": -0.5})
+
+    assert adjusted.classes == ("M0/affine/4", "M3/affine/4/float16")
+    assert float(adjusted.bias[0]) == 0.0
+    assert float(adjusted.bias[1]) == 0.5
 
 
 def test_selector_split_falls_back_when_stratified_groups_are_singletons(tmp_path) -> None:

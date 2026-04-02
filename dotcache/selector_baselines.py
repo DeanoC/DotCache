@@ -361,6 +361,38 @@ def load_linear_selector_model(path: str | Path) -> LinearSelectorModel:
     return LinearSelectorModel.from_dict(payload)
 
 
+def adjust_linear_selector_model_logits(
+    model: LinearSelectorModel,
+    *,
+    candidate_logit_offsets: dict[str, float],
+) -> LinearSelectorModel:
+    if not candidate_logit_offsets:
+        return LinearSelectorModel(
+            classes=tuple(model.classes),
+            weight=np.array(model.weight, copy=True),
+            bias=np.array(model.bias, copy=True),
+            feature_mean=np.array(model.feature_mean, copy=True),
+            feature_std=np.array(model.feature_std, copy=True),
+            feature_names=tuple(model.feature_names),
+        )
+    updated_bias = np.array(model.bias, copy=True)
+    classes = tuple(model.classes)
+    for candidate, offset in candidate_logit_offsets.items():
+        try:
+            class_index = classes.index(str(candidate))
+        except ValueError as exc:
+            raise ValueError(f"selector model does not contain candidate: {candidate}") from exc
+        updated_bias[class_index] = np.float32(updated_bias[class_index] + float(offset))
+    return LinearSelectorModel(
+        classes=classes,
+        weight=np.array(model.weight, copy=True),
+        bias=updated_bias,
+        feature_mean=np.array(model.feature_mean, copy=True),
+        feature_std=np.array(model.feature_std, copy=True),
+        feature_names=tuple(model.feature_names),
+    )
+
+
 def selector_feature_vector_from_row(
     row: dict[str, Any],
     *,
