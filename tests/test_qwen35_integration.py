@@ -1605,6 +1605,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--trace-python-allocations",
             "--blas-num-threads",
             "1",
+            "--warmup-runs",
+            "2",
+            "--measured-runs",
+            "3",
             "--tokens-per-page",
             "8",
             "--execution-recent-window",
@@ -1662,6 +1666,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-value-escape-prewarm",
             "--execution-value-escape-prewarm-min-context",
             "49152",
+            "--prepared-chunk-cache-min-page-count",
+            "2",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -1693,7 +1699,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.profile_backend is True
     assert serving_args.trace_python_allocations is True
     assert serving_args.blas_num_threads == 1
+    assert serving_args.warmup_runs == 2
+    assert serving_args.measured_runs == 3
     assert serving_args.tokens_per_page == 8
+    assert serving_args.prepared_chunk_cache_min_page_count == 2
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16
     assert serving_args.execution_recent_window_layer == ["layer:23=96"]
@@ -1746,6 +1755,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
         [
             "run_qwen35_serving_sweep.py",
             "--dotcache-profile-backend",
+            "--warmup-runs",
+            "1",
+            "--measured-runs",
+            "4",
             "--contexts",
             "4096",
             "16384",
@@ -1753,6 +1766,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     )
     sweep_args = serving_sweep.parse_args()
     assert sweep_args.dotcache_profile_backend is True
+    assert sweep_args.warmup_runs == 1
+    assert sweep_args.measured_runs == 4
     assert sweep_args.contexts == [4096, 16384]
 
 

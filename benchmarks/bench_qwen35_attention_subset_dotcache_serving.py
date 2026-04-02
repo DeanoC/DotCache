@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import math
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,6 +99,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
     parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument("--measured-runs", type=int, default=1)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
@@ -152,6 +155,26 @@ def _run_case(
     base_record: dict[str, object],
     continue_on_error: bool,
 ) -> None:
+    record = _execute_case(
+        harness,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=max_new_tokens,
+        base_record=base_record,
+        continue_on_error=continue_on_error,
+    )
+    print(json.dumps(record, sort_keys=True), flush=True)
+
+
+def _execute_case(
+    harness,
+    *,
+    input_ids,
+    attention_mask,
+    max_new_tokens: int,
+    base_record: dict[str, object],
+    continue_on_error: bool,
+) -> dict[str, object]:
     try:
         if bool(base_record.get("scorer_diagnostic", False)):
             record = harness.run_attention_subset_dotcache_serving_scorer_diagnostic(
@@ -280,12 +303,135 @@ def _run_case(
                 "prompt_length": int(input_ids.shape[1]),
             }
         )
-        print(json.dumps(error_record, sort_keys=True), flush=True)
-        return
+        return error_record
 
     merged_record = dict(base_record)
     merged_record.update(record)
-    print(json.dumps(merged_record, sort_keys=True), flush=True)
+    return merged_record
+
+
+def _is_numeric(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        raise ValueError("values must be non-empty")
+    if len(values) == 1:
+        return float(values[0])
+    sorted_values = sorted(float(value) for value in values)
+    position = max(0.0, min(1.0, float(fraction))) * float(len(sorted_values) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = position - float(lower)
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
+
+def _aggregate_record_values(records: list[dict[str, object]]) -> dict[str, object]:
+    if not records:
+        raise ValueError("records must be non-empty")
+    template = records[-1]
+    aggregated: dict[str, object] = {}
+    for key, template_value in template.items():
+        values = [record.get(key) for record in records if key in record]
+        if isinstance(template_value, dict) and all(isinstance(value, dict) for value in values):
+            aggregated[key] = _aggregate_record_values(values)  # type: ignore[arg-type]
+            continue
+        if _is_numeric(template_value) and all(_is_numeric(value) for value in values):
+            numeric_values = [float(value) for value in values]
+            mean_value = sum(numeric_values) / float(len(numeric_values))
+            median_value = _percentile(numeric_values, 0.5)
+            p95_value = _percentile(numeric_values, 0.95)
+            if isinstance(template_value, int) and all(value.is_integer() for value in numeric_values):
+                aggregated[key] = int(round(median_value))
+            else:
+                aggregated[key] = median_value
+            aggregated[f"{key}_mean"] = mean_value
+            aggregated[f"{key}_median"] = median_value
+            aggregated[f"{key}_p95"] = p95_value
+            continue
+        aggregated[key] = template_value
+    return aggregated
+
+
+def _run_case_series(
+    harness,
+    *,
+    input_ids,
+    attention_mask,
+    max_new_tokens: int,
+    base_record: dict[str, object],
+    continue_on_error: bool,
+    warmup_runs: int,
+    measured_runs: int,
+) -> None:
+    if warmup_runs <= 0 and measured_runs <= 1:
+        _run_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            base_record=base_record,
+            continue_on_error=continue_on_error,
+        )
+        return
+
+    for warmup_index in range(max(0, int(warmup_runs))):
+        warmup_record = _execute_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            base_record=base_record,
+            continue_on_error=continue_on_error,
+        )
+        warmup_record.update(
+            {
+                "measurement_kind": "warmup",
+                "measurement_index": int(warmup_index),
+                "warmup_runs": int(warmup_runs),
+                "measured_runs": int(measured_runs),
+            }
+        )
+        print(json.dumps(warmup_record, sort_keys=True), flush=True)
+        if warmup_record.get("status") == "error":
+            return
+
+    measured_records: list[dict[str, object]] = []
+    for measurement_index in range(max(1, int(measured_runs))):
+        trial_record = _execute_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            base_record=base_record,
+            continue_on_error=continue_on_error,
+        )
+        trial_record.update(
+            {
+                "measurement_kind": "trial",
+                "measurement_index": int(measurement_index),
+                "warmup_runs": int(warmup_runs),
+                "measured_runs": int(measured_runs),
+            }
+        )
+        print(json.dumps(trial_record, sort_keys=True), flush=True)
+        if trial_record.get("status") == "error":
+            return
+        measured_records.append(trial_record)
+
+    aggregate_record = _aggregate_record_values(measured_records)
+    aggregate_record.update(
+        {
+            "measurement_kind": "aggregate",
+            "measurement_index": None,
+            "warmup_runs": int(warmup_runs),
+            "measured_runs": int(measured_runs),
+        }
+    )
+    print(json.dumps(aggregate_record, sort_keys=True), flush=True)
 
 
 def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
@@ -629,11 +775,17 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "profile_backend": bool(args.profile_backend),
         "trace_python_allocations": bool(args.trace_python_allocations),
         "blas_num_threads": int(args.blas_num_threads),
+        "warmup_runs": int(args.warmup_runs),
+        "measured_runs": int(args.measured_runs),
     }
 
 
 def main() -> None:
     args = parse_args()
+    if int(args.warmup_runs) < 0:
+        raise SystemExit("--warmup-runs must be non-negative")
+    if int(args.measured_runs) <= 0:
+        raise SystemExit("--measured-runs must be positive")
     if int(args.blas_num_threads) > 0:
         thread_count = str(int(args.blas_num_threads))
         os.environ["OMP_NUM_THREADS"] = thread_count
@@ -672,13 +824,15 @@ def main() -> None:
     for repeat_count in args.repeat_counts:
         prompt = " ".join([args.prompt_unit] * repeat_count)
         input_ids, attention_mask = harness.tokenize_prompt(prompt)
-        _run_case(
+        _run_case_series(
             harness,
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=args.max_new_tokens,
             base_record={**common_record, "prompt_mode": "repeat_count", "repeat_count": repeat_count},
             continue_on_error=args.continue_on_error,
+            warmup_runs=args.warmup_runs,
+            measured_runs=args.measured_runs,
         )
 
     for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
@@ -687,13 +841,15 @@ def main() -> None:
             prompt_unit=args.prompt_unit,
             prompt_length=prompt_length,
         )
-        _run_case(
+        _run_case_series(
             harness,
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=args.max_new_tokens,
             base_record={**common_record, "prompt_mode": "exact_length", "prompt_length": prompt_length},
             continue_on_error=args.continue_on_error,
+            warmup_runs=args.warmup_runs,
+            measured_runs=args.measured_runs,
         )
 
 

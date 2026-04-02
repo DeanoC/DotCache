@@ -29,6 +29,9 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
     exact_length_rows = [row for row in rows if row.get("prompt_mode") == "exact_length"]
     if exact_length_rows:
         rows = exact_length_rows
+    aggregate_rows = [row for row in rows if row.get("measurement_kind") == "aggregate"]
+    if aggregate_rows:
+        rows = aggregate_rows
     return sorted(rows, key=lambda row: int(row.get("prompt_length") or 0))
 
 
@@ -59,6 +62,9 @@ def _row_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "prompt_length": int(row.get("prompt_length") or 0),
         "decode_ms_per_step": float(row.get("dotcache_decode_ms_per_step") or 0.0),
+        "decode_ms_per_step_p95": float(
+            row.get("dotcache_decode_ms_per_step_p95") or row.get("dotcache_decode_ms_per_step") or 0.0
+        ),
         "prefill_ms": float(row.get("dotcache_prefill_ms") or 0.0),
         "resident_mib": _mib(row.get("resident_bytes")),
         "kv_resident_mib": _mib(row.get("kv_resident_bytes")),
@@ -72,6 +78,9 @@ def _row_summary(row: dict[str, Any]) -> dict[str, Any]:
         "selector_invocations": selector_invocations,
         "selector_ms_total": selector_ms_total,
         "selector_us_per_invocation": (selector_ms_total * 1000.0 / selector_invocations) if selector_invocations else None,
+        "measurement_kind": row.get("measurement_kind"),
+        "warmup_runs": int(row.get("warmup_runs") or 0),
+        "measured_runs": int(row.get("measured_runs") or 1),
         "prepare_ms_step": float(trace.get("prepare_ms_total", 0.0)) / steps,
         "score_ms_step": float(trace.get("score_ms_total", 0.0)) / steps,
         "mix_ms_step": float(trace.get("mix_ms_total", 0.0)) / steps,
@@ -135,8 +144,8 @@ def _render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Decode And Memory",
         "",
-        "| Context | Variant | Decode ms/step | Prefill ms | Resident MiB | KV MiB | M0 frac | M3 frac | Shortlist | Selector ms | Selector us/inv |",
-        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Context | Variant | Decode ms/step | Decode p95 | Prefill ms | Resident MiB | KV MiB | M0 frac | M3 frac | Shortlist | Selector ms | Selector us/inv |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for comparison in report["comparisons"]:
         context = int(comparison["prompt_length"])
@@ -156,6 +165,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
                         str(context),
                         variant_name,
                         _fmt(row["decode_ms_per_step"]),
+                        _fmt(row["decode_ms_per_step_p95"]),
                         _fmt(row["prefill_ms"]),
                         _fmt(row["resident_mib"]),
                         _fmt(row["kv_resident_mib"]),
