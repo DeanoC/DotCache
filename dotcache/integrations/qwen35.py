@@ -5434,6 +5434,7 @@ def run_qwen35_attention_subset_page_trace_capture_harness(
         decode_steps=decode_steps,
     )
     prefill_tensors = dense_capture["prefill_tensors"]
+    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
@@ -5779,6 +5780,8 @@ def run_qwen35_attention_subset_dotcache_harness(
 
     dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
     dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
+    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
+    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     if dense_logits.size == 0:
         teacher_forced_max_abs = 0.0
@@ -6575,6 +6578,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             for dense_step, dotcache_step in zip(dense_logits, dotcache_logits, strict=True)
         ]
 
+    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
