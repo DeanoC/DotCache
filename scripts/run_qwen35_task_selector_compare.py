@@ -143,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measured-runs", type=int, default=5)
     parser.add_argument("--max-new-tokens-retrieval", type=int, default=12)
-    parser.add_argument("--max-new-tokens-reasoning", type=int, default=12)
+    parser.add_argument("--max-new-tokens-reasoning", type=int, default=64)
     parser.add_argument("--max-new-tokens-instruction", type=int, default=12)
     parser.add_argument("--output", default=None)
     return parser.parse_args()
@@ -180,11 +180,11 @@ def _build_suffix_task_inputs(
 def _build_reasoning_inputs(tokenizer, *, device: torch.device, prompt_length: int) -> tuple[torch.Tensor, torch.Tensor, str]:
     answer = "48"
     suffix = (
-        "A clerk solves a budget worksheet step by step.\n"
-        "Start with 17. Add 26. Subtract 9. Add 14.\n"
-        "What is the final total?\n"
-        "Answer with the exact integer only.\n"
-        "Answer:"
+        "A clerk solves a budget worksheet.\n"
+        "Compute 17 + 26 - 9 + 14.\n"
+        "You may think silently, but the visible response must end with a final line exactly in the form FINAL: <integer>.\n"
+        "Do not include any words after the final integer.\n"
+        "FINAL:"
     )
     input_ids, attention_mask = _build_suffix_task_inputs(
         tokenizer,
@@ -224,19 +224,19 @@ def _build_instruction_inputs(
 def _score_reasoning(generated_text: str, expected_answer: str) -> dict[str, object]:
     stripped = generated_text.strip()
     first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
-    no_think = _strip_think_blocks(stripped)
-    all_numbers = re.findall(r"-?\d+", no_think)
-    predicted = all_numbers[-1] if all_numbers else ""
-    match = re.search(r"-?\d+", first_line)
-    predicted = match.group(0) if match else ""
-    if all_numbers:
-        predicted = all_numbers[-1]
+    cleaned = _strip_chat_artifacts(_strip_think_blocks(stripped))
+    final_match = re.search(r"FINAL:\s*(-?\d+)", cleaned, flags=re.IGNORECASE)
+    if final_match:
+        predicted = final_match.group(1)
+    else:
+        all_numbers = re.findall(r"-?\d+", cleaned)
+        predicted = all_numbers[-1] if all_numbers else ""
     correct = predicted == expected_answer
     return {
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
         "task_generated_first_line": first_line,
-        "task_generated_text_cleaned": no_think,
+        "task_generated_text_cleaned": cleaned,
         "task_generated_value": predicted,
         "task_success": bool(correct),
         "task_metric_name": "exact_integer_match",
