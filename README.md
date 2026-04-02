@@ -43,6 +43,15 @@ Qwen serving entrypoints now default to the `systems` profile. Use `--learned-pa
 
 The standard Qwen backend-truth wrappers also default their learned lane to the `systems` profile.
 
+The current cross-family promotion checkpoint is summarized in:
+
+- [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
+
+That report packages the current decision:
+
+- Qwen3.5 9B should default to `systems`
+- Llama 3.2 3B is already effectively saturated, so `quality` and `systems` are equivalent today
+
 ## Larger-machine selector suite
 
 For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:

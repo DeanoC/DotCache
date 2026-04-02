@@ -1,0 +1,281 @@
+{
+  "llama_task_rows": [
+    {
+      "exact_decode_ms_per_step": 120.24984144690362,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 59.06443479894237,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.046875,
+      "systems_decode_ms_per_step": 59.036482802846216,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.046875,
+      "systems_vs_quality_speedup": 1.0004734698743742,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 162.59401046078312,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 72.79587206854062,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.072265625,
+      "systems_decode_ms_per_step": 76.90934045240283,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.072265625,
+      "systems_vs_quality_speedup": 0.9465153600373425,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 121.23614085453843,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 58.831821033169355,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.09765625,
+      "systems_decode_ms_per_step": 59.29049956686203,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.09765625,
+      "systems_vs_quality_speedup": 0.9922638780741689,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 162.40601713902183,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 72.67720960376282,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.0478515625,
+      "systems_decode_ms_per_step": 72.20705092278502,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.0478515625,
+      "systems_vs_quality_speedup": 1.0065112572106092,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 120.1007425446402,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 58.86748107150197,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.05078125,
+      "systems_decode_ms_per_step": 60.172896493564956,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.05078125,
+      "systems_vs_quality_speedup": 0.9783055910861365,
+      "task_name": "retrieval_passkey"
+    },
+    {
+      "exact_decode_ms_per_step": 164.11734537475488,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 72.81742710620165,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_max_abs_error": 0.12890625,
+      "systems_decode_ms_per_step": 75.77248031950809,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_max_abs_error": 0.12890625,
+      "systems_vs_quality_speedup": 0.9610009702619482,
+      "task_name": "retrieval_passkey"
+    }
+  ],
+  "promotion_calls": {
+    "llama": {
+      "default_profile": "quality_or_systems_equivalent",
+      "mean_task_speedup_vs_quality": 0.9808450877574298,
+      "rationale": "systems and quality are effectively the same operating point because the selector is already saturated to M3."
+    },
+    "qwen": {
+      "default_profile": "systems",
+      "mean_quality_harness_speedup_vs_quality": 1.5771580564088612,
+      "mean_task_speedup_vs_quality": 3.678784191112595,
+      "rationale": "systems preserves task success and materially outperforms quality in serving decode."
+    }
+  },
+  "qwen_quality_rows": [
+    {
+      "prompt_length": 1024,
+      "quality_vs_exact_decode_speedup": 3.139946152087842,
+      "systems_minus_quality_logit_rmse": -0.0028162002563476562,
+      "systems_minus_quality_token_agreement": 0.0,
+      "systems_vs_exact_decode_speedup": 4.696890263324565,
+      "systems_vs_quality_decode_speedup": 1.4958505769920496,
+      "variants": {
+        "exact": {
+          "decode_ms_per_step": 212.43541123112664,
+          "decode_ms_per_step_p95": 212.9746884224005,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.0,
+          "prefill_ms": 68.15392524003983,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 8.4306640625,
+          "replay_output_max_abs_error": 6.28125,
+          "teacher_forced_logit_max_abs_error": 9.103515625,
+          "teacher_forced_logit_rmse": 0.5298725962638855,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "quality": {
+          "decode_ms_per_step": 67.6557497936301,
+          "decode_ms_per_step_p95": 68.34614989347756,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.9541015625,
+          "prefill_ms": 67.42894276976585,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 7.970703125,
+          "replay_output_max_abs_error": 11.19921875,
+          "teacher_forced_logit_max_abs_error": 7.365234375,
+          "teacher_forced_logit_rmse": 0.4702954590320587,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "systems": {
+          "decode_ms_per_step": 45.22894922411069,
+          "decode_ms_per_step_p95": 63.82799135753884,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.98828125,
+          "prefill_ms": 67.36352574080229,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 7.9609375,
+          "replay_output_max_abs_error": 11.3359375,
+          "teacher_forced_logit_max_abs_error": 7.244140625,
+          "teacher_forced_logit_rmse": 0.46747925877571106,
+          "teacher_forced_token_agreement_rate": 1.0
+        }
+      }
+    },
+    {
+      "prompt_length": 2048,
+      "quality_vs_exact_decode_speedup": 4.320142290750677,
+      "systems_minus_quality_logit_rmse": -0.005359292030334473,
+      "systems_minus_quality_token_agreement": 0.0,
+      "systems_vs_exact_decode_speedup": 7.16480709907297,
+      "systems_vs_quality_decode_speedup": 1.6584655358256728,
+      "variants": {
+        "exact": {
+          "decode_ms_per_step": 358.1894305534661,
+          "decode_ms_per_step_p95": 358.7655796785839,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.0,
+          "prefill_ms": 119.69932308420539,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 2.26953125,
+          "replay_output_max_abs_error": 3.0859375,
+          "teacher_forced_logit_max_abs_error": 1.2578125,
+          "teacher_forced_logit_rmse": 0.15797996520996094,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "quality": {
+          "decode_ms_per_step": 82.9114891239442,
+          "decode_ms_per_step_p95": 83.70708432048559,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.964599609375,
+          "prefill_ms": 118.49827598780394,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 5.2119140625,
+          "replay_output_max_abs_error": 11.24609375,
+          "teacher_forced_logit_max_abs_error": 3.734375,
+          "teacher_forced_logit_rmse": 0.2777605950832367,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "systems": {
+          "decode_ms_per_step": 49.99289242550731,
+          "decode_ms_per_step_p95": 50.990072230342776,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.99853515625,
+          "prefill_ms": 118.22718475013971,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 5.205078125,
+          "replay_output_max_abs_error": 11.22265625,
+          "teacher_forced_logit_max_abs_error": 3.7265625,
+          "teacher_forced_logit_rmse": 0.2724013030529022,
+          "teacher_forced_token_agreement_rate": 1.0
+        }
+      }
+    }
+  ],
+  "qwen_task_rows": [
+    {
+      "exact_decode_ms_per_step": 204.94598258907595,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 129.9647466900448,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.04272737354040146,
+      "systems_decode_ms_per_step": 42.83570882398635,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.011694886721670628,
+      "systems_vs_quality_speedup": 3.0340281568369782,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 350.4385316045955,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 166.00311004246274,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.04068104177713394,
+      "systems_decode_ms_per_step": 54.4966859354948,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.011630949564278126,
+      "systems_vs_quality_speedup": 3.0461138543168094,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 210.0223159941379,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 172.1911783242831,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.07249259203672409,
+      "systems_decode_ms_per_step": 41.98299169365782,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.05077783018350601,
+      "systems_vs_quality_speedup": 4.101450882317547,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 356.9733187396196,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 233.68716317781946,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.07748296856880188,
+      "systems_decode_ms_per_step": 54.1984674273408,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.045812930911779404,
+      "systems_vs_quality_speedup": 4.31169319485101,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 205.77102426129082,
+      "exact_success": 1.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 166.32976025963822,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.03592754527926445,
+      "systems_decode_ms_per_step": 45.14358929979304,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.014025246724486351,
+      "systems_vs_quality_speedup": 3.684460248720204,
+      "task_name": "retrieval_passkey"
+    },
+    {
+      "exact_decode_ms_per_step": 349.1529542952776,
+      "exact_success": 1.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 230.64696385214725,
+      "quality_success": 1.0,
+      "quality_teacher_forced_logit_rmse": 0.03912610560655594,
+      "systems_decode_ms_per_step": 59.21679153107107,
+      "systems_success": 1.0,
+      "systems_teacher_forced_logit_rmse": 0.017577186226844788,
+      "systems_vs_quality_speedup": 3.8949588096330197,
+      "task_name": "retrieval_passkey"
+    }
+  ]
+}

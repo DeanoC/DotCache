@@ -253,7 +253,29 @@ This should be the actual execution order for the next stage:
 5. run the benchmark suite and generate the page-level failure workbook
 6. promote only the selectors that survive the matched-budget bakeoff into the real serving path
 
-## 11. Bottom Line
+## 11. Current Checkpoint
+
+The current repo checkpoint is summarized in:
+
+- [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
+
+The present promotion call is:
+
+- Qwen3.5 9B: `systems` is the correct default serving profile
+- Llama 3.2 3B: `quality` and `systems` are effectively the same operating point today
+
+Why this is enough for a local promotion call:
+
+- task-level success is preserved across instruction, retrieval, and reasoning slices
+- Qwen keeps the large serving-speed win under the systems profile
+- Llama confirms that the same selector machinery does not require a forced systems bias when the learned selector is already saturated to `M3`
+
+What is still not claimed:
+
+- that DotCache has already cleared the full matched-budget external-baseline courtroom
+- that every model family should inherit the same systems bias by default
+
+## 12. Bottom Line
 
 The pivot is straightforward:
 
