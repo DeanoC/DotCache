@@ -39,7 +39,9 @@ Serving entrypoints now support named learned-selector profiles so we do not hav
 - `--learned-page-selector-profile manual`
   respects explicit `--learned-page-selector-target-candidate` and `--learned-page-selector-logit-offset`
 
-The standard Qwen backend-truth wrappers now default their learned lane to the `systems` profile.
+Qwen serving entrypoints now default to the `systems` profile. Use `--learned-page-selector-profile quality` when you want the unbiased research/eval operating point.
+
+The standard Qwen backend-truth wrappers also default their learned lane to the `systems` profile.
 
 ## Larger-machine selector suite
 

@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
-    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="quality")
+    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="systems")
     parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
     parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
     parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
