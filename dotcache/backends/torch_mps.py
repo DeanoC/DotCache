@@ -143,6 +143,8 @@ class PreparedChunkMPS:
     codes_groups: tuple[Any, ...] | None
     scales_groups: tuple[Any, ...] | None
     bias_groups: tuple[Any, ...] | None
+    escape_payload_batch: Any | None = None
+    escape_scales_batch: Any | None = None
     fused_scaled_codes: Any | None = None
     m2_sketch_groups: tuple[Any, ...] | None = None
     m2_basis_groups: tuple[Any, ...] | None = None
@@ -503,7 +505,7 @@ def _prepared_chunk_cache_key(pages: Sequence[PreparedPageTorch]) -> tuple[tuple
         return None
     if len(_chunk_compatible_pages(pages)) != 1:
         return None
-    if pages[0].header.mode_default not in ("M0", "M2", "M4", "T3"):
+    if pages[0].header.mode_default not in ("M0", "M2", "M3", "M4", "T3"):
         return None
     return tuple((int(page.cache_uid), int(page.header.token_count)) for page in pages)
 
@@ -526,8 +528,33 @@ def _build_prepared_chunk_mps(pages: Sequence[PreparedPageTorch]) -> PreparedChu
         raise ValueError("pages must be non-empty")
     header = pages[0].header
     device_type = pages[0].device_type
-    if header.mode_default not in ("M0", "M2", "M4", "T3"):
-        raise ValueError("prepared chunk cache currently supports only M0, M2, M4, and T3 pages")
+    if header.mode_default not in ("M0", "M2", "M3", "M4", "T3"):
+        raise ValueError("prepared chunk cache currently supports only M0, M2, M3, M4, and T3 pages")
+    if header.mode_default == "M3":
+        escape_payload_batch = torch.stack(
+            [page.escape_payload[: header.token_count, : header.head_dim] for page in pages],
+            dim=0,
+        ).contiguous()
+        escape_scales_batch = None
+        resident_nbytes = int(escape_payload_batch.numel() * escape_payload_batch.element_size())
+        if header.escape_dtype == "int8":
+            escape_scales_batch = torch.stack(
+                [page.escape_scales[: header.token_count] for page in pages],
+                dim=0,
+            ).contiguous()
+            escape_scales_batch = escape_scales_batch.to(dtype=_escape_scale_dtype(device_type=device_type))
+            resident_nbytes += int(escape_scales_batch.numel() * escape_scales_batch.element_size())
+        return PreparedChunkMPS(
+            header=header,
+            payload_groups=(),
+            codes_groups=None,
+            scales_groups=None,
+            bias_groups=None,
+            escape_payload_batch=escape_payload_batch,
+            escape_scales_batch=escape_scales_batch,
+            fused_scaled_codes=None,
+            resident_nbytes=resident_nbytes,
+        )
     if header.mode_default == "M2":
         m2_sketch_groups = tuple(
             torch.stack([page.m2_sketch[:, group_index, :] for page in pages], dim=0).contiguous()
@@ -1250,6 +1277,13 @@ def _decode_escape_batch_torch(
     head_dim: int,
 ):
     torch = _load_torch()
+    prepared_chunk = _get_prepared_chunk_mps(pages)
+    if prepared_chunk is not None and prepared_chunk.escape_payload_batch is not None:
+        payload = prepared_chunk.escape_payload_batch[:, :token_count, :head_dim]
+        if pages[0].header.escape_dtype == "int8":
+            scales = prepared_chunk.escape_scales_batch[:, :token_count]
+            return payload.to(dtype=torch.float32) * scales[..., None]
+        return payload.to(dtype=torch.float32)
     if len(pages) == 1:
         payload = pages[0].escape_payload[:token_count, :head_dim]
         if pages[0].header.escape_dtype == "int8":

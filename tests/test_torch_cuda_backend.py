@@ -8,10 +8,12 @@ from dotcache.attention_runtime import decode_step, prepare_page
 from dotcache.backends import (
     PreparedPageTorch,
     clear_prepared_chunk_cache,
+    configure_prepared_chunk_cache,
     cuda_available,
     decode_grouped_multiquery_step_prepared_cuda_tensor,
     decode_grouped_multiquery_step_prepared_cuda_tensor_output_only,
     decode_multi_query_step_cuda_tensor,
+    prepared_chunk_cache_resident_bytes,
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
@@ -108,6 +110,42 @@ def test_m3_pages_work_on_cuda(escape_dtype: str) -> None:
         atol=0.12 if escape_dtype == "int8" else 1e-3,
         rtol=0.12 if escape_dtype == "int8" else 1e-3,
     )
+
+
+@requires_cuda
+@pytest.mark.parametrize("escape_dtype", ["float16", "int8"])
+def test_m3_pages_reuse_prepared_chunk_cache_on_cuda(escape_dtype: str) -> None:
+    rng = np.random.default_rng(90205)
+    config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=8,
+        escape_dtype=escape_dtype,
+    )
+    context_length = 16
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+    key_pages = [prepare_page(page, backend="torch_cuda") for page in _encode_paged(keys, config, kind="K")]
+    value_pages = [prepare_page(page, backend="torch_cuda") for page in _encode_paged(values, config, kind="V")]
+    clear_prepared_chunk_cache()
+    configure_prepared_chunk_cache(max_resident_bytes=64 * 1024 * 1024, min_page_count=1, clear=False)
+    try:
+        first_logits, first_weights, first_output = decode_step(query, key_pages, value_pages, backend="torch_cuda")
+        resident_after_first_decode = prepared_chunk_cache_resident_bytes()
+        second_logits, second_weights, second_output = decode_step(query, key_pages, value_pages, backend="torch_cuda")
+        resident_after_second_decode = prepared_chunk_cache_resident_bytes()
+    finally:
+        configure_prepared_chunk_cache(max_resident_bytes=64 * 1024 * 1024, min_page_count=4, clear=False)
+        clear_prepared_chunk_cache()
+
+    np.testing.assert_allclose(second_logits, first_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(second_weights, first_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(second_output, first_output, atol=1e-4, rtol=1e-4)
+    assert resident_after_first_decode > 0
+    assert resident_after_second_decode == resident_after_first_decode
 
 
 @requires_cuda
