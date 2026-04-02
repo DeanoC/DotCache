@@ -1,0 +1,43 @@
+{
+  "artifact_path": "benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
+  "class_count": 2,
+  "classes": [
+    "M0/affine/4",
+    "M3/affine/4/float16"
+  ],
+  "feature_count": 13,
+  "feature_names": [
+    "stage_decode",
+    "kind_key",
+    "layer_fraction",
+    "kv_head_fraction",
+    "log_token_start",
+    "log_token_age",
+    "token_count",
+    "head_dim",
+    "trace_rms",
+    "log_trace_abs_max",
+    "trace_channel_range_mean",
+    "trace_outlier_fraction",
+    "age_per_token"
+  ],
+  "l2": 0.001,
+  "learning_rate": 0.2,
+  "runtime_feature_names": [
+    "stage_decode",
+    "kind_key",
+    "layer_fraction",
+    "kv_head_fraction",
+    "log_token_start",
+    "log_token_age",
+    "token_count",
+    "head_dim",
+    "trace_rms",
+    "log_trace_abs_max",
+    "trace_channel_range_mean",
+    "trace_outlier_fraction",
+    "age_per_token"
+  ],
+  "steps": 400,
+  "train_example_count": 2048
+}
