@@ -46,6 +46,26 @@ DEFAULT_INSTRUCTION_FILLER = (
 )
 
 
+def _strip_chat_artifacts(text: str) -> str:
+    cleaned = str(text).replace("\r\n", "\n").strip()
+    cleaned = re.sub(r"(?is)<\|im_end\|>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<\|endoftext\|>", " ", cleaned)
+    lines = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        line = re.sub(r"(?i)(user|assistant)\s*$", "", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _strip_think_blocks(text: str) -> str:
+    cleaned = str(text)
+    cleaned = re.sub(r"(?is)<think>.*?</think>", " ", cleaned)
+    cleaned = re.sub(r"(?im)^\s*thinking process:\s*$", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a compact Qwen real-task selector comparison suite.")
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-9B")
@@ -204,13 +224,19 @@ def _build_instruction_inputs(
 def _score_reasoning(generated_text: str, expected_answer: str) -> dict[str, object]:
     stripped = generated_text.strip()
     first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
+    no_think = _strip_think_blocks(stripped)
+    all_numbers = re.findall(r"-?\d+", no_think)
+    predicted = all_numbers[-1] if all_numbers else ""
     match = re.search(r"-?\d+", first_line)
     predicted = match.group(0) if match else ""
+    if all_numbers:
+        predicted = all_numbers[-1]
     correct = predicted == expected_answer
     return {
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
         "task_generated_first_line": first_line,
+        "task_generated_text_cleaned": no_think,
         "task_generated_value": predicted,
         "task_success": bool(correct),
         "task_metric_name": "exact_integer_match",
@@ -224,12 +250,14 @@ def _normalize_instruction_lines(text: str) -> list[str]:
 
 def _score_instruction(generated_text: str, expected_answer: str) -> dict[str, object]:
     stripped = generated_text.strip()
+    cleaned = _strip_chat_artifacts(stripped)
     expected_lines = _normalize_instruction_lines(expected_answer)
-    observed_lines = _normalize_instruction_lines(stripped)
+    observed_lines = _normalize_instruction_lines(cleaned)
     correct = observed_lines == expected_lines
     return {
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
+        "task_generated_text_cleaned": cleaned,
         "task_generated_lines": observed_lines,
         "task_success": bool(correct),
         "task_metric_name": "exact_constraint_following",
