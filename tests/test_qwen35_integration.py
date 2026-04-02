@@ -41,6 +41,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
     _configure_qwen35_linear_attention_runtime,
+    _decode_input_id_sequence,
     _qwen35_mps_serving_shortlist_heuristic,
 )
 from dotcache.model_kv_cache import ModelPagedKVCache
@@ -1104,6 +1105,15 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "python_tracemalloc_peak_bytes" in first_step
     assert "python_allocated_blocks_delta" in first_step
     assert "python_gc_count_delta" in first_step
+
+
+def test_decode_input_id_sequence_flattens_decode_steps() -> None:
+    decode_inputs = [
+        torch.tensor([[11]], dtype=torch.long),
+        torch.tensor([[22]], dtype=torch.long),
+        torch.tensor([[33]], dtype=torch.long),
+    ]
+    assert _decode_input_id_sequence(decode_inputs) == [11, 22, 33]
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:

@@ -5052,6 +5052,16 @@ def _run_qwen35_attention_subset_dense_capture(
     }
 
 
+def _decode_input_id_sequence(decode_inputs: list[Any]) -> list[int]:
+    generated_ids: list[int] = []
+    for decode_input_ids in decode_inputs:
+        if torch is not None and torch.is_tensor(decode_input_ids):
+            generated_ids.extend(int(token_id) for token_id in decode_input_ids.detach().view(-1).tolist())
+        else:
+            generated_ids.extend(int(token_id) for token_id in np.asarray(decode_input_ids).reshape(-1).tolist())
+    return generated_ids
+
+
 def _run_qwen35_attention_subset_dense_teacher_forced_capture(
     model,
     adapter: Qwen35AttentionSubsetModelAdapter,
@@ -5769,6 +5779,7 @@ def run_qwen35_attention_subset_dotcache_harness(
 
     dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
     dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
+    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     if dense_logits.size == 0:
         teacher_forced_max_abs = 0.0
         teacher_forced_max_rel = 0.0
@@ -6578,6 +6589,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "dotcache_ready": False,
             "runtime_mode": "dotcache_attention_subset_serving_quality",
             "dotcache_prefill_ms": float(dotcache_prefill_ms),
+            "dense_generated_ids": list(generated_ids),
+            "dotcache_generated_ids": list(generated_ids),
             "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
             "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
             "replay_context_max_abs_error": replay_context_max_abs,
@@ -6704,6 +6717,10 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
+    decoded_text = _decode_text(tokenizer, generated_ids)
+    if decoded_text is not None:
+        result["dense_text"] = decoded_text
+        result["dotcache_text"] = decoded_text
     return result
 
 
