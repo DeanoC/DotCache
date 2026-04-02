@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from dotcache.backends import configure_prepared_chunk_cache
 from dotcache.config import DotCacheConfig
 from dotcache.integrations.llama import (
     LlamaDotCacheHarness,
@@ -28,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=1)
     parser.add_argument("--random-tiny", action="store_true")
     parser.add_argument("--profile", action="store_true")
     return parser.parse_args()
@@ -66,6 +68,8 @@ def _build_random_harness(args: argparse.Namespace):
 
 def main() -> None:
     args = parse_args()
+    if args.prepared_chunk_cache_min_page_count is not None:
+        configure_prepared_chunk_cache(min_page_count=args.prepared_chunk_cache_min_page_count, clear=False)
     if not transformers_available():
         raise SystemExit("bench_llama_decode.py requires the optional transformers dependencies")
 
@@ -86,6 +90,7 @@ def main() -> None:
                 "learned_page_selector_path": args.learned_page_selector_path,
                 "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
                 "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "model_id": "tiny-random-llama",
                 "tokens_per_page": args.tokens_per_page,
             }
@@ -125,6 +130,7 @@ def main() -> None:
                 "learned_page_selector_path": args.learned_page_selector_path,
                 "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
                 "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "torch_dtype": args.torch_dtype,
             }
         )

@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepared-chunk-cache-budget-ratio", type=float, default=None)
     parser.add_argument("--prepared-chunk-cache-min-bytes", type=int, default=None)
     parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
-    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
