@@ -266,6 +266,7 @@ def test_model_paged_kv_cache_can_use_learned_page_selector_artifact(tmp_path) -
     assert summary["learned_page_selector_prediction_counts_by_stage"] == {
         "prefill": {"M3/affine/4/float16": int(summary["total_static_pages"])}
     }
+    assert summary["learned_page_selector_profile"] == "quality"
 
 
 def test_model_paged_kv_cache_can_scope_learned_page_selector_to_keys_only(tmp_path) -> None:
@@ -356,6 +357,7 @@ def test_model_paged_kv_cache_can_apply_learned_page_selector_logit_offset(tmp_p
     assert cache._states[(0, 0)].session.value_pages[0].header.mode_default == "M3"
 
     summary = cache.page_mode_summary()
+    assert summary["learned_page_selector_profile"] == "quality"
     assert summary["learned_page_selector_target_candidate"] == "M3/affine/4/float16"
     assert float(summary["learned_page_selector_logit_offset"]) == 1.0
 

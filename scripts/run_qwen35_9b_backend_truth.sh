@@ -66,6 +66,7 @@ COMMON_ARGS=(
   --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
+  --learned-page-selector-profile systems \
   --learned-page-selector-scope KV \
   "$@" \
   > "$OUTPUT_DIR/qwen35_9b_dotcache_learned_selector_serving.jsonl"

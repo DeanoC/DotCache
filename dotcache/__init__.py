@@ -100,6 +100,7 @@ from .selector_baselines import (
     train_runtime_linear_selector,
     train_static_rule_selector,
 )
+from .selector_profiles import SelectorProfileResolution, resolve_learned_page_selector_profile
 
 __all__ = [
     "DotCacheConfig",
@@ -138,6 +139,7 @@ __all__ = [
     "SelectorEvaluationSummary",
     "SelectorExample",
     "SelectorPrediction",
+    "SelectorProfileResolution",
     "SelectorSplit",
     "StaticRuleSelectorModel",
     "StateAblationResult",
@@ -198,6 +200,7 @@ __all__ = [
     "run_oracle_labeling",
     "run_oracle_batch_replay",
     "run_oracle_replay",
+    "resolve_learned_page_selector_profile",
     "save_oracle_labels",
     "save_oracle_dataset_split_manifest",
     "save_page_trace_manifest",

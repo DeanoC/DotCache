@@ -70,6 +70,7 @@ mkdir -p "$OUTPUT_DIR"
   --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
+  --learned-page-selector-profile systems \
   "$@" \
   --learned-page-selector-scope KV \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_serving.jsonl"
@@ -88,6 +89,7 @@ mkdir -p "$OUTPUT_DIR"
   --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
+  --learned-page-selector-profile systems \
   "$@" \
   --learned-page-selector-scope K \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_k_only_serving.jsonl"
@@ -106,6 +108,7 @@ mkdir -p "$OUTPUT_DIR"
   --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
+  --learned-page-selector-profile systems \
   "$@" \
   --learned-page-selector-scope V \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_v_only_serving.jsonl"

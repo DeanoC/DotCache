@@ -26,6 +26,21 @@ bash scripts/run_page_selector_local_smoke_suite.sh /path/to/oracle_bundle
 
 That wrapper materializes the checked-in local smoke split suite, runs the manifest-driven batch selector eval, and prints the resulting summary paths.
 
+## Serving selector profiles
+
+Serving entrypoints now support named learned-selector profiles so we do not have to keep passing model-specific bias flags by hand:
+
+- `--learned-page-selector-profile quality`
+  uses the unbiased learned selector operating point
+- `--learned-page-selector-profile systems`
+  uses the current systems-tuned operating point
+  for Qwen3.5 lanes this resolves to `M3/affine/4/float16` with `+2.0` logit bias
+  for the current Llama lane it resolves to the unbiased selector because that selector is already saturated to `M3`
+- `--learned-page-selector-profile manual`
+  respects explicit `--learned-page-selector-target-candidate` and `--learned-page-selector-logit-offset`
+
+The standard Qwen backend-truth wrappers now default their learned lane to the `systems` profile.
+
 ## Larger-machine selector suite
 
 For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:

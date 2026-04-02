@@ -189,6 +189,7 @@ class DotCacheConfig:
     learned_page_selector_path: str | None = None
     learned_page_selector_prompt_family: str | None = None
     learned_page_selector_prompt_variant: str | None = None
+    learned_page_selector_profile: str = "quality"
     learned_page_selector_scope: str = "KV"
     learned_page_selector_target_candidate: str = "M3/affine/4/float16"
     learned_page_selector_logit_offset: float = 0.0
@@ -370,6 +371,8 @@ class DotCacheConfig:
             raise ValueError("learned_page_selector_prompt_family must be a non-empty string when provided")
         if self.learned_page_selector_prompt_variant is not None and not str(self.learned_page_selector_prompt_variant).strip():
             raise ValueError("learned_page_selector_prompt_variant must be a non-empty string when provided")
+        if str(self.learned_page_selector_profile) not in {"quality", "systems", "manual"}:
+            raise ValueError("learned_page_selector_profile must be quality, systems, or manual")
         if str(self.learned_page_selector_scope) not in {"KV", "K", "V"}:
             raise ValueError("learned_page_selector_scope must be KV, K, or V")
         if not str(self.learned_page_selector_target_candidate).strip():

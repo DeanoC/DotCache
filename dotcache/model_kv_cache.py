@@ -3647,6 +3647,7 @@ class ModelPagedKVCache:
             if self.config.learned_page_selector_prompt_variant is None
             else str(self.config.learned_page_selector_prompt_variant)
         )
+        summary["learned_page_selector_profile"] = str(self.config.learned_page_selector_profile)
         summary["learned_page_selector_scope"] = str(self.config.learned_page_selector_scope)
         summary["learned_page_selector_target_candidate"] = str(self.config.learned_page_selector_target_candidate)
         summary["learned_page_selector_logit_offset"] = float(self.config.learned_page_selector_logit_offset)

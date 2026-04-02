@@ -14,6 +14,17 @@ from dotcache.integrations.llama import (
 )
 
 
+def _resolve_selector_profile(args: argparse.Namespace):
+    from dotcache.selector_profiles import resolve_learned_page_selector_profile
+
+    return resolve_learned_page_selector_profile(
+        profile=args.learned_page_selector_profile,
+        model_id=args.model_id,
+        target_candidate=args.learned_page_selector_target_candidate,
+        logit_offset=args.learned_page_selector_logit_offset,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark the Phase 5 Llama DotCache integration path.")
     parser.add_argument("--model-id", default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
@@ -29,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="quality")
     parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
     parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
     parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
@@ -54,6 +66,7 @@ def _build_random_harness(args: argparse.Namespace):
     model = LlamaForCausalLM(config)
     model.to(args.device)
     model.eval()
+    selector_profile = _resolve_selector_profile(args)
     dotcache_config = DotCacheConfig(
         head_dim=32,
         group_size=args.group_size,
@@ -63,9 +76,10 @@ def _build_random_harness(args: argparse.Namespace):
         learned_page_selector_path=args.learned_page_selector_path,
         learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
         learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
+        learned_page_selector_profile=selector_profile.profile,
         learned_page_selector_scope=args.learned_page_selector_scope,
-        learned_page_selector_target_candidate=args.learned_page_selector_target_candidate,
-        learned_page_selector_logit_offset=args.learned_page_selector_logit_offset,
+        learned_page_selector_target_candidate=selector_profile.target_candidate,
+        learned_page_selector_logit_offset=selector_profile.logit_offset,
     )
     adapter = LlamaDotCacheModelAdapter(model, dotcache_config, backend=args.backend)
     input_ids = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.long, device=args.device)
@@ -74,6 +88,7 @@ def _build_random_harness(args: argparse.Namespace):
 
 def main() -> None:
     args = parse_args()
+    selector_profile = _resolve_selector_profile(args)
     if args.prepared_chunk_cache_min_page_count is not None:
         configure_prepared_chunk_cache(min_page_count=args.prepared_chunk_cache_min_page_count, clear=False)
     if not transformers_available():
@@ -96,9 +111,10 @@ def main() -> None:
                 "learned_page_selector_path": args.learned_page_selector_path,
                 "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
                 "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "learned_page_selector_profile": selector_profile.profile,
                 "learned_page_selector_scope": args.learned_page_selector_scope,
-                "learned_page_selector_target_candidate": args.learned_page_selector_target_candidate,
-                "learned_page_selector_logit_offset": args.learned_page_selector_logit_offset,
+                "learned_page_selector_target_candidate": selector_profile.target_candidate,
+                "learned_page_selector_logit_offset": selector_profile.logit_offset,
                 "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "model_id": "tiny-random-llama",
                 "tokens_per_page": args.tokens_per_page,
@@ -119,9 +135,10 @@ def main() -> None:
             learned_page_selector_path=args.learned_page_selector_path,
             learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
             learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
+            learned_page_selector_profile=selector_profile.profile,
             learned_page_selector_scope=args.learned_page_selector_scope,
-            learned_page_selector_target_candidate=args.learned_page_selector_target_candidate,
-            learned_page_selector_logit_offset=args.learned_page_selector_logit_offset,
+            learned_page_selector_target_candidate=selector_profile.target_candidate,
+            learned_page_selector_logit_offset=selector_profile.logit_offset,
         )
         harness = LlamaDotCacheHarness.from_pretrained(
             args.model_id,
@@ -142,9 +159,10 @@ def main() -> None:
                 "learned_page_selector_path": args.learned_page_selector_path,
                 "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
                 "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "learned_page_selector_profile": selector_profile.profile,
                 "learned_page_selector_scope": args.learned_page_selector_scope,
-                "learned_page_selector_target_candidate": args.learned_page_selector_target_candidate,
-                "learned_page_selector_logit_offset": args.learned_page_selector_logit_offset,
+                "learned_page_selector_target_candidate": selector_profile.target_candidate,
+                "learned_page_selector_logit_offset": selector_profile.logit_offset,
                 "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "torch_dtype": args.torch_dtype,
             }

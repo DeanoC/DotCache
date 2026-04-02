@@ -6,6 +6,17 @@ import os
 import math
 
 
+def _resolve_selector_profile(args: argparse.Namespace):
+    from dotcache.selector_profiles import resolve_learned_page_selector_profile
+
+    return resolve_learned_page_selector_profile(
+        profile=args.learned_page_selector_profile,
+        model_id=args.model_id,
+        target_candidate=args.learned_page_selector_target_candidate,
+        logit_offset=args.learned_page_selector_logit_offset,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serving-style DotCache benchmark for the Qwen3.5 full-attention subset.")
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
@@ -94,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="quality")
     parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
     parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
     parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
@@ -576,6 +588,7 @@ def _resolve_args_from_layer_profile(args: argparse.Namespace) -> None:
 def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCacheConfig:
     from dotcache.config import DotCacheConfig
 
+    selector_profile = _resolve_selector_profile(args)
     config_kwargs: dict[str, object] = {
         "head_dim": head_dim,
         "group_size": args.group_size,
@@ -661,9 +674,10 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "learned_page_selector_profile": selector_profile.profile,
         "learned_page_selector_scope": args.learned_page_selector_scope,
-        "learned_page_selector_target_candidate": args.learned_page_selector_target_candidate,
-        "learned_page_selector_logit_offset": args.learned_page_selector_logit_offset,
+        "learned_page_selector_target_candidate": selector_profile.target_candidate,
+        "learned_page_selector_logit_offset": selector_profile.logit_offset,
     }
     if args.prepared_chunk_cache_budget_ratio is not None:
         config_kwargs["prepared_chunk_cache_budget_ratio"] = args.prepared_chunk_cache_budget_ratio
@@ -677,6 +691,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
 
 
 def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) -> dict[str, object]:
+    selector_profile = _resolve_selector_profile(args)
     return {
         "benchmark": "qwen35_attention_subset_dotcache_serving",
         "model_id": args.model_id,
@@ -770,9 +785,10 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "learned_page_selector_profile": selector_profile.profile,
         "learned_page_selector_scope": args.learned_page_selector_scope,
-        "learned_page_selector_target_candidate": args.learned_page_selector_target_candidate,
-        "learned_page_selector_logit_offset": args.learned_page_selector_logit_offset,
+        "learned_page_selector_target_candidate": selector_profile.target_candidate,
+        "learned_page_selector_logit_offset": selector_profile.logit_offset,
         "prepared_chunk_cache_budget_ratio": args.prepared_chunk_cache_budget_ratio,
         "prepared_chunk_cache_min_bytes": args.prepared_chunk_cache_min_bytes,
         "prepared_chunk_cache_max_bytes": args.prepared_chunk_cache_max_bytes,

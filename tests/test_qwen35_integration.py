@@ -1672,6 +1672,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "M3/affine/4/float16",
             "--learned-page-selector-logit-offset",
             "1.5",
+            "--learned-page-selector-profile",
+            "manual",
             "--prepared-chunk-cache-min-page-count",
             "2",
             "--scorer-diagnostic",
@@ -1750,6 +1752,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_value_escape_top_k == 64
     assert serving_args.execution_value_escape_prewarm is True
     assert serving_args.execution_value_escape_prewarm_min_context == 49152
+    assert serving_args.learned_page_selector_profile == "manual"
     assert serving_args.learned_page_selector_scope == "K"
     assert serving_args.learned_page_selector_target_candidate == "M3/affine/4/float16"
     assert serving_args.learned_page_selector_logit_offset == 1.5
@@ -1774,6 +1777,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "M0/affine/4",
             "--learned-page-selector-logit-offset",
             "-0.75",
+            "--learned-page-selector-profile",
+            "systems",
             "--contexts",
             "4096",
             "16384",
@@ -1783,6 +1788,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert sweep_args.dotcache_profile_backend is True
     assert sweep_args.warmup_runs == 1
     assert sweep_args.measured_runs == 4
+    assert sweep_args.learned_page_selector_profile == "systems"
     assert sweep_args.learned_page_selector_scope == "V"
     assert sweep_args.learned_page_selector_target_candidate == "M0/affine/4"
     assert sweep_args.learned_page_selector_logit_offset == -0.75
