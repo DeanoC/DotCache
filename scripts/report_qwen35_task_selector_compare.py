@@ -30,6 +30,18 @@ def _load_aggregate_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_trial_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        payload = json.loads(stripped)
+        if payload.get("measurement_kind") == "trial":
+            rows.append(payload)
+    return rows
+
+
 def _fmt_float(value: object) -> str:
     if value is None:
         return "-"
@@ -51,7 +63,50 @@ def _markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def build_report(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+def _sample_key(row: dict[str, Any]) -> tuple[str, int, str]:
+    return (
+        str(row["task_name"]),
+        int(row["prompt_length_requested"]),
+        str(row["selector_profile"]),
+    )
+
+
+def _sample_output_table(rows: list[dict[str, Any]]) -> str:
+    samples: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _sample_key(row)
+        current = samples.get(key)
+        if current is None or int(row.get("measurement_index", 10**9)) < int(current.get("measurement_index", 10**9)):
+            samples[key] = row
+
+    ordered = sorted(samples.values(), key=lambda row: (str(row["task_name"]), int(row["prompt_length_requested"]), str(row["selector_profile"])))
+    table = [[
+        "task",
+        "prompt_length",
+        "profile",
+        "success",
+        "expected",
+        "generated_first_line",
+        "generated_text",
+    ]]
+    for row in ordered:
+        generated_text = str(row.get("task_generated_text", "")).replace("\n", "\\n")
+        first_line = str(row.get("task_generated_first_line", generated_text.split("\\n", 1)[0] if generated_text else ""))
+        table.append(
+            [
+                str(row["task_name"]),
+                str(int(row["prompt_length_requested"])),
+                str(row["selector_profile"]),
+                _fmt_float(row.get("task_metric_value")),
+                str(row.get("task_expected_answer", "")).replace("\n", "\\n"),
+                first_line.replace("\n", "\\n"),
+                generated_text,
+            ]
+        )
+    return _markdown_table(table)
+
+
+def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], str]:
     by_group: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         by_group[_group_key(row)][str(row["selector_profile"])] = row
@@ -107,20 +162,29 @@ def build_report(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
             ]
         )
 
-    markdown = "\n".join(
-        [
-            "# Qwen3.5 9B Task Selector Compare",
-            "",
-            _markdown_table(markdown_rows),
-        ]
-    )
-    return {"rows": summary_rows}, markdown
+    markdown_sections = [
+        "# Qwen3.5 9B Task Selector Compare",
+        "",
+        _markdown_table(markdown_rows),
+    ]
+    if trial_rows:
+        markdown_sections.extend(
+            [
+                "",
+                "## Sample Outputs",
+                "",
+                _sample_output_table(trial_rows),
+            ]
+        )
+    return {"rows": summary_rows}, "\n".join(markdown_sections)
 
 
 def main() -> int:
     args = parse_args()
-    rows = _load_aggregate_rows(Path(args.input))
-    payload, markdown = build_report(rows)
+    input_path = Path(args.input)
+    rows = _load_aggregate_rows(input_path)
+    trial_rows = _load_trial_rows(input_path)
+    payload, markdown = build_report(rows, trial_rows)
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")
     print(markdown)
