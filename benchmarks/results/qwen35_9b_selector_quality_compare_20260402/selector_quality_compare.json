@@ -1,0 +1,113 @@
+{
+  "comparisons": [
+    {
+      "prompt_length": 1024,
+      "quality_vs_exact_decode_speedup": 2.8765505336229764,
+      "systems_minus_quality_logit_rmse": -0.0028162002563476562,
+      "systems_minus_quality_token_agreement": 0.0,
+      "systems_vs_exact_decode_speedup": 4.758419074724011,
+      "systems_vs_quality_decode_speedup": 1.6542101447913193,
+      "variants": {
+        "exact": {
+          "decode_ms_per_step": 209.5234344014898,
+          "decode_ms_per_step_p95": 216.16417409386486,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.0,
+          "prefill_ms": 68.2089370675385,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 8.4306640625,
+          "replay_output_max_abs_error": 6.28125,
+          "teacher_forced_logit_max_abs_error": 9.103515625,
+          "teacher_forced_logit_rmse": 0.5298725962638855,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "quality": {
+          "decode_ms_per_step": 72.8384333779104,
+          "decode_ms_per_step_p95": 91.2644638447091,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.9541015625,
+          "prefill_ms": 67.9078008979559,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 7.970703125,
+          "replay_output_max_abs_error": 11.19921875,
+          "teacher_forced_logit_max_abs_error": 7.365234375,
+          "teacher_forced_logit_rmse": 0.4702954590320587,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "systems": {
+          "decode_ms_per_step": 44.0321525093168,
+          "decode_ms_per_step_p95": 67.72266220068559,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.98828125,
+          "prefill_ms": 66.74335896968842,
+          "prompt_length": 1024,
+          "replay_context_max_abs_error": 7.9609375,
+          "replay_output_max_abs_error": 11.3359375,
+          "teacher_forced_logit_max_abs_error": 7.244140625,
+          "teacher_forced_logit_rmse": 0.46747925877571106,
+          "teacher_forced_token_agreement_rate": 1.0
+        }
+      }
+    },
+    {
+      "prompt_length": 2048,
+      "quality_vs_exact_decode_speedup": 4.050114107950159,
+      "systems_minus_quality_logit_rmse": -0.005359292030334473,
+      "systems_minus_quality_token_agreement": 0.0,
+      "systems_vs_exact_decode_speedup": 7.343019913547332,
+      "systems_vs_quality_decode_speedup": 1.8130402546272397,
+      "variants": {
+        "exact": {
+          "decode_ms_per_step": 354.76457176264375,
+          "decode_ms_per_step_p95": 361.452309100423,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.0,
+          "prefill_ms": 120.61999412253499,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 2.26953125,
+          "replay_output_max_abs_error": 3.0859375,
+          "teacher_forced_logit_max_abs_error": 1.2578125,
+          "teacher_forced_logit_rmse": 0.15797996520996094,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "quality": {
+          "decode_ms_per_step": 87.5937226228416,
+          "decode_ms_per_step_p95": 88.86370725231245,
+          "learned_page_selector_logit_offset": 0.0,
+          "learned_page_selector_profile": "quality",
+          "m3_fraction": 0.964599609375,
+          "prefill_ms": 119.78115374222398,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 5.2119140625,
+          "replay_output_max_abs_error": 11.24609375,
+          "teacher_forced_logit_max_abs_error": 3.734375,
+          "teacher_forced_logit_rmse": 0.2777605950832367,
+          "teacher_forced_token_agreement_rate": 1.0
+        },
+        "systems": {
+          "decode_ms_per_step": 48.31317032221705,
+          "decode_ms_per_step_p95": 48.65306530846283,
+          "learned_page_selector_logit_offset": 2.0,
+          "learned_page_selector_profile": "systems",
+          "m3_fraction": 0.99853515625,
+          "prefill_ms": 118.7026877887547,
+          "prompt_length": 2048,
+          "replay_context_max_abs_error": 5.205078125,
+          "replay_output_max_abs_error": 11.22265625,
+          "teacher_forced_logit_max_abs_error": 3.7265625,
+          "teacher_forced_logit_rmse": 0.2724013030529022,
+          "teacher_forced_token_agreement_rate": 1.0
+        }
+      }
+    }
+  ],
+  "inputs": {
+    "exact": "benchmarks/results/qwen35_9b_selector_quality_compare_20260402/qwen35_9b_exact_quality.jsonl",
+    "quality": "benchmarks/results/qwen35_9b_selector_quality_compare_20260402/qwen35_9b_learned_quality_profile.jsonl",
+    "systems": "benchmarks/results/qwen35_9b_selector_quality_compare_20260402/qwen35_9b_learned_systems_profile.jsonl"
+  }
+}
