@@ -1275,26 +1275,43 @@ def _decode_escape_batch_torch(
     *,
     token_count: int,
     head_dim: int,
+    promote_float32: bool = True,
 ):
     torch = _load_torch()
+    target_dtype = torch.float32 if promote_float32 else None
     prepared_chunk = _get_prepared_chunk_mps(pages)
     if prepared_chunk is not None and prepared_chunk.escape_payload_batch is not None:
         payload = prepared_chunk.escape_payload_batch[:, :token_count, :head_dim]
         if pages[0].header.escape_dtype == "int8":
             scales = prepared_chunk.escape_scales_batch[:, :token_count]
-            return payload.to(dtype=torch.float32) * scales[..., None]
-        return payload.to(dtype=torch.float32)
+            result = payload if target_dtype is None else payload.to(dtype=target_dtype)
+            scale_values = scales if target_dtype is None else scales.to(dtype=target_dtype)
+            return result * scale_values[..., None]
+        return payload if target_dtype is None else payload.to(dtype=target_dtype)
     if len(pages) == 1:
         payload = pages[0].escape_payload[:token_count, :head_dim]
         if pages[0].header.escape_dtype == "int8":
             scales = pages[0].escape_scales[:token_count]
-            return (payload.to(dtype=torch.float32) * scales[:, None]).unsqueeze(0)
-        return payload.to(dtype=torch.float32).unsqueeze(0)
+            result = payload if target_dtype is None else payload.to(dtype=target_dtype)
+            scale_values = scales if target_dtype is None else scales.to(dtype=target_dtype)
+            return (result * scale_values[:, None]).unsqueeze(0)
+        return (payload if target_dtype is None else payload.to(dtype=target_dtype)).unsqueeze(0)
     payload = torch.stack([page.escape_payload[:token_count, :head_dim] for page in pages], dim=0)
     if pages[0].header.escape_dtype == "int8":
         scales = torch.stack([page.escape_scales[:token_count] for page in pages], dim=0)
-        return payload.to(dtype=torch.float32) * scales[..., None]
-    return payload.to(dtype=torch.float32)
+        result = payload if target_dtype is None else payload.to(dtype=target_dtype)
+        scale_values = scales if target_dtype is None else scales.to(dtype=target_dtype)
+        return result * scale_values[..., None]
+    return payload if target_dtype is None else payload.to(dtype=target_dtype)
+
+
+def _m3_native_compute_enabled(pages: Sequence[PreparedPageTorch]) -> bool:
+    if not pages:
+        return False
+    header = pages[0].header
+    if pages[0].device_type != "cuda":
+        return False
+    return header.mode_default == "M3" and header.escape_dtype == "float16"
 
 
 def _optional_m2_sidecar_batches(
@@ -2315,8 +2332,16 @@ def _score_page_chunk_torch(query_slice: np.ndarray | Any, pages: Sequence[Prepa
         )
 
     if header.mode_default == "M3":
-        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
+        use_native_dtype = _m3_native_compute_enabled(pages)
+        dense = _decode_escape_batch_torch(
+            pages,
+            token_count=header.token_count,
+            head_dim=header.head_dim,
+            promote_float32=not use_native_dtype,
+        )
         query = _pad_query(query_slice, header.head_dim, device_type=device_type)
+        if use_native_dtype:
+            return torch.matmul(dense, query.to(dtype=dense.dtype)).reshape(-1).to(dtype=torch.float32)
         return torch.matmul(dense, query).reshape(-1)
 
     if header.mode_default == "M2":
@@ -2560,8 +2585,19 @@ def _mix_page_chunk_torch(
         raise ValueError("attn_weights chunk must have shape [page_count, token_count]")
 
     if header.mode_default == "M3":
-        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
-        output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
+        use_native_dtype = _m3_native_compute_enabled(pages)
+        dense = _decode_escape_batch_torch(
+            pages,
+            token_count=header.token_count,
+            head_dim=header.head_dim,
+            promote_float32=not use_native_dtype,
+        )
+        if use_native_dtype:
+            output[: header.head_dim] += torch.sum(weights.to(dtype=dense.dtype)[..., None] * dense, dim=(0, 1)).to(
+                dtype=torch.float32
+            )
+        else:
+            output[: header.head_dim] += torch.sum(weights[..., None] * dense, dim=(0, 1))
         return output
 
     if header.mode_default in {"M2", "M4"}:
@@ -2812,8 +2848,18 @@ def _score_page_chunk_multiquery_torch(
         )
 
     if header.mode_default == "M3":
-        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
+        use_native_dtype = _m3_native_compute_enabled(pages)
+        dense = _decode_escape_batch_torch(
+            pages,
+            token_count=header.token_count,
+            head_dim=header.head_dim,
+            promote_float32=not use_native_dtype,
+        )
         queries = _pad_queries(query_slices, header.head_dim, device_type=device_type)
+        if use_native_dtype:
+            return torch.einsum("pth,qh->qpt", dense, queries.to(dtype=dense.dtype)).reshape(query_count, -1).to(
+                dtype=torch.float32
+            )
         return torch.einsum("pth,qh->qpt", dense, queries).reshape(query_count, -1)
 
     if header.mode_default == "M2":
@@ -3062,8 +3108,21 @@ def _mix_page_chunk_multiquery_torch(
     output = torch.zeros((query_count, header.padded_head_dim), dtype=torch.float32, device=device_type)
 
     if header.mode_default == "M3":
-        dense = _decode_escape_batch_torch(pages, token_count=header.token_count, head_dim=header.head_dim)
-        output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
+        use_native_dtype = _m3_native_compute_enabled(pages)
+        dense = _decode_escape_batch_torch(
+            pages,
+            token_count=header.token_count,
+            head_dim=header.head_dim,
+            promote_float32=not use_native_dtype,
+        )
+        if use_native_dtype:
+            output[:, : header.head_dim] += torch.einsum(
+                "qpt,pth->qh",
+                weights.to(dtype=dense.dtype),
+                dense,
+            ).to(dtype=torch.float32)
+        else:
+            output[:, : header.head_dim] += torch.einsum("qpt,pth->qh", weights, dense)
         return output
 
     if header.mode_default in {"M2", "M4"}:
@@ -3241,13 +3300,23 @@ def _score_page_chunk_grouped_multiquery_torch(
         )
 
     if header.mode_default == "M3":
+        use_native_dtype = _m3_native_compute_enabled(pages_by_group[0])
         dense = torch.stack(
             [
-                _decode_escape_batch_torch(group_pages, token_count=header.token_count, head_dim=header.head_dim)
+                _decode_escape_batch_torch(
+                    group_pages,
+                    token_count=header.token_count,
+                    head_dim=header.head_dim,
+                    promote_float32=not use_native_dtype,
+                )
                 for group_pages in pages_by_group
             ],
             dim=0,
         )
+        if use_native_dtype:
+            return torch.einsum("bpth,bqh->bqpt", dense, queries.to(dtype=dense.dtype)).reshape(
+                batch_size, query_count, -1
+            ).to(dtype=torch.float32)
         return torch.einsum("bpth,bqh->bqpt", dense, queries).reshape(batch_size, query_count, -1)
 
     if header.mode_default == "M2":
@@ -3819,14 +3888,27 @@ def _mix_page_chunk_grouped_multiquery_torch(
         )
 
     if header.mode_default == "M3":
+        use_native_dtype = _m3_native_compute_enabled(pages_by_group[0])
         dense = torch.stack(
             [
-                _decode_escape_batch_torch(group_pages, token_count=header.token_count, head_dim=header.head_dim)
+                _decode_escape_batch_torch(
+                    group_pages,
+                    token_count=header.token_count,
+                    head_dim=header.head_dim,
+                    promote_float32=not use_native_dtype,
+                )
                 for group_pages in pages_by_group
             ],
             dim=0,
         )
-        output[:, :, : header.head_dim] += torch.einsum("bqpt,bpth->bqh", weights, dense)
+        if use_native_dtype:
+            output[:, :, : header.head_dim] += torch.einsum(
+                "bqpt,bpth->bqh",
+                weights.to(dtype=dense.dtype),
+                dense,
+            ).to(dtype=torch.float32)
+        else:
+            output[:, :, : header.head_dim] += torch.einsum("bqpt,bpth->bqh", weights, dense)
         return output
 
     if header.mode_default in {"M2", "M4"}:
