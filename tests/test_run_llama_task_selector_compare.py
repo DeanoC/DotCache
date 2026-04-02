@@ -22,3 +22,10 @@ def test_score_reasoning_extracts_final_integer_after_think_text() -> None:
     result = MODULE._score_reasoning(generated, "48")
     assert result["task_metric_value"] == 1.0
     assert result["task_generated_value"] == "48"
+
+
+def test_score_reasoning_prefers_leading_answer_before_prompt_echo() -> None:
+    generated = "48\nCompute 17 + 26 - 9 + 14.\nFINAL:"
+    result = MODULE._score_reasoning(generated, "48")
+    assert result["task_metric_value"] == 1.0
+    assert result["task_generated_value"] == "48"

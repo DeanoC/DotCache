@@ -229,8 +229,16 @@ def _score_reasoning(generated_text: str, expected_answer: str) -> dict[str, obj
     if final_match:
         predicted = final_match.group(1)
     else:
-        all_numbers = re.findall(r"-?\d+", cleaned)
-        predicted = all_numbers[-1] if all_numbers else ""
+        first_line_match = re.search(r"^\s*(-?\d+)\b", first_line)
+        if first_line_match:
+            predicted = first_line_match.group(1)
+        else:
+            leading_match = re.search(r"^\s*(-?\d+)\b", cleaned)
+            if leading_match:
+                predicted = leading_match.group(1)
+            else:
+                all_numbers = re.findall(r"-?\d+", cleaned)
+                predicted = all_numbers[-1] if all_numbers else ""
     correct = predicted == expected_answer
     return {
         "task_expected_answer": expected_answer,
