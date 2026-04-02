@@ -10,6 +10,10 @@ Runs a learned-selector page-mix sensitivity sweep for Qwen3.5 0.8B by:
   2. benchmarking each variant on 1024 and 2048 prompt lengths
   3. writing a compact sensitivity report
 
+This wrapper pins the serving benchmark to `--learned-page-selector-profile quality`
+so the generated bias-shifted artifacts are measured directly, without stacking the
+default Qwen `systems` profile on top.
+
 The learned-selector artifact defaults to:
   benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json
 EOF
@@ -57,6 +61,7 @@ while IFS=$'\t' read -r variant artifact_path; do
     --learned-page-selector-path "$artifact_path" \
     --learned-page-selector-prompt-family cache \
     --learned-page-selector-prompt-variant locality \
+    --learned-page-selector-profile quality \
     "$@" \
     > "$RESULTS_DIR/$variant.jsonl"
 done < <(
