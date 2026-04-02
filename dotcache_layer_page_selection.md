@@ -265,6 +265,53 @@ The current repo still only partially satisfies that standardized contract:
 
 That status table is the honest indicator of direction of travel. The project is no longer missing metrics entirely; it is missing consistency, held-out packaging, and external comparators.
 
+### 5.3.1. Cross-Family Selector-Profile Checkpoint
+
+The repo now also contains a cleaner default-path checkpoint in [`selector_profile_promotion_checkpoint_20260402.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md). This is narrower than a full external-baseline courtroom, but it is much closer to a paper-facing promotion decision than the earlier profile sweeps because it combines:
+
+- repeated serving-quality comparisons on Qwen3.5 9B
+- task-level held-out checks on Qwen3.5 9B
+- the same task-level held-out checks on Llama 3.2 3B
+
+The current selector-profile summary is:
+
+| Model | Exact success | Quality success | Systems success | Mean systems vs quality speedup | Current default-path read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `Qwen3.5 9B` | `1.000` | `1.000` | `1.000` | `3.679x` | promote `systems` |
+| `Llama 3.2 3B` | `1.000` | `1.000` | `1.000` | `0.981x` | `quality` and `systems` are effectively the same |
+
+For Qwen3.5 9B, the held-out task rows now stay clean across instruction following, retrieval, and a strengthened reasoning slice:
+
+| Qwen3.5 9B task | Context | Quality decode ms/step | Systems decode ms/step | Systems vs quality speedup |
+| --- | ---: | ---: | ---: | ---: |
+| instruction | `1024` | `129.97` | `42.84` | `3.03x` |
+| instruction | `2048` | `166.00` | `54.50` | `3.05x` |
+| reasoning | `1024` | `172.19` | `41.98` | `4.10x` |
+| reasoning | `2048` | `233.69` | `54.20` | `4.31x` |
+| retrieval | `1024` | `166.33` | `45.14` | `3.68x` |
+| retrieval | `2048` | `230.65` | `59.22` | `3.89x` |
+
+The Qwen serving-quality harness points in the same direction. In [`selector_quality_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_selector_quality_compare_20260402/selector_quality_compare.md), the `systems` profile stays at `1.000` token agreement while improving decode from `67.66` to `45.23` ms/step at `1024` and from `82.91` to `49.99` ms/step at `2048`, with slightly lower logit RMSE than the `quality` profile in both contexts.
+
+The Llama 3.2 3B result is different in exactly the way a model-family-sensitive selector story should be different. The current learned selector is already saturated to `M3`, so the `systems` profile does not buy an extra win:
+
+| Llama 3.2 3B task | Context | Quality decode ms/step | Systems decode ms/step | Systems vs quality speedup |
+| --- | ---: | ---: | ---: | ---: |
+| instruction | `1024` | `59.06` | `59.04` | `1.00x` |
+| instruction | `2048` | `72.80` | `76.91` | `0.95x` |
+| reasoning | `1024` | `58.83` | `59.29` | `0.99x` |
+| reasoning | `2048` | `72.68` | `72.21` | `1.01x` |
+| retrieval | `1024` | `58.87` | `60.17` | `0.98x` |
+| retrieval | `2048` | `72.82` | `75.77` | `0.96x` |
+
+This is useful because it narrows the selector claim in a healthy way. The project no longer needs to pretend that one bias setting should be globally optimal across all model families. The stronger current claim is:
+
+- selector profiles should be family-sensitive
+- `systems` is the correct default for the current Qwen3.5 serving lane
+- Llama does not currently need an extra systems bias beyond the learned selector itself
+
+This is enough evidence to support a local default-path switch in the repo. It is not, by itself, enough to say that matched-budget external-baseline Gate C is already cleared.
+
 ### 5.4. TinyLlama 1.1B
 
 TinyLlama remains the cleanest success case in the local profiles:

@@ -282,7 +282,7 @@ Additional rule for default-switch claims:
 - do not argue that a new execution path should become the default unless it shows a stable advantage across repeated held-out systems runs and does not regress held-out quality
 - do not argue that a heterogeneous page-format path should become the default unless it also beats the best fixed single-format DotCache variant on oracle or trace-backed studies
 
-## Current Status As Of 2026-03-31
+## Current Status As Of 2026-04-02
 
 What is already in place:
 
@@ -291,6 +291,7 @@ What is already in place:
 - shortlist recall and scorer diagnostics
 - grouped versus `per_kv_fallback` path accounting
 - step-level timing breakdown fields in the Qwen3.5 serving lane
+- a cross-family selector-profile promotion checkpoint in [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
 
 What is still missing:
 
@@ -302,7 +303,12 @@ What is still missing:
 - matched-budget accounting with metadata and fragmentation included
 - a failure workbook for benchmark misses
 
-That means the project is improving on measurement discipline, but it is not yet benchmark-complete.
+The current checkpoint already supports one narrow but real promotion call:
+
+- Qwen3.5 9B can default to the `systems` selector profile for serving
+- Llama 3.2 3B currently does not need an extra systems bias because `quality` and `systems` are effectively the same operating point
+
+That means the project is improving on measurement discipline, and the selector-profile question is much less ambiguous than it was one week ago, but it is not yet benchmark-complete.
 
 ## Recommended Immediate Use
 
