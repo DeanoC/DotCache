@@ -188,6 +188,7 @@ class DotCacheConfig:
     learned_page_selector_path: str | None = None
     learned_page_selector_prompt_family: str | None = None
     learned_page_selector_prompt_variant: str | None = None
+    learned_page_selector_scope: str = "KV"
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -366,6 +367,8 @@ class DotCacheConfig:
             raise ValueError("learned_page_selector_prompt_family must be a non-empty string when provided")
         if self.learned_page_selector_prompt_variant is not None and not str(self.learned_page_selector_prompt_variant).strip():
             raise ValueError("learned_page_selector_prompt_variant must be a non-empty string when provided")
+        if str(self.learned_page_selector_scope) not in {"KV", "K", "V"}:
+            raise ValueError("learned_page_selector_scope must be KV, K, or V")
 
     @property
     def num_groups(self) -> int:
@@ -398,6 +401,12 @@ class DotCacheConfig:
 
     def learned_page_selector_enabled(self) -> bool:
         return self.learned_page_selector_path is not None and bool(str(self.learned_page_selector_path).strip())
+
+    def learned_page_selector_applies_to_kind(self, *, kind: str) -> bool:
+        scope = str(self.learned_page_selector_scope)
+        if scope == "KV":
+            return kind in {"K", "V"}
+        return str(kind) == scope
 
     def resolve_page_mode(self, *, kind: str, layer_id: int, kv_head_id: int) -> str:
         if kind == "K":

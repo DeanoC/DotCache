@@ -11,7 +11,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare exact, shortlist, and learned-selector DotCache backend profiles.")
     parser.add_argument("--exact", required=True, help="Path to exact DotCache JSONL artifact.")
     parser.add_argument("--shortlist", required=True, help="Path to shortlist-base DotCache JSONL artifact.")
-    parser.add_argument("--learned", required=True, help="Path to learned-selector DotCache JSONL artifact.")
+    parser.add_argument("--learned", required=True, help="Path to learned-selector KV-scope DotCache JSONL artifact.")
+    parser.add_argument("--learned-k-only", default=None, help="Optional path to learned-selector K-only DotCache JSONL artifact.")
+    parser.add_argument("--learned-v-only", default=None, help="Optional path to learned-selector V-only DotCache JSONL artifact.")
     parser.add_argument("--markdown-output", default=None, help="Optional markdown output path.")
     parser.add_argument("--json-output", default=None, help="Optional JSON output path.")
     return parser.parse_args()
@@ -104,6 +106,10 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
         "shortlist_base": _load_rows(Path(args.shortlist)),
         "learned_selector": _load_rows(Path(args.learned)),
     }
+    if args.learned_k_only:
+        variants["learned_selector_k_only"] = _load_rows(Path(args.learned_k_only))
+    if args.learned_v_only:
+        variants["learned_selector_v_only"] = _load_rows(Path(args.learned_v_only))
     rows_by_context: dict[int, dict[str, dict[str, Any]]] = {}
     for variant_name, rows in variants.items():
         for row in rows:
@@ -119,26 +125,42 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
             "prompt_length": context,
             "variants": context_rows,
         }
-        if learned and exact:
-            comparison["learned_vs_exact_decode_speedup"] = (
-                float(exact["decode_ms_per_step"] / max(learned["decode_ms_per_step"], 1e-8))
-            )
-        if learned and shortlist:
-            comparison["learned_vs_shortlist_decode_speedup"] = (
-                float(shortlist["decode_ms_per_step"] / max(learned["decode_ms_per_step"], 1e-8))
-            )
+        speedups: dict[str, dict[str, float]] = {}
+        for variant_name, variant_row in context_rows.items():
+            if variant_name in {"exact", "shortlist_base"}:
+                continue
+            variant_speedups: dict[str, float] = {}
+            if exact and variant_row:
+                variant_speedups["vs_exact"] = float(exact["decode_ms_per_step"] / max(variant_row["decode_ms_per_step"], 1e-8))
+            if shortlist and variant_row:
+                variant_speedups["vs_shortlist"] = float(
+                    shortlist["decode_ms_per_step"] / max(variant_row["decode_ms_per_step"], 1e-8)
+                )
+            if variant_speedups:
+                speedups[variant_name] = variant_speedups
+        if speedups:
+            comparison["speedups"] = speedups
         comparisons.append(comparison)
     return {
         "inputs": {
             "exact": args.exact,
             "shortlist": args.shortlist,
             "learned": args.learned,
+            "learned_k_only": args.learned_k_only,
+            "learned_v_only": args.learned_v_only,
         },
         "comparisons": comparisons,
     }
 
 
 def _render_markdown(report: dict[str, Any]) -> str:
+    variant_order = [
+        "exact",
+        "shortlist_base",
+        "learned_selector",
+        "learned_selector_k_only",
+        "learned_selector_v_only",
+    ]
     lines = [
         "# Qwen3.5 Backend Truth Report",
         "",
@@ -149,7 +171,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
     ]
     for comparison in report["comparisons"]:
         context = int(comparison["prompt_length"])
-        for variant_name in ("exact", "shortlist_base", "learned_selector"):
+        for variant_name in variant_order:
             row = comparison["variants"].get(variant_name)
             if row is None:
                 continue
@@ -189,7 +211,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
     )
     for comparison in report["comparisons"]:
         context = int(comparison["prompt_length"])
-        for variant_name in ("exact", "shortlist_base", "learned_selector"):
+        for variant_name in variant_order:
             row = comparison["variants"].get(variant_name)
             if row is None:
                 continue
@@ -211,19 +233,24 @@ def _render_markdown(report: dict[str, Any]) -> str:
                 )
                 + " |"
             )
-    lines.extend(["", "## Speedups", "", "| Context | Learned vs Exact | Learned vs Shortlist |", "| ---: | ---: | ---: |"])
+    lines.extend(["", "## Speedups", "", "| Context | Variant | Vs Exact | Vs Shortlist |", "| ---: | --- | ---: | ---: |"])
     for comparison in report["comparisons"]:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    str(int(comparison["prompt_length"])),
-                    _fmt(comparison.get("learned_vs_exact_decode_speedup")),
-                    _fmt(comparison.get("learned_vs_shortlist_decode_speedup")),
-                ]
+        for variant_name in ("learned_selector", "learned_selector_k_only", "learned_selector_v_only"):
+            speedups = (comparison.get("speedups") or {}).get(variant_name)
+            if not speedups:
+                continue
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(int(comparison["prompt_length"])),
+                        variant_name,
+                        _fmt(speedups.get("vs_exact")),
+                        _fmt(speedups.get("vs_shortlist")),
+                    ]
+                )
+                + " |"
             )
-            + " |"
-        )
     return "\n".join(lines) + "\n"
 
 

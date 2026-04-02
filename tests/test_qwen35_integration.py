@@ -1666,6 +1666,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-value-escape-prewarm",
             "--execution-value-escape-prewarm-min-context",
             "49152",
+            "--learned-page-selector-scope",
+            "K",
             "--prepared-chunk-cache-min-page-count",
             "2",
             "--scorer-diagnostic",
@@ -1744,6 +1746,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_value_escape_top_k == 64
     assert serving_args.execution_value_escape_prewarm is True
     assert serving_args.execution_value_escape_prewarm_min_context == 49152
+    assert serving_args.learned_page_selector_scope == "K"
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]
@@ -1759,6 +1762,8 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "1",
             "--measured-runs",
             "4",
+            "--learned-page-selector-scope",
+            "V",
             "--contexts",
             "4096",
             "16384",
@@ -1768,6 +1773,7 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert sweep_args.dotcache_profile_backend is True
     assert sweep_args.warmup_runs == 1
     assert sweep_args.measured_runs == 4
+    assert sweep_args.learned_page_selector_scope == "V"
     assert sweep_args.contexts == [4096, 16384]
 
 

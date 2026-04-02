@@ -3201,6 +3201,8 @@ class ModelPagedKVCache:
         model = self._learned_page_selector_model
         if model is None:
             return None
+        if not self.config.learned_page_selector_applies_to_kind(kind=str(kind)):
+            return None
         stage_name = str(stage)
         started_at = perf_counter()
         page_stats = observe_page(values)
@@ -3636,6 +3638,7 @@ class ModelPagedKVCache:
             if self.config.learned_page_selector_prompt_variant is None
             else str(self.config.learned_page_selector_prompt_variant)
         )
+        summary["learned_page_selector_scope"] = str(self.config.learned_page_selector_scope)
         summary["learned_page_selector_invocations"] = int(self._learned_page_selector_invocations)
         summary["learned_page_selector_fallbacks"] = int(self._learned_page_selector_fallbacks)
         summary["learned_page_selector_ms_total"] = float(self._learned_page_selector_ms_total)

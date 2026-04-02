@@ -8,7 +8,7 @@ usage: bash scripts/run_qwen35_backend_truth.sh <output-dir> [extra sweep args..
 Runs the narrow backend-truth experiment for Qwen3.5 0.8B:
   1. dense / statecache / exact DotCache sweep
   2. shortlist-base DotCache lane
-  3. learned-selector DotCache lane
+  3. learned-selector DotCache lanes (KV, K-only, V-only)
   4. backend comparison report
 
 The learned-selector artifact defaults to:
@@ -71,12 +71,51 @@ mkdir -p "$OUTPUT_DIR"
   --learned-page-selector-prompt-family cache \
   --learned-page-selector-prompt-variant locality \
   "$@" \
+  --learned-page-selector-scope KV \
   > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_serving.jsonl"
+
+"$PYTHON_BIN" "$REPO_ROOT/benchmarks/bench_qwen35_attention_subset_dotcache_serving.py" \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --layer-profile "$REPO_ROOT/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml" \
+  --repeat-counts \
+  --target-prompt-lengths 1024 2048 \
+  --max-new-tokens 4 \
+  --continue-on-error \
+  --profile-backend \
+  --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
+  --learned-page-selector-prompt-family cache \
+  --learned-page-selector-prompt-variant locality \
+  "$@" \
+  --learned-page-selector-scope K \
+  > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_k_only_serving.jsonl"
+
+"$PYTHON_BIN" "$REPO_ROOT/benchmarks/bench_qwen35_attention_subset_dotcache_serving.py" \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --layer-profile "$REPO_ROOT/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml" \
+  --repeat-counts \
+  --target-prompt-lengths 1024 2048 \
+  --max-new-tokens 4 \
+  --continue-on-error \
+  --profile-backend \
+  --learned-page-selector-path "$LEARNED_SELECTOR_ARTIFACT" \
+  --learned-page-selector-prompt-family cache \
+  --learned-page-selector-prompt-variant locality \
+  "$@" \
+  --learned-page-selector-scope V \
+  > "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_v_only_serving.jsonl"
 
 "$PYTHON_BIN" "$REPO_ROOT/scripts/report_qwen35_backend_truth.py" \
   --exact "$OUTPUT_DIR/qwen35_0p8b_dotcache_serving_sweep.jsonl" \
   --shortlist "$OUTPUT_DIR/qwen35_0p8b_dotcache_shortlist_base_serving.jsonl" \
   --learned "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_serving.jsonl" \
+  --learned-k-only "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_k_only_serving.jsonl" \
+  --learned-v-only "$OUTPUT_DIR/qwen35_0p8b_dotcache_learned_selector_v_only_serving.jsonl" \
   --markdown-output "$OUTPUT_DIR/backend_truth_report.md" \
   --json-output "$OUTPUT_DIR/backend_truth_report.json"
 

@@ -94,6 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learned-page-selector-path", default=None)
     parser.add_argument("--learned-page-selector-prompt-family", default=None)
     parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
     parser.add_argument("--prepared-chunk-cache-budget-ratio", type=float, default=None)
     parser.add_argument("--prepared-chunk-cache-min-bytes", type=int, default=None)
     parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
@@ -658,6 +659,7 @@ def _build_dotcache_config(args: argparse.Namespace, *, head_dim: int) -> DotCac
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "learned_page_selector_scope": args.learned_page_selector_scope,
     }
     if args.prepared_chunk_cache_budget_ratio is not None:
         config_kwargs["prepared_chunk_cache_budget_ratio"] = args.prepared_chunk_cache_budget_ratio
@@ -764,6 +766,7 @@ def _common_record(args: argparse.Namespace, *, max_position_embeddings: int) ->
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "learned_page_selector_scope": args.learned_page_selector_scope,
         "prepared_chunk_cache_budget_ratio": args.prepared_chunk_cache_budget_ratio,
         "prepared_chunk_cache_min_bytes": args.prepared_chunk_cache_min_bytes,
         "prepared_chunk_cache_max_bytes": args.prepared_chunk_cache_max_bytes,
