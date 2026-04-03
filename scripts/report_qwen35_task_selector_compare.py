@@ -13,6 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--json-output", required=True)
+    parser.add_argument("--title", default="Qwen Task Selector Compare")
     return parser.parse_args()
 
 
@@ -106,7 +107,12 @@ def _sample_output_table(rows: list[dict[str, Any]]) -> str:
     return _markdown_table(table)
 
 
-def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], str]:
+def build_report(
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    trial_rows: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], str]:
     by_group: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         by_group[_group_key(row)][str(row["selector_profile"])] = row
@@ -163,7 +169,7 @@ def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | 
         )
 
     markdown_sections = [
-        "# Qwen3.5 9B Task Selector Compare",
+        f"# {title}",
         "",
         _markdown_table(markdown_rows),
     ]
@@ -184,7 +190,7 @@ def main() -> int:
     input_path = Path(args.input)
     rows = _load_aggregate_rows(input_path)
     trial_rows = _load_trial_rows(input_path)
-    payload, markdown = build_report(rows, trial_rows)
+    payload, markdown = build_report(rows, title=str(args.title), trial_rows=trial_rows)
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")
     print(markdown)
