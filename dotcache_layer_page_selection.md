@@ -312,6 +312,18 @@ This is useful because it narrows the selector claim in a healthy way. The proje
 
 This is enough evidence to support a local default-path switch in the repo. It is not, by itself, enough to say that matched-budget external-baseline Gate C is already cleared.
 
+### 5.3.2. Controller-Family Framing, Not Just Better Aggregate Rows
+
+Independent controller work in [/Users/deanocalver/Documents/Projects/M0TileDevice/docs/stage10_stage11_findings_report.md](/Users/deanocalver/Documents/Projects/M0TileDevice/docs/stage10_stage11_findings_report.md) reinforces a point that this DotCache draft should state more explicitly: a selector family can be a successful diagnostic branch without being the right default controller family.
+
+That repo's Stage 10 to Stage 11 pivot is useful as evaluation language even though the mechanism is different. Stage 10 local overrides improved aggregate quality but failed worst-subset robustness; Stage 11 budgeted allocation became the first baseline-ready family because it improved the overall allocation problem while making the worst-case subset effectively near-zero. DotCache should use the same promotion discipline. In practice that means:
+
+- distinguish diagnostic selector branches from promoted default profiles
+- report family-level breakdowns and worst-subset floors alongside aggregate means
+- keep high-gain but less robust points as frontier markers, not default baselines
+
+This matters for the current Qwen selector story. The `systems` profile is promotable not merely because it is faster on average, but because the held-out task slices we currently trust stay clean while the speed win persists across contexts and stronger models. That is the right level of evidence for a local default-path switch. It is not yet the same thing as a full benchmark courtroom against every external baseline.
+
 ### 5.4. TinyLlama 1.1B
 
 TinyLlama remains the cleanest success case in the local profiles:

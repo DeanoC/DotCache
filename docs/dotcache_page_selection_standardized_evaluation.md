@@ -266,6 +266,34 @@ For every failed benchmark answer in a promoted selector or format-selection stu
 
 This workbook is diagnostic, but it is now a required companion for long-context quality debugging.
 
+## Controller Lessons Imported From M0TileDevice
+
+The independent controller work in [/Users/deanocalver/Documents/Projects/M0TileDevice/docs/stage10_stage11_findings_report.md](/Users/deanocalver/Documents/Projects/M0TileDevice/docs/stage10_stage11_findings_report.md) sharpened a few evaluation rules that DotCache should adopt directly.
+
+First, aggregate wins are not enough. A selector or controller family can improve mean quality while still being the wrong default if it fails on worst-case subsets. DotCache promotion decisions should therefore report:
+
+- family-level breakdowns, not just one aggregate mean
+- a worst-subset floor or equivalent robustness floor
+- whether the candidate is solving the overall allocation problem or merely tuning one friendly family
+
+Second, local repair logic and final controller families should be described differently. The M0TileDevice Stage 10 to Stage 11 pivot is a useful language template:
+
+- a diagnostic branch may uncover real signals and still be the wrong family to promote
+- a promoted default should be the first point that clears the robustness gate, not necessarily the highest-gain point on one subset
+- a high-gain comparison point can still be worth keeping in the paper as a frontier marker, but it should not be described as the default baseline
+
+Third, selector-oracle studies should expose agreement and allocation structure explicitly. When the relevant data exists, promoted DotCache studies should prefer to include:
+
+- `selection_agreement`
+- `bucket_selection_agreement`
+- `policy_oracle_gap`
+- `allocation_efficiency`
+- `policy_only_count`
+- `oracle_only_count`
+- `top_k_overlap`
+
+These are not all required in every final table, but they are the right diagnostic vocabulary for deciding whether a learned selector is truly matching the oracle or simply finding a different local optimum.
+
 ## Promotion Rules
 
 Do not promote a row into the paper's main evidence if any of the following are true:
@@ -281,6 +309,7 @@ Additional rule for default-switch claims:
 
 - do not argue that a new execution path should become the default unless it shows a stable advantage across repeated held-out systems runs and does not regress held-out quality
 - do not argue that a heterogeneous page-format path should become the default unless it also beats the best fixed single-format DotCache variant on oracle or trace-backed studies
+- do not treat a candidate as the new default if it wins on aggregate but still fails a clearly identified worst-subset floor or family-level robustness gate
 
 ## Current Status As Of 2026-04-02
 
@@ -302,6 +331,8 @@ What is still missing:
 - an oracle or trace-backed page-format labeling harness
 - matched-budget accounting with metadata and fragmentation included
 - a failure workbook for benchmark misses
+- a standard worst-subset floor and family-breakdown readout for selector-promotion studies
+- a standard oracle-gap / agreement diagnostic block for promoted selector rows
 
 The current checkpoint already supports one narrow but real promotion call:
 
