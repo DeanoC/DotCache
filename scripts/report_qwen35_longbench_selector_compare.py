@@ -8,6 +8,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+EXPECTED_CASES = ("exact", "quality", "systems", "streaming_sink_recent")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize Qwen LongBench selector comparison runs.")
@@ -60,6 +62,23 @@ def _prompt_key(row: dict[str, Any]) -> tuple[int, str, str]:
     )
 
 
+def _validate_expected_cases(rows: list[dict[str, Any]]) -> None:
+    observed: dict[int, set[str]] = defaultdict(set)
+    for row in rows:
+        observed[int(row["comparison_max_prompt_tokens"])].add(str(row["comparison_case"]))
+    missing_by_bucket: dict[int, list[str]] = {}
+    for max_prompt_tokens, cases in sorted(observed.items()):
+        missing = [case for case in EXPECTED_CASES if case not in cases]
+        if missing:
+            missing_by_bucket[max_prompt_tokens] = missing
+    if missing_by_bucket:
+        details = ", ".join(
+            f"{max_prompt_tokens}: {', '.join(missing)}"
+            for max_prompt_tokens, missing in missing_by_bucket.items()
+        )
+        raise SystemExit(f"incomplete aggregate coverage in report input; missing cases by context: {details}")
+
+
 def _sample_output_table(rows: list[dict[str, Any]]) -> str:
     samples: dict[tuple[int, str, str], dict[str, Any]] = {}
     for row in rows:
@@ -106,6 +125,7 @@ def build_report(
     title: str,
     trial_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], str]:
+    _validate_expected_cases(rows)
     grouped: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[_group_key(row)].append(row)

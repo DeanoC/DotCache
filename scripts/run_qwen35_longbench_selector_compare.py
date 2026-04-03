@@ -23,6 +23,9 @@ DEFAULT_SELECTOR_ARTIFACT = (
     / "serving_selector_artifact"
     / "linear_selector_model.json"
 )
+SHARED_SELECTOR_ARTIFACT = Path(
+    "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +82,19 @@ def _load_prompt_specs(path: str) -> list[dict[str, Any]]:
             raise SystemExit(f"prompt pack item {prompt_id!r} must define a non-negative row_index")
         prompt_specs.append({"prompt_id": prompt_id, "dataset": dataset, "row_index": row_index})
     return prompt_specs
+
+
+def _case_requires_selector_artifact(case: str) -> bool:
+    return case in {"quality", "systems"}
+
+
+def _resolve_selector_artifact(path: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.exists():
+        return candidate.resolve()
+    if candidate == DEFAULT_SELECTOR_ARTIFACT and SHARED_SELECTOR_ARTIFACT.exists():
+        return SHARED_SELECTOR_ARTIFACT.resolve()
+    return candidate
 
 
 def _case_extra_args(case: str, *, selector_artifact: str) -> list[str]:
@@ -246,6 +262,14 @@ def _run_single(
 
 def main() -> None:
     args = parse_args()
+    args.selector_artifact = str(_resolve_selector_artifact(str(args.selector_artifact)))
+    if any(_case_requires_selector_artifact(case) for case in args.comparison_cases):
+        selector_artifact = Path(args.selector_artifact)
+        if not selector_artifact.is_file():
+            raise SystemExit(
+                "selector artifact required for quality/systems but not found: "
+                f"{selector_artifact}"
+            )
     prompt_specs = _load_prompt_specs(args.prompt_pack)
     output_path = Path(args.output)
     if output_path.exists():
@@ -272,7 +296,12 @@ def main() -> None:
                     _append_record(output_path, warmup)
                     print(json.dumps(warmup, sort_keys=True), flush=True)
                     if warmup.get("status") == "error":
-                        break
+                        raise SystemExit(
+                            "benchmark warmup failed for "
+                            f"{case} / {prompt_spec['prompt_id']} / {max_prompt_tokens}: "
+                            f"{warmup.get('error_type', 'UnknownError')}: "
+                            f"{warmup.get('error_message', 'no error message')}"
+                        )
 
                 measured_records: list[dict[str, Any]] = []
                 for measurement_index in range(max(1, int(args.measured_runs))):
@@ -293,24 +322,27 @@ def main() -> None:
                     _append_record(output_path, record)
                     print(json.dumps(record, sort_keys=True), flush=True)
                     if record.get("status") == "error":
-                        measured_records = []
-                        break
+                        raise SystemExit(
+                            "benchmark trial failed for "
+                            f"{case} / {prompt_spec['prompt_id']} / {max_prompt_tokens}: "
+                            f"{record.get('error_type', 'UnknownError')}: "
+                            f"{record.get('error_message', 'no error message')}"
+                        )
                     measured_records.append(record)
 
-                if measured_records:
-                    aggregate = _aggregate_record_values(measured_records)
-                    aggregate.update(
-                        {
-                            "measurement_kind": "aggregate",
-                            "warmup_runs": int(args.warmup_runs),
-                            "measured_runs": int(args.measured_runs),
-                            "comparison_case": case,
-                            "evaluation_prompt_id": prompt_spec["prompt_id"],
-                            "comparison_max_prompt_tokens": int(max_prompt_tokens),
-                        }
-                    )
-                    _append_record(output_path, aggregate)
-                    print(json.dumps(aggregate, sort_keys=True), flush=True)
+                aggregate = _aggregate_record_values(measured_records)
+                aggregate.update(
+                    {
+                        "measurement_kind": "aggregate",
+                        "warmup_runs": int(args.warmup_runs),
+                        "measured_runs": int(args.measured_runs),
+                        "comparison_case": case,
+                        "evaluation_prompt_id": prompt_spec["prompt_id"],
+                        "comparison_max_prompt_tokens": int(max_prompt_tokens),
+                    }
+                )
+                _append_record(output_path, aggregate)
+                print(json.dumps(aggregate, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":
