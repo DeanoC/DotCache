@@ -50,6 +50,7 @@ def _row_summary(row: dict[str, Any]) -> dict[str, Any]:
             row.get("dotcache_decode_ms_per_step_p95") or row.get("dotcache_decode_ms_per_step") or 0.0
         ),
         "teacher_forced_token_agreement_rate": float(row.get("teacher_forced_token_agreement_rate") or 0.0),
+        "teacher_forced_perplexity_ratio": float(row.get("teacher_forced_perplexity_ratio") or 0.0),
         "teacher_forced_logit_rmse": float(row.get("teacher_forced_logit_rmse") or 0.0),
         "teacher_forced_logit_max_abs_error": float(row.get("teacher_forced_logit_max_abs_error") or 0.0),
         "replay_context_max_abs_error": float(row.get("replay_context_max_abs_error") or 0.0),
@@ -93,6 +94,9 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
             comparison["systems_minus_quality_token_agreement"] = float(
                 systems["teacher_forced_token_agreement_rate"] - quality["teacher_forced_token_agreement_rate"]
             )
+            comparison["systems_minus_quality_perplexity_ratio"] = float(
+                systems["teacher_forced_perplexity_ratio"] - quality["teacher_forced_perplexity_ratio"]
+            )
             comparison["systems_minus_quality_logit_rmse"] = float(
                 systems["teacher_forced_logit_rmse"] - quality["teacher_forced_logit_rmse"]
             )
@@ -113,8 +117,8 @@ def _render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Metrics",
         "",
-        "| Context | Variant | Decode ms/step | Decode p95 | Prefill ms | Token agreement | Logit RMSE | Logit max abs | Replay ctx max abs | Replay out max abs | M3 frac | Profile | Logit offset |",
-        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
+        "| Context | Variant | Decode ms/step | Decode p95 | Prefill ms | Token agreement | PPL ratio | Logit RMSE | Logit max abs | Replay ctx max abs | Replay out max abs | M3 frac | Profile | Logit offset |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
     ]
     for comparison in report["comparisons"]:
         context = int(comparison["prompt_length"])
@@ -132,6 +136,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
                         _fmt(row["decode_ms_per_step_p95"]),
                         _fmt(row["prefill_ms"]),
                         _fmt(row["teacher_forced_token_agreement_rate"]),
+                        _fmt(row["teacher_forced_perplexity_ratio"]),
                         _fmt(row["teacher_forced_logit_rmse"]),
                         _fmt(row["teacher_forced_logit_max_abs_error"]),
                         _fmt(row["replay_context_max_abs_error"]),
@@ -148,8 +153,8 @@ def _render_markdown(report: dict[str, Any]) -> str:
             "",
             "## Tradeoff",
             "",
-            "| Context | Quality vs Exact speedup | Systems vs Exact speedup | Systems vs Quality speedup | Systems - Quality token agreement | Systems - Quality logit RMSE |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Context | Quality vs Exact speedup | Systems vs Exact speedup | Systems vs Quality speedup | Systems - Quality token agreement | Systems - Quality PPL ratio | Systems - Quality logit RMSE |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for comparison in report["comparisons"]:
@@ -162,6 +167,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
                     _fmt(comparison.get("systems_vs_exact_decode_speedup")),
                     _fmt(comparison.get("systems_vs_quality_decode_speedup")),
                     _fmt(comparison.get("systems_minus_quality_token_agreement")),
+                    _fmt(comparison.get("systems_minus_quality_perplexity_ratio")),
                     _fmt(comparison.get("systems_minus_quality_logit_rmse")),
                 ]
             )

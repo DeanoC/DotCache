@@ -102,6 +102,8 @@ def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | 
         "quality_decode_ms",
         "systems_decode_ms",
         "systems_vs_quality_speedup",
+        "quality_ppl_ratio",
+        "systems_ppl_ratio",
         "quality_logit_max_abs",
         "systems_logit_max_abs",
     ]]
@@ -122,6 +124,12 @@ def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | 
             "quality_decode_ms_per_step": quality_decode,
             "systems_decode_ms_per_step": systems_decode,
             "systems_vs_quality_speedup": speedup,
+            "quality_teacher_forced_perplexity_ratio": float(
+                quality.get("teacher_forced_perplexity_ratio", 0.0) or 0.0
+            ),
+            "systems_teacher_forced_perplexity_ratio": float(
+                systems.get("teacher_forced_perplexity_ratio", 0.0) or 0.0
+            ),
             "quality_teacher_forced_logit_max_abs_error": float(
                 quality.get("teacher_forced_logit_max_abs_error", 0.0) or 0.0
             ),
@@ -141,6 +149,8 @@ def build_report(rows: list[dict[str, Any]], trial_rows: list[dict[str, Any]] | 
                 _fmt_float(row["quality_decode_ms_per_step"]),
                 _fmt_float(row["systems_decode_ms_per_step"]),
                 _fmt_float(row["systems_vs_quality_speedup"]),
+                _fmt_float(row["quality_teacher_forced_perplexity_ratio"]),
+                _fmt_float(row["systems_teacher_forced_perplexity_ratio"]),
                 _fmt_float(row["quality_teacher_forced_logit_max_abs_error"]),
                 _fmt_float(row["systems_teacher_forced_logit_max_abs_error"]),
             ]

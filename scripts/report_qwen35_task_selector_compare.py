@@ -128,6 +128,8 @@ def build_report(
         "quality_decode_ms",
         "systems_decode_ms",
         "systems_vs_quality_speedup",
+        "quality_ppl_ratio",
+        "systems_ppl_ratio",
         "quality_rmse",
         "systems_rmse",
     ]]
@@ -148,6 +150,8 @@ def build_report(
             "quality_decode_ms_per_step": quality_decode,
             "systems_decode_ms_per_step": systems_decode,
             "systems_vs_quality_speedup": speedup,
+            "quality_teacher_forced_perplexity_ratio": quality.get("teacher_forced_perplexity_ratio"),
+            "systems_teacher_forced_perplexity_ratio": systems.get("teacher_forced_perplexity_ratio"),
             "quality_teacher_forced_logit_rmse": quality.get("teacher_forced_logit_rmse"),
             "systems_teacher_forced_logit_rmse": systems.get("teacher_forced_logit_rmse"),
         }
@@ -163,6 +167,8 @@ def build_report(
                 _fmt_float(row["quality_decode_ms_per_step"]),
                 _fmt_float(row["systems_decode_ms_per_step"]),
                 _fmt_float(row["systems_vs_quality_speedup"]),
+                _fmt_float(row["quality_teacher_forced_perplexity_ratio"]),
+                _fmt_float(row["systems_teacher_forced_perplexity_ratio"]),
                 _fmt_float(row["quality_teacher_forced_logit_rmse"]),
                 _fmt_float(row["systems_teacher_forced_logit_rmse"]),
             ]

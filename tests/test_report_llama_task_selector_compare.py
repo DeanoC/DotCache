@@ -19,6 +19,7 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
             "selector_profile": "exact",
             "task_metric_value": 1.0,
             "decode_ms_per_step": 120.0,
+            "teacher_forced_perplexity_ratio": 1.0,
             "teacher_forced_logit_max_abs_error": 0.9,
         },
         {
@@ -27,6 +28,7 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
             "selector_profile": "quality",
             "task_metric_value": 1.0,
             "decode_ms_per_step": 80.0,
+            "teacher_forced_perplexity_ratio": 1.1,
             "teacher_forced_logit_max_abs_error": 0.4,
         },
         {
@@ -35,10 +37,13 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
             "selector_profile": "systems",
             "task_metric_value": 1.0,
             "decode_ms_per_step": 40.0,
+            "teacher_forced_perplexity_ratio": 1.05,
             "teacher_forced_logit_max_abs_error": 0.3,
         },
     ]
     payload, markdown = MODULE.build_report(rows, trial_rows=[])
     assert payload["rows"][0]["systems_vs_quality_speedup"] == 2.0
+    assert payload["rows"][0]["systems_teacher_forced_perplexity_ratio"] == 1.05
     assert payload["rows"][0]["systems_teacher_forced_logit_max_abs_error"] == 0.3
     assert "Llama 3.2 3B Task Selector Compare" in markdown
+    assert "1.050" in markdown

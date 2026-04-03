@@ -17,7 +17,16 @@ def _load_module():
 def test_selector_quality_compare_report_renders_tradeoff_rows(tmp_path: Path) -> None:
     module = _load_module()
 
-    def write_row(path: Path, *, decode: float, token_agreement: float, rmse: float, profile: str, offset: float) -> None:
+    def write_row(
+        path: Path,
+        *,
+        decode: float,
+        token_agreement: float,
+        ppl_ratio: float,
+        rmse: float,
+        profile: str,
+        offset: float,
+    ) -> None:
         path.write_text(
             (
                 "{"
@@ -25,6 +34,7 @@ def test_selector_quality_compare_report_renders_tradeoff_rows(tmp_path: Path) -
                 f"\"dotcache_prefill_ms\":100.0,\"dotcache_decode_ms_per_step\":{decode},"
                 f"\"dotcache_decode_ms_per_step_p95\":{decode + 1.0},"
                 f"\"teacher_forced_token_agreement_rate\":{token_agreement},"
+                f"\"teacher_forced_perplexity_ratio\":{ppl_ratio},"
                 f"\"teacher_forced_logit_rmse\":{rmse},"
                 "\"teacher_forced_logit_max_abs_error\":1.0,"
                 "\"replay_context_max_abs_error\":0.1,"
@@ -40,9 +50,9 @@ def test_selector_quality_compare_report_renders_tradeoff_rows(tmp_path: Path) -
     exact = tmp_path / "exact.jsonl"
     quality = tmp_path / "quality.jsonl"
     systems = tmp_path / "systems.jsonl"
-    write_row(exact, decode=120.0, token_agreement=1.0, rmse=0.01, profile="quality", offset=0.0)
-    write_row(quality, decode=100.0, token_agreement=0.99, rmse=0.02, profile="quality", offset=0.0)
-    write_row(systems, decode=80.0, token_agreement=0.97, rmse=0.05, profile="systems", offset=2.0)
+    write_row(exact, decode=120.0, token_agreement=1.0, ppl_ratio=1.0, rmse=0.01, profile="quality", offset=0.0)
+    write_row(quality, decode=100.0, token_agreement=0.99, ppl_ratio=1.1, rmse=0.02, profile="quality", offset=0.0)
+    write_row(systems, decode=80.0, token_agreement=0.97, ppl_ratio=1.05, rmse=0.05, profile="systems", offset=2.0)
 
     report = module._build_report(
         type(
@@ -61,7 +71,9 @@ def test_selector_quality_compare_report_renders_tradeoff_rows(tmp_path: Path) -
     assert comparison["systems_vs_exact_decode_speedup"] == 1.5
     assert comparison["systems_vs_quality_decode_speedup"] == 1.25
     assert comparison["systems_minus_quality_token_agreement"] == -0.020000000000000018
+    assert comparison["systems_minus_quality_perplexity_ratio"] == -0.050000000000000044
 
     markdown = module._render_markdown(report)
     assert "Systems vs Quality speedup" in markdown
-    assert "| 1024 | systems | 80.000 | 81.000 | 100.000 | 0.970 | 0.050 |" in markdown
+    assert "PPL ratio" in markdown
+    assert "| 1024 | systems | 80.000 | 81.000 | 100.000 | 0.970 | 1.050 | 0.050 |" in markdown

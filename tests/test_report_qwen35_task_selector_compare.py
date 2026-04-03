@@ -20,6 +20,7 @@ def test_build_report_summarizes_task_rows() -> None:
             "selector_profile": "exact",
             "task_metric_value": 1.0,
             "dotcache_decode_ms_per_step": 100.0,
+            "teacher_forced_perplexity_ratio": 1.0,
             "teacher_forced_logit_rmse": 0.6,
         },
         {
@@ -29,6 +30,7 @@ def test_build_report_summarizes_task_rows() -> None:
             "selector_profile": "quality",
             "task_metric_value": 1.0,
             "dotcache_decode_ms_per_step": 80.0,
+            "teacher_forced_perplexity_ratio": 1.1,
             "teacher_forced_logit_rmse": 0.4,
         },
         {
@@ -38,6 +40,7 @@ def test_build_report_summarizes_task_rows() -> None:
             "selector_profile": "systems",
             "task_metric_value": 1.0,
             "dotcache_decode_ms_per_step": 40.0,
+            "teacher_forced_perplexity_ratio": 1.05,
             "teacher_forced_logit_rmse": 0.3,
         },
     ]
@@ -54,10 +57,12 @@ def test_build_report_summarizes_task_rows() -> None:
             "task_generated_first_line": "RIVER-58142",
         }
     ]
-    payload, markdown = MODULE.build_report(rows, trial_rows)
+    payload, markdown = MODULE.build_report(rows, title="Qwen Task Selector Compare", trial_rows=trial_rows)
     assert payload["rows"][0]["systems_vs_quality_speedup"] == 2.0
+    assert payload["rows"][0]["systems_teacher_forced_perplexity_ratio"] == 1.05
     assert payload["rows"][0]["systems_teacher_forced_logit_rmse"] == 0.3
     assert "retrieval_passkey" in markdown
     assert "2.000" in markdown
+    assert "1.050" in markdown
     assert "Sample Outputs" in markdown
     assert "RIVER-58142" in markdown
