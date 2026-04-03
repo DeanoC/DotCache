@@ -20,10 +20,12 @@ from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, t
 
 from benchmarks.bench_qwen35_attention_subset_dotcache_needle import (
     _apply_missing_serving_defaults,
-    _build_dotcache_config,
     _decode_generated_text,
-    _resolve_args_from_layer_profile,
     _run_case,
+)
+from benchmarks.bench_qwen35_attention_subset_dotcache_serving import (
+    _build_dotcache_config,
+    _resolve_args_from_layer_profile,
 )
 
 
@@ -103,12 +105,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent-window", type=int, default=128)
     parser.add_argument("--execution-recent-window", type=int, default=0)
     parser.add_argument("--execution-sink-window", type=int, default=0)
+    parser.add_argument("--execution-recent-window-layer", action="append", default=[])
+    parser.add_argument("--execution-recent-window-context-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-top-k", type=int, default=0)
     parser.add_argument("--execution-relevance-top-k-layer", action="append", default=[])
     parser.add_argument("--execution-relevance-top-k-context-layer", action="append", default=[])
     parser.add_argument("--execution-full-context-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-disable-grouped-batching-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-recent-old-bonus-window", type=int, default=0)
+    parser.add_argument("--execution-recent-old-bonus-strength", type=float, default=0.0)
+    parser.add_argument("--execution-recent-old-bonus-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-relevance-mode", choices=["sketch", "envelope"], default="envelope")
+    parser.add_argument("--execution-secondary-relevance-mode", choices=["", "sketch", "envelope"], default="")
+    parser.add_argument("--execution-secondary-relevance-top-k", type=int, default=0)
+    parser.add_argument("--execution-secondary-relevance-min-overlap", type=float, default=0.0)
+    parser.add_argument("--execution-secondary-relevance-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-recent-neighbor-rescue-top-k", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-anchor-window", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-min-anchor-pages", type=int, default=0)
+    parser.add_argument("--execution-recent-neighbor-rescue-layer", type=int, action="append", default=[])
     parser.add_argument("--execution-builtin-selector-cache", action="store_true")
     parser.add_argument("--execution-builtin-selector-score-all-pages", action="store_true")
     parser.add_argument("--execution-builtin-selector-candidate-only", action="store_true")
@@ -131,6 +146,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execution-exact-promote-union-rescue-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-top-k", type=int, default=0)
     parser.add_argument("--execution-exact-refine-layer", type=int, action="append", default=[])
+    parser.add_argument("--execution-grouped-decode-compact", action="store_true")
+    parser.add_argument("--execution-grouped-mix-compact", action="store_true")
+    parser.add_argument("--execution-grouped-mix-disable-packed-cuda", action="store_true")
+    parser.add_argument("--execution-freeze-chunk-budget-during-decode", action="store_true")
     parser.add_argument("--m2-sketch-dim-k", type=int, default=8)
     parser.add_argument("--m2-center-k", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--m2-segment-count-k", type=int, default=1)
@@ -147,6 +166,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m1-fallback-to-m0", action="store_true")
     parser.add_argument("--m1-error-threshold", type=float, default=0.2)
     parser.add_argument("--m1-token-p95-error-threshold", type=float, default=0.55)
+    parser.add_argument("--learned-page-selector-path", default=None)
+    parser.add_argument("--learned-page-selector-prompt-family", default=None)
+    parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="systems")
+    parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
+    parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
+    parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
+    parser.add_argument("--prepared-chunk-cache-budget-ratio", type=float, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-max-bytes", type=int, default=None)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=0)
     parser.add_argument("--profile-backend", action="store_true")
     parser.add_argument("--trace-python-allocations", action="store_true")
@@ -299,6 +329,17 @@ def _build_base_record(
         "longbench_prompt_token_length_original": int(prompt_length_tokens_original),
         "longbench_prompt_was_truncated": bool(prompt_was_truncated),
         "max_new_tokens": int(args.max_new_tokens),
+        "learned_page_selector_path": args.learned_page_selector_path,
+        "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+        "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+        "learned_page_selector_profile": args.learned_page_selector_profile,
+        "learned_page_selector_scope": args.learned_page_selector_scope,
+        "learned_page_selector_target_candidate": args.learned_page_selector_target_candidate,
+        "learned_page_selector_logit_offset": float(args.learned_page_selector_logit_offset),
+        "prepared_chunk_cache_budget_ratio": args.prepared_chunk_cache_budget_ratio,
+        "prepared_chunk_cache_min_bytes": args.prepared_chunk_cache_min_bytes,
+        "prepared_chunk_cache_max_bytes": args.prepared_chunk_cache_max_bytes,
+        "prepared_chunk_cache_min_page_count": int(args.prepared_chunk_cache_min_page_count),
     }
 
 
