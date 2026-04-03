@@ -338,6 +338,7 @@ The current checkpoint already supports one narrow but real promotion call:
 
 - Qwen3.5 9B can default to the `systems` selector profile for serving
 - Llama 3.2 3B currently does not need an extra systems bias because `quality` and `systems` are effectively the same operating point
+- the fixed Qwen3.5 9B LongBench QA mini-pack now supports the same local Qwen default-path read against a small held-out external-style QA family and a sink-plus-recent reference
 
 That means the project is improving on measurement discipline, and the selector-profile question is much less ambiguous than it was one week ago, but it is not yet benchmark-complete.
 

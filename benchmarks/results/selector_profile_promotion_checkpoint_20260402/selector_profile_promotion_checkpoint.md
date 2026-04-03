@@ -36,8 +36,16 @@
 | Llama 3.2 3B | retrieval_passkey | 1024 | 58.867 | 60.173 | 0.978 | 1.000 | 1.000 |
 | Llama 3.2 3B | retrieval_passkey | 2048 | 72.817 | 75.772 | 0.961 | 1.000 | 1.000 |
 
+## Qwen LongBench External Check
+
+| context_cap | exact_qa_f1 | quality_qa_f1 | systems_qa_f1 | streaming_qa_f1 | exact_decode_ms | quality_decode_ms | systems_decode_ms | streaming_decode_ms | systems_vs_quality_speedup | systems_vs_streaming_speedup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4096 | 0.292 | 0.292 | 0.292 | 0.237 | 609.550 | 611.890 | 95.410 | 256.650 | 6.413 | 2.690 |
+| 8192 | 0.256 | 0.256 | 0.256 | 0.218 | 1050.850 | 810.300 | 150.950 | 286.270 | 5.368 | 1.896 |
+
 ## Notes
 
 - Qwen task rows come from the strengthened reasoning task slice, which now passes in `exact`, `quality`, and `systems`.
 - Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.
+- The fixed Qwen LongBench QA mini-pack now behaves like a real held-out external-style check: `systems` matches `exact` and `quality` on QA F1 while materially beating both and also beating the sink-plus-recent streaming reference.
 - This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.

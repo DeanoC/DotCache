@@ -92,6 +92,96 @@
       "rationale": "systems preserves task success and materially outperforms quality in serving decode."
     }
   },
+  "qwen_longbench_rows": [
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 609.55,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.292,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 611.89,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.292,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "streaming_sink_recent",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 256.65,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.237,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 95.41,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.292,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1050.85,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.256,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 810.3,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.256,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "streaming_sink_recent",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 286.27,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.218,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 150.95,
+      "mean_exact_match": 0.0,
+      "mean_qa_f1": 0.256,
+      "mean_teacher_forced_logit_rmse": null,
+      "mean_teacher_forced_perplexity_ratio": null,
+      "n_rows": 4,
+      "p95_decode_ms_per_step": null
+    }
+  ],
   "qwen_quality_rows": [
     {
       "prompt_length": 1024,

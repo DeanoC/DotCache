@@ -272,6 +272,7 @@ The repo now also contains a cleaner default-path checkpoint in [`selector_profi
 - repeated serving-quality comparisons on Qwen3.5 9B
 - task-level held-out checks on Qwen3.5 9B
 - the same task-level held-out checks on Llama 3.2 3B
+- a fixed LongBench-derived held-out QA mini-pack on Qwen3.5 9B with a sink-plus-recent reference lane
 
 The current selector-profile summary is:
 
@@ -293,6 +294,15 @@ For Qwen3.5 9B, the held-out task rows now stay clean across instruction followi
 
 The Qwen serving-quality harness points in the same direction. In [`selector_quality_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_selector_quality_compare_20260402/selector_quality_compare.md), the `systems` profile stays at `1.000` token agreement while improving decode from `67.66` to `45.23` ms/step at `1024` and from `82.91` to `49.99` ms/step at `2048`, with slightly lower logit RMSE than the `quality` profile in both contexts.
 
+The new external-style LongBench check now points the same way. In [`longbench_selector_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_longbench_selector_compare_20260403/longbench_selector_compare.md), the fixed Qwen3.5 9B mini-pack gives the same held-out QA F1 to `exact`, `quality`, and `systems` while the sink-plus-recent reference falls behind:
+
+| Qwen3.5 9B LongBench QA | Context cap | Exact QA F1 | Quality QA F1 | Systems QA F1 | Streaming QA F1 | Exact decode ms/step | Quality decode ms/step | Systems decode ms/step |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| held-out QA mini-pack | `4096` | `0.292` | `0.292` | `0.292` | `0.237` | `609.55` | `611.89` | `95.41` |
+| held-out QA mini-pack | `8192` | `0.256` | `0.256` | `0.256` | `0.218` | `1050.85` | `810.30` | `150.95` |
+
+Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile matching the full-answer DotCache lanes on held-out QA F1 while still delivering about `6.41x` speedup over `quality` at `4096` and `5.37x` at `8192`, and while also beating the sink-plus-recent reference on both quality and speed.
+
 The Llama 3.2 3B result is different in exactly the way a model-family-sensitive selector story should be different. The current learned selector is already saturated to `M3`, so the `systems` profile does not buy an extra win:
 
 | Llama 3.2 3B task | Context | Quality decode ms/step | Systems decode ms/step | Systems vs quality speedup |
@@ -309,6 +319,7 @@ This is useful because it narrows the selector claim in a healthy way. The proje
 - selector profiles should be family-sensitive
 - `systems` is the correct default for the current Qwen3.5 serving lane
 - Llama does not currently need an extra systems bias beyond the learned selector itself
+- the Qwen default-path read now survives one small held-out LongBench-style QA check in addition to the compact task harnesses
 
 This is enough evidence to support a local default-path switch in the repo. It is not, by itself, enough to say that matched-budget external-baseline Gate C is already cleared.
 

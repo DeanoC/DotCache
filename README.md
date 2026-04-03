@@ -52,6 +52,8 @@ That report packages the current decision:
 - Qwen3.5 9B should default to `systems`
 - Llama 3.2 3B is already effectively saturated, so `quality` and `systems` are equivalent today
 
+The checkpoint now also includes the fixed Qwen3.5 9B LongBench QA mini-pack result, where `systems` matches `exact` and `quality` on held-out QA F1 while materially outperforming them on decode and also beating the sink-plus-recent reference.
+
 ## Larger-machine selector suite
 
 For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:

@@ -61,8 +61,37 @@ def test_build_report_captures_qwen_and_llama_calls() -> None:
                 }
             ]
         },
+        qwen_longbench_payload={
+            "rows": [
+                {
+                    "comparison_case": "exact",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 600.0,
+                    "mean_qa_f1": 0.29,
+                },
+                {
+                    "comparison_case": "quality",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 610.0,
+                    "mean_qa_f1": 0.29,
+                },
+                {
+                    "comparison_case": "systems",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 95.0,
+                    "mean_qa_f1": 0.29,
+                },
+                {
+                    "comparison_case": "streaming_sink_recent",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 250.0,
+                    "mean_qa_f1": 0.23,
+                },
+            ]
+        },
     )
     assert payload["promotion_calls"]["qwen"]["default_profile"] == "systems"
     assert payload["promotion_calls"]["llama"]["default_profile"] == "quality_or_systems_equivalent"
     assert "Promote systems as default" in markdown
     assert "Llama 3.2 3B" in markdown
+    assert "Qwen LongBench External Check" in markdown

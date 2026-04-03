@@ -17,6 +17,9 @@ DEFAULT_QWEN_QUALITY_JSON = (
 DEFAULT_LLAMA_TASK_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "llama32_3b_task_selector_compare_20260402" / "task_selector_compare.json"
 )
+DEFAULT_QWEN_LONGBENCH_JSON = (
+    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_selector_compare_20260403" / "longbench_selector_compare.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-task-json", default=str(DEFAULT_QWEN_TASK_JSON))
     parser.add_argument("--qwen-quality-json", default=str(DEFAULT_QWEN_QUALITY_JSON))
     parser.add_argument("--llama-task-json", default=str(DEFAULT_LLAMA_TASK_JSON))
+    parser.add_argument("--qwen-longbench-json", default=str(DEFAULT_QWEN_LONGBENCH_JSON))
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--json-output", required=True)
     return parser.parse_args()
@@ -59,10 +63,12 @@ def build_report(
     qwen_task_payload: dict[str, Any],
     qwen_quality_payload: dict[str, Any],
     llama_task_payload: dict[str, Any],
+    qwen_longbench_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
     qwen_task_rows = list(qwen_task_payload.get("rows", []))
     llama_task_rows = list(llama_task_payload.get("rows", []))
     qwen_quality_rows = list(qwen_quality_payload.get("comparisons", []))
+    qwen_longbench_rows = list(qwen_longbench_payload.get("rows", []))
 
     qwen_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in qwen_task_rows]
     llama_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in llama_task_rows]
@@ -85,6 +91,7 @@ def build_report(
         "qwen_task_rows": qwen_task_rows,
         "qwen_quality_rows": qwen_quality_rows,
         "llama_task_rows": llama_task_rows,
+        "qwen_longbench_rows": qwen_longbench_rows,
     }
 
     overview_rows = [[
@@ -174,6 +181,51 @@ def build_report(
                 ]
             )
 
+    longbench_table = [[
+        "context_cap",
+        "exact_qa_f1",
+        "quality_qa_f1",
+        "systems_qa_f1",
+        "streaming_qa_f1",
+        "exact_decode_ms",
+        "quality_decode_ms",
+        "systems_decode_ms",
+        "streaming_decode_ms",
+        "systems_vs_quality_speedup",
+        "systems_vs_streaming_speedup",
+    ]]
+    longbench_by_key = {
+        (int(row["max_prompt_tokens"]), str(row["comparison_case"])): row for row in qwen_longbench_rows
+    }
+    for context_cap in sorted({int(row["max_prompt_tokens"]) for row in qwen_longbench_rows}):
+        exact = longbench_by_key.get((context_cap, "exact"))
+        quality = longbench_by_key.get((context_cap, "quality"))
+        systems = longbench_by_key.get((context_cap, "systems"))
+        streaming = longbench_by_key.get((context_cap, "streaming_sink_recent"))
+        longbench_table.append(
+            [
+                str(context_cap),
+                _fmt(exact.get("mean_qa_f1") if exact else None),
+                _fmt(quality.get("mean_qa_f1") if quality else None),
+                _fmt(systems.get("mean_qa_f1") if systems else None),
+                _fmt(streaming.get("mean_qa_f1") if streaming else None),
+                _fmt(exact.get("mean_decode_ms_per_step") if exact else None),
+                _fmt(quality.get("mean_decode_ms_per_step") if quality else None),
+                _fmt(systems.get("mean_decode_ms_per_step") if systems else None),
+                _fmt(streaming.get("mean_decode_ms_per_step") if streaming else None),
+                _fmt(
+                    (float(quality["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
+                    if quality and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
+                    else None
+                ),
+                _fmt(
+                    (float(streaming["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
+                    if streaming and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
+                    else None
+                ),
+            ]
+        )
+
     markdown = "\n".join(
         [
             "# Selector Profile Promotion Checkpoint",
@@ -195,10 +247,15 @@ def build_report(
             "",
             _markdown_table(task_table),
             "",
+            "## Qwen LongBench External Check",
+            "",
+            _markdown_table(longbench_table),
+            "",
             "## Notes",
             "",
             "- Qwen task rows come from the strengthened reasoning task slice, which now passes in `exact`, `quality`, and `systems`.",
             "- Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.",
+            "- The fixed Qwen LongBench QA mini-pack now behaves like a real held-out external-style check: `systems` matches `exact` and `quality` on QA F1 while materially beating both and also beating the sink-plus-recent streaming reference.",
             "- This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.",
         ]
     )
@@ -211,6 +268,7 @@ def main() -> int:
         qwen_task_payload=_load_json(args.qwen_task_json),
         qwen_quality_payload=_load_json(args.qwen_quality_json),
         llama_task_payload=_load_json(args.llama_task_json),
+        qwen_longbench_payload=_load_json(args.qwen_longbench_json),
     )
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")
