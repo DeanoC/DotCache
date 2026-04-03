@@ -35,18 +35,22 @@ DEFAULT_LONGBENCH_ZIP_URL = "https://huggingface.co/datasets/zai-org/LongBench/r
 SUPPORTED_DATASETS = {
     "hotpotqa": {
         "prompt": (
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n\n"
+            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
+            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "The following are given passages.\n{context}\n\n"
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n\n"
+            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
+            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "Question: {input}\nAnswer:"
         ),
         "max_new_tokens": 32,
     },
     "2wikimqa": {
         "prompt": (
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n\n"
+            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
+            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "The following are given passages.\n{context}\n\n"
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n\n"
+            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
+            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "Question: {input}\nAnswer:"
         ),
         "max_new_tokens": 32,
@@ -55,7 +59,8 @@ SUPPORTED_DATASETS = {
         "prompt": (
             "Read the following text and answer briefly.\n\n"
             "{context}\n\n"
-            "Now, answer the following question based on the above text, only give me the answer and do not output any other words.\n\n"
+            "Now, answer the following question based on the above text, only give me the answer and do not output any other words.\n"
+            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "Question: {input}\nAnswer:"
         ),
         "max_new_tokens": 64,
@@ -64,9 +69,9 @@ SUPPORTED_DATASETS = {
         "prompt": (
             "You are given a scientific article and a question. Answer the question as concisely as you can, using a single phrase or sentence if possible. "
             'If the question cannot be answered based on the information in the article, write "unanswerable". If the question is a yes/no question, answer "yes", "no", or "unanswerable". '
-            "Do not provide any explanation.\n\n"
+            "Do not provide any explanation. Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
             "Article: {context}\n\n"
-            ' Answer the question based on the above article as concisely as you can, using a single phrase or sentence if possible. If the question cannot be answered based on the information in the article, write "unanswerable". If the question is a yes/no question, answer "yes", "no", or "unanswerable". Do not provide any explanation.\n\n'
+            ' Answer the question based on the above article as concisely as you can, using a single phrase or sentence if possible. If the question cannot be answered based on the information in the article, write "unanswerable". If the question is a yes/no question, answer "yes", "no", or "unanswerable". Do not provide any explanation. Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n'
             "Question: {input}\n\n"
             "Answer:"
         ),
@@ -221,20 +226,77 @@ def qa_f1_score(prediction: str, ground_truth: str) -> float:
     return f1_score(normalized_prediction.split(), normalized_ground_truth.split())
 
 
+def _strip_think_blocks(text: str) -> str:
+    cleaned = str(text)
+    cleaned = re.sub(r"(?is)<think>.*?</think>", " ", cleaned)
+    cleaned = re.sub(r"(?im)^\s*thinking process:\s*$", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _strip_chat_role_labels(text: str) -> str:
+    cleaned = str(text).replace("\r\n", "\n")
+    cleaned = re.sub(r"(?is)<\|im_end\|>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<\|endoftext\|>", " ", cleaned)
+    cleaned = re.sub(r"(?i)(?:user|assistant)\b", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _leading_answer_span(text: str) -> str:
+    cleaned = str(text).strip()
+    if not cleaned:
+        return ""
+    marker_pattern = re.compile(
+        r"(?is)"
+        r"(?:user\b|assistant\b|<think>|"
+        r"\bquestion:\b|\barticle:\b|\banswer:\b|"
+        r"\bread the following text\b|\bthe following are given passages\b|"
+        r"\binput:\b|\btask:\b)"
+    )
+    match = marker_pattern.search(cleaned)
+    if match and match.start() > 0:
+        return cleaned[: match.start()].strip(" \n\t:,-.")
+    first_line = cleaned.splitlines()[0].strip()
+    return first_line.strip(" \n\t:,-.")
+
+
+def _prediction_variants(prediction: str) -> list[str]:
+    raw = str(prediction).strip()
+    cleaned = _strip_chat_role_labels(_strip_think_blocks(raw))
+    variants: list[str] = []
+    for candidate in (
+        raw,
+        _leading_answer_span(raw),
+        cleaned,
+        _leading_answer_span(cleaned),
+    ):
+        normalized = candidate.strip()
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+    return variants
+
+
 def score_longbench_answers(prediction: str, answers: list[str]) -> dict[str, object]:
     stripped = prediction.strip()
+    variants = _prediction_variants(stripped)
     exact = False
     best_f1 = 0.0
     best_answer = ""
+    best_prediction = stripped
     for answer in answers:
-        score = qa_f1_score(stripped, answer)
-        if score > best_f1:
-            best_f1 = score
-            best_answer = answer
-        if normalize_answer(stripped) == normalize_answer(answer):
-            exact = True
+        for variant in variants:
+            score = qa_f1_score(variant, answer)
+            if score > best_f1:
+                best_f1 = score
+                best_answer = answer
+                best_prediction = variant
+            if normalize_answer(variant) == normalize_answer(answer):
+                exact = True
+                best_answer = answer
+                best_prediction = variant
     return {
         "longbench_generated_text": stripped,
+        "longbench_generated_text_scored": best_prediction,
         "longbench_answer_exact_match": exact,
         "longbench_qa_f1_max": float(best_f1),
         "longbench_best_matching_answer": best_answer,
@@ -242,12 +304,10 @@ def score_longbench_answers(prediction: str, answers: list[str]) -> dict[str, ob
 
 
 def clean_longbench_generated_text(text: str) -> str:
-    cleaned = str(text)
-    cleaned = re.sub(r"(?is)<think>.*?</think>", " ", cleaned)
-    cleaned = re.sub(r"(?im)^\s*assistant\s*$", " ", cleaned)
-    cleaned = re.sub(r"(?im)^\s*answer:\s*$", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned.strip()
+    no_think = _strip_think_blocks(text)
+    leading = _leading_answer_span(no_think)
+    cleaned = _strip_chat_role_labels(leading or no_think)
+    return cleaned or _strip_chat_role_labels(no_think)
 
 
 def _ensure_longbench_zip(cache_dir: Path, zip_url: str) -> Path:
@@ -413,6 +473,7 @@ def main() -> None:
         {
             "longbench_generated_text_cleaned": cleaned_generated_text,
             "longbench_chat_artifact_cleaned": bool(cleaned_generated_text != str(generated_text).strip()),
+            "longbench_generated_text_scored_cleaned": cleaned_answer_score["longbench_generated_text_scored"],
             "longbench_answer_exact_match_cleaned": cleaned_answer_score["longbench_answer_exact_match"],
             "longbench_qa_f1_max_cleaned": cleaned_answer_score["longbench_qa_f1_max"],
             "longbench_best_matching_answer_cleaned": cleaned_answer_score["longbench_best_matching_answer"],

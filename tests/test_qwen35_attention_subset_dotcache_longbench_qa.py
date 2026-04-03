@@ -36,12 +36,27 @@ def test_score_longbench_answers_tracks_exact_and_best_f1() -> None:
     assert score["longbench_best_matching_answer"] == "extension of the NetVLAD, adds Ghost clusters along with the NetVLAD clusters"
 
 
+def test_score_longbench_answers_accepts_leading_answer_before_chat_tail() -> None:
+    score = score_longbench_answers(
+        "Gates v. Collieruser user Gates v. Col",
+        ["Gates v. Collier"],
+    )
+    assert score["longbench_answer_exact_match"] is True
+    assert score["longbench_generated_text_scored"] == "Gates v. Collier"
+
+
 def test_clean_longbench_generated_text_removes_chat_artifacts() -> None:
     raw = "Miller v. California\n</think>\n\nMiller v. California.\nassistant\n<think>\n\n</think>\n\nMiller v. California."
     cleaned = clean_longbench_generated_text(raw)
     assert "assistant" not in cleaned
     assert "<think>" not in cleaned
     assert "Miller v. California" in cleaned
+
+
+def test_clean_longbench_generated_text_keeps_leading_answer_only() -> None:
+    raw = "Ozalj, present day Croatia.user Ozalj, present day Croatia."
+    cleaned = clean_longbench_generated_text(raw)
+    assert cleaned == "Ozalj, present day Croatia"
 
 
 def test_run_case_uses_scorer_diagnostic_when_requested() -> None:
