@@ -123,50 +123,169 @@ def gemma4_text_dotcache_supported(model_or_config: Any) -> bool:
     return all(_gemma4_layer_head_dim(config, layer_idx) > 0 for layer_idx in range(int(config.num_hidden_layers)))
 
 
-def gemma4_text_tuned_profile_for_workload(*, prompt_length: int, decode_budget: int) -> str:
+@dataclass(frozen=True, slots=True)
+class Gemma4TextTuningPreset:
+    profile: str
+    bits_k: int
+    group_size: int
+    tokens_per_page: int
+    exact_value_layers: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Gemma4TextTuningRule:
+    min_prompt_length: int
+    max_prompt_length: int | None
+    min_decode_budget: int
+    max_decode_budget: int | None
+    preset: Gemma4TextTuningPreset
+
+    def matches(self, *, prompt_length: int, decode_budget: int) -> bool:
+        return (
+            prompt_length >= self.min_prompt_length
+            and (self.max_prompt_length is None or prompt_length <= self.max_prompt_length)
+            and decode_budget >= self.min_decode_budget
+            and (self.max_decode_budget is None or decode_budget <= self.max_decode_budget)
+        )
+
+
+_GEMMA4_TEXT_TUNING_RULES: tuple[Gemma4TextTuningRule, ...] = (
+    Gemma4TextTuningRule(
+        min_prompt_length=1,
+        max_prompt_length=1023,
+        min_decode_budget=1,
+        max_decode_budget=None,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0",
+            bits_k=4,
+            group_size=32,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=1024,
+        max_prompt_length=2047,
+        min_decode_budget=1,
+        max_decode_budget=23,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0_8",
+            bits_k=4,
+            group_size=32,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=1024,
+        max_prompt_length=2047,
+        min_decode_budget=24,
+        max_decode_budget=None,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced",
+            bits_k=4,
+            group_size=32,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=2048,
+        max_prompt_length=4095,
+        min_decode_budget=1,
+        max_decode_budget=23,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0_8",
+            bits_k=4,
+            group_size=32,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=2048,
+        max_prompt_length=4095,
+        min_decode_budget=24,
+        max_decode_budget=None,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0_8",
+            bits_k=4,
+            group_size=16,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=4096,
+        max_prompt_length=None,
+        min_decode_budget=1,
+        max_decode_budget=23,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced",
+            bits_k=4,
+            group_size=32,
+            tokens_per_page=4,
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=4096,
+        max_prompt_length=None,
+        min_decode_budget=24,
+        max_decode_budget=31,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0_8",
+            bits_k=4,
+            group_size=16,
+            tokens_per_page=8,
+            exact_value_layers=(0, 4, 8, 9, 14),
+        ),
+    ),
+    Gemma4TextTuningRule(
+        min_prompt_length=4096,
+        max_prompt_length=None,
+        min_decode_budget=32,
+        max_decode_budget=None,
+        preset=Gemma4TextTuningPreset(
+            profile="balanced_layer0",
+            bits_k=4,
+            group_size=16,
+            tokens_per_page=8,
+            exact_value_layers=(0, 4, 8, 9, 14),
+        ),
+    ),
+)
+
+
+def gemma4_text_tuned_preset_for_workload(*, prompt_length: int, decode_budget: int) -> Gemma4TextTuningPreset:
     prompt_tokens = int(prompt_length)
     decode_tokens = int(decode_budget)
     if prompt_tokens <= 0:
         raise ValueError("prompt_length must be positive")
     if decode_tokens <= 0:
         raise ValueError("decode_budget must be positive")
-    if prompt_tokens >= 4096:
-        if decode_tokens >= 32:
-            return "balanced_layer0"
-        if decode_tokens >= 24:
-            return "balanced_layer0_8"
-        return "balanced"
-    if prompt_tokens >= 2048:
-        return "balanced_layer0_8"
-    if prompt_tokens >= 1024:
-        return "balanced" if decode_tokens >= 24 else "balanced_layer0_8"
-    return "balanced_layer0"
+    for rule in _GEMMA4_TEXT_TUNING_RULES:
+        if rule.matches(prompt_length=prompt_tokens, decode_budget=decode_tokens):
+            return rule.preset
+    raise RuntimeError(
+        f"no Gemma 4 tuning preset matched prompt_length={prompt_tokens} decode_budget={decode_tokens}"
+    )
+
+
+def gemma4_text_tuned_profile_for_workload(*, prompt_length: int, decode_budget: int) -> str:
+    return gemma4_text_tuned_preset_for_workload(
+        prompt_length=prompt_length,
+        decode_budget=decode_budget,
+    ).profile
 
 
 def gemma4_text_tuned_knobs_for_workload(*, prompt_length: int, decode_budget: int) -> tuple[int, int, int]:
-    prompt_tokens = int(prompt_length)
-    decode_tokens = int(decode_budget)
-    if prompt_tokens <= 0:
-        raise ValueError("prompt_length must be positive")
-    if decode_tokens <= 0:
-        raise ValueError("decode_budget must be positive")
-    if prompt_tokens >= 4096 and decode_tokens >= 24:
-        return 4, 16, 8
-    if prompt_tokens >= 2048 and decode_tokens >= 24:
-        return 4, 16, 4
-    return 4, 32, 4
+    preset = gemma4_text_tuned_preset_for_workload(
+        prompt_length=prompt_length,
+        decode_budget=decode_budget,
+    )
+    return preset.bits_k, preset.group_size, preset.tokens_per_page
 
 
 def gemma4_text_tuned_value_layers_for_workload(*, prompt_length: int, decode_budget: int) -> tuple[int, ...] | None:
-    prompt_tokens = int(prompt_length)
-    decode_tokens = int(decode_budget)
-    if prompt_tokens <= 0:
-        raise ValueError("prompt_length must be positive")
-    if decode_tokens <= 0:
-        raise ValueError("decode_budget must be positive")
-    if prompt_tokens >= 4096 and decode_tokens >= 24:
-        return (0, 4, 8, 9, 14)
-    return None
+    return gemma4_text_tuned_preset_for_workload(
+        prompt_length=prompt_length,
+        decode_budget=decode_budget,
+    ).exact_value_layers
 
 
 def gemma4_text_recommended_dotcache_config(

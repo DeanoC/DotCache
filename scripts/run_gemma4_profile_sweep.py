@@ -19,6 +19,7 @@ from dotcache.integrations import (
     Gemma4TextHarness,
     gemma4_sliding_attention_source_layers,
     gemma4_text_recommended_dotcache_config,
+    gemma4_text_tuned_preset_for_workload,
 )
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
@@ -108,6 +109,12 @@ def _run_case(
     adaptive_knobs: bool = False,
     adaptive_values: bool = False,
 ) -> dict[str, Any]:
+    tuned_preset = None
+    if str(profile).strip().lower() == "adaptive":
+        tuned_preset = gemma4_text_tuned_preset_for_workload(
+            prompt_length=prompt_length,
+            decode_budget=max_new_tokens,
+        )
     config = gemma4_text_recommended_dotcache_config(
         harness.model,
         bits_k=bits_k,
@@ -138,6 +145,7 @@ def _run_case(
         "benchmark": "gemma4_text_dotcache_sweep",
         "model_id": model_id,
         "profile": profile,
+        "adaptive_preset_profile": None if tuned_preset is None else tuned_preset.profile,
         "prompt_mode": "exact_length",
         "prompt_length": int(prompt_length),
         "max_new_tokens": int(max_new_tokens),
@@ -146,6 +154,10 @@ def _run_case(
         "bits_v": int(config.bits_v),
         "group_size": int(config.group_size),
         "tokens_per_page": int(config.tokens_per_page),
+        "adaptive_preset_bits_k": None if tuned_preset is None else int(tuned_preset.bits_k),
+        "adaptive_preset_group_size": None if tuned_preset is None else int(tuned_preset.group_size),
+        "adaptive_preset_tokens_per_page": None if tuned_preset is None else int(tuned_preset.tokens_per_page),
+        "adaptive_preset_value_layers": None if tuned_preset is None or tuned_preset.exact_value_layers is None else list(tuned_preset.exact_value_layers),
         "default_mode_k": str(config.default_mode_k),
         "default_mode_v": str(config.default_mode_v),
         "key_mode_overrides": list(config.key_mode_overrides),

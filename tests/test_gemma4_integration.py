@@ -14,6 +14,7 @@ from dotcache.integrations.gemma4 import (
     gemma4_text_dotcache_supported,
     gemma4_text_recommended_dotcache_config,
     gemma4_text_tuned_knobs_for_workload,
+    gemma4_text_tuned_preset_for_workload,
     gemma4_text_tuned_profile_for_workload,
     gemma4_text_tuned_value_layers_for_workload,
     run_gemma4_text_generation_harness,
@@ -258,6 +259,24 @@ def test_gemma4_tuned_profile_for_workload_matches_current_matrix_heuristic() ->
     assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=16) == "balanced"
     assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=24) == "balanced_layer0_8"
     assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=32) == "balanced_layer0"
+
+
+def test_gemma4_tuned_preset_for_workload_reads_measured_cutoff_table() -> None:
+    preset = gemma4_text_tuned_preset_for_workload(prompt_length=2048, decode_budget=24)
+
+    assert preset.profile == "balanced_layer0_8"
+    assert preset.bits_k == 4
+    assert preset.group_size == 16
+    assert preset.tokens_per_page == 4
+    assert preset.exact_value_layers is None
+
+    preset = gemma4_text_tuned_preset_for_workload(prompt_length=4096, decode_budget=32)
+
+    assert preset.profile == "balanced_layer0"
+    assert preset.bits_k == 4
+    assert preset.group_size == 16
+    assert preset.tokens_per_page == 8
+    assert preset.exact_value_layers == (0, 4, 8, 9, 14)
 
 
 def test_gemma4_tuned_knobs_for_workload_match_current_knob_sweep() -> None:
