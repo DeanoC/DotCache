@@ -45,6 +45,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
 SUITE_CONFIG="$REPO_ROOT/configs/selector_split_suites/larger_machine_comprehensive_suite.json"
+ARCHIVE_ROOT="${PAGE_SELECTOR_ARCHIVE_ROOT:-/workspace}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "python executable not found: $PYTHON_BIN" >&2
@@ -166,11 +167,146 @@ if [[ ${#KINDS[@]} -eq 0 ]]; then
   KINDS=("K" "V")
 fi
 
+join_by() {
+  local delimiter="$1"
+  shift || true
+  local first="${1-}"
+  shift || true
+  printf '%s' "$first"
+  for value in "$@"; do
+    printf '%s%s' "$delimiter" "$value"
+  done
+}
+
+model_slug() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+value = sys.argv[1].strip().lower().replace(".", "")
+value = value.split("/")[-1]
+value = re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+print(value or "model")
+PY
+}
+
+compute_archive_fingerprint() {
+  python3 - <<'PY'
+import hashlib
+import json
+import os
+
+payload = {
+    "model_id": os.environ["ARCHIVE_MODEL_ID"],
+    "weight_quantization": os.environ["ARCHIVE_WEIGHT_QUANTIZATION"],
+    "tokens_per_page": int(os.environ["ARCHIVE_TOKENS_PER_PAGE"]),
+    "group_size": int(os.environ["ARCHIVE_GROUP_SIZE"]),
+    "max_per_stage_kind": int(os.environ["ARCHIVE_MAX_PER_STAGE_KIND"]),
+    "prompt_families": [value for value in os.environ["ARCHIVE_PROMPT_FAMILIES"].split(",") if value],
+    "prompt_lengths": [int(value) for value in os.environ["ARCHIVE_PROMPT_LENGTHS"].split(",") if value],
+    "decode_steps": [int(value) for value in os.environ["ARCHIVE_DECODE_STEPS"].split(",") if value],
+    "kinds": [value for value in os.environ["ARCHIVE_KINDS"].split(",") if value],
+    "candidates": [value for value in os.environ["ARCHIVE_CANDIDATES"].split(",") if value],
+}
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+print(hashlib.sha256(encoded).hexdigest()[:16])
+PY
+}
+
+write_archive_meta() {
+  local archive_dir="$1"
+  mkdir -p "$archive_dir"
+  python3 - "$archive_dir/archive_meta.json" <<'PY'
+import json
+import os
+import sys
+
+payload = {
+    "model_id": os.environ["ARCHIVE_MODEL_ID"],
+    "weight_quantization": os.environ["ARCHIVE_WEIGHT_QUANTIZATION"],
+    "tokens_per_page": int(os.environ["ARCHIVE_TOKENS_PER_PAGE"]),
+    "group_size": int(os.environ["ARCHIVE_GROUP_SIZE"]),
+    "max_per_stage_kind": int(os.environ["ARCHIVE_MAX_PER_STAGE_KIND"]),
+    "prompt_families": [value for value in os.environ["ARCHIVE_PROMPT_FAMILIES"].split(",") if value],
+    "prompt_lengths": [int(value) for value in os.environ["ARCHIVE_PROMPT_LENGTHS"].split(",") if value],
+    "decode_steps": [int(value) for value in os.environ["ARCHIVE_DECODE_STEPS"].split(",") if value],
+    "kinds": [value for value in os.environ["ARCHIVE_KINDS"].split(",") if value],
+    "candidates": [value for value in os.environ["ARCHIVE_CANDIDATES"].split(",") if value],
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, sort_keys=True, indent=2)
+    handle.write("\n")
+PY
+}
+
+find_matching_archive() {
+  local canonical_archive_dir="$1"
+  local slug="$2"
+  if [[ -d "$canonical_archive_dir" ]]; then
+    printf '%s\n' "$canonical_archive_dir"
+    return 0
+  fi
+
+  local legacy_match
+  legacy_match="$(find "$ARCHIVE_ROOT" -maxdepth 1 -type d -name "*${slug}*_archives" | sort | tail -n 1)"
+  if [[ -n "$legacy_match" ]]; then
+    printf '%s\n' "$legacy_match"
+    return 0
+  fi
+  return 1
+}
+
+restore_stage_from_archive() {
+  local archive_dir="$1"
+  local stage_name="$2"
+  local destination="$3"
+  local tarball="$archive_dir/${stage_name}.tar.gz"
+  if [[ ! -f "$tarball" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$destination")"
+  rm -rf "$destination"
+  tar -xzf "$tarball" -C "$(dirname "$destination")"
+}
+
+archive_stage() {
+  local source_dir="$1"
+  local archive_dir="$2"
+  local stage_name="$3"
+  if [[ ! -d "$source_dir" ]]; then
+    return 0
+  fi
+  mkdir -p "$archive_dir"
+  tar -czf "$archive_dir/${stage_name}.tar.gz" -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+}
+
 CAPTURE_DIR="$OUTPUT_ROOT/capture"
 LABELS_DIR="$OUTPUT_ROOT/labels"
 SUITE_DIR="$OUTPUT_ROOT/suite"
 BATCH_DIR="$OUTPUT_ROOT/batch_eval"
 mkdir -p "$CAPTURE_DIR" "$LABELS_DIR" "$SUITE_DIR" "$BATCH_DIR"
+
+ARCHIVE_MODEL_ID="$MODEL_ID"
+ARCHIVE_WEIGHT_QUANTIZATION="$WEIGHT_QUANTIZATION"
+ARCHIVE_TOKENS_PER_PAGE="$TOKENS_PER_PAGE"
+ARCHIVE_GROUP_SIZE="$GROUP_SIZE"
+ARCHIVE_MAX_PER_STAGE_KIND="$MAX_PER_STAGE_KIND"
+ARCHIVE_PROMPT_FAMILIES="$(join_by , "${PROMPT_FAMILIES[@]}")"
+ARCHIVE_PROMPT_LENGTHS="$(join_by , "${PROMPT_LENGTHS[@]}")"
+ARCHIVE_DECODE_STEPS="$(join_by , "${DECODE_STEPS[@]}")"
+ARCHIVE_KINDS="$(join_by , "${KINDS[@]}")"
+ARCHIVE_CANDIDATES="$(join_by , "${CANDIDATES[@]}")"
+export ARCHIVE_MODEL_ID ARCHIVE_WEIGHT_QUANTIZATION ARCHIVE_TOKENS_PER_PAGE ARCHIVE_GROUP_SIZE
+export ARCHIVE_MAX_PER_STAGE_KIND ARCHIVE_PROMPT_FAMILIES ARCHIVE_PROMPT_LENGTHS ARCHIVE_DECODE_STEPS
+export ARCHIVE_KINDS ARCHIVE_CANDIDATES
+
+MODEL_SLUG="$(model_slug "$MODEL_ID")"
+ARCHIVE_FINGERPRINT="$(compute_archive_fingerprint)"
+CANONICAL_ARCHIVE_DIR="$ARCHIVE_ROOT/page_selector_${MODEL_SLUG}_${ARCHIVE_FINGERPRINT}_archives"
+ARCHIVE_DIR="$(find_matching_archive "$CANONICAL_ARCHIVE_DIR" "$MODEL_SLUG" || true)"
+if [[ -n "$ARCHIVE_DIR" ]]; then
+  printf 'Found archive candidate at %s\n' "$ARCHIVE_DIR" >&2
+fi
 
 CAPTURE_CMD=(
   "$PYTHON_BIN" "$REPO_ROOT/scripts/run_qwen35_attention_subset_capture_sweep.py"
@@ -229,16 +365,40 @@ BATCH_CMD=(
 )
 
 printf 'Running capture sweep into %s\n' "$CAPTURE_DIR" >&2
-"${CAPTURE_CMD[@]}"
+if [[ -n "$ARCHIVE_DIR" ]] && restore_stage_from_archive "$ARCHIVE_DIR" capture "$CAPTURE_DIR"; then
+  printf 'Restored capture archive from %s\n' "$ARCHIVE_DIR/capture.tar.gz" >&2
+else
+  "${CAPTURE_CMD[@]}"
+  archive_stage "$CAPTURE_DIR" "$CANONICAL_ARCHIVE_DIR" capture
+  write_archive_meta "$CANONICAL_ARCHIVE_DIR"
+fi
 
 printf 'Generating oracle labels into %s\n' "$LABELS_DIR" >&2
-"${LABEL_CMD[@]}"
+if [[ -n "$ARCHIVE_DIR" ]] && restore_stage_from_archive "$ARCHIVE_DIR" labels "$LABELS_DIR"; then
+  printf 'Restored labels archive from %s\n' "$ARCHIVE_DIR/labels.tar.gz" >&2
+else
+  "${LABEL_CMD[@]}"
+  archive_stage "$LABELS_DIR" "$CANONICAL_ARCHIVE_DIR" labels
+  write_archive_meta "$CANONICAL_ARCHIVE_DIR"
+fi
 
 printf 'Materializing comprehensive split suite into %s\n' "$SUITE_DIR" >&2
-"${SUITE_CMD[@]}"
+if [[ -n "$ARCHIVE_DIR" ]] && restore_stage_from_archive "$ARCHIVE_DIR" suite "$SUITE_DIR"; then
+  printf 'Restored suite archive from %s\n' "$ARCHIVE_DIR/suite.tar.gz" >&2
+else
+  "${SUITE_CMD[@]}"
+  archive_stage "$SUITE_DIR" "$CANONICAL_ARCHIVE_DIR" suite
+  write_archive_meta "$CANONICAL_ARCHIVE_DIR"
+fi
 
 printf 'Running selector batch bakeoff into %s\n' "$BATCH_DIR" >&2
-"${BATCH_CMD[@]}"
+if [[ -n "$ARCHIVE_DIR" ]] && restore_stage_from_archive "$ARCHIVE_DIR" batch_eval "$BATCH_DIR"; then
+  printf 'Restored batch_eval archive from %s\n' "$ARCHIVE_DIR/batch_eval.tar.gz" >&2
+else
+  "${BATCH_CMD[@]}"
+  archive_stage "$BATCH_DIR" "$CANONICAL_ARCHIVE_DIR" batch_eval
+  write_archive_meta "$CANONICAL_ARCHIVE_DIR"
+fi
 
 echo "$CAPTURE_DIR/manifest.json"
 echo "$LABELS_DIR/summary.json"

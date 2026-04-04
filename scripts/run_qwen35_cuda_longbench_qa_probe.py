@@ -15,19 +15,26 @@ from scripts.run_qwen35_cuda_needle_probe import _append_record, _case_extra_arg
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_ID = "Qwen/Qwen3.5-0.8B"
+DEFAULT_LAYER_PROFILE = str(
+    REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_third_pass.yaml"
+)
+DEFAULT_QUALITY_LAYER_PROFILE = str(
+    REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_shortlist_quality.yaml"
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run single-shot Qwen3.5 CUDA LongBench QA probes with standardized metadata."
     )
-    parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--backend", default="torch_cuda")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="float16")
     parser.add_argument(
         "--layer-profile",
-        default=str(REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_third_pass.yaml"),
+        default=DEFAULT_LAYER_PROFILE,
     )
     parser.add_argument(
         "--cases",
@@ -38,9 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-pack", required=True, help="JSON file defining LongBench rows to run.")
     parser.add_argument(
         "--quality-layer-profile",
-        default=str(
-            REPO_ROOT / "configs" / "layer_profiles" / "qwen35_0p8b_attention_subset_cuda_shortlist_quality.yaml"
-        ),
+        default=DEFAULT_QUALITY_LAYER_PROFILE,
     )
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--profile-backend", action="store_true")
@@ -105,7 +110,7 @@ def _load_prompt_specs(path: str) -> list[dict[str, Any]]:
 
 def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict[str, Any]) -> list[str]:
     layer_profile = args.layer_profile
-    if case == "shortlist_quality_profile":
+    if case == "shortlist_quality_profile" and args.quality_layer_profile is not None:
         layer_profile = args.quality_layer_profile
     command = [
         sys.executable,
@@ -118,13 +123,13 @@ def _benchmark_command(args: argparse.Namespace, *, case: str, prompt_spec: dict
         args.device,
         "--torch-dtype",
         args.torch_dtype,
-        "--layer-profile",
-        layer_profile,
         "--longbench-dataset",
         prompt_spec["dataset"],
         "--longbench-row-index",
         str(prompt_spec["row_index"]),
     ]
+    if layer_profile is not None:
+        command.extend(["--layer-profile", layer_profile])
     if args.profile_backend:
         command.append("--profile-backend")
     if args.quality_check:
@@ -220,6 +225,10 @@ def _run_single_probe(args: argparse.Namespace, *, case: str, prompt_spec: dict[
 
 def main() -> None:
     args = parse_args()
+    if args.model_id != DEFAULT_MODEL_ID and args.layer_profile == DEFAULT_LAYER_PROFILE:
+        args.layer_profile = None
+    if args.model_id != DEFAULT_MODEL_ID and args.quality_layer_profile == DEFAULT_QUALITY_LAYER_PROFILE:
+        args.quality_layer_profile = None
     prompt_specs = _load_prompt_specs(args.prompt_pack)
     output_path = Path(args.output) if args.output else None
     if output_path is not None and output_path.exists():
