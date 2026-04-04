@@ -1,0 +1,62 @@
+[
+  {
+    "prompt_id": "hotpotqa_row0",
+    "dataset": "hotpotqa",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "hotpotqa_row1",
+    "dataset": "hotpotqa",
+    "row_index": 1
+  },
+  {
+    "prompt_id": "hotpotqa_row2",
+    "dataset": "hotpotqa",
+    "row_index": 2
+  },
+  {
+    "prompt_id": "2wikimqa_row0",
+    "dataset": "2wikimqa",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "2wikimqa_row1",
+    "dataset": "2wikimqa",
+    "row_index": 1
+  },
+  {
+    "prompt_id": "2wikimqa_row2",
+    "dataset": "2wikimqa",
+    "row_index": 2
+  },
+  {
+    "prompt_id": "multifieldqa_en_row0",
+    "dataset": "multifieldqa_en",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "multifieldqa_en_row1",
+    "dataset": "multifieldqa_en",
+    "row_index": 1
+  },
+  {
+    "prompt_id": "multifieldqa_en_row2",
+    "dataset": "multifieldqa_en",
+    "row_index": 2
+  },
+  {
+    "prompt_id": "qasper_row0",
+    "dataset": "qasper",
+    "row_index": 0
+  },
+  {
+    "prompt_id": "qasper_row1",
+    "dataset": "qasper",
+    "row_index": 1
+  },
+  {
+    "prompt_id": "qasper_row2",
+    "dataset": "qasper",
+    "row_index": 2
+  }
+]

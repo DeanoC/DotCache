@@ -56,6 +56,21 @@ The checkpoint now also includes the fixed Qwen3.5 9B LongBench QA mini-pack res
 
 It also now includes the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines.
 
+For broader LongBench coverage, the repo now also supports named pack tiers:
+
+- `mini`
+  the current 4-row checkpoint pack
+- `medium`
+  a 12-row broader pack across the same supported QA datasets
+- `full`
+  a 20-row broader pack across the same supported QA datasets
+
+Run those via:
+
+```bash
+bash scripts/run_qwen35_9b_longbench_pack.sh /path/to/output_dir --pack medium
+```
+
 ## Larger-machine selector suite
 
 For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:
