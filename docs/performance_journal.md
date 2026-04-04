@@ -3945,3 +3945,2668 @@ So the corrected `4B` local serving read is:
 - the practical exact-length boundary for this lane is still below `8192`
 
 I stopped the ladder after the first exact-length OOM at `8192`, so there is no useful `16384` result to promote from this run.
+
+## 2026-03-31 16:05 UTC - 890M combined DotCache + StateCache does not beat the local StateCache-only lane
+
+I tested the next obvious 890M question directly: if DotCache reduces the token-growing full-attention KV subset, does that create useful extra room for the local `StateCache` winner on the same laptop?
+
+I added a local wrapper for that question:
+
+- [run_qwen35_0p8b_hybrid_890m.sh](/workspace/DotCache/scripts/run_qwen35_0p8b_hybrid_890m.sh)
+
+and ran it with:
+
+- `Qwen/Qwen3.5-0.8B`
+- the checked-in 890M attention profile `qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml`
+- DotCache on the six `full_attention` layers
+- StateCache on the eighteen `linear_attention` layers
+- `post_update_m0`, `8-bit`, `renorm=0`
+- exact lengths `512`, `2048`, and `8192`
+
+Raw output is saved under:
+
+- [qwen35_rocm_890m_hybrid_followup_20260331](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_hybrid_followup_20260331)
+
+### Result
+
+The combined lane runs cleanly, but it is not a keepable local path on this machine.
+
+Exact-length hybrid results:
+
+- `512`
+  - dense decode `54.44 ms/step`
+  - hybrid decode `98.73 ms/step`
+  - teacher-forced logit max abs error `0.8945`
+  - replay output max abs error `0.0436`
+- `2048`
+  - dense decode `47.79 ms/step`
+  - hybrid decode `148.83 ms/step`
+  - teacher-forced logit max abs error `4.6387`
+  - replay output max abs error `0.5063`
+- `8192`
+  - dense decode `80.48 ms/step`
+  - hybrid decode `456.94 ms/step`
+  - teacher-forced logit max abs error `1.6895`
+  - replay output max abs error `0.0625`
+
+Against the promoted local StateCache-only serving lane from the same machine:
+
+- pure StateCache `512`: `53.34 ms/step`
+- pure StateCache `2048`: `64.47 ms/step`
+- pure StateCache `8192`: `180.79 ms/step`
+
+So the combined lane is worse than the local StateCache-only lane at every tested context:
+
+- `512`: `98.73` vs `53.34`
+- `2048`: `148.83` vs `64.47`
+- `8192`: `456.94` vs `180.79`
+
+### Important negative finding
+
+The checked-in shortlist profile did not actually engage inside this combined runtime on the laptop:
+
+- `execution_shortlist_applied = 0`
+- `execution_shortlist_total_pages = 0`
+
+on all three exact-length rows.
+
+That means the intended “DotCache reduces KV enough to buy room for StateCache” story is not materializing yet in the current hybrid harness on the 890M. At least in this run, the machine is paying the hybrid attention-side cost without getting a real shortlist-driven reduction back.
+
+### Machine-level conclusion
+
+The honest local read is now:
+
+- pure StateCache remains the right compressed native lane on this laptop
+- the combined DotCache + StateCache path is still exploratory on the 890M
+- it does not currently extend the useful context envelope beyond the pure local StateCache lane
+- the next hybrid step should not be more blind benchmark sweeps
+- the next hybrid step should be to inspect why shortlist never activates in the combined runtime and whether the 890M value-escape or context-aware attention profiles survive that path better
+
+## 2026-03-31 18:40 UTC - 890M StateCache follow-up: recurrent layers want per-layer renorm, but long-context parity still breaks
+
+I used the 890M as a `StateCache` diagnosis box rather than another DotCache throughput lane and ran a full recurrent-only real sweep over all eighteen `Qwen/Qwen3.5-0.8B` DeltaNet layers:
+
+- layers: `0 1 2 4 5 6 8 9 10 12 13 14 16 17 18 20 21 22`
+- state kind: `recurrent`
+- bits: `8 4 3`
+- renorm intervals: `0 2 4 8`
+- prompt length `32`
+- decode steps `4`
+
+Raw sweep output is saved under:
+
+- [qwen35_rocm_890m_statecache_followup_20260331](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331)
+
+### Full-layer recurrent sweep result
+
+The sweep produced a much cleaner policy picture than the earlier sampled pass:
+
+- every recurrent layer still preferred `8b / M0`
+- no layer promoted to `4b` or `3b` under the current readout safety thresholds
+- five recurrent layers preferred `renorm_interval = 2`
+  - layers `5`, `8`, `12`, `18`, `21`
+- most other recurrent layers preferred `renorm_interval = 0`
+- two recurrent layers stood out as fallback-quality rather than safe-band quality
+  - layer `4`: `8b` readout error `0.274`
+  - layer `20`: `8b` readout error `0.204`
+
+This is useful because it says the current machine is not pointing at “lower bits everywhere.” It is pointing at:
+
+- per-layer renorm structure inside recurrent DeltaNet state
+- and a small number of harder recurrent layers that may need special handling
+
+### Implementation follow-up
+
+I added first-class per-layer renorm interval overrides to the local `Qwen3.5` StateCache integration and benchmark CLIs so the sweep-derived policy can be expressed directly instead of approximated with another global knob.
+
+The new surface now exists in:
+
+- [qwen35.py](/workspace/DotCache/dotcache/integrations/qwen35.py)
+- [bench_qwen35_deltanet_statecache_readout.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_readout.py)
+- [bench_qwen35_deltanet_statecache_serving.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_serving.py)
+- [bench_qwen35_deltanet_statecache_loss.py](/workspace/DotCache/benchmarks/bench_qwen35_deltanet_statecache_loss.py)
+
+and the tiny integration test slice still passes after the change.
+
+### Candidate A: per-layer recurrent renorm only
+
+I validated the sweep-derived renorm map directly:
+
+- base lane: `post_update_m0`, recurrent-only, `8b / M0`, global `renorm=0`
+- recurrent renorm overrides:
+  - `5=2`
+  - `8=2`
+  - `12=2`
+  - `18=2`
+  - `21=2`
+
+Readout results:
+
+- `512`
+  - dense decode `44.63 ms/step`
+  - StateCache decode `33.64 ms/step`
+  - greedy agreement `1.0`
+- `2048`
+  - dense decode `50.75 ms/step`
+  - StateCache decode `44.57 ms/step`
+  - greedy agreement `1.0`
+- `8192`
+  - dense decode `110.56 ms/step`
+  - StateCache decode `88.54 ms/step`
+  - greedy agreement `0.75`
+
+Serving results:
+
+- `512`
+  - decode `41.70 ms/step`
+  - prefill peak `1.8445 GB`
+  - decode peak `1.8403 GB`
+- `2048`
+  - decode `44.05 ms/step`
+  - prefill peak `2.2413 GB`
+  - decode peak `1.9211 GB`
+- `8192`
+  - decode `124.26 ms/step`
+  - prefill peak `7.4126 GB`
+  - decode peak `2.2466 GB`
+- `16384`
+  - exact-length OOM
+
+### Candidate A conclusion
+
+This is the first useful StateCache-specific follow-up from the 890M:
+
+- the per-layer renorm map is materially faster than the promoted baseline through `2048`
+- it does not cost meaningful extra VRAM versus the baseline
+- it still breaks parity at `8192`
+
+So the machine is telling us something specific:
+
+- recurrent renorm is not globally useless
+- but the long-context failure is not solved by simply turning renorm on for the layers that locally prefer it
+
+### Candidate B: add `M3` escapes on the two recurrent outliers
+
+I then tested the next obvious hypothesis:
+
+- keep the same per-layer renorm map
+- add recurrent `M3` escapes on layers `4` and `20`
+
+Readout results:
+
+- `2048`
+  - dense decode `55.60 ms/step`
+  - StateCache decode `49.60 ms/step`
+  - greedy agreement `1.0`
+- `8192`
+  - dense decode `103.66 ms/step`
+  - StateCache decode `87.81 ms/step`
+  - greedy agreement `0.75`
+
+This reduced compression:
+
+- fixed-resident compression ratio fell from about `2.91x` to about `2.40x`
+
+and did **not** restore long-context parity.
+
+### Machine-level conclusion
+
+The 890M produced a useful StateCache research result here:
+
+- the next promising `StateCache` direction is per-layer renorm, not lower bits
+- the long-context `8192` failure is interactional rather than isolated to one or two recurrent outlier layers
+- adding `M3` escapes on layers `4` and `20` is not enough to fix it
+
+The most useful next StateCache work from this machine is now:
+
+- inspect which recurrent layers actually diverge first inside the `8192` decode path under the renorm-map policy
+- or add a stage-specific/per-layer renorm policy that can differ between readout and post-update phases
+
+## 2026-03-31 19:10 UTC - 890M StateCache localization: the `8192` renorm-map break is recurrent-dominated and not centered on layers `4/20`
+
+I followed up the renorm-map result with a direct `StateCache` localization run on the exact long-context regime that breaks:
+
+- model `Qwen/Qwen3.5-0.8B`
+- sequence length `8196`
+- prefix length `8192`
+- eval steps `4`
+- `post_update_m0`
+- recurrent-only `8b / M0`
+- recurrent renorm overrides:
+  - `5=2`
+  - `8=2`
+  - `12=2`
+  - `18=2`
+  - `21=2`
+
+Raw output is saved at:
+
+- [qwen35_0p8b_localization_postupdate_perlayerrenorm_8192.json](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_localization_postupdate_perlayerrenorm_8192.json)
+
+### Result
+
+The long-context failure is clearly recurrent-side.
+
+Per-step statecache logit max abs error:
+
+- step `0`: `0.0`
+- step `1`: `0.1348`
+- step `2`: `0.1543`
+- step `3`: `21.6426`
+
+So the instability is not gradual drift forever. It stays moderate for two decode steps and then blows up on the final step of this short teacher-forced continuation.
+
+### Recurrent vs conv
+
+The recurrent-only path dominates the failure:
+
+- recurrent-only max output abs error: `0.009765625`
+- conv-only max output abs error: `0.00048828125`
+
+That is about a `20x` difference in output error magnitude, which means the current `8192` break is not being driven by conv-state quantization.
+
+### Dominant recurrent layers at `8192`
+
+Top recurrent per-layer output abs error under the renorm-map policy:
+
+- layer `18`: `0.00977`
+- layer `14`: `0.00659`
+- layer `8`: `0.00610`
+- layer `10`: `0.00489`
+- layer `13`: `0.00488`
+
+This matters because it does **not** line up with the earlier “fallback-quality” sweep outliers:
+
+- layer `4`
+- layer `20`
+
+I already tried escaping those two layers to `M3`, and it did not restore `8192` parity. This localization result explains why: they are not the dominant long-context output-error layers in the actual failing decode path.
+
+### Updated hypothesis
+
+The current best local `StateCache` hypothesis is now:
+
+- the `8192` break is a recurrent interaction problem that emerges late in decode
+- it is not solved by only escaping the obvious sweep outliers `4/20`
+- the more relevant long-context layers now look like `18`, `14`, and `8`
+- stage-specific or layer-specific post-update treatment is more plausible than another global knob
+
+## 2026-03-31 19:25 UTC - 890M StateCache targeted recurrent probes: `18/14/8` are diagnostic, not a direct fix
+
+I followed the localization result with a narrow `8192` probe set aimed at the dominant recurrent layers:
+
+- exact prompt length `8192`
+- `post_update_m0`
+- recurrent-only `8b / M0`
+- base recurrent renorm overrides:
+  - `5=2`
+  - `8=2`
+  - `12=2`
+  - `18=2`
+  - `21=2`
+
+Raw output is saved at:
+
+- [qwen35_0p8b_readout_8192_targeted_recurrent_probes.jsonl](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_readout_8192_targeted_recurrent_probes.jsonl)
+
+### Candidate set
+
+I tested four recurrent-mode variants:
+
+- baseline renorm map with no extra escapes
+- layer `18 = M3`
+- layers `18/14 = M3`
+- layers `18/14/8 = M3`
+
+### Result
+
+All four variants failed in the same way:
+
+- greedy agreement stayed at `0.75`
+- first divergence step stayed at `3`
+- output max abs error stayed at `0.0126953125`
+- prefill and decode peaks were unchanged at about `7.53 GB` and `2.37 GB`
+
+The only thing that changed materially was compression and timing:
+
+- baseline renorm map
+  - StateCache decode `149.68 ms/step`
+  - fixed-resident compression ratio `2.91x`
+- `18 = M3`
+  - StateCache decode `150.27 ms/step`
+  - fixed-resident compression ratio `2.63x`
+- `18/14 = M3`
+  - StateCache decode `79.50 ms/step`
+  - fixed-resident compression ratio `2.40x`
+- `18/14/8 = M3`
+  - StateCache decode `146.29 ms/step`
+  - fixed-resident compression ratio `2.21x`
+
+### Interpretation
+
+This is a useful negative result:
+
+- the dominant long-context recurrent layers from localization are real
+- but simply escaping them to `M3` does **not** restore `8192` parity
+- the `8192` break is not explained by one bad recurrent layer or one obvious pair of layers
+
+So the localization ranking is still useful as diagnosis, but it is not a direct “escape these layers and the problem goes away” recipe.
+
+## 2026-03-31 19:35 UTC - 890M StateCache targeted renorm ablations: layer `18/8` renorm is not the sole cause of the `8192` break
+
+I then tested the next renorm-specific hypothesis:
+
+- keep the same `8192` exact readout setup
+- start from the recurrent renorm map `5/8/12/18/21 = 2`
+- remove renorm from the most suspicious long-context layers
+
+Raw output is saved at:
+
+- [qwen35_0p8b_readout_8192_targeted_renorm_ablations.jsonl](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_readout_8192_targeted_renorm_ablations.jsonl)
+
+### Candidate set
+
+- baseline renorm map
+- drop layer `18` renorm
+- drop layer `8` renorm
+- drop both `18` and `8` renorm
+
+### Result
+
+Again, all four variants failed with the same parity shape:
+
+- greedy agreement `0.75`
+- first divergence step `3`
+- output max abs error `0.0126953125`
+
+Timing moved, but the failure did not:
+
+- baseline renorm map
+  - StateCache decode `146.99 ms/step`
+- drop `18` renorm
+  - StateCache decode `157.67 ms/step`
+- drop `8` renorm
+  - StateCache decode `108.21 ms/step`
+- drop `18` and `8` renorm
+  - StateCache decode `105.07 ms/step`
+
+### Interpretation
+
+This rules out a simpler explanation:
+
+- layer `18` renorm is not the single thing breaking `8192`
+- layer `8` renorm is not the single thing breaking `8192`
+- even removing both together does **not** change the failure step or agreement rate
+
+So the next StateCache hypothesis on this machine should move away from “fix one or two recurrent layers” and toward a broader interaction:
+
+- stage-specific post-update behavior
+- a different recurrent quantization path for late decode
+- or a longer-horizon localization pass that explains why the blow-up consistently appears on decode step `3`
+
+## 2026-03-31 20:20 UTC - 890M StateCache stage-split follow-up: post-update renorm is the destabilizer
+
+I implemented a narrow stage-split `StateCache` probe surface in the local Qwen3.5 integration so I could keep the existing recurrent policy metadata while changing only the post-update treatment.
+
+The exact `8192` probe set was:
+
+- model `Qwen/Qwen3.5-0.8B`
+- exact prompt length `8192`
+- recurrent-only `8b / M0`
+- `post_update_m0`
+- base recurrent renorm map carried over from the earlier sweep:
+  - `5=2`
+  - `8=2`
+  - `12=2`
+  - `18=2`
+  - `21=2`
+
+Raw output is saved at:
+
+- [qwen35_0p8b_readout_8192_postupdate_stage_split_probes.jsonl](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_readout_8192_postupdate_stage_split_probes.jsonl)
+
+### Candidate set
+
+I tested four post-update variants:
+
+- baseline renorm map
+- post-update only `M3` on recurrent layers `18/14/8`
+- post-update only drop renorm on `18/14/8`
+- post-update only drop renorm on all previously renormed layers `5/8/12/18/21`
+
+### Result
+
+Three variants failed in the same way:
+
+- baseline renorm map
+  - StateCache decode `153.89 ms/step`
+  - greedy agreement `0.75`
+  - first divergence step `3`
+- post-update only `M3` on `18/14/8`
+  - StateCache decode `158.11 ms/step`
+  - greedy agreement `0.75`
+  - first divergence step `3`
+- post-update only drop renorm on `18/14/8`
+  - StateCache decode `140.33 ms/step`
+  - greedy agreement `0.75`
+  - first divergence step `3`
+
+The one variant that restored parity was:
+
+- post-update only drop renorm on `5/8/12/18/21`
+  - StateCache decode `155.80 ms/step`
+  - greedy agreement `1.0`
+  - no divergence across the 4-step readout
+
+Compression stayed unchanged for the renorm-only variants:
+
+- effective recurrent compression ratio remained `3.2x`
+- effective fixed-resident compression ratio remained `2.91x`
+
+Only the `M3` escape variant reduced compression:
+
+- recurrent compression ratio fell to `2.34x`
+- fixed-resident compression ratio fell to `2.21x`
+
+and it still did **not** restore parity.
+
+### Interpretation
+
+This is the strongest `StateCache` result from the 890M so far:
+
+- the long-context failure is not coming from readout approximation by itself
+- it is not fixed by escaping the localized recurrent layers in post-update
+- it is not fixed by dropping renorm on only `18/14/8`
+- it **is** removed when post-update renorm is disabled entirely
+
+So the current per-layer renorm map has to be interpreted much more narrowly:
+
+- it may still be a useful diagnosis signal
+- but it should not be applied to the post-update writeback path on this machine
+
+The next useful `StateCache` hypothesis is now sharper:
+
+- if renorm has value, it likely belongs on a true readout-only path rather than in post-update writeback
+- or we need a more selective late-decode renorm rule than the current “every Nth update on chosen layers” map
+
+## 2026-03-31 21:10 UTC - 890M StateCache readout-only renorm follow-up: useful at `8192` readout, mixed in serving, no new memory headroom
+
+I implemented a matching readout-only override surface so I could test the mirror image of the previous result:
+
+- keep `post_update_m0`
+- keep post-update recurrent renorm at `0`
+- apply the recurrent renorm map only before readout
+
+That let me test whether the earlier renorm map was still useful once it was kept out of the writeback path.
+
+Raw output is saved at:
+
+- [qwen35_0p8b_readout_readoutrenorm_postupdatezero_probe.jsonl](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_readout_readoutrenorm_postupdatezero_probe.jsonl)
+- [qwen35_0p8b_serving_readoutrenorm_postupdatezero_probe.jsonl](/workspace/DotCache/benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_serving_readoutrenorm_postupdatezero_probe.jsonl)
+
+The compared policies were:
+
+- `postupdate_all_renorm0`
+  - no recurrent renorm on readout
+  - no recurrent renorm on post-update
+- `readout_renorm_map_postupdate_all_renorm0`
+  - readout-only recurrent renorm on `5/8/12/18/21 = 2`
+  - no recurrent renorm on post-update
+
+### Readout result
+
+Both policies stayed parity-safe through exact `2048` and exact `8192`.
+
+At `2048`:
+
+- `postupdate_all_renorm0`
+  - StateCache decode `58.65 ms/step`
+  - greedy agreement `1.0`
+- `readout_renorm_map_postupdate_all_renorm0`
+  - StateCache decode `60.85 ms/step`
+  - greedy agreement `1.0`
+
+At `8192`:
+
+- `postupdate_all_renorm0`
+  - StateCache decode `139.98 ms/step`
+  - greedy agreement `1.0`
+- `readout_renorm_map_postupdate_all_renorm0`
+  - StateCache decode `136.19 ms/step`
+  - greedy agreement `1.0`
+
+Compression was unchanged:
+
+- effective recurrent compression ratio stayed `3.2x`
+- effective fixed-resident compression ratio stayed `2.91x`
+
+So the readout-only renorm path does not buy a broad speedup. But it *does* confirm the current hypothesis:
+
+- the renorm map can be used safely when it stays on the read path
+- the instability was specifically tied to post-update writeback renorm
+
+### Serving result
+
+Serving is more mixed.
+
+At `2048`:
+
+- `postupdate_all_renorm0`
+  - StateCache decode `70.33 ms/step`
+- `readout_renorm_map_postupdate_all_renorm0`
+  - StateCache decode `55.02 ms/step`
+
+So the readout-only renorm path is materially better at this mid context.
+
+At `8192`:
+
+- `postupdate_all_renorm0`
+  - StateCache decode `143.71 ms/step`
+- `readout_renorm_map_postupdate_all_renorm0`
+  - StateCache decode `154.04 ms/step`
+
+So the same policy becomes worse again at long serving context.
+
+At exact `16384`:
+
+- both policies still fail with `OutOfMemoryError`
+
+### Interpretation
+
+This is a useful but bounded result:
+
+- readout-only renorm is **safe**
+- post-update renorm is the part that breaks long-context parity
+- the readout-only renorm map is not a general winner
+- it helps serving at `2048`
+- it hurts serving at `8192`
+- it does not move the `16384` memory boundary
+
+So the next StateCache direction is no longer “renorm yes or no.” It is:
+
+- context-sensitive readout treatment
+- or a policy that changes across decode horizon rather than applying the same readout renorm map at both `2048` and `8192`
+
+## 2026-03-31 21:40 UTC - 890M StateCache context-banded readout renorm sweep: no single winner, but stable candidates emerge by context
+
+After confirming that readout-only renorm is safe when post-update renorm stays at `0`, I ran a serving sweep to see whether different recurrent readout maps win at different contexts.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_serving_readout_policy_sweep.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_followup_20260331/qwen35_0p8b_readout_policy_confirmation.jsonl`
+
+Setup:
+
+- model: `Qwen/Qwen3.5-0.8B`
+- state stage: `post_update_m0`
+- writeback renorm: `0` on all recurrent layers
+- readout-only candidate maps:
+  - `readout_map_full = {5, 8, 12, 18, 21} -> 2`
+  - `readout_map_early = {5, 8} -> 2`
+  - `readout_map_late = {12, 18, 21} -> 2`
+
+### Serving sweep
+
+At `1024`:
+
+- baseline `postupdate_all_renorm0`: `60.06 ms/step`
+- `readout_map_full`: `56.34 ms/step`
+- `readout_map_early`: `47.53 ms/step`
+- `readout_map_late`: `43.87 ms/step`
+
+So `readout_map_late` is the fastest of the tested safe-writeback policies at `1024`.
+
+At `2048`:
+
+- baseline `postupdate_all_renorm0`: `58.38 ms/step`
+- `readout_map_full`: `62.68 ms/step`
+- `readout_map_early`: `60.94 ms/step`
+- `readout_map_late`: `51.21 ms/step`
+
+So `readout_map_late` is also best at `2048`.
+
+At `4096`:
+
+- baseline `postupdate_all_renorm0`: `82.26 ms/step`
+- `readout_map_full`: `65.07 ms/step`
+- `readout_map_early`: `80.93 ms/step`
+- `readout_map_late`: `71.36 ms/step`
+
+So the full readout renorm map becomes best at `4096`.
+
+At `8192`:
+
+- baseline `postupdate_all_renorm0`: `152.80 ms/step`
+- `readout_map_full`: `160.60 ms/step`
+- `readout_map_early`: `103.26 ms/step`
+- `readout_map_late`: `139.04 ms/step`
+
+So the early-only readout map is best at `8192`.
+
+Compression stayed unchanged across the sweep:
+
+- effective recurrent compression ratio: `3.2x`
+- effective fixed-resident compression ratio: `2.91x`
+
+This means the effect is coming from read-path numerics and decode behavior, not from any change in stored StateCache footprint.
+
+### Exact readout confirmation
+
+I then validated the best context-local candidates with exact readout parity checks:
+
+- `readout_map_late` at `1024`
+  - greedy agreement `1.0`
+  - StateCache decode `54.44 ms/step`
+  - output max abs error `0.00848`
+- `readout_map_late` at `2048`
+  - greedy agreement `1.0`
+  - StateCache decode `54.53 ms/step`
+  - output max abs error `0.00726`
+- `readout_map_full` at `4096`
+  - greedy agreement `1.0`
+  - StateCache decode `92.75 ms/step`
+  - output max abs error `0.00830`
+- `readout_map_early` at `8192`
+  - greedy agreement `1.0`
+  - StateCache decode `153.23 ms/step`
+  - output max abs error `0.01270`
+
+So all four best-per-band candidates are readout-safe under exact parity checking.
+
+### Interpretation
+
+This is the clearest StateCache policy result from the 890M so far:
+
+- there is **not** a single best recurrent renorm map across contexts
+- post-update renorm should stay disabled on this machine
+- readout renorm can still help, but the best layer set shifts with context
+
+Current best hypothesis:
+
+- `1024` to `2048`: use `readout_map_late = {12, 18, 21} -> 2`
+- `4096`: use `readout_map_full = {5, 8, 12, 18, 21} -> 2`
+- `8192`: use `readout_map_early = {5, 8} -> 2`
+
+So the next StateCache improvement direction on this machine is a **context-banded readout-only renorm policy**, not another single global recurrent policy.
+
+## 2026-03-31 22:35 UTC - 890M StateCache selector validation: quality-safe, latency-mixed, no new memory headroom
+
+I validated the new built-in readout policy selector `890m_context_banded_v1` against the simple local baseline:
+
+- baseline: `post_update_m0`, recurrent-only, `8b/M0`, `renorm=0`
+- selector: same writeback path, but readout-only recurrent renorm bands
+  - `<1024`: baseline
+  - `1024-2048`: `late = {12, 18, 21} -> 2`
+  - `2049-4096`: `full = {5, 8, 12, 18, 21} -> 2`
+  - `>4096`: `early = {5, 8} -> 2`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_readout_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_readout_selector.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_serving_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_serving_selector.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_loss_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_selector_validation_20260331/qwen35_0p8b_loss_selector.jsonl`
+
+### Readout
+
+At exact `1024`:
+
+- baseline: `39.52 ms/step`, agreement `1.0`
+- selector (`late`): `47.58 ms/step`, agreement `1.0`
+
+At exact `2048`:
+
+- baseline: `53.45 ms/step`, agreement `1.0`
+- selector (`late`): `59.92 ms/step`, agreement `1.0`
+
+At exact `4096`:
+
+- baseline: `89.91 ms/step`, agreement `1.0`
+- selector (`full`): `79.26 ms/step`, agreement `1.0`
+
+At exact `8192`:
+
+- baseline: `157.08 ms/step`, agreement `1.0`
+- selector (`early`): `177.38 ms/step`, agreement `1.0`
+
+So the selector is readout-safe, but it is only faster at `4096`.
+
+### Serving
+
+At exact `1024`:
+
+- baseline: `60.46 ms/step`
+- selector (`late`): `67.00 ms/step`
+
+At exact `2048`:
+
+- baseline: `51.31 ms/step`
+- selector (`late`): `60.85 ms/step`
+
+At exact `4096`:
+
+- baseline: `85.27 ms/step`
+- selector (`full`): `61.69 ms/step`
+
+At exact `8192`:
+
+- baseline: `157.72 ms/step`
+- selector (`early`): `128.09 ms/step`
+
+Serving memory peaks were unchanged:
+
+- `1024`: prefill `1.877 GB`, decode `1.897 GB`
+- `2048`: prefill `2.197 GB`, decode `2.197 GB`
+- `4096`: prefill `3.322 GB`, decode `3.322 GB`
+- `8192`: prefill `7.322 GB`, decode `7.322 GB`
+
+So the selector does **not** create new memory headroom. It only changes read-path behavior.
+
+### Loss
+
+Teacher-forced quality stayed effectively unchanged across all tested prefixes:
+
+- `1024`: match rate stayed `1.0`, loss delta moved from `-3.09e-4` to `-2.14e-4`
+- `2048`: match rate stayed `1.0`, loss delta moved from `-2.78e-5` to `-5.74e-6`
+- `4096`: match rate stayed `1.0`, loss delta moved from `1.85e-6` to `-2.0e-6`
+- `8192`: match rate stayed `1.0`, loss delta moved from `-4.37e-6` to `4.49e-6`
+
+The main timing change in loss was also context-dependent:
+
+- slower at `1024`, `2048`, and `4096`
+- faster at `8192` (`111.78 ms/step` vs `132.39`)
+
+### Interpretation
+
+This validation is useful but not promotable as a universal default:
+
+- the selector is **quality-safe**
+- it does **not** change memory
+- it helps serving materially at `4096` and `8192`
+- it hurts serving at `1024` and `2048`
+- it is not a broad readout win
+
+So `890m_context_banded_v1` should stay as an **explicit experimental policy selector**, not as the default 890M StateCache path. The baseline `post_update_m0 + renorm=0` remains the simple default, and the selector is now a tool for further StateCache policy research.
+
+## 2026-03-31 23:10 UTC - 890M StateCache decode-horizon follow-up: selector gains do not survive longer decode
+
+To understand the `2048` vs `4096` crossover, I reran baseline vs `890m_context_banded_v1` at exact prompt lengths `2048` and `4096`, but across decode horizons `4`, `8`, and `16`.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_readout_horizon_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_readout_horizon_selector.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_serving_horizon_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_serving_horizon_selector.jsonl`
+
+### Exact readout
+
+At `2048`, the `late` selector band stayed parity-safe at every horizon, but did not become a stable win:
+
+- `4` steps: baseline `55.36 ms/step`, selector `60.82`
+- `8` steps: baseline `55.86 ms/step`, selector `55.73`
+- `16` steps: baseline `56.41 ms/step`, selector `65.62`
+
+At `4096`, the `full` selector band also stayed parity-safe, but the short-horizon gain collapsed:
+
+- `4` steps: baseline `83.77 ms/step`, selector `81.58`
+- `8` steps: baseline `84.14 ms/step`, selector `91.05`
+- `16` steps: baseline `88.72 ms/step`, selector `91.21`
+
+So there is no readout evidence that the selector gets better as decode horizon grows. If anything, the opposite happens.
+
+### Serving
+
+At `2048`, the `late` selector band does not turn into a longer-horizon serving win:
+
+- `4` steps: baseline `71.13 ms/step`, selector `74.30`
+- `8` steps: baseline `64.52 ms/step`, selector `65.00`
+- `16` steps: baseline `48.97 ms/step`, selector `65.57`
+
+At `4096`, the `full` selector band only helps at the shortest tested decode horizon:
+
+- `4` steps: baseline `100.47 ms/step`, selector `89.35`
+- `8` steps: baseline `79.27 ms/step`, selector `101.40`
+- `16` steps: baseline `91.56 ms/step`, selector `96.60`
+
+Serving memory again stayed unchanged between baseline and selector:
+
+- `2048`: prefill reserved `2.168 GB`, decode reserved `2.190 GB`
+- `4096`: prefill reserved `3.270 GB`, decode reserved `3.287 GB`
+
+### Interpretation
+
+This follow-up narrows the explanation for the earlier crossover:
+
+- the selector remains **quality-safe**
+- the selector remains **memory-neutral**
+- the `4096` advantage is a **short-horizon effect**
+- it does **not** strengthen with longer decode
+- longer decode generally pushes the selector back toward baseline or worse
+
+So the main open hypothesis is no longer “the selector helps once context is long enough.” It is:
+
+- some readout-only renorm maps help the *first few decode steps* at selected contexts
+- but the benefit does not survive across a longer decode horizon
+
+That points away from a stable deployment policy and toward a more specific short-horizon transient effect in the read path.
+
+## 2026-03-31 23:35 UTC - 890M StateCache per-step follow-up: crossover is confounded by warm-state measurement noise
+
+I profiled the `4096 x 16` serving case at per-step granularity to test the next hypothesis: that the selector only wins on the first few decode steps and then gives the gain back later.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_serving_step_profile_4096.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_horizon_followup_20260331/qwen35_0p8b_serving_4096x16_repeatcheck.jsonl`
+
+### In-process per-step profile
+
+Using one loaded model with `3` repeated `4096 x 16` serving decodes:
+
+- baseline average decode time: `86.96 ms/step`
+- selector average decode time: `79.38 ms/step`
+
+Per-step averages:
+
+- baseline first `4` steps: `92.76 ms/step`
+- baseline first `8` steps: `90.44`
+- baseline last `8` steps: `83.48`
+
+- selector first `4` steps: `78.12 ms/step`
+- selector first `8` steps: `78.54`
+- selector last `8` steps: `80.22`
+
+So in this warm in-process profile, the selector is **not** just winning on the first few tokens. It is flatter across the whole decode than baseline.
+
+### Fresh-process repeat check
+
+I then reran the exact `4096 x 16` serving point as `3` fresh-process benchmark invocations per policy:
+
+- baseline runs: `95.15`, `59.10`, `75.95 ms/step`
+- selector runs: `96.18`, `93.87`, `94.68 ms/step`
+
+Means:
+
+- baseline mean: `76.74 ms/step`
+- selector mean: `94.91`
+
+The baseline variance here is very large, much larger than the selector variance.
+
+### Interpretation
+
+This means the earlier crossover diagnosis needs to be tightened again:
+
+- the selector is still quality-safe and memory-neutral
+- the `4096` behavior is **not** explained cleanly by “only the first few decode steps are faster”
+- process-level benchmark results on this machine are noisy enough that cold/warm allocator state is likely contaminating some comparisons
+
+So the most useful conclusion from this follow-up is methodological:
+
+- the current one-shot serving harness is not stable enough to attribute small `4096` differences confidently
+- warm in-process repeated measurement is needed before treating `4096` as a real selector win or loss
+
+The next useful StateCache step is therefore not another policy sweep. It is a repeated in-process serving benchmark path for StateCache so the machine-level timing variance stops dominating the policy comparisons.
+
+## 2026-03-31 23:55 UTC - 890M StateCache repeated in-process serving path added and validated
+
+I added repeated in-process measurement support to the Qwen3.5 StateCache serving benchmark:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+
+New knobs:
+
+- `--warmup-in-process-repeats`
+- `--in-process-repeats`
+
+The benchmark now keeps one loaded model alive, runs optional warmup iterations, then emits a single aggregate record with:
+
+- `benchmark_measurement_mode = in_process_repeated`
+- per-repeat decode values
+- per-repeat prefill values
+- mean decode / prefill times
+- per-metric stddev
+- generated-id consistency across repeats
+
+I validated the new path on the previously noisy `4096 x 16` serving case:
+
+- baseline artifact:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_inprocess_repeat_validation_20260331/qwen35_0p8b_serving_4096x16_inprocess_baseline.jsonl`
+- selector artifact:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_inprocess_repeat_validation_20260331/qwen35_0p8b_serving_4096x16_inprocess_selector.jsonl`
+
+Setup:
+
+- warmup repeats: `1`
+- measured repeats: `3`
+
+Results:
+
+- baseline:
+  - decode `76.31 ms/step`
+  - stddev `15.15`
+  - repeats `55.60`, `81.88`, `91.44`
+  - generated ids consistent: `true`
+- selector (`full` band):
+  - decode `77.24 ms/step`
+  - stddev `6.80`
+  - repeats `71.52`, `73.41`, `86.80`
+  - generated ids consistent: `true`
+
+Interpretation:
+
+- the repeated in-process path reduces the cold/warm process confound enough to be usable
+- but the `4096 x 16` selector result is still effectively a wash
+- the selector is a bit more stable here, but not clearly faster
+
+So the methodology improved, but the policy conclusion did not: `890m_context_banded_v1` still does not justify promotion as a default 890M StateCache serving policy.
+
+## 2026-04-01 00:15 UTC - 890M StateCache mode-family follow-up: `layer 4/20 = M3` is the first non-renorm lead worth keeping
+
+I moved off renorm maps and tested targeted recurrent mode policies using the repeated in-process serving path plus exact `8192` readout.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_followup_20260331/qwen35_0p8b_serving_4096x16_mode_policies.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_followup_20260331/qwen35_0p8b_readout_8192_mode_policies.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_followup_20260331/qwen35_0p8b_serving_8192x8_mode_policies.jsonl`
+
+Policies:
+
+- baseline: all recurrent layers `M0`
+- `m3_sensitive`: `8/14/18 = M3`
+- `m3_outliers`: `4/20 = M3`
+- `m3_combined`: `4/8/14/18/20 = M3`
+
+### Repeated in-process serving at `4096 x 16`
+
+- baseline:
+  - decode `81.87 ms/step`
+  - stddev `3.88`
+  - recurrent compression ratio `3.20x`
+- `m3_sensitive`:
+  - decode `84.13`
+  - stddev `6.40`
+  - recurrent compression ratio `2.34x`
+- `m3_outliers`:
+  - decode `81.13`
+  - stddev `3.71`
+  - recurrent compression ratio `2.57x`
+- `m3_combined`:
+  - decode `83.56`
+  - stddev `4.64`
+  - recurrent compression ratio `1.99x`
+
+So none of the targeted M3 policies give a meaningful `4096 x 16` serving win. The broad escapes mostly just reduce compression.
+
+### Exact readout at `8192`
+
+All tested mode policies stayed parity-safe:
+
+- baseline:
+  - agreement `1.0`
+  - decode `144.60 ms/step`
+- `m3_sensitive`:
+  - agreement `1.0`
+  - decode `116.21`
+- `m3_outliers`:
+  - agreement `1.0`
+  - decode `80.73`
+- `m3_combined`:
+  - agreement `1.0`
+  - decode `116.16`
+
+The strongest result here is `m3_outliers`, not the previously localized long-context layers.
+
+### Repeated in-process serving at `8192 x 8`
+
+I then checked the promising policies in actual serving:
+
+- baseline:
+  - decode `159.27 ms/step`
+  - stddev `0.85`
+  - recurrent compression ratio `3.20x`
+- `m3_sensitive`:
+  - decode `152.05`
+  - stddev `4.70`
+  - recurrent compression ratio `2.34x`
+- `m3_outliers`:
+  - decode `140.92`
+  - stddev `6.36`
+  - recurrent compression ratio `2.57x`
+
+So `m3_outliers = {4, 20} -> M3` is the first non-renorm mode policy that produces a real long-context serving gain on this machine:
+
+- `159.27 -> 140.92 ms/step` at `8192 x 8`
+- while staying exact-readout safe at `8192`
+- and without the much larger compression loss of the broader M3 escape sets
+
+### Interpretation
+
+This is the first StateCache follow-up that looks like a keepable lead rather than just a diagnosis:
+
+- the long-context-sensitive layers from localization (`8/14/18`) are **not** the best serving policy by themselves
+- the earlier sweep outliers (`4/20`) matter more than expected
+- a very small recurrent M3 escape set can help long-context serving while preserving parity
+
+So the next useful StateCache step is to validate `post_update_m0 + recurrent 8b + layer 4/20 = M3` across:
+
+- repeated in-process serving at `2048`, `4096`, and `8192`
+- exact readout at the same contexts
+- and then decide whether it should replace the plain all-`M0` baseline as the new 890M long-context default.
+
+## 2026-04-01 00:40 UTC - 890M StateCache outlier-pair validation: useful alternative, not a universal replacement
+
+I validated the outlier-pair policy:
+
+- baseline: `post_update_m0`, recurrent-only, `8b`, all recurrent layers `M0`
+- candidate: same, but `layer 4 = M3` and `layer 20 = M3`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_outlier_validation_20260401/qwen35_0p8b_serving_outlier_validation.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_outlier_validation_20260401/qwen35_0p8b_readout_outlier_validation.jsonl`
+
+### Repeated in-process serving (`8` decode steps, warmup `1`, repeats `3`)
+
+At `2048`:
+
+- baseline:
+  - decode `62.06 ms/step`
+  - stddev `6.10`
+- `4/20 = M3`:
+  - decode `59.24`
+  - stddev `3.59`
+
+So the outlier pair is better at `2048`.
+
+At `4096`:
+
+- baseline:
+  - decode `67.91 ms/step`
+  - stddev `16.60`
+- `4/20 = M3`:
+  - decode `90.87`
+  - stddev `1.24`
+
+So the outlier pair is clearly worse at `4096`.
+
+At `8192`:
+
+- baseline:
+  - decode `152.05 ms/step`
+  - stddev `8.37`
+- `4/20 = M3`:
+  - decode `148.02`
+  - stddev `7.56`
+
+So the outlier pair is slightly better at `8192`, but only modestly.
+
+Compression impact:
+
+- baseline recurrent compression ratio: `3.20x`
+- `4/20 = M3` recurrent compression ratio: `2.57x`
+
+So the candidate gives up a meaningful amount of compression to get those timing changes.
+
+### Exact readout (`4` decode steps)
+
+The outlier pair stayed parity-safe at every tested context:
+
+- `2048`
+  - baseline: agreement `1.0`, decode `62.17 ms/step`
+  - `4/20 = M3`: agreement `1.0`, decode `55.79`
+- `4096`
+  - baseline: agreement `1.0`, decode `89.26`
+  - `4/20 = M3`: agreement `1.0`, decode `74.24`
+- `8192`
+  - baseline: agreement `1.0`, decode `146.52`
+  - `4/20 = M3`: agreement `1.0`, decode `147.26`
+
+Output max abs error stayed unchanged at each context:
+
+- `2048`: `0.00726318359375`
+- `4096`: `0.00830078125`
+- `8192`: `0.0126953125`
+
+### Interpretation
+
+This validation sharpens the result:
+
+- `layer 4/20 = M3` is **quality-safe**
+- it is a real readout improvement at `2048` and `4096`
+- it is a real serving improvement at `2048`
+- it is only a small serving gain at `8192`
+- it is a clear serving regression at `4096`
+
+So this is **not** a universal replacement for the all-`M0` baseline.
+
+Current best interpretation:
+
+- the outlier pair is a useful alternative mode family
+- but it is context-dependent in serving
+- and it should not replace the plain all-`M0` 890M default without another selector layer
+
+So the next StateCache step is now obvious:
+
+- compare only two serving policies with the repeated in-process path:
+  - all-`M0`
+  - `4/20 = M3`
+- then fit a minimal context selector between them instead of tuning more layers
+
+## 2026-04-01 01:25 UTC - 890M StateCache two-policy selector follow-up: readout-only was the wrong abstraction, recurrent-policy selector remains experimental
+
+I followed through on the next step and fit the two-policy selector against the exact-length repeated in-process serving scan:
+
+- baseline: all recurrent layers `M0`
+- alternative: `layer 4 = M3`, `layer 20 = M3`
+
+Scan artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_two_policy_selector_20260401/qwen35_0p8b_serving_two_policy_selector_scan.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_two_policy_selector_20260401/qwen35_0p8b_readout_m3_outliers_extra_contexts.jsonl`
+
+### Selector fit from the serving scan
+
+The scan did **not** support a clean monotonic threshold:
+
+- `1024`: tiny outlier-pair win
+- `1536`: tiny outlier-pair win
+- `2048`: baseline win
+- `3072`: outlier-pair win
+- `4096`: outlier-pair win
+- `6144`: baseline win
+- `8192`: outlier-pair win, but with high variance
+
+So the useful shape was not “switch above some context”. It was a narrow and noisy mid-band.
+
+The best exact-readout-safe summary from the scan was:
+
+- use baseline outside the strongest measured window
+- use `4/20 = M3` only in the `3072-4096` band
+
+The extra exact-readout check confirmed the outlier pair stayed parity-safe at the unvalidated contexts too:
+
+- `1024`, `1536`, `3072`, `6144`: greedy agreement `1.0`
+
+### Negative result: readout-only mode selector was the wrong abstraction
+
+I first implemented the selector as a **readout-only recurrent mode policy** and validated it.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_readout_mode_selector_confirmation.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_serving_mode_selector_confirmation.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_readout_mode_selector_4096_rerun.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_serving_mode_selector_2048_rerun.jsonl`
+
+That was a real negative result:
+
+- the policy resolved in the expected bands
+- quality stayed safe
+- but the timings did **not** line up with the earlier `4/20 = M3` manual experiments
+- `4096` exact readout became dramatically slower
+- `2048` serving at the baseline band showed severe repeat instability
+
+That told me the earlier `4/20 = M3` finding was **not** a readout-only effect. It came from the full recurrent policy path.
+
+### Corrected implementation: recurrent mode policy selector
+
+I then corrected the implementation to a general recurrent mode policy:
+
+- policy name: `890m_m3_outlier_pair_midband_v1`
+- banding:
+  - baseline outside `3072-4096`
+  - `4/20 = M3` inside `3072-4096`
+
+Corrected confirmation artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_readout_recurrent_mode_selector_confirmation.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_mode_selector_impl_20260401/qwen35_0p8b_serving_recurrent_mode_selector_confirmation.jsonl`
+
+The corrected selector now resolves and runs end-to-end:
+
+- `2048`: band `baseline`, no recurrent mode overrides
+- `3072`: band `midband_outliers`, recurrent overrides `{4, 20} -> M3`
+- `4096`: band `midband_outliers`, recurrent overrides `{4, 20} -> M3`
+- `6144`: band `baseline`, no recurrent mode overrides
+
+Quality remained safe on exact readout:
+
+- `2048`: agreement `1.0`
+- `3072`: agreement `1.0`
+- `4096`: agreement `1.0`
+- `6144`: agreement `1.0`
+
+But the serving confirmation stayed too unstable to promote this as a default machine policy:
+
+- `2048` baseline band: `185.17 ms/step`, stddev `19.60`
+- `3072` outlier band: `347.64`, stddev `226.92`
+  - repeat values: `371.24 / 613.01 / 58.67`
+- `4096` outlier band: `82.81`, stddev `2.86`
+  - repeat values: `86.40 / 82.63 / 79.40`
+- `6144` baseline band: `99.36`, stddev `18.67`
+
+### Interpretation
+
+This is the current best conclusion:
+
+- the **selector logic** is now correctly implemented
+- the earlier readout-only version was a useful negative result
+- the corrected recurrent-policy selector is **deployable as an explicit experimental knob**
+- but the machine-level serving evidence is still too unstable outside the `4096` band to make it the new default
+
+What is robust right now:
+
+- `4/20 = M3` is a real alternative policy family
+- `4096` remains the strongest selector band
+- the 890M still shows large process- and allocator-sensitive variance in repeated serving measurements at other contexts
+
+So this selector is worth keeping for further work, but not worth silently promoting over the plain all-`M0` baseline yet.
+
+## 2026-04-01 02:10 UTC - 890M StateCache paired in-process A/B benchmark: useful harness, but still contaminated by order effects
+
+I implemented the next measurement step directly in the serving benchmark:
+
+- one loaded model
+- repeated in-process paired comparison
+- baseline then candidate within the same process
+- one aggregate comparison row per context
+
+Implementation:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+  - added paired A/B mode for recurrent policy comparisons
+  - new CLI:
+    - `--paired-recurrent-mode-policy`
+    - `--paired-recurrent-mode-override`
+    - `--paired-label`
+  - new aggregate mode:
+    - `benchmark_measurement_mode = in_process_paired_repeated`
+  - emitted paired fields include:
+    - baseline and candidate decode means / stddevs / raw values
+    - baseline and candidate recurrent compression ratios
+    - paired delta / ratio
+    - paired generated-id agreement
+
+Focused verification passed:
+
+- `python -m py_compile benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+- `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'statecache_cli_parse_supports_conv_flags or statecache_serving_repeat_summary_aggregates_measurements or statecache_serving_paired_repeat_summary_aggregates_measurements'`
+  - result: `3 passed`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_paired_ab_20260401/qwen35_0p8b_serving_paired_ab_8steps.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_paired_ab_20260401/qwen35_0p8b_serving_paired_ab_16steps.jsonl`
+
+Compared policies:
+
+- baseline:
+  - `post_update_m0`, recurrent-only, `8b`, all recurrent layers `M0`
+- candidate:
+  - same baseline
+  - plus `paired-recurrent-mode-policy = 890m_m3_outlier_pair_midband_v1`
+  - which resolves to `4/20 = M3` only inside `3072-4096`
+
+### Paired A/B results (`8` decode steps)
+
+At `3072`:
+
+- baseline:
+  - `228.96 ms/step`
+  - stddev `28.30`
+  - recurrent compression `3.20x`
+- candidate:
+  - `279.35`
+  - stddev `22.37`
+  - recurrent compression `2.57x`
+- candidate delta:
+  - `+50.40 ms/step`
+  - ratio `1.220x`
+
+At `4096`:
+
+- baseline:
+  - `352.15 ms/step`
+  - stddev `21.58`
+  - recurrent compression `3.20x`
+- candidate:
+  - `403.18`
+  - stddev `18.03`
+  - recurrent compression `2.57x`
+- candidate delta:
+  - `+51.02`
+  - ratio `1.145x`
+
+At `6144`:
+
+- baseline:
+  - `463.27 ms/step`
+  - stddev `108.20`
+  - recurrent compression `3.20x`
+- candidate:
+  - `566.26`
+  - stddev `25.85`
+  - recurrent compression `3.20x`
+- candidate delta:
+  - `+102.99`
+  - ratio `1.222x`
+
+### Paired A/B results (`16` decode steps)
+
+At `3072`:
+
+- baseline:
+  - `121.78 ms/step`
+  - stddev `56.13`
+  - recurrent compression `3.20x`
+- candidate:
+  - `168.39`
+  - stddev `64.11`
+  - recurrent compression `2.57x`
+- candidate delta:
+  - `+46.61`
+  - ratio `1.383x`
+
+At `4096`:
+
+- baseline:
+  - `314.34 ms/step`
+  - stddev `156.95`
+  - recurrent compression `3.20x`
+- candidate:
+  - `345.73`
+  - stddev `84.22`
+  - recurrent compression `2.57x`
+- candidate delta:
+  - `+31.39`
+  - ratio `1.100x`
+
+At `6144`:
+
+- baseline:
+  - `234.25 ms/step`
+  - stddev `116.40`
+  - recurrent compression `3.20x`
+- candidate:
+  - `178.41`
+  - stddev `142.81`
+  - recurrent compression `3.20x`
+- candidate delta:
+  - `-55.85`
+  - ratio `0.762x`
+
+### Interpretation
+
+This is the most useful result from the paired harness:
+
+- at `6144`, the candidate policy resolves to the **same effective policy as baseline**
+  - same recurrent compression ratio: `3.20x`
+  - no mid-band `4/20 = M3` escape should apply
+- but the candidate timing still differs a lot from baseline
+  - and even flips sign between `8` and `16` decode steps
+
+That means the new paired A/B harness is an improvement over process-per-policy comparisons, but it is **still contaminated by order effects**:
+
+- baseline-first / candidate-second sequencing is not neutral enough
+- the second slot in the pair is carrying measurable drift from allocator / thermal / cache state
+- so the raw paired deltas at `3072` and `4096` cannot yet be treated as trustworthy selector evidence by themselves
+
+What is still useful from this run:
+
+- the harness now gives us a clean control context
+- `6144` proves that same-process pairing alone is not sufficient
+- we now have a concrete reason to move to an order-counterbalanced design instead of adding more StateCache policy variants
+
+So the next measurement step should be:
+
+- counterbalanced paired benchmarking
+  - `ABBA` or alternating `AB / BA` order
+- keep the same contexts: `3072`, `4096`, `6144`
+- keep the same decode steps: `8` and `16`
+- and only after that decide whether `4/20 = M3` survives as a real serving lead on this machine
+
+## 2026-03-31 12:48 UTC - 890M StateCache counterbalanced `ABBA` follow-up: the `4/20 = M3` lead mostly collapses once order bias is controlled
+
+I completed the counterbalanced `ABBA` serving follow-up for the two-policy comparison:
+
+- baseline:
+  - recurrent all-`M0`
+- candidate:
+  - `890m_m3_outlier_pair_midband_v1`
+  - recurrent layers `4/20 = M3` only in the `3072-4096` band
+
+The useful positive result is that `ABBA` fixed the control behavior that was broken in the earlier simple `AB` paired harness:
+
+- at `6144`, the candidate resolves to the **same effective recurrent policy** as baseline
+  - same recurrent compression ratio: `3.20x`
+- under `ABBA`, both control cases collapsed close to parity instead of showing large fake deltas
+  - `6144 x 8`: baseline `107.37 ms/step`, candidate `110.35`, delta `+2.99`, ratio `1.028x`
+  - `6144 x 16`: baseline `109.82`, candidate `108.76`, delta `-1.06`, ratio `0.990x`
+
+That is the clearest sign so far that the earlier large paired deltas were mostly sequencing noise rather than real StateCache policy effects.
+
+### Isolated `ABBA` exact-length serving results
+
+At `3072`:
+
+- `8` decode steps:
+  - baseline `64.97 ms/step`
+  - candidate `65.38`
+  - delta `+0.40`
+  - ratio `1.006x`
+- `16` decode steps:
+  - baseline `60.79`
+  - candidate `60.33`
+  - delta `-0.46`
+  - ratio `0.992x`
+
+At `4096`:
+
+- `8` decode steps:
+  - baseline `462.29 ms/step`
+  - candidate `423.26`
+  - delta `-39.03`
+  - ratio `0.916x`
+  - but variance is still very high
+    - baseline stddev `176.98`
+    - candidate stddev `169.41`
+- `16` decode steps:
+  - baseline `77.52`
+  - candidate `79.30`
+  - delta `+1.78`
+  - ratio `1.023x`
+
+At `6144`:
+
+- `8` decode steps:
+  - baseline `107.37`
+  - candidate `110.35`
+  - delta `+2.99`
+  - ratio `1.028x`
+- `16` decode steps:
+  - baseline `109.82`
+  - candidate `108.76`
+  - delta `-1.06`
+  - ratio `0.990x`
+
+### Interpretation
+
+This is the corrected measurement story for the `4/20 = M3` hypothesis:
+
+- the earlier apparent serving lead does **not** survive cleanly once order is counterbalanced
+- `3072` is effectively a tie
+- `6144` is effectively a tie, exactly as it should be for a control context where both sides use the same recurrent policy
+- `4096 x 16` is effectively a tie
+- the only remaining apparent win is `4096 x 8`, but it is still contaminated by very large variance and should not be treated as promotion-quality evidence yet
+
+So the current best conclusion is:
+
+- `4/20 = M3` is still an interesting outlier-sensitive StateCache policy
+- but it is **not** strong enough to promote as a new 890M default
+- once the benchmark is made more honest, most of the claimed win disappears
+
+Artifacts:
+
+- isolated `3072 x 8` rerun:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_8steps_3072.jsonl`
+- isolated `4096 x 8` rerun:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_8steps_4096.jsonl`
+- isolated `6144 x 8` rerun:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_8steps_6144.jsonl`
+- isolated `3072 x 16` rerun:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_16steps_3072.jsonl`
+- isolated `4096 x 16` rerun:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_16steps_4096.jsonl`
+- `6144 x 16` exact-length row:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_counterbalanced_abba_20260401/qwen35_0p8b_serving_paired_abba_16steps_6144.jsonl`
+
+The next useful StateCache step on this machine is no longer another mid-band mode selector tweak. It is to capture per-step decode timings and recurrent read/write error around the unstable `4096 x 8` case, because that is now the only place where a real policy effect might still be hiding inside the remaining noise.
+
+## 2026-03-31 13:05 UTC - 890M StateCache `4096 x 8` causality probe: `4/20 = M3` fixes the wrong problem
+
+I added two small instrumentation pieces before rerunning the unstable `4096 x 8` case:
+
+- serving now reports `deltanet_statecache_per_step_decode_ms`
+- the StateCache localization path now accepts the same recurrent mode policy selector as serving and reports recurrent state-vs-output error maps directly
+
+I also added a dedicated localization benchmark entrypoint:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+
+Artifacts for this causality pass:
+
+- serving baseline:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_causality_20260331/qwen35_0p8b_serving_4096x8_baseline.jsonl`
+- serving `4/20 = M3`:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_causality_20260331/qwen35_0p8b_serving_4096x8_m3outliers.jsonl`
+- localization baseline:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_causality_20260331/qwen35_0p8b_localization_4096p8_baseline.jsonl`
+- localization `4/20 = M3`:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_causality_20260331/qwen35_0p8b_localization_4096p8_m3outliers.jsonl`
+
+### Exact-length serving (`4096` prompt, `8` decode steps)
+
+This exact single-run serving probe is negative for the `4/20 = M3` policy:
+
+- baseline:
+  - `88.95 ms/step`
+  - recurrent compression `3.20x`
+- `4/20 = M3`:
+  - `102.57 ms/step`
+  - recurrent compression `2.57x`
+
+The generated token ids matched exactly across both runs:
+
+- baseline ids:
+  - `[65789, 12482, 364, 4778, 45543, 13, 7976, 65789]`
+- candidate ids:
+  - identical
+
+Per-step serving timings explain the regression:
+
+- baseline:
+  - `[141.32, 58.43, 63.43, 94.12, 59.58, 103.17, 94.57, 96.98]`
+- candidate:
+  - `[144.29, 85.54, 82.01, 93.52, 101.99, 105.29, 106.63, 101.31]`
+- candidate minus baseline:
+  - `[+2.97, +27.11, +18.58, -0.60, +42.41, +2.12, +12.06, +4.33]`
+
+So the `M3` escape cost is showing up in the real greedy serving path even though the generated sequence stays identical.
+
+### Teacher-forced localization (`4096` prefix, `8` eval steps)
+
+The localization probe says the `4/20 = M3` policy is doing something real numerically, but not on the dominant failure path.
+
+Timing:
+
+- baseline:
+  - `93.71 ms/step`
+  - per-step decode ms `[86.67, 94.44, 80.68, 92.36, 102.25, 101.60, 97.96]`
+- `4/20 = M3`:
+  - `69.09 ms/step`
+  - per-step decode ms `[64.25, 52.96, 53.33, 80.12, 79.16, 96.31, 57.50]`
+
+Read/write error interpretation:
+
+- recurrent state max abs error by layer is the **write/state** error
+- recurrent output max abs error by layer is the **readout** error
+
+The `M3` outlier escape strongly reduced the targeted layers’ recurrent writeback error:
+
+- layer `4` state error:
+  - baseline `0.02434`
+  - candidate `0.00207`
+- layer `20` state error:
+  - baseline `0.01519`
+  - candidate `0.00198`
+
+It also reduced those two layers’ own recurrent output error:
+
+- layer `4` output error:
+  - baseline `0.00488`
+  - candidate `0.00024`
+- layer `20` output error:
+  - baseline `0.00229`
+  - candidate `0.00006`
+
+But the dominant recurrent output-error layers did **not** change:
+
+- baseline top recurrent output-error layers:
+  - `18 = 0.00879`
+  - `14 = 0.007996`
+  - `2 = 0.007812`
+  - `22 = 0.006592`
+  - `13 = 0.005753`
+- candidate top recurrent output-error layers:
+  - the same top set with the same maxima
+
+And the per-step logit error curve only changed slightly:
+
+- baseline:
+  - `[0.0, 0.10547, 0.17383, 0.15039, 0.16211, 0.20898, 0.43066, 0.23242]`
+- candidate:
+  - `[0.0, 0.10742, 0.15430, 0.15625, 0.16211, 0.20508, 0.39746, 0.24609]`
+
+### Interpretation
+
+This is the clearest causal read so far for the `4/20 = M3` idea:
+
+- it is **not** fake
+  - the policy really does reduce recurrent state error on layers `4` and `20`
+  - and it reduces those layers' local readout error too
+- but it is still **not the right global fix**
+  - the dominant recurrent output-error layers at `4096 x 8` remain `18`, `14`, and `2`
+  - the live greedy serving path still gets slower because the `M3` escape overhead costs more than the local numerical cleanup buys back
+
+So the corrected conclusion is:
+
+- `4/20 = M3` identifies genuine outlier layers
+- but those layers are not the main recurrent readout bottleneck at `4096 x 8`
+- and the runtime penalty of `M3` on the serving path is large enough to wipe out its local numerical benefit
+
+The next useful StateCache step is therefore **not** another `4/20` selector refinement. It is to target the actual dominant recurrent readout-error layers at this context band, especially `18`, `14`, and `2`, while keeping the serving-side escape overhead visible in the loop.
+
+## 2026-03-31 13:23 UTC - 890M StateCache targeted dominant readout-layer escapes at `4096 x 8`: better numerics, no clear serving payoff
+
+I followed the causality result directly and targeted the actual dominant recurrent output-error layers at `4096 x 8`:
+
+- `18 = M3`
+- `18/14 = M3`
+- `18/14/2 = M3`
+
+Artifacts:
+
+- serving:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_serving_4096x8_layer18.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_serving_4096x8_layer18_14.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_serving_4096x8_layer18_14_2.jsonl`
+- localization:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_localization_4096p8_layer18.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_localization_4096p8_layer18_14.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_targeted_readout_layers_20260331/qwen35_0p8b_localization_4096p8_layer18_14_2.jsonl`
+
+Baseline for comparison remained the earlier exact `4096 x 8` causality run:
+
+- exact serving baseline:
+  - `88.95 ms/step`
+- localization baseline:
+  - `93.71 ms/step`
+- dominant recurrent output-error layers:
+  - `18 = 0.00879`
+  - `14 = 0.007996`
+  - `2 = 0.007812`
+
+### Exact serving (`4096` prompt, `8` decode steps)
+
+All three targeted candidates preserved the exact same generated ids as baseline:
+
+- `[65789, 12482, 364, 4778, 45543, 13, 7976, 65789]`
+
+Serving timings:
+
+- `18 = M3`
+  - `86.90 ms/step`
+  - delta vs baseline `-2.05`
+  - recurrent compression `2.85x`
+- `18/14 = M3`
+  - `91.68`
+  - delta `+2.74`
+  - recurrent compression `2.57x`
+- `18/14/2 = M3`
+  - `92.22`
+  - delta `+3.27`
+  - recurrent compression `2.34x`
+
+So only the single-layer `18 = M3` variant showed a small serving gain, and the larger escape sets immediately gave it back.
+
+### Localization (`4096` prefix, `8` eval steps)
+
+The localization pass confirms that the dominant recurrent output-error layers were the right numerical targets:
+
+- `18 = M3`
+  - localization decode `78.16 ms/step`
+  - delta vs baseline `-15.55`
+  - recurrent output error change:
+    - layer `18`: `-0.008301`
+    - layer `14`: `0.0`
+    - layer `2`: `0.0`
+- `18/14 = M3`
+  - localization decode `82.65`
+  - delta `-11.06`
+  - recurrent output error change:
+    - layer `18`: `-0.008301`
+    - layer `14`: `-0.007751`
+    - layer `2`: `0.0`
+- `18/14/2 = M3`
+  - localization decode `88.15`
+  - delta `-5.56`
+  - recurrent output error change:
+    - layer `18`: `-0.008301`
+    - layer `14`: `-0.007751`
+    - layer `2`: `-0.007751`
+
+The same monotonic pattern held for recurrent **state/write** error:
+
+- `18 = M3` cleaned layer `18`
+- `18/14 = M3` cleaned `18` and `14`
+- `18/14/2 = M3` cleaned all three
+
+Importantly, as the targeted output-error cleanup became more complete, the localization timing advantage got smaller:
+
+- `18 = M3`: best localization timing
+- `18/14 = M3`: still better than baseline, but less so
+- `18/14/2 = M3`: still better than baseline, but much less so
+
+### Interpretation
+
+This is the strongest StateCache signal from the 890M so far:
+
+- the dominant recurrent output-error layers at `4096 x 8` were identified correctly
+- targeting them with `M3` does improve the localization numerics exactly as expected
+- but the serving path only tolerates a **small** amount of that cleanup before the `M3` overhead starts to dominate
+
+So the tradeoff curve now looks like this:
+
+- `18 = M3`
+  - best compromise so far
+  - small exact serving gain
+  - real numerical cleanup on the top output-error layer
+- `18/14 = M3`
+  - numerically cleaner
+  - no serving payoff
+- `18/14/2 = M3`
+  - cleanest numerically
+  - serving regression
+
+That means the current bottleneck is no longer “which layers matter?” We now know that. The real limitation is:
+
+- `M3` is too expensive as the mechanism for fixing multiple dominant readout-error layers in the live serving path
+
+So the next useful StateCache step should shift from **which layers to escape** toward **how to make those layers cheaper to stabilize**. On this machine the best immediate follow-up is:
+
+- keep `post_update` aggressive
+- try **readout-only** treatment on `18`, then `18/14`
+- or test a lighter-weight fix than full `M3` on those layers, because the current escape mechanism is spending too much runtime for the quality cleanup it buys.
+
+## 2026-03-31 13:41 UTC - 890M StateCache readout-only dominant-layer treatment at `4096 x 8`: no improvement over post-update escapes
+
+I tested the next obvious hypothesis from the targeted layer work:
+
+- keep `post_update` fully baseline (`M0`)
+- apply `M3` only on the **readout** side
+- target the same dominant recurrent output-error layers:
+  - `18 = M3`
+  - `18/14 = M3`
+
+Artifacts:
+
+- serving:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_targeted_20260331/qwen35_0p8b_serving_4096x8_layer18.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_targeted_20260331/qwen35_0p8b_serving_4096x8_layer18_14.jsonl`
+- localization:
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_targeted_20260331/qwen35_0p8b_localization_4096p8_layer18.jsonl`
+  - `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_targeted_20260331/qwen35_0p8b_localization_4096p8_layer18_14.jsonl`
+
+I also patched the benchmark surface so the experiment is reproducible:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+  - now exposes `--readout-recurrent-mode-override`
+- `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+  - now accepts the same readout-only override
+- `dotcache/integrations/qwen35.py`
+  - localization summaries now reflect readout-only recurrent mode treatment correctly instead of silently reporting the post-update path
+
+### Exact serving comparison
+
+Against the exact baseline (`88.95 ms/step`):
+
+- readout-only `18 = M3`
+  - `87.78 ms/step`
+  - delta vs baseline `-1.17`
+- readout-only `18/14 = M3`
+  - `96.19`
+  - delta `+7.24`
+
+Compared with the earlier **post-update** targeted versions:
+
+- `18 = M3`
+  - post-update: `86.90`
+  - readout-only: `87.78`
+- `18/14 = M3`
+  - post-update: `91.68`
+  - readout-only: `96.19`
+
+So readout-only did **not** improve the serving tradeoff:
+
+- for `18 = M3`, it kept only part of the small serving gain
+- for `18/14 = M3`, it was materially worse than both baseline and the post-update version
+
+### Localization comparison
+
+Against the localization baseline (`93.71 ms/step`):
+
+- readout-only `18 = M3`
+  - `88.07`
+  - delta `-5.63`
+- readout-only `18/14 = M3`
+  - `86.19`
+  - delta `-7.52`
+
+The readout-only path still cleaned the intended dominant recurrent output-error layers:
+
+- `18 = M3`
+  - output error change:
+    - layer `18`: `-0.008301`
+    - layer `14`: `0.0`
+- `18/14 = M3`
+  - output error change:
+    - layer `18`: `-0.008301`
+    - layer `14`: `-0.007751`
+
+It also reduced the same recurrent state-error layers as the post-update variants:
+
+- `18 = M3`
+  - state error change:
+    - layer `18`: `-0.014877`
+- `18/14 = M3`
+  - state error change:
+    - layer `18`: `-0.014877`
+    - layer `14`: `-0.003509`
+
+But the localization timing gains were smaller than the post-update variants:
+
+- `18 = M3`
+  - post-update localization delta: `-15.55`
+  - readout-only localization delta: `-5.63`
+- `18/14 = M3`
+  - post-update localization delta: `-11.06`
+  - readout-only localization delta: `-7.52`
+
+### Interpretation
+
+This is a useful negative result:
+
+- moving the dominant-layer `M3` treatment from post-update to readout-only does **not** improve the runtime-quality tradeoff on this machine
+- it preserves the same intended layer cleanup
+- but it gives back serving performance instead of improving it
+
+So the new conclusion is:
+
+- the problem is **not** “we are fixing the right layers at the wrong stage”
+- the problem is that full `M3` itself is too expensive as the stabilization mechanism, even when restricted to readout-only
+
+That means the next useful StateCache step should no longer be more `M3` stage placement experiments. The better research direction is:
+
+- find a cheaper stabilizer for the known sensitive recurrent readout layers (`18`, `14`, `2`)
+- or reduce the amount of exact escape applied inside those layers rather than switching whole layers to `M3`
+
+## 2026-03-31: 890M 0.8B targeted readout-only renorm on `18/14/2` at `4096 x 8`
+
+Added explicit CLI support for readout-side recurrent renorm overrides in:
+
+- `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+- `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+
+and threaded the same override path through `run_qwen35_deltanet_statecache_localization_harness` in `dotcache/integrations/qwen35.py`, with focused regression coverage in `tests/test_qwen35_integration.py`.
+
+Raw artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_serving_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_serving_renorm18.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_serving_renorm18_14.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_serving_renorm18_14_2.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_localization_baseline.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_localization_renorm18.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_localization_renorm18_14.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_4096x8_readout_only_renorm_targeted_20260331/qwen35_0p8b_localization_renorm18_14_2.json`
+
+### Serving comparison
+
+Exact-length `4096 x 8`, `post_update_m0`, recurrent-only, `8b`, `renorm=0`, with only readout-side renorm changed:
+
+- baseline
+  - `83.69 ms/step`
+  - generated ids: `[65789, 12482, 364, 4778, 45543, 13, 7976, 65789]`
+- readout-only `18 = 2`
+  - `91.01 ms/step`
+  - delta vs baseline: `+7.32`
+  - generated ids matched baseline exactly
+- readout-only `18/14 = 2`
+  - `96.15`
+  - delta: `+12.46`
+  - generated ids matched baseline exactly
+- readout-only `18/14/2 = 2`
+  - `83.29`
+  - delta: `-0.40`
+  - generated ids matched baseline exactly
+
+So there is no promotion-quality serving win here. The only case that did not regress materially was the full `18/14/2` set, and that was effectively a tie.
+
+### Localization comparison
+
+Exact prefix `4096`, `8` eval steps:
+
+- baseline
+  - `87.75 ms/step`
+  - top recurrent output-error layers: `18`, `14`, `2`, `22`, `13`
+  - top recurrent state-error layers: `4`, `18`, `20`, `22`, `8`
+- readout-only `18 = 2`
+  - `83.34`
+  - localization delta: `-4.41`
+- readout-only `18/14 = 2`
+  - `84.83`
+  - localization delta: `-2.92`
+- readout-only `18/14/2 = 2`
+  - `94.75`
+  - localization delta: `+7.00`
+
+The interesting negative finding is that the recurrent localization maps did **not** move:
+
+- per-layer recurrent output-error maps were identical to baseline for all three renorm sets
+- per-layer recurrent state-error maps were identical to baseline for all three renorm sets
+- the dominant recurrent output-error layers stayed `18`, `14`, and `2`
+- the dominant recurrent state-error layers stayed `4`, `18`, and `20`
+
+The only numerical change that showed up consistently was in the aggregate per-step logit-error trace:
+
+- baseline max per-step logit error: `0.4306640625`
+- all three targeted renorm variants: `0.3408203125`
+- delta: `-0.08984375`
+
+But that improvement was not enough to change the localized layer ranking, and it did not translate into a stable serving win.
+
+### Interpretation
+
+This is a useful negative result:
+
+- targeted readout-only renorm is much cheaper than `M3`
+- but on this `4096 x 8` case it behaves almost like a numerical near-no-op at the recurrent-layer level
+- `18/14` and `18/14/2` collapse onto the same localized error pattern as `18` alone
+- the serving signal remains weak and inconsistent, with no robust improvement over baseline
+
+So the next cheaper-stabilizer hypothesis should not be “more targeted readout-only renorm on these same layers.” The better follow-on is either:
+
+- a different stabilizer family entirely
+- or finer-grained treatment inside the sensitive layers, because whole-layer renorm targeting is not changing the actual recurrent error leaders enough to matter
+
+## 2026-03-31: 890M 0.8B recurrent quantization telemetry on layers 18/14/2/4/20
+
+Added explicit recurrent StateCache quantization telemetry to the Qwen3.5 integration and localization harness so we can inspect what the quantizer is actually doing inside the sensitive layers rather than only comparing outer policy knobs.
+
+Implementation and verification:
+
+- instrumented recurrent/conv quantization telemetry in `dotcache/integrations/qwen35.py`
+- exposed telemetry-layer targeting in `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+- added focused coverage in `tests/test_qwen35_integration.py`
+- verification:
+  - `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_localization.py tests/test_qwen35_integration.py`
+  - `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'localization_reports_quantization_telemetry or localization_accepts_readout_recurrent_renorm_overrides'`
+  - result: `2 passed`
+
+New telemetry captures:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_quant_telemetry_20260331/qwen35_0p8b_localization_quant_telemetry_baseline.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_quant_telemetry_20260331/qwen35_0p8b_localization_quant_telemetry_readoutrenorm18_14_2.json`
+
+Configuration:
+
+- model: `Qwen/Qwen3.5-0.8B`
+- backend: `torch_cuda`
+- exact localization case: prefix `4096`, `8` eval steps, recurrent-only, `8b`, `post_update_m0`
+- tracked recurrent layers: `18`, `14`, `2`, `4`, `20`
+
+### Baseline telemetry
+
+Baseline decode throughput in the localization harness was `92.99 ms/step`.
+
+The main positive finding is that the telemetry is already separating three different failure shapes:
+
+- layer `18` is the largest steady post-update recurrent quantization-error layer among the tracked output-sensitive layers
+- layer `20` is also a clear post-update recurrent quantization-error outlier even though it is not one of the main recurrent output-error leaders
+- layer `4` has the broadest scale excursions, suggesting an outlier/range problem rather than high steady decode error
+
+Post-update recurrent telemetry means over the decode steps:
+
+- layer `14`
+  - `edge_code_fraction_mean = 0.06366`
+  - `error_mean_abs_mean = 1.16e-05`
+  - `scale_mean_mean = 9.89e-05`
+  - `scale_max_max = 0.00926`
+- layer `18`
+  - `edge_code_fraction_mean = 0.06505`
+  - `error_mean_abs_mean = 5.18e-05`
+  - `scale_mean_mean = 6.25e-04`
+  - `scale_max_max = 0.02477`
+- layer `20`
+  - `edge_code_fraction_mean = 0.06438`
+  - `error_mean_abs_mean = 3.87e-05`
+  - `scale_mean_mean = 4.46e-04`
+  - `scale_max_max = 0.02023`
+- layer `2`
+  - `edge_code_fraction_mean = 0.06350`
+  - `error_mean_abs_mean = 1.33e-05`
+  - `scale_mean_mean = 1.30e-04`
+  - `scale_max_max = 0.00884`
+- layer `4`
+  - `edge_code_fraction_mean = 0.06382`
+  - `error_mean_abs_mean = 1.23e-05`
+  - `scale_mean_mean = 2.87e-04`
+  - `scale_max_max = 0.05133`
+
+Important negative finding: the tracked layers all sit in a very similar edge-code-pressure band, about `6.3%` to `6.5%`. So this does **not** look like a single obviously saturated recurrent layer. The problem looks broader than “one layer is clipping badly.”
+
+Another useful separation is between prefill and steady decode. Prefill post-update quantization is noticeably noisier than steady decode post-update:
+
+- `recurrent:18:prefill_post_update error_mean_abs_mean = 1.47e-04`
+- `recurrent:20:prefill_post_update error_mean_abs_mean = 1.05e-04`
+- `recurrent:4:prefill_post_update error_mean_abs_mean = 6.63e-05`
+
+That makes layer `4` look more like a prefill/range outlier than a steady recurrent-drift driver.
+
+### Readout-only renorm comparison: 18/14/2 = 2
+
+Comparison localization throughput was `89.47 ms/step`.
+
+This run used the same `4096 x 8` localization case, but added only readout-side recurrent renorm overrides on layers `18`, `14`, and `2`.
+
+The strong positive result is that the readout-side quantization path for those layers becomes effectively lossless under the telemetry:
+
+- `recurrent:2:readout`
+  - `error_mean_abs_mean = 9.52e-10`
+  - `edge_code_fraction_mean = 0.06351`
+- `recurrent:14:readout`
+  - `error_mean_abs_mean = 6.54e-10`
+  - `edge_code_fraction_mean = 0.06366`
+- `recurrent:18:readout`
+  - `error_mean_abs_mean = 5.47e-09`
+  - `edge_code_fraction_mean = 0.06503`
+
+But the negative result is more important for the research direction: this near-lossless readout path does **not** materially change the post-update quantizer behavior.
+
+Representative post-update means stayed effectively unchanged:
+
+- `recurrent:4:post_update error_mean_abs_mean`
+  - baseline: `1.23346e-05`
+  - readout-renorm: `1.23251e-05`
+- `recurrent:20:post_update error_mean_abs_mean`
+  - baseline: `3.86658e-05`
+  - readout-renorm: `3.86639e-05`
+
+The same qualitative pattern held for the other tracked layers: edge-code fractions and scale statistics barely moved on the post-update path even when the readout path was made nearly lossless.
+
+### Interpretation
+
+This is a useful research result even though it is not a direct speed win:
+
+- readout-only renorm can make selected recurrent readout layers numerically almost lossless
+- it does **not** materially alter the post-update writeback quantizer where the recurrent drift appears to persist
+- layer `18` still looks like the strongest tracked post-update recurrent quantization problem
+- layer `20` remains a genuine post-update quantization outlier that does not show up as strongly in the recurrent output-error rankings
+- layer `4` still looks like a broad-range / prefill-heavy outlier rather than the main steady decode failure source
+- edge-code pressure is broad and similar across the tracked layers, not isolated to one obviously broken layer
+
+So the next useful StateCache hypothesis should not be “more readout-only renorm.” The more promising directions now are:
+
+- inspect post-update writeback behavior more directly, especially around layer `18`
+- inspect whether `20` is a group-structure or scale-range outlier rather than an output-error leader
+- probe cheaper intra-layer stabilizers such as group-structure changes instead of more whole-layer readout overrides
+
+## 2026-03-31: 890M 0.8B group-size probe on post-update writeback (layers 18 and 20)
+
+Used the new recurrent quantization telemetry to probe the cheapest remaining intra-layer stabilizer: change `group_size` while keeping the exact same `4096 x 8`, recurrent-only, `8b`, `post_update_m0`, `renorm=0` case.
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_localization_group8.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_localization_group16.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_localization_group32.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_serving_group8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_serving_group16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_probe_20260331/qwen35_0p8b_serving_group32.jsonl`
+
+### Exact serving result
+
+Exact `4096 x 8`, same generated ids in all three cases:
+
+- `group_size = 8`
+  - decode: `101.78 ms/step`
+  - prefill peak: `3.5106 GB`
+  - decode peak: `3.5316 GB`
+  - effective recurrent compression ratio: `2.0`
+- `group_size = 16`
+  - decode: `100.64`
+  - prefill peak: `3.5106 GB`
+  - decode peak: `3.5295 GB`
+  - effective recurrent compression ratio: `2.67`
+- `group_size = 32`
+  - decode: `86.56`
+  - prefill peak: `3.5106 GB`
+  - decode peak: `3.5295 GB`
+  - effective recurrent compression ratio: `3.2`
+
+So the negative serving result is clear: smaller groups do **not** move peak memory meaningfully on this machine, and they slow decode because they give up too much recurrent compression.
+
+### Telemetry result on the sensitive post-update layers
+
+The positive research result is that smaller groups are a real numerical stabilizer for the post-update quantizer on layers `18` and `20`.
+
+Layer `18` post-update recurrent telemetry:
+
+- `group_size = 8`
+  - `error_mean_abs_mean = 1.94e-05`
+  - `edge_code_fraction_mean = 0.25318`
+  - `scale_mean_mean = 2.64e-04`
+  - `scale_max_max = 0.02477`
+- `group_size = 16`
+  - `error_mean_abs_mean = 3.31e-05`
+  - `edge_code_fraction_mean = 0.12778`
+  - `scale_mean_mean = 4.00e-04`
+  - `scale_max_max = 0.02477`
+- `group_size = 32`
+  - `error_mean_abs_mean = 5.18e-05`
+  - `edge_code_fraction_mean = 0.06505`
+  - `scale_mean_mean = 6.25e-04`
+  - `scale_max_max = 0.02477`
+
+Layer `20` post-update recurrent telemetry:
+
+- `group_size = 8`
+  - `error_mean_abs_mean = 1.64e-05`
+  - `edge_code_fraction_mean = 0.25239`
+  - `scale_mean_mean = 2.12e-04`
+  - `scale_max_max = 0.01988`
+- `group_size = 16`
+  - `error_mean_abs_mean = 2.67e-05`
+  - `edge_code_fraction_mean = 0.12680`
+  - `scale_mean_mean = 3.12e-04`
+  - `scale_max_max = 0.01988`
+- `group_size = 32`
+  - `error_mean_abs_mean = 3.87e-05`
+  - `edge_code_fraction_mean = 0.06438`
+  - `scale_mean_mean = 4.46e-04`
+  - `scale_max_max = 0.02023`
+
+Interpretation:
+
+- shrinking the group does reduce post-update quantization error materially on both `18` and `20`
+- the tradeoff is exactly what the telemetry should predict:
+  - error goes down
+  - effective per-group scale range goes down
+  - edge-code usage goes up sharply because there are many more smaller groups
+- so `18` and `20` do appear to have a real group-structure sensitivity, not just a random mode-selection problem
+
+### Localization effect
+
+This also shows up in the localized long-context error signal:
+
+- `group_size = 8`
+  - localization decode: `67.01 ms/step`
+  - max per-step logit error: `0.11914`
+  - top recurrent output max-error layers: `14`, `22`, `1`, `8`, `18`
+  - top recurrent state max-error layers: `4`, `18`, `20`, `17`, `12`
+- `group_size = 16`
+  - localization decode: `86.07`
+  - max per-step logit error: `0.16406`
+  - top recurrent output max-error layers: `1`, `8`, `14`, `22`, `17`
+  - top recurrent state max-error layers: `4`, `18`, `20`, `17`, `12`
+- `group_size = 32`
+  - localization decode: `84.76`
+  - max per-step logit error: `0.43066`
+  - top recurrent output max-error layers: `18`, `14`, `2`, `22`, `13`
+  - top recurrent state max-error layers: `4`, `18`, `20`, `22`, `8`
+
+So the positive numerical result is strong: `group_size = 8` sharply cuts the localized long-context logit-error peak and pushes layer `18` down the recurrent output-error ranking.
+
+### Takeaway
+
+This is useful for the research direction:
+
+- the sensitive recurrent layers really are group-structure-sensitive
+- smaller groups are a valid stabilizer family for StateCache
+- but on this 890M they are too expensive as a global policy because they reduce recurrent compression from `3.2x` to `2.0x` without moving peak memory
+
+So the next useful hypothesis is no longer “does group size matter?” It does. The better question is whether we can make it selective:
+
+- a per-layer group-size escape on `18` and maybe `20`
+- or some cheaper approximation to that effect inside the post-update path
+
+## 2026-03-31: 890M 0.8B selective recurrent group-size escapes on layers 18 and 20
+
+Implemented per-layer recurrent group-size overrides for the Qwen3.5 StateCache path, then tested the narrowest useful cases at exact `4096 x 8`:
+
+- baseline: global `group_size = 32`
+- `18 = 8`
+- `20 = 8`
+- `18/20 = 8`
+
+Implementation and verification:
+
+- added `parse_qwen35_deltanet_statecache_int_overrides(...)` and recurrent layer-group-size override resolution in `dotcache/integrations/qwen35.py`
+- threaded recurrent layer-group-size overrides through:
+  - `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+  - `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+- added focused coverage in `tests/test_qwen35_integration.py`
+- verification:
+  - `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_serving.py benchmarks/bench_qwen35_deltanet_statecache_localization.py tests/test_qwen35_integration.py`
+  - `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'parse_qwen35_deltanet_statecache_int_overrides_parses_group_size or statecache_cli_parse_supports_conv_flags or localization_reports_quantization_telemetry'`
+  - result: `3 passed`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_localization_baseline.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_localization_layer18.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_localization_layer20.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_localization_layer18_20.json`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_serving_baseline.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_serving_layer18.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_serving_layer20.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_perlayer_group_escape_20260331/qwen35_0p8b_serving_layer18_20.jsonl`
+
+### Repeated in-process exact serving result
+
+Exact `4096 x 8`, recurrent-only, `8b`, `post_update_m0`, `renorm=0`, `warmup=1`, `repeats=3`.
+
+All four cases produced the exact same generated ids:
+
+- baseline
+  - decode: `72.75 ms/step`
+  - repeats: `59.72 / 74.13 / 84.40`
+  - stddev: `10.12`
+  - recurrent compression ratio: `3.20`
+- `18 = 8`
+  - decode: `69.43`
+  - repeats: `72.00 / 75.78 / 60.50`
+  - stddev: `6.50`
+  - recurrent compression ratio: `3.10`
+- `20 = 8`
+  - decode: `67.94`
+  - repeats: `74.80 / 67.51 / 61.52`
+  - stddev: `5.43`
+  - recurrent compression ratio: `3.10`
+- `18/20 = 8`
+  - decode: `62.61`
+  - repeats: `62.02 / 61.82 / 63.98`
+  - stddev: `0.97`
+  - recurrent compression ratio: `3.00`
+
+The positive result is real: the combined `18/20 = 8` escape beat baseline clearly on repeated in-process serving while giving up only a small amount of recurrent compression (`3.20x -> 3.00x`).
+
+Important negative/neutral result: peak memory did not move at all in this `4096` case.
+
+- baseline prefill/decode peak: `3.5295 GB / 3.5295 GB`
+- `18 = 8`: unchanged
+- `20 = 8`: unchanged
+- `18/20 = 8`: unchanged
+
+So this is a numerics + decode-throughput improvement, not a memory-headroom improvement.
+
+### Localization and telemetry result
+
+Baseline:
+
+- localization decode: `72.83 ms/step`
+- max per-step logit error: `0.43066`
+- top recurrent output max-error layers: `18`, `14`, `2`, `22`, `13`
+- top recurrent state max-error layers: `4`, `18`, `20`, `22`, `8`
+- post-update telemetry:
+  - layer `18`: `error_mean_abs_mean = 5.18e-05`, `group_size = 32`
+  - layer `20`: `error_mean_abs_mean = 3.87e-05`, `group_size = 32`
+
+`18 = 8`:
+
+- localization decode: `86.20`
+- max per-step logit error: `0.43750`
+- recurrent output max-error leaders: `14`, `2`, `22`, `13`, `1`
+- recurrent state max-error leaders: `4`, `20`, `18`, `22`, `8`
+- post-update telemetry:
+  - layer `18`: `1.94e-05`, `group_size = 8`
+  - layer `20`: `3.86e-05`, `group_size = 32`
+
+`20 = 8`:
+
+- localization decode: `86.11`
+- max per-step logit error: `0.42871`
+- recurrent output max-error leaders: `18`, `14`, `2`, `22`, `13`
+- recurrent state max-error leaders: `4`, `18`, `22`, `8`, `12`
+- post-update telemetry:
+  - layer `18`: `5.18e-05`, `group_size = 32`
+  - layer `20`: `1.64e-05`, `group_size = 8`
+
+`18/20 = 8`:
+
+- localization decode: `63.33`
+- max per-step logit error: `0.43164`
+- recurrent output max-error leaders: `14`, `2`, `22`, `13`, `1`
+- recurrent state max-error leaders: `4`, `18`, `22`, `8`, `12`
+- post-update telemetry:
+  - layer `18`: `1.94e-05`, `group_size = 8`
+  - layer `20`: `1.64e-05`, `group_size = 8`
+
+### Interpretation
+
+This is the first selective group-structure result that looks genuinely useful:
+
+- `18` and `20` really are the right recurrent layers to target with smaller groups
+- selective `group_size = 8` on those layers sharply reduces their post-update quantization error
+- the combined `18/20 = 8` escape removes `18` from the top recurrent output max-error set and removes `20` from the top recurrent state max-error set
+- unlike the global `group_size = 8` policy, the selective escape keeps most of the recurrent compression (`3.00x` vs baseline `3.20x`)
+- on this exact `4096 x 8` case it also improves repeated in-process serving materially and with low variance
+
+But there is still an important negative constraint:
+
+- the max per-step logit error barely moves overall (`0.43066 -> 0.43164`)
+- memory does not move
+- so this is not evidence that selective grouping solves the general long-context drift problem
+
+The current best conclusion is narrower:
+
+- selective recurrent group-size escapes are a more promising stabilizer family than `M3` or targeted readout-only renorm
+- `18/20 = 8` is now worth validating across neighboring contexts like `3072`, `4096`, and `6144`, and longer decode horizons, before promoting it as a real 890M StateCache policy
+
+## 2026-03-31: 890M 0.8B validation of `18/20 = group_size 8` across `3072/4096/6144` and `8/16` decode steps
+
+Validated the first selective recurrent group-size lead as a real policy candidate rather than a one-off `4096 x 8` result.
+
+Method:
+
+- benchmark: `bench_qwen35_deltanet_statecache_serving.py`
+- model: `Qwen/Qwen3.5-0.8B`
+- backend: `torch_cuda`
+- config shared across all rows:
+  - recurrent-only, `8b`, global `group_size = 32`, `post_update_m0`, `renorm=0`
+  - exact prompt lengths `3072`, `4096`, `6144`
+  - decode steps `8` and `16`
+  - repeated in-process serving with `warmup=1`, `repeats=3`
+- compared:
+  - baseline
+  - selective recurrent group-size escape `layer:18=8`, `layer:20=8`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_3072x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_3072x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_3072x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_3072x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_4096x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_4096x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_4096x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_4096x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_6144x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_6144x8.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_baseline_6144x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_validation_20260331/qwen35_0p8b_serving_group18_20_6144x16.jsonl`
+
+### Row-by-row result
+
+All rows produced exact generated-id matches between baseline and `18/20 = 8`.
+
+- `3072 x 8`
+  - baseline: `77.06 ms/step`, stddev `4.03`, repeats `78.11 / 81.39 / 71.69`
+  - `18/20 = 8`: `76.95`, stddev `4.83`, repeats `70.17 / 81.09 / 79.59`
+  - interpretation: effective tie
+- `3072 x 16`
+  - baseline: `73.86`, stddev `1.80`, repeats `71.61 / 76.01 / 73.97`
+  - `18/20 = 8`: `68.68`, stddev `9.14`, repeats `77.01 / 73.09 / 55.95`
+  - interpretation: candidate mean is better, but variance is high
+- `4096 x 8`
+  - baseline: `78.27`, stddev `6.61`, repeats `86.92 / 76.99 / 70.88`
+  - `18/20 = 8`: `87.90`, stddev `8.72`, repeats `79.50 / 99.92 / 84.27`
+  - interpretation: candidate regresses here
+- `4096 x 16`
+  - baseline: `88.49`, stddev `2.80`, repeats `90.06 / 90.86 / 84.55`
+  - `18/20 = 8`: `88.84`, stddev `3.04`, repeats `85.03 / 89.01 / 92.48`
+  - interpretation: effective tie
+- `6144 x 8`
+  - baseline: `109.64`, stddev `19.90`, repeats `125.69 / 121.63 / 81.61`
+  - `18/20 = 8`: `121.95`, stddev `2.97`, repeats `120.94 / 118.91 / 125.99`
+  - interpretation: candidate is slower, but much more stable
+- `6144 x 16`
+  - baseline: `116.03`, stddev `4.30`, repeats `110.26 / 117.28 / 120.56`
+  - `18/20 = 8`: `89.13`, stddev `0.74`, repeats `90.14 / 88.91 / 88.36`
+  - interpretation: strong candidate win
+
+### Compression and memory
+
+The candidate kept the same selective compression profile in every row:
+
+- baseline recurrent compression ratio: `3.20x`
+- `18/20 = 8` recurrent compression ratio: `3.00x`
+
+Memory remained unchanged across the whole matrix:
+
+- `3072`: `2.8542 GB` prefill / `2.8542 GB` decode for both baseline and candidate
+- `4096`: `3.5295 GB` / `3.5295 GB` for both
+- `6144`: `5.3016 GB` / `5.3016 GB` for both
+
+So the validation confirms again that this is not a memory-headroom policy. It is a recurrent-numerics / decode-throughput policy.
+
+### Interpretation
+
+This validation is mixed, but useful:
+
+- the `18/20 = 8` escape is **not** a universal drop-in replacement for the baseline
+- it clearly does **not** dominate at `4096 x 8`
+- it is neutral-to-positive at `3072`
+- it looks strongest at the longer-horizon `6144 x 16` case
+- it often reduces variance even when it does not reduce mean decode time
+
+So the better hypothesis is now:
+
+- selective smaller groups on `18/20` are helping a longer-horizon recurrent stability problem
+- but they are not universally beneficial at shorter horizons or in the earlier part of the context ladder
+
+This means the next useful direction is a small context/horizon selector rather than a single new default:
+
+- baseline for `4096 x 8`
+- consider `18/20 = 8` only in the longer-horizon regime, especially around `6144 x 16`
+
+The key negative result is important too: the earlier single-row `4096 x 8` win did **not** generalize. The policy only becomes interesting again once the decode horizon is longer.
+
+## 2026-03-31: encoded the long-horizon `18/20 = 8` selector as an explicit 890M policy
+
+Turned the mixed `18/20 = group_size 8` result into a first-class opt-in policy instead of leaving it as a manual override string.
+
+Implementation:
+
+- added `resolve_qwen35_deltanet_statecache_recurrent_group_size_policy(...)` in `dotcache/integrations/qwen35.py`
+- added the policy type `890m_long_horizon_group_escape_v1`
+- threaded it through:
+  - `run_qwen35_deltanet_statecache_serving_harness(...)`
+  - `run_qwen35_deltanet_statecache_localization_harness(...)`
+  - `benchmarks/bench_qwen35_deltanet_statecache_serving.py`
+  - `benchmarks/bench_qwen35_deltanet_statecache_localization.py`
+- added focused coverage in `tests/test_qwen35_integration.py`
+
+Policy rule encoded from the validation matrix:
+
+- baseline outside the long-horizon regime
+- apply recurrent group-size overrides `{18: 8, 20: 8}` only when:
+  - `prompt_length >= 6144`
+  - `decode_steps >= 16`
+
+This is intentionally narrow. The validation matrix did **not** justify making the selector broader or making it the default:
+
+- it regressed at `4096 x 8`
+- it was only tie/noisy-positive around `3072`
+- it regressed at `6144 x 8`
+- it was clearly good at `6144 x 16`
+
+So the encoded policy is the strongest supported rule, not an optimistic extrapolation.
+
+Verification:
+
+- `python -m py_compile dotcache/integrations/qwen35.py benchmarks/bench_qwen35_deltanet_statecache_serving.py benchmarks/bench_qwen35_deltanet_statecache_localization.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'recurrent_group_size_policy or parse_qwen35_deltanet_statecache_int_overrides_parses_group_size or statecache_cli_parse_supports_conv_flags'`
+- result: `7 passed`
+
+No new benchmark evidence was created in this step; this was the code-level promotion of the already-journaled validation matrix into a reproducible selector.
+
+## 2026-03-31: wrapper-mode confirmation for `890m_long_horizon_group_escape_v1`
+
+Followed up by exposing the long-horizon selector as a non-default local wrapper mode and then running an explicit `6144 x 16` confirmation through that path.
+
+Implementation:
+
+- added `serving-long-horizon` to `scripts/run_qwen35_0p8b_statecache_890m.sh`
+- the mode pins:
+  - `--recurrent-group-size-policy 890m_long_horizon_group_escape_v1`
+  - `--max-new-tokens 16`
+  - `--warmup-in-process-repeats 1`
+  - `--in-process-repeats 3`
+  - `--target-prompt-lengths 6144`
+- verification:
+  - `bash -n scripts/run_qwen35_0p8b_statecache_890m.sh`
+
+### Important bug found and fixed
+
+The first wrapper confirmation exposed a real policy-activation bug:
+
+- the policy band resolved to `long_horizon`
+- but the runtime still emitted empty recurrent group-size overrides
+- and the compression ratio stayed at baseline `3.2x`
+
+Root cause:
+
+- the CLI passed an empty explicit override map `{}`, which masked the policy override map
+- this made the selector a silent no-op in the exact wrapper path
+
+Fix:
+
+- changed the serving/localization integration paths to treat an empty override map as “no explicit override”
+- added regression coverage so `recurrent_group_size_policy` still applies when the explicit override map is empty
+
+Verification after the fix:
+
+- `python -m py_compile dotcache/integrations/qwen35.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'recurrent_group_size_policy or policy_survives_empty_group_override_map'`
+- result: `6 passed`
+
+### Corrected wrapper confirmation row
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_policy_confirmation_20260331/qwen35_0p8b_serving_policywrapper_6144x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_group_escape_policy_confirmation_20260331/qwen35_0p8b_serving_policywrapper_baseline_6144x16.jsonl`
+
+After the fix, the wrapper row really did activate the selector:
+
+- policy: `890m_long_horizon_group_escape_v1`
+- band: `long_horizon`
+- recurrent group-size overrides: `{18: 8, 20: 8}`
+- recurrent compression ratio: `3.0x`
+- generated ids matched baseline exactly
+
+But the wrapper-environment rerun did **not** reproduce the earlier fast validation row:
+
+- wrapper baseline `6144 x 16`
+  - `105.43 ms/step`
+  - stddev `22.44`
+  - repeats `118.56 / 123.88 / 73.85`
+- wrapper policy `6144 x 16`
+  - `122.44`
+  - stddev `6.65`
+  - repeats `127.03 / 113.04 / 127.25`
+
+Compared with the earlier validation matrix:
+
+- earlier baseline `6144 x 16`: `116.03`
+- earlier policy `6144 x 16`: `89.13`
+
+So this wrapper confirmation produced a useful negative result:
+
+- the policy is definitely active now
+- but this specific confirmation path is noisy enough that it does not reproduce the earlier favorable `6144 x 16` row
+- both wrapper rows were slower than the earlier validation, and the policy row was slower than the wrapper baseline mean
+
+Interpretation:
+
+- the earlier validation matrix is still the best evidence we have for the long-horizon selector
+- the wrapper-mode rerun is not strong enough to overturn it, but it is strong enough to show that the effect is not yet stable enough to trust from a single confirmation pass
+- the wrapper should therefore stay opt-in and non-default
+
+## 2026-03-31: counterbalanced paired long-horizon A/B on `6144/8192 x 16`
+
+Ran the stricter follow-up that was still missing: a counterbalanced paired serving benchmark at the two long-horizon points, comparing the promoted long-horizon selector against the two single-layer constituents that motivated it.
+
+Implementation:
+
+- extended `benchmarks/bench_qwen35_deltanet_statecache_serving.py` so paired A/B runs can vary recurrent group-size settings on the candidate side
+- added paired candidate CLI support for:
+  - `--paired-recurrent-group-size-policy`
+  - `--paired-recurrent-layer-group-size-override`
+- added focused parser / aggregation coverage in `tests/test_qwen35_integration.py`
+
+Verification:
+
+- `python -m py_compile benchmarks/bench_qwen35_deltanet_statecache_serving.py tests/test_qwen35_integration.py`
+- `PYTHONPATH=. ./.venv/bin/pytest tests/test_qwen35_integration.py -q -k 'statecache_cli_parse_supports_conv_flags or statecache_serving_paired_repeat_summary_aggregates_measurements'`
+- result: `2 passed`
+
+Method:
+
+- exact-length prompts: `6144`, `8192`
+- decode horizon: `16`
+- schedule: `ABBA`
+- warmups: `1`
+- in-process repeats: `4`
+- baseline: global `group_size=32`
+- candidates:
+  - `policy`: `890m_long_horizon_group_escape_v1` -> `{18: 8, 20: 8}`
+  - `layer18`: explicit `{18: 8}`
+  - `layer20`: explicit `{20: 8}`
+
+Artifacts:
+
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_policy_6144x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_layer18_6144x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_layer20_6144x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_policy_8192x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_layer18_8192x16.jsonl`
+- `benchmarks/results/qwen35_rocm_890m_statecache_longhorizon_paired_20260331/qwen35_0p8b_paired_layer20_8192x16.jsonl`
+
+Results:
+
+- `6144 x 16`, `policy`:
+  - baseline `92.39 ms/step`
+  - candidate `103.15`
+  - delta `+10.76`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0x`
+- `6144 x 16`, `layer18`:
+  - baseline `114.69`
+  - candidate `99.88`
+  - delta `-14.80`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0968x`
+- `6144 x 16`, `layer20`:
+  - baseline `112.13`
+  - candidate `117.66`
+  - delta `+5.54`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0968x`
+- `8192 x 16`, `policy`:
+  - baseline `125.06`
+  - candidate `146.72`
+  - delta `+21.66`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0x`
+- `8192 x 16`, `layer18`:
+  - baseline `110.04`
+  - candidate `110.54`
+  - delta `+0.50`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0968x`
+- `8192 x 16`, `layer20`:
+  - baseline `124.91`
+  - candidate `123.23`
+  - delta `-1.68`
+  - ids matched baseline exactly
+  - recurrent compression `3.2x -> 3.0968x`
+
+Important variance notes:
+
+- `6144 x 16`, `layer18` remains the strongest positive row, but candidate stddev was still high (`21.88 ms/step`)
+- `8192 x 16`, `layer18` is effectively a tie despite slightly lower prefill
+- `8192 x 16`, `layer20` is only a small positive (`-1.68 ms/step`), not promotion-grade evidence
+- the full policy lost clearly at both long-horizon contexts, so the combined `{18,20}` escape is now a negative result under the stricter paired method
+
+Interpretation:
+
+- the earlier selector story was too optimistic
+- the useful long-horizon effect does **not** support the combined `{18,20}` policy
+- under stricter paired `ABBA`, the only real positive is `18=8` at `6144 x 16`
+- that effect does not carry to `8192 x 16`, where `18=8` collapses to a tie
+- `20=8` is not a useful partner layer at `6144 x 16`, and at `8192 x 16` it is only marginally positive
+
+Current conclusion:
+
+- `890m_long_horizon_group_escape_v1` should not be treated as promoted evidence anymore
+- the stronger claim that survives this pass is narrower:
+  - `layer 18 = group_size 8` can help at `6144 x 16`
+  - there is no stable evidence yet that the same change improves the next longer context
+- this is now a targeted long-horizon hypothesis about layer `18`, not a generally useful policy selector

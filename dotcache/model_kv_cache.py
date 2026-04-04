@@ -3038,6 +3038,7 @@ class ModelPagedKVCache:
         keys: np.ndarray,
         values: np.ndarray,
         *,
+        token_start: int,
         sequence_length: int,
         full_tokens: int,
     ) -> tuple[list[list[EncodedPage]], list[list[EncodedPage]]]:
@@ -3064,7 +3065,7 @@ class ModelPagedKVCache:
                 kind="K",
                 layer_id=layer_id,
                 kv_head_id=kv_head_id,
-                token_start=0,
+                token_start=token_start,
                 sequence_length=sequence_length,
             )
             key_mode_name = (
@@ -3083,13 +3084,14 @@ class ModelPagedKVCache:
 
         for page_start in range(0, full_tokens, page_size):
             page_end = page_start + page_size
+            absolute_page_start = int(token_start + page_start)
             for kv_head_id in range(self.num_key_value_heads):
                 key_page_mode = self._select_page_mode(
                     full_keys[kv_head_id, page_start:page_end],
                     kind="K",
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
-                    token_start=page_start,
+                    token_start=absolute_page_start,
                     sequence_length=sequence_length,
                 )
                 key_pages_by_head[kv_head_id].append(
@@ -3099,7 +3101,7 @@ class ModelPagedKVCache:
                         kind="K",
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
-                        token_start=page_start,
+                        token_start=absolute_page_start,
                         page_mode=key_page_mode,
                         build_runtime_metadata=self._should_build_execution_runtime_metadata(kind="K"),
                         build_m2_sidecar=build_key_sidecar,
@@ -3125,13 +3127,13 @@ class ModelPagedKVCache:
                     kind="V",
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
-                    token_start=page_start,
+                    token_start=absolute_page_start,
                     page_mode=self._select_page_mode(
                         dense_value_page,
                         kind="V",
                         layer_id=layer_id,
                         kv_head_id=kv_head_id,
-                        token_start=page_start,
+                        token_start=absolute_page_start,
                         sequence_length=sequence_length,
                     ),
                     build_runtime_metadata=False,
@@ -3610,6 +3612,7 @@ class ModelPagedKVCache:
         layer_k: np.ndarray,
         layer_v: np.ndarray,
         *,
+        context_length: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> None:
         keys = _normalize_prefill_tensor(
@@ -3628,13 +3631,18 @@ class ModelPagedKVCache:
             raise ValueError("layer_k and layer_v sequence lengths must match")
 
         seq_len = int(keys.shape[1])
+        absolute_context_length = seq_len if context_length is None else int(context_length)
+        if absolute_context_length < seq_len:
+            raise ValueError("context_length must be at least the stored prefill cache length")
+        token_offset = absolute_context_length - seq_len
         full_page_count = seq_len // self.config.tokens_per_page
         full_tokens = full_page_count * self.config.tokens_per_page
         preload_key_pages_by_head, preload_value_pages_by_head = self._encode_full_prefill_pages(
             layer_id,
             keys,
             values,
-            sequence_length=seq_len,
+            token_start=token_offset,
+            sequence_length=absolute_context_length,
             full_tokens=full_tokens,
         )
         for kv_head_id in range(self.num_key_value_heads):
@@ -3647,8 +3655,12 @@ class ModelPagedKVCache:
                 state.invalidate_decode_views()
             remainder_keys = keys[kv_head_id, full_tokens:]
             remainder_values = values[kv_head_id, full_tokens:]
-            state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
-            state.sequence_length = seq_len
+            state.tail.load_prefill_remainder(
+                remainder_keys,
+                remainder_values,
+                token_start=token_offset + full_tokens,
+            )
+            state.sequence_length = absolute_context_length
         if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
             value_tails = [self._state(layer_id, kv_head_id).persistent_value_tail for kv_head_id in range(self.num_key_value_heads)]
@@ -3657,22 +3669,22 @@ class ModelPagedKVCache:
                 if tail is not None:
                     tail.clear()
                     if keys[kv_head_id, full_tokens:].shape[0] > 0:
-                        tail._ensure_allocated(token_start=full_tokens)
+                        tail._ensure_allocated(token_start=token_offset + full_tokens)
                 tail = value_tails[kv_head_id]
                 if tail is not None:
                     tail.clear()
                     if values[kv_head_id, full_tokens:].shape[0] > 0:
-                        tail._ensure_allocated(token_start=full_tokens)
+                        tail._ensure_allocated(token_start=token_offset + full_tokens)
             self._batch_upload_persistent_tail_rows(
                 key_tails,
                 keys[:, full_tokens:],
-                token_start=full_tokens,
+                token_start=token_offset + full_tokens,
                 trace=trace,
             )
             self._batch_upload_persistent_tail_rows(
                 value_tails,
                 values[:, full_tokens:],
-                token_start=full_tokens,
+                token_start=token_offset + full_tokens,
                 trace=trace,
             )
         self._rebuild_resident_accounting()
@@ -3684,6 +3696,7 @@ class ModelPagedKVCache:
         layer_k,
         layer_v,
         *,
+        context_length: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> None:
         try:
@@ -3708,6 +3721,10 @@ class ModelPagedKVCache:
             raise ValueError("layer_k and layer_v sequence lengths must match")
 
         seq_len = int(keys.shape[1])
+        absolute_context_length = seq_len if context_length is None else int(context_length)
+        if absolute_context_length < seq_len:
+            raise ValueError("context_length must be at least the stored prefill cache length")
+        token_offset = absolute_context_length - seq_len
         full_page_count = seq_len // self.config.tokens_per_page
         full_tokens = full_page_count * self.config.tokens_per_page
         direct_prepare_full_pages = (
@@ -3724,7 +3741,7 @@ class ModelPagedKVCache:
                     kind="K",
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
-                    token_start=0,
+                    token_start=token_offset,
                     device_type=self._torch_device_type,
                     build_runtime_metadata=self._should_build_execution_runtime_metadata(kind="K"),
                 )
@@ -3737,7 +3754,7 @@ class ModelPagedKVCache:
                     kind="V",
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
-                    token_start=0,
+                    token_start=token_offset,
                     device_type=self._torch_device_type,
                 )
                 for kv_head_id in range(self.num_key_value_heads)
@@ -3749,7 +3766,8 @@ class ModelPagedKVCache:
                 layer_id,
                 full_keys_cpu,
                 full_values_cpu,
-                sequence_length=seq_len,
+                token_start=token_offset,
+                sequence_length=absolute_context_length,
                 full_tokens=full_tokens,
             )
         else:
@@ -3775,8 +3793,12 @@ class ModelPagedKVCache:
             else:
                 remainder_keys = remainder_keys_cpu[kv_head_id]
                 remainder_values = remainder_values_cpu[kv_head_id]
-                state.tail.load_prefill_remainder(remainder_keys, remainder_values, token_start=full_tokens)
-            state.sequence_length = seq_len
+                state.tail.load_prefill_remainder(
+                    remainder_keys,
+                    remainder_values,
+                    token_start=token_offset + full_tokens,
+                )
+            state.sequence_length = absolute_context_length
 
         if self._use_persistent_torch_tail:
             key_tails = [self._state(layer_id, kv_head_id).persistent_key_tail for kv_head_id in range(self.num_key_value_heads)]
@@ -3786,21 +3808,21 @@ class ModelPagedKVCache:
                 if tail is not None:
                     tail.clear()
                     if int(keys[kv_head_id, full_tokens:].shape[0]) > 0:
-                        tail._ensure_allocated(token_start=full_tokens)
+                        tail._ensure_allocated(token_start=token_offset + full_tokens)
                 tail = value_tails[kv_head_id]
                 if tail is not None:
                     tail.clear()
                     if int(values[kv_head_id, full_tokens:].shape[0]) > 0:
-                        tail._ensure_allocated(token_start=full_tokens)
+                        tail._ensure_allocated(token_start=token_offset + full_tokens)
             self._batch_append_persistent_tail_tensors(
                 key_tails,
                 keys[:, full_tokens:],
-                token_start=full_tokens,
+                token_start=token_offset + full_tokens,
             )
             self._batch_append_persistent_tail_tensors(
                 value_tails,
                 values[:, full_tokens:],
-                token_start=full_tokens,
+                token_start=token_offset + full_tokens,
             )
         self._rebuild_resident_accounting()
         self._mark_prepared_chunk_cache_budget_dirty(reason="ingest_prefill_cache_torch")

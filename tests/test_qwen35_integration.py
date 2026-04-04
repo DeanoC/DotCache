@@ -23,6 +23,11 @@ from dotcache.integrations.qwen35 import (
     inspect_qwen35_deltanet_state,
     inspect_qwen35_hybrid_state,
     load_qwen35_text_only_from_pretrained,
+    parse_qwen35_deltanet_statecache_int_overrides,
+    resolve_qwen35_deltanet_statecache_recurrent_group_size_policy,
+    resolve_qwen35_deltanet_statecache_recurrent_mode_policy,
+    resolve_qwen35_deltanet_statecache_readout_mode_policy,
+    resolve_qwen35_deltanet_statecache_readout_policy,
     run_qwen35_attention_subset_dotcache_harness,
     run_qwen35_attention_subset_dotcache_loss_harness,
     run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness,
@@ -114,6 +119,97 @@ def _tiny_deltanet_qwen35_model() -> Qwen3_5ForConditionalGeneration:
         },
     )
     return Qwen3_5ForConditionalGeneration(config).eval()
+
+
+@pytest.mark.parametrize(
+    ("prompt_length", "expected_band", "expected_overrides"),
+    [
+        (512, "baseline", {}),
+        (1024, "late", {12: 2, 18: 2, 21: 2}),
+        (2048, "late", {12: 2, 18: 2, 21: 2}),
+        (4096, "full", {5: 2, 8: 2, 12: 2, 18: 2, 21: 2}),
+        (8192, "early", {5: 2, 8: 2}),
+    ],
+)
+def test_resolve_qwen35_deltanet_statecache_readout_policy_890m_bands(
+    prompt_length: int,
+    expected_band: str,
+    expected_overrides: dict[int, int],
+) -> None:
+    overrides, band = resolve_qwen35_deltanet_statecache_readout_policy(
+        prompt_length=prompt_length,
+        policy="890m_context_banded_v1",
+    )
+    assert overrides == expected_overrides
+    assert band == expected_band
+
+
+@pytest.mark.parametrize(
+    ("prompt_length", "expected_band", "expected_overrides"),
+    [
+        (2048, "baseline", {}),
+        (3072, "midband_outliers", {4: "M3", 20: "M3"}),
+        (4096, "midband_outliers", {4: "M3", 20: "M3"}),
+        (6144, "baseline", {}),
+    ],
+)
+def test_resolve_qwen35_deltanet_statecache_readout_mode_policy_890m_bands(
+    prompt_length: int,
+    expected_band: str,
+    expected_overrides: dict[int, str],
+) -> None:
+    overrides, band = resolve_qwen35_deltanet_statecache_readout_mode_policy(
+        prompt_length=prompt_length,
+        policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert overrides == expected_overrides
+    assert band == expected_band
+
+
+@pytest.mark.parametrize(
+    ("prompt_length", "expected_band", "expected_overrides"),
+    [
+        (2048, "baseline", {}),
+        (3072, "midband_outliers", {4: "M3", 20: "M3"}),
+        (4096, "midband_outliers", {4: "M3", 20: "M3"}),
+        (6144, "baseline", {}),
+    ],
+)
+def test_resolve_qwen35_deltanet_statecache_recurrent_mode_policy_890m_bands(
+    prompt_length: int,
+    expected_band: str,
+    expected_overrides: dict[int, str],
+) -> None:
+    overrides, band = resolve_qwen35_deltanet_statecache_recurrent_mode_policy(
+        prompt_length=prompt_length,
+        policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert overrides == expected_overrides
+    assert band == expected_band
+
+
+@pytest.mark.parametrize(
+    ("prompt_length", "decode_steps", "expected_band", "expected_overrides"),
+    [
+        (4096, 8, "baseline", {}),
+        (4096, 16, "baseline", {}),
+        (6144, 8, "baseline", {}),
+        (6144, 16, "long_horizon", {18: 8, 20: 8}),
+    ],
+)
+def test_resolve_qwen35_deltanet_statecache_recurrent_group_size_policy_890m_bands(
+    prompt_length: int,
+    decode_steps: int,
+    expected_band: str,
+    expected_overrides: dict[int, int],
+) -> None:
+    overrides, band = resolve_qwen35_deltanet_statecache_recurrent_group_size_policy(
+        prompt_length=prompt_length,
+        decode_steps=decode_steps,
+        policy="890m_long_horizon_group_escape_v1",
+    )
+    assert overrides == expected_overrides
+    assert band == expected_band
 
 
 def test_qwen35_rocm_fast_path_wrapper_downcasts_float32_qkv(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -550,6 +646,254 @@ def test_qwen35_deltanet_statecache_readout_supports_conv_plus_recurrent_scope()
     assert result["deltanet_statecache_per_layer_recurrent_bytes"]
 
 
+def test_qwen35_deltanet_statecache_readout_accepts_per_layer_renorm_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        statecache_scope="conv_plus_recurrent",
+        conv_bits=8,
+        state_stage="post_update_m0",
+        recurrent_renorm_interval_overrides={0: 2},
+        conv_renorm_interval_overrides={0: 2},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_conv_renorm_interval_overrides"] == {"0": 2}
+
+
+def test_qwen35_deltanet_statecache_readout_accepts_post_update_recurrent_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        post_update_recurrent_renorm_interval_overrides={0: 2},
+        post_update_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_per_layer_recurrent_mode"]["0"] == "M3"
+
+
+def test_qwen35_deltanet_statecache_readout_accepts_readout_recurrent_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_renorm_interval_overrides={0: 2},
+        readout_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_readout_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_readout_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {}
+    assert result["deltanet_statecache_per_layer_recurrent_mode"]["0"] == "M3"
+
+
+def test_qwen35_deltanet_statecache_readout_accepts_readout_recurrent_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 1024), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_policy="890m_context_banded_v1",
+    )
+    assert result["deltanet_statecache_readout_recurrent_policy"] == "890m_context_banded_v1"
+    assert result["deltanet_statecache_readout_recurrent_policy_band"] == "late"
+    assert result["deltanet_statecache_readout_recurrent_renorm_interval_overrides"] == {
+        "12": 2,
+        "18": 2,
+        "21": 2,
+    }
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_readout_accepts_recurrent_mode_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 3072), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert result["deltanet_statecache_recurrent_mode_policy"] == "890m_m3_outlier_pair_midband_v1"
+    assert result["deltanet_statecache_recurrent_mode_policy_band"] == "midband_outliers"
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_recurrent_group_size_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 6144), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=16,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_group_size_policy="890m_long_horizon_group_escape_v1",
+    )
+    assert result["deltanet_statecache_recurrent_group_size_policy"] == "890m_long_horizon_group_escape_v1"
+    assert result["deltanet_statecache_recurrent_group_size_policy_band"] == "long_horizon"
+    assert result["deltanet_statecache_recurrent_layer_group_size_overrides"] == {"18": 8, "20": 8}
+
+
+def test_qwen35_deltanet_statecache_serving_policy_survives_empty_group_override_map() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 6144), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=16,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_group_size_policy="890m_long_horizon_group_escape_v1",
+        recurrent_layer_group_size_overrides={},
+    )
+    assert result["deltanet_statecache_recurrent_group_size_policy_band"] == "long_horizon"
+    assert result["deltanet_statecache_recurrent_layer_group_size_overrides"] == {"18": 8, "20": 8}
+
+
+def test_qwen35_deltanet_statecache_readout_accepts_readout_recurrent_mode_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 3072), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_readout_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert result["deltanet_statecache_readout_recurrent_mode_policy"] == "890m_m3_outlier_pair_midband_v1"
+    assert result["deltanet_statecache_readout_recurrent_mode_policy_band"] == "midband_outliers"
+    assert result["deltanet_statecache_readout_recurrent_mode_overrides"] == {"4": "M3", "20": "M3"}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_readout_rejects_policy_plus_manual_readout_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run_qwen35_deltanet_statecache_readout_harness(
+            model,
+            adapter,
+            input_ids=encoded["input_ids"],
+            attention_mask=encoded["attention_mask"],
+            tokenizer=tokenizer,
+            decode_steps=1,
+            group_size=16,
+            bits=8,
+            state_stage="post_update_m0",
+            readout_recurrent_policy="890m_context_banded_v1",
+            readout_recurrent_renorm_interval_overrides={0: 2},
+        )
+
+
+def test_qwen35_deltanet_statecache_readout_rejects_mode_policy_plus_manual_mode_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run_qwen35_deltanet_statecache_readout_harness(
+            model,
+            adapter,
+            input_ids=encoded["input_ids"],
+            attention_mask=encoded["attention_mask"],
+            tokenizer=tokenizer,
+            decode_steps=1,
+            group_size=16,
+            bits=8,
+            state_stage="post_update_m0",
+            readout_recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+            readout_recurrent_mode_overrides={0: "M3"},
+        )
+
+
+def test_qwen35_deltanet_statecache_readout_rejects_recurrent_mode_policy_plus_manual_mode_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("x", return_tensors="pt")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run_qwen35_deltanet_statecache_readout_harness(
+            model,
+            adapter,
+            input_ids=encoded["input_ids"],
+            attention_mask=encoded["attention_mask"],
+            tokenizer=tokenizer,
+            decode_steps=1,
+            group_size=16,
+            bits=8,
+            state_stage="post_update_m0",
+            recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+            recurrent_mode_overrides={0: "M3"},
+        )
+
+
 def test_qwen35_deltanet_statecache_readout_uses_fresh_prefill_for_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -708,6 +1052,54 @@ def test_qwen35_deltanet_statecache_loss_accepts_recurrent_mode_overrides() -> N
     assert result["deltanet_statecache_recurrent_state_bytes"] > 0
 
 
+def test_qwen35_deltanet_statecache_loss_accepts_per_layer_renorm_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_renorm_interval_overrides={0: 2},
+        conv_renorm_interval_overrides={0: 2},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_conv_renorm_interval_overrides"] == {"0": 2}
+
+
+def test_qwen35_deltanet_statecache_loss_accepts_post_update_recurrent_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_loss_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        post_update_recurrent_renorm_interval_overrides={0: 2},
+        post_update_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {"0": "M3"}
+
+
 def test_qwen35_deltanet_statecache_localization_reports_first_failure_hints() -> None:
     model = _tiny_deltanet_qwen35_model()
     adapter = Qwen35DeltaNetStateModelAdapter(model=model)
@@ -735,6 +1127,149 @@ def test_qwen35_deltanet_statecache_localization_reports_first_failure_hints() -
     assert "deltanet_statecache_recurrent_result" in result
     assert "deltanet_statecache_conv_result" in result
     assert "deltanet_statecache_combined_result" in result
+
+
+def test_qwen35_deltanet_statecache_localization_accepts_per_layer_renorm_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_renorm_interval_overrides={0: 2},
+        conv_renorm_interval_overrides={0: 2},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_conv_renorm_interval_overrides"] == {"0": 2}
+
+
+def test_qwen35_deltanet_statecache_localization_accepts_post_update_recurrent_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        post_update_recurrent_renorm_interval_overrides={0: 2},
+        post_update_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {"0": "M3"}
+
+
+def test_qwen35_deltanet_statecache_localization_accepts_recurrent_mode_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 4099), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        prefix_length=4096,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert result["deltanet_statecache_recurrent_mode_policy"] == "890m_m3_outlier_pair_midband_v1"
+    assert result["deltanet_statecache_recurrent_mode_policy_band"] == "midband_outliers"
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {"4": "M3", "20": "M3"}
+    assert "deltanet_statecache_recurrent_state_max_abs_error_by_layer" in result
+    assert "deltanet_statecache_recurrent_output_max_abs_error_by_layer" in result
+
+
+def test_qwen35_deltanet_statecache_localization_accepts_readout_recurrent_mode_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {}
+    assert result["deltanet_statecache_readout_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_localization_accepts_readout_recurrent_renorm_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_renorm_interval_overrides={0: 2},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_readout_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_localization_reports_quantization_telemetry() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache localization", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_localization_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        prefix_length=4,
+        eval_steps=3,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        quantization_telemetry_layer_ids={0},
+    )
+    assert result["deltanet_statecache_quantization_telemetry_tracked_layers"] == [0]
+    assert len(result["deltanet_statecache_quantization_telemetry_records"]) >= 1
+    summary = result["deltanet_statecache_quantization_telemetry_summary"]
+    assert "recurrent:0:prefill_post_update" in summary
+    assert summary["recurrent:0:prefill_post_update"]["event_count"] >= 1
+    assert "top_groups_by_mean_abs_error" in summary["recurrent:0:prefill_post_update"]
 
 
 def test_qwen35_deltanet_statecache_readout_reports_per_layer_recurrent_modes() -> None:
@@ -777,6 +1312,120 @@ def test_qwen35_deltanet_statecache_serving_reports_serving_runtime_mode() -> No
     assert result["deltanet_recurrent_state_bytes"] > result["deltanet_statecache_recurrent_state_bytes"]
     assert result["deltanet_dense_fixed_resident_bytes"] > result["deltanet_statecache_fixed_resident_bytes"]
     assert len(result["deltanet_statecache_generated_ids"]) == 2
+    assert len(result["deltanet_statecache_per_step_decode_ms"]) == 2
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_per_layer_renorm_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache serving", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_renorm_interval_overrides={0: 2},
+    )
+    assert result["deltanet_statecache_recurrent_renorm_interval_overrides"] == {"0": 2}
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_readout_recurrent_overrides() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello state cache serving", return_tensors="pt")
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_renorm_interval_overrides={0: 2},
+        readout_recurrent_mode_overrides={0: "M3"},
+    )
+    assert result["deltanet_statecache_readout_recurrent_renorm_interval_overrides"] == {"0": 2}
+    assert result["deltanet_statecache_readout_recurrent_mode_overrides"] == {"0": "M3"}
+    assert result["deltanet_statecache_post_update_recurrent_renorm_interval_overrides"] == {}
+    assert result["deltanet_statecache_post_update_recurrent_mode_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_readout_recurrent_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 4096), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_policy="890m_context_banded_v1",
+    )
+    assert result["deltanet_statecache_readout_recurrent_policy"] == "890m_context_banded_v1"
+    assert result["deltanet_statecache_readout_recurrent_policy_band"] == "full"
+    assert result["deltanet_statecache_readout_recurrent_renorm_interval_overrides"] == {
+        "5": 2,
+        "8": 2,
+        "12": 2,
+        "18": 2,
+        "21": 2,
+    }
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_recurrent_mode_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 4096), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert result["deltanet_statecache_recurrent_mode_policy"] == "890m_m3_outlier_pair_midband_v1"
+    assert result["deltanet_statecache_recurrent_mode_policy_band"] == "midband_outliers"
+    assert result["deltanet_statecache_recurrent_mode_overrides"] == {}
+
+
+def test_qwen35_deltanet_statecache_serving_accepts_readout_recurrent_mode_policy() -> None:
+    model = _tiny_deltanet_qwen35_model()
+    adapter = Qwen35DeltaNetStateModelAdapter(model=model)
+    input_ids = torch.ones((1, 4096), dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_deltanet_statecache_serving_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+        group_size=16,
+        bits=8,
+        state_stage="post_update_m0",
+        readout_recurrent_mode_policy="890m_m3_outlier_pair_midband_v1",
+    )
+    assert result["deltanet_statecache_readout_recurrent_mode_policy"] == "890m_m3_outlier_pair_midband_v1"
+    assert result["deltanet_statecache_readout_recurrent_mode_policy_band"] == "midband_outliers"
+    assert result["deltanet_statecache_readout_recurrent_mode_overrides"] == {"4": "M3", "20": "M3"}
 
 
 def test_qwen35_attention_subset_adapter_wraps_only_full_attention_layers() -> None:
@@ -1552,6 +2201,7 @@ def test_qwen35_hybrid_combined_localization_runs_on_tiny_hybrid_model() -> None
 def test_qwen35_statecache_cli_parse_supports_conv_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     import benchmarks.bench_qwen35_deltanet_statecache_readout as readout_bench
     import benchmarks.bench_qwen35_deltanet_statecache_loss as loss_bench
+    import benchmarks.bench_qwen35_deltanet_statecache_serving as serving_bench
     import benchmarks.bench_qwen35_hybrid_failure_localize as hybrid_bench
 
     monkeypatch.setattr(
@@ -1573,6 +2223,81 @@ def test_qwen35_statecache_cli_parse_supports_conv_flags(monkeypatch: pytest.Mon
     assert readout_args.conv_bits == 4
     assert readout_args.conv_layer_bit_overrides == ["1:8"]
     assert readout_args.conv_mode_override == ["1:M3"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_deltanet_statecache_serving.py",
+            "--recurrent-mode-policy",
+            "890m_m3_outlier_pair_midband_v1",
+            "--recurrent-group-size-policy",
+            "890m_long_horizon_group_escape_v1",
+            "--recurrent-layer-group-size-override",
+            "layer:18=8",
+            "--paired-recurrent-group-size-policy",
+            "890m_long_horizon_group_escape_v1",
+            "--paired-recurrent-layer-group-size-override",
+            "layer:20=8",
+            "--paired-recurrent-mode-policy",
+            "890m_m3_outlier_pair_midband_v1",
+            "--paired-order-schedule",
+            "ABBA",
+            "--readout-recurrent-policy",
+            "890m_context_banded_v1",
+            "--readout-recurrent-mode-policy",
+            "890m_m3_outlier_pair_midband_v1",
+            "--warmup-in-process-repeats",
+            "1",
+            "--in-process-repeats",
+            "3",
+        ],
+    )
+    serving_args = serving_bench.parse_args()
+    assert serving_args.recurrent_mode_policy == "890m_m3_outlier_pair_midband_v1"
+    assert serving_args.recurrent_group_size_policy == "890m_long_horizon_group_escape_v1"
+    assert serving_args.recurrent_layer_group_size_override == ["layer:18=8"]
+    assert serving_args.paired_recurrent_group_size_policy == "890m_long_horizon_group_escape_v1"
+    assert serving_args.paired_recurrent_layer_group_size_override == ["layer:20=8"]
+    assert serving_args.paired_recurrent_mode_policy == "890m_m3_outlier_pair_midband_v1"
+    assert serving_args.paired_order_schedule == "ABBA"
+    assert serving_args.readout_recurrent_policy == "890m_context_banded_v1"
+    assert serving_args.readout_recurrent_mode_policy == "890m_m3_outlier_pair_midband_v1"
+    assert serving_args.readout_recurrent_renorm_interval_override == []
+    assert serving_args.warmup_in_process_repeats == 1
+    assert serving_args.in_process_repeats == 3
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_deltanet_statecache_localization.py",
+            "--prefix-length",
+            "4096",
+            "--readout-recurrent-renorm-interval-override",
+            "layer:18=2",
+            "--readout-recurrent-mode-override",
+            "layer:18=M3",
+            "--recurrent-group-size-policy",
+            "890m_long_horizon_group_escape_v1",
+            "--recurrent-layer-group-size-override",
+            "layer:18=8",
+        ],
+    )
+    import benchmarks.bench_qwen35_deltanet_statecache_localization as localization_bench
+
+    localization_args = localization_bench.parse_args()
+    assert localization_args.readout_recurrent_renorm_interval_override == ["layer:18=2"]
+    assert localization_args.readout_recurrent_mode_override == ["layer:18=M3"]
+    assert localization_args.recurrent_group_size_policy == "890m_long_horizon_group_escape_v1"
+    assert localization_args.recurrent_layer_group_size_override == ["layer:18=8"]
+
+
+def test_parse_qwen35_deltanet_statecache_int_overrides_parses_group_size() -> None:
+    parsed = parse_qwen35_deltanet_statecache_int_overrides(
+        ["layer:18=8", "layer:20=16"],
+        value_name="group_size",
+        minimum=1,
+    )
+    assert parsed == {18: 8, 20: 16}
 
 
 def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2416,3 +3141,90 @@ def test_qwen35_scorer_report_summarizes_layer23(tmp_path: Path) -> None:
     assert "23" in output
     assert "0.750" in output
     assert "0.945" in output
+
+
+def test_qwen35_statecache_serving_repeat_summary_aggregates_measurements() -> None:
+    import benchmarks.bench_qwen35_deltanet_statecache_serving as serving_bench
+
+    summary = serving_bench._summarize_in_process_repeat_records(
+        [
+            {
+                "prefill_ms": 10.0,
+                "deltanet_statecache_decode_ms_per_step": 20.0,
+                "deltanet_statecache_prefill_cuda_peak_memory_reserved_bytes": 100,
+                "deltanet_statecache_decode_cuda_peak_memory_reserved_bytes": 200,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+            {
+                "prefill_ms": 14.0,
+                "deltanet_statecache_decode_ms_per_step": 28.0,
+                "deltanet_statecache_prefill_cuda_peak_memory_reserved_bytes": 140,
+                "deltanet_statecache_decode_cuda_peak_memory_reserved_bytes": 260,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+        ],
+        warmup_in_process_repeats=1,
+    )
+
+    assert summary["benchmark_measurement_mode"] == "in_process_repeated"
+    assert summary["warmup_in_process_repeats"] == 1
+    assert summary["in_process_repeats"] == 2
+    assert summary["prefill_ms"] == 12.0
+    assert summary["deltanet_statecache_decode_ms_per_step"] == 24.0
+    assert summary["deltanet_statecache_prefill_cuda_peak_memory_reserved_bytes"] == 120
+    assert summary["deltanet_statecache_decode_cuda_peak_memory_reserved_bytes"] == 230
+    assert summary["in_process_repeat_generated_ids_consistent"] is True
+    assert summary["in_process_repeat_decode_ms_per_step_values"] == [20.0, 28.0]
+
+
+def test_qwen35_statecache_serving_paired_repeat_summary_aggregates_measurements() -> None:
+    import benchmarks.bench_qwen35_deltanet_statecache_serving as serving_bench
+
+    summary = serving_bench._summarize_paired_in_process_repeat_records(
+        [
+            {
+                "prefill_ms": 10.0,
+                "deltanet_statecache_decode_ms_per_step": 20.0,
+                "deltanet_statecache_effective_recurrent_compression_ratio": 3.2,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+            {
+                "prefill_ms": 14.0,
+                "deltanet_statecache_decode_ms_per_step": 24.0,
+                "deltanet_statecache_effective_recurrent_compression_ratio": 3.2,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+        ],
+        [
+            {
+                "prefill_ms": 11.0,
+                "deltanet_statecache_decode_ms_per_step": 18.0,
+                "deltanet_statecache_effective_recurrent_compression_ratio": 2.57,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+            {
+                "prefill_ms": 15.0,
+                "deltanet_statecache_decode_ms_per_step": 22.0,
+                "deltanet_statecache_effective_recurrent_compression_ratio": 2.57,
+                "deltanet_statecache_generated_ids": [1, 2],
+            },
+        ],
+        warmup_in_process_repeats=1,
+        in_process_repeats=1,
+        candidate_label="m3_outliers",
+        order_schedule="AB",
+    )
+
+    assert summary["benchmark_measurement_mode"] == "in_process_paired_repeated"
+    assert summary["warmup_in_process_repeats"] == 1
+    assert summary["in_process_repeats"] == 1
+    assert summary["paired_order_schedule"] == "AB"
+    assert summary["paired_baseline_sample_count"] == 2
+    assert summary["paired_candidate_sample_count"] == 2
+    assert summary["paired_candidate_label"] == "m3_outliers"
+    assert summary["paired_generated_ids_match_all"] is True
+    assert summary["baseline_decode_ms_per_step"] == 22.0
+    assert summary["candidate_decode_ms_per_step"] == 20.0
+    assert summary["paired_decode_ms_per_step_delta"] == -2.0
+    assert summary["baseline_recurrent_compression_ratio"] == 3.2
+    assert summary["candidate_recurrent_compression_ratio"] == 2.57
