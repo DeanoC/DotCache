@@ -1,0 +1,157 @@
+{
+  "generated_from": {
+    "knob_artifacts": [
+      "benchmarks/results/gemma4_profile_sweep_20260404_knob_grid_focus/gemma4_profile_sweep.jsonl"
+    ],
+    "profile_artifacts": [
+      "benchmarks/results/gemma4_profile_sweep_20260404_matrix/gemma4_profile_sweep.jsonl",
+      "benchmarks/results/gemma4_profile_sweep_20260404_matrix_4096/gemma4_profile_sweep.jsonl",
+      "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_confirm/gemma4_profile_sweep.jsonl"
+    ],
+    "value_artifacts": [
+      "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_values_final/gemma4_profile_sweep.jsonl"
+    ]
+  },
+  "model_family": "gemma4_text",
+  "rules": [
+    {
+      "knob_source_artifact": null,
+      "max_decode_budget": 23,
+      "max_prompt_length": 2047,
+      "min_decode_budget": 1,
+      "min_prompt_length": 1,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": null,
+        "group_size": 32,
+        "profile": "balanced_layer0_8",
+        "tokens_per_page": 4
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_matrix/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 16,
+      "source_prompt_length": 1024,
+      "value_source_artifact": null
+    },
+    {
+      "knob_source_artifact": null,
+      "max_decode_budget": null,
+      "max_prompt_length": 2047,
+      "min_decode_budget": 24,
+      "min_prompt_length": 1,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": null,
+        "group_size": 32,
+        "profile": "balanced",
+        "tokens_per_page": 4
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_confirm/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 24,
+      "source_prompt_length": 1024,
+      "value_source_artifact": null
+    },
+    {
+      "knob_source_artifact": null,
+      "max_decode_budget": 23,
+      "max_prompt_length": 4095,
+      "min_decode_budget": 1,
+      "min_prompt_length": 2048,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": null,
+        "group_size": 32,
+        "profile": "balanced_layer0_8",
+        "tokens_per_page": 4
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_matrix/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 16,
+      "source_prompt_length": 2048,
+      "value_source_artifact": null
+    },
+    {
+      "knob_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_knob_grid_focus/gemma4_profile_sweep.jsonl",
+      "max_decode_budget": null,
+      "max_prompt_length": 4095,
+      "min_decode_budget": 24,
+      "min_prompt_length": 2048,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": null,
+        "group_size": 16,
+        "profile": "balanced_layer0_8",
+        "tokens_per_page": 4
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_confirm/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 24,
+      "source_prompt_length": 2048,
+      "value_source_artifact": null
+    },
+    {
+      "knob_source_artifact": null,
+      "max_decode_budget": 23,
+      "max_prompt_length": null,
+      "min_decode_budget": 1,
+      "min_prompt_length": 4096,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": null,
+        "group_size": 32,
+        "profile": "balanced",
+        "tokens_per_page": 4
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_matrix_4096/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 16,
+      "source_prompt_length": 4096,
+      "value_source_artifact": null
+    },
+    {
+      "knob_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_knob_grid_focus/gemma4_profile_sweep.jsonl",
+      "max_decode_budget": 31,
+      "max_prompt_length": null,
+      "min_decode_budget": 24,
+      "min_prompt_length": 4096,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": [
+          0,
+          4,
+          8,
+          9,
+          14
+        ],
+        "group_size": 16,
+        "profile": "balanced_layer0_8",
+        "tokens_per_page": 8
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_confirm/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 24,
+      "source_prompt_length": 4096,
+      "value_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_values_final/gemma4_profile_sweep.jsonl"
+    },
+    {
+      "knob_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_knob_grid_focus/gemma4_profile_sweep.jsonl",
+      "max_decode_budget": null,
+      "max_prompt_length": null,
+      "min_decode_budget": 32,
+      "min_prompt_length": 4096,
+      "preset": {
+        "bits_k": 4,
+        "exact_value_layers": [
+          0,
+          4,
+          8,
+          9,
+          14
+        ],
+        "group_size": 16,
+        "profile": "balanced_layer0",
+        "tokens_per_page": 8
+      },
+      "profile_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_matrix_4096/gemma4_profile_sweep.jsonl",
+      "source_decode_budget": 32,
+      "source_prompt_length": 4096,
+      "value_source_artifact": "benchmarks/results/gemma4_profile_sweep_20260404_adaptive_values_final/gemma4_profile_sweep.jsonl"
+    }
+  ],
+  "schema_version": 1
+}

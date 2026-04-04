@@ -595,32 +595,73 @@ That profile only applies to the six `full_attention` layers, disables the recen
 
 ### ROCm 890M Snapshot
 
-The first full ROCm laptop sweep on `Qwen/Qwen3.5-0.8B` is now checked in under:
+The current checked-in ROCm laptop sweep and follow-up StateCache rerun are under:
 
 - [benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330](./benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330)
 - [benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330](./benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330)
 - [benchmarks/results/qwen35_rocm_890m_statecache_20260330](./benchmarks/results/qwen35_rocm_890m_statecache_20260330)
+- [benchmarks/results/qwen35_rocm_890m_statecache_discovery_20260331](./benchmarks/results/qwen35_rocm_890m_statecache_discovery_20260331)
 
 The short version is:
 
 - the shared ROCm lane works and the Qwen3.5 fast path is active
-- dense native Qwen3.5 is still the best general serving lane on this `890M` from `2048` through `8192`
-- StateCache is a better compressed-hybrid fit than attention-subset DotCache on this machine
+- attention-subset DotCache is still not the right local path on this `890M`
+- the promoted local `0.8B` StateCache lane is `post_update_m0`, recurrent-only, `8b / M0`, `renorm=0`
+- the promoted local `4B` StateCache lane is `bnb_8bit`, `post_update_m0`, with recurrent `M3` escapes on layers `0/1/2`
+- `4B` still hits a real exact-length ceiling below `8192` on this machine
 - the best current ROCm DotCache profile is [qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml](./configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml)
-- all tested lanes still OOM at exact `16384`
+- `0.8B` still OOMs at exact `16384`
 
-Warm-cache serving snapshot on this laptop:
+Current warm-cache StateCache serving snapshot on this laptop:
 
-| Prompt | Dense Decode | Best DotCache Decode | StateCache Decode | Best Lane |
-|---|---:|---:|---:|---|
-| `512` | `56.11 ms/step` | n/a | `42.57 ms/step` | `StateCache` |
-| `2048` | `51.99 ms/step` | `189.20 ms/step` | `58.73 ms/step` | `Dense` |
-| `8192` | `94.41 ms/step` | `191.36 ms/step` | `124.04 ms/step` | `Dense` |
-| `16384` | OOM | OOM | OOM | none |
+| Model | Prompt | Preset Decode | Practical Read |
+|---|---:|---:|---|
+| `Qwen3.5-0.8B` | `512` | `53.34 ms/step` | `post_update_m0` wins locally |
+| `Qwen3.5-0.8B` | `2048` | `64.47 ms/step` | promoted local serving lane |
+| `Qwen3.5-0.8B` | `8192` | `180.79 ms/step` | promoted local serving lane |
+| `Qwen3.5-0.8B` | `16384` | OOM | real capacity ceiling |
+| `Qwen3.5-4B bnb_8bit` | `2048` | `223.00 ms/step` | preferred local `4B` lane |
+| `Qwen3.5-4B bnb_8bit` | `4096` | `242.74 ms/step` | preferred local `4B` lane |
+| `Qwen3.5-4B bnb_8bit` | `8192` | OOM | real capacity ceiling |
 
-The important implementation read from the ROCm DotCache tuning pass is that shortlist helps a lot on this GPU, but it is still not enough to make the attention-subset path win. The best shortlist baseline improved the old third-pass DotCache lane from `618.59 -> 191.36 ms/step` at `8192`, but it still stayed behind both dense and StateCache.
+The important implementation read from the ROCm DotCache tuning pass is still that shortlist helps a lot on this GPU, but it is not enough to make the attention-subset path competitive with the local StateCache lanes.
 
 The important machine-limit read is that `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is not supported on this ROCm stack, so the `16384` OOMs are still real capacity limits rather than an allocator workaround opportunity.
+
+For reproducible local 890M StateCache runs, use:
+
+```bash
+bash scripts/run_qwen35_0p8b_statecache_890m.sh
+bash scripts/run_qwen35_0p8b_statecache_890m.sh readout
+bash scripts/run_qwen35_4b_statecache_890m.sh
+bash scripts/run_qwen35_4b_statecache_890m.sh readout
+```
+
+Those wrappers encode the currently recommended local presets:
+
+- `0.8B`: `post_update_m0`, recurrent-only, `8b / M0`, `renorm=0`
+- `4B`: `bnb_8bit`, `post_update_m0`, recurrent `M3` escapes on `0/1/2`
+
+They intentionally default to the known-safe prompt ladders on this machine:
+
+- `0.8B` serving: `512 2048 8192`
+- `4B` serving: `2048 4096`
+
+Use the checked-in discovery bundle and [docs/performance_journal.md](./docs/performance_journal.md) if you want the exact negative boundary runs as well.
+
+If you want to test whether DotCache KV reduction buys more headroom for the same local StateCache lane, there is already a combined native wrapper on this machine:
+
+```bash
+bash scripts/run_qwen35_0p8b_hybrid_890m.sh
+```
+
+That wrapper uses:
+
+- the best checked-in 890M attention-subset profile
+- DotCache on the six `full_attention` layers
+- StateCache on the eighteen `linear_attention` layers
+
+It is the right next experiment for asking whether shrinking token-growing KV on this laptop creates useful extra room for the resident StateCache path.
 
 For the external GGUF / `llama.cpp` reference lane, use:
 

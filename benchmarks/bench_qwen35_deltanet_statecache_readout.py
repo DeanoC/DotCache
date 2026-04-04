@@ -9,6 +9,7 @@ from transformers import AutoConfig
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.integrations.qwen35 import (
     Qwen35DeltaNetStateHarness,
+    parse_qwen35_deltanet_statecache_renorm_overrides,
     parse_qwen35_deltanet_statecache_mode_overrides,
     transformers_available,
 )
@@ -44,7 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conv-layer-bit-overrides", nargs="*", default=[])
     parser.add_argument("--state-stage", choices=["readout_only_m0", "post_update_m0"], default="readout_only_m0")
     parser.add_argument("--renorm-interval", type=int, default=0)
+    parser.add_argument("--recurrent-renorm-interval-override", action="append", default=[])
+    parser.add_argument("--conv-renorm-interval-override", action="append", default=[])
+    parser.add_argument("--recurrent-mode-policy", choices=["890m_m3_outlier_pair_midband_v1"], default=None)
     parser.add_argument("--recurrent-mode-override", action="append", default=[])
+    parser.add_argument("--readout-recurrent-policy", choices=["890m_context_banded_v1"], default=None)
+    parser.add_argument("--readout-recurrent-mode-policy", choices=["890m_m3_outlier_pair_midband_v1"], default=None)
     parser.add_argument("--conv-mode-override", action="append", default=[])
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
@@ -93,7 +99,12 @@ def _run_case(
     conv_layer_bits_overrides: dict[int, int],
     state_stage: str,
     renorm_interval: int,
+    recurrent_renorm_interval_overrides: dict[int, int],
+    conv_renorm_interval_overrides: dict[int, int],
+    recurrent_mode_policy: str | None,
     recurrent_mode_overrides: dict[int, str],
+    readout_recurrent_policy: str | None,
+    readout_recurrent_mode_policy: str | None,
     conv_mode_overrides: dict[int, str],
     base_record: dict[str, object],
     continue_on_error: bool,
@@ -111,7 +122,12 @@ def _run_case(
             conv_layer_bits_overrides=conv_layer_bits_overrides,
             state_stage=state_stage,
             renorm_interval=renorm_interval,
+            recurrent_renorm_interval_overrides=recurrent_renorm_interval_overrides,
+            conv_renorm_interval_overrides=conv_renorm_interval_overrides,
+            recurrent_mode_policy=recurrent_mode_policy,
             recurrent_mode_overrides=recurrent_mode_overrides,
+            readout_recurrent_policy=readout_recurrent_policy,
+            readout_recurrent_mode_policy=readout_recurrent_mode_policy,
             conv_mode_overrides=conv_mode_overrides,
         )
     except Exception as exc:  # pragma: no cover - benchmark failure path
@@ -176,6 +192,12 @@ def main() -> None:
     }
     recurrent_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.recurrent_mode_override)
     conv_mode_overrides = parse_qwen35_deltanet_statecache_mode_overrides(args.conv_mode_override)
+    recurrent_renorm_interval_overrides = parse_qwen35_deltanet_statecache_renorm_overrides(
+        args.recurrent_renorm_interval_override
+    )
+    conv_renorm_interval_overrides = parse_qwen35_deltanet_statecache_renorm_overrides(
+        args.conv_renorm_interval_override
+    )
     if recurrent_mode_overrides:
         common_record["deltanet_statecache_recurrent_mode_overrides"] = {
             str(layer_id): mode for layer_id, mode in sorted(recurrent_mode_overrides.items())
@@ -183,6 +205,14 @@ def main() -> None:
     if conv_mode_overrides:
         common_record["deltanet_statecache_conv_mode_overrides"] = {
             str(layer_id): mode for layer_id, mode in sorted(conv_mode_overrides.items())
+        }
+    if recurrent_renorm_interval_overrides:
+        common_record["deltanet_statecache_recurrent_renorm_interval_overrides"] = {
+            str(layer_id): int(interval) for layer_id, interval in sorted(recurrent_renorm_interval_overrides.items())
+        }
+    if conv_renorm_interval_overrides:
+        common_record["deltanet_statecache_conv_renorm_interval_overrides"] = {
+            str(layer_id): int(interval) for layer_id, interval in sorted(conv_renorm_interval_overrides.items())
         }
 
     for repeat_count in args.repeat_counts:
@@ -201,7 +231,12 @@ def main() -> None:
             conv_layer_bits_overrides=conv_layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
+            recurrent_renorm_interval_overrides=recurrent_renorm_interval_overrides,
+            conv_renorm_interval_overrides=conv_renorm_interval_overrides,
+            recurrent_mode_policy=args.recurrent_mode_policy,
             recurrent_mode_overrides=recurrent_mode_overrides,
+            readout_recurrent_policy=args.readout_recurrent_policy,
+            readout_recurrent_mode_policy=args.readout_recurrent_mode_policy,
             conv_mode_overrides=conv_mode_overrides,
             base_record={**common_record, "prompt_mode": "repeat_count", "repeat_count": repeat_count},
             continue_on_error=args.continue_on_error,
@@ -226,7 +261,12 @@ def main() -> None:
             conv_layer_bits_overrides=conv_layer_bit_overrides,
             state_stage=args.state_stage,
             renorm_interval=args.renorm_interval,
+            recurrent_renorm_interval_overrides=recurrent_renorm_interval_overrides,
+            conv_renorm_interval_overrides=conv_renorm_interval_overrides,
+            recurrent_mode_policy=args.recurrent_mode_policy,
             recurrent_mode_overrides=recurrent_mode_overrides,
+            readout_recurrent_policy=args.readout_recurrent_policy,
+            readout_recurrent_mode_policy=args.readout_recurrent_mode_policy,
             conv_mode_overrides=conv_mode_overrides,
             base_record={**common_record, "prompt_mode": "exact_length", "prompt_length": prompt_length},
             continue_on_error=args.continue_on_error,

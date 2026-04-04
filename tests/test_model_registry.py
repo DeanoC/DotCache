@@ -43,11 +43,13 @@ def test_model_registry_records_dotcache_ready_models_as_harness_backed() -> Non
     assert smollm17b_spec.runtime == "dotcache_hf"
 
 
-def test_model_registry_marks_qwen35_as_reference_only() -> None:
+def test_model_registry_marks_qwen35_4b_as_local_stretch_lane() -> None:
     spec = get_model_spec("qwen35_4b_hf")
     assert spec.dotcache_ready is False
-    assert spec.local_tier == "reference_only"
+    assert spec.local_tier == "stretch_here"
     assert spec.family == "qwen3_5_hybrid"
+    assert spec.runtime == "transformers"
+    assert spec.benchmark_harness == "qwen35_text"
 
 
 def test_model_registry_marks_qwen35_0p8b_as_runnable_dense_text_lane() -> None:

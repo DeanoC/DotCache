@@ -20,7 +20,7 @@ mps = [
   "torch>=2.5",
 ]
 hf = [
-  "transformers>=5.3.0",
+  "transformers>=5.5.0",
   "sentencepiece>=0.2.1",
   "safetensors>=0.7.0",
 ]
