@@ -47,8 +47,8 @@
 
 | context | exact_decode_ms | shortlist_decode_ms | learned_decode_ms | learned_vs_exact_speedup | learned_vs_shortlist_speedup | learned_m3_frac | learned_score_ms | learned_mix_ms | selector_us_per_invocation |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1024 | 520.855 | 522.212 | 171.895 | 3.030 | 3.038 | 0.995 | 44.046 | 38.038 | 24.955 |
-| 2048 | 838.435 | 621.426 | 228.777 | 3.665 | 2.716 | 0.995 | 79.922 | 67.007 | 24.822 |
+| 1024 | 507.437 | 524.766 | 169.089 | 3.001 | 3.103 | 0.995 | 42.319 | 36.765 | 24.566 |
+| 2048 | 824.979 | 642.788 | 224.143 | 3.681 | 2.868 | 0.995 | 77.845 | 66.103 | 24.761 |
 
 ## Notes
 
