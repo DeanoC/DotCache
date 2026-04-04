@@ -45,7 +45,10 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
+    _advance_attention_subset_cache_placeholder,
+    _extract_attention_subset_prefill_tensors,
     _configure_qwen35_linear_attention_runtime,
+    _replace_attention_subset_cache_with_placeholders,
     _decode_input_id_sequence,
     _qwen35_mps_serving_shortlist_heuristic,
 )
@@ -78,6 +81,19 @@ class _TinyTokenizer:
                 continue
             filtered.append(str(int(token_id)))
         return " ".join(filtered)
+
+
+class _FakeLayerCacheRecord:
+    def __init__(self, *, keys=None, values=None):
+        self.keys = keys
+        self.values = values
+
+
+class _FakeLayerStructuredCache:
+    def __init__(self, *, layers, conv_states=None, recurrent_states=None):
+        self.layers = list(layers)
+        self.conv_states = list(conv_states or [])
+        self.recurrent_states = list(recurrent_states or [])
 
 
 def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
@@ -468,6 +484,51 @@ def test_qwen35_adapter_partitions_native_hybrid_state() -> None:
     assert summary["hybrid_token_growing_layer_count"] == 1
     assert summary["hybrid_fixed_resident_layer_ids"] == [0, 1, 2]
     assert summary["hybrid_token_growing_layer_ids"] == [3]
+
+
+def test_qwen35_adapter_partitions_layer_structured_hybrid_state() -> None:
+    model = _tiny_qwen35_model()
+    key_tensor = torch.ones((1, 1, 3, 16), dtype=torch.float32)
+    value_tensor = torch.full((1, 1, 3, 16), 2.0, dtype=torch.float32)
+    cache = _FakeLayerStructuredCache(
+        layers=[
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(keys=key_tensor, values=value_tensor),
+        ],
+        conv_states=[torch.zeros((1, 16), dtype=torch.float32) for _ in range(3)],
+        recurrent_states=[torch.zeros((1, 16), dtype=torch.float32) for _ in range(3)],
+    )
+    partition = Qwen35TextModelAdapter(model=model).partition_hybrid_state(cache)
+    assert partition.fixed_resident_layer_ids == [0, 1, 2]
+    assert partition.token_growing_layer_ids == [3]
+    assert torch.equal(partition.token_growing_layers[0].key_cache, key_tensor)
+    assert torch.equal(partition.token_growing_layers[0].value_cache, value_tensor)
+
+
+def test_qwen35_attention_subset_prefill_helpers_support_layer_structured_cache() -> None:
+    key_tensor = torch.randn((1, 1, 4, 8), dtype=torch.float32)
+    value_tensor = torch.randn((1, 1, 4, 8), dtype=torch.float32)
+    cache = _FakeLayerStructuredCache(
+        layers=[
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(keys=key_tensor.clone(), values=value_tensor.clone()),
+        ]
+    )
+    extracted = _extract_attention_subset_prefill_tensors(cache, [1])
+    assert torch.equal(extracted[1][0], key_tensor)
+    assert torch.equal(extracted[1][1], value_tensor)
+
+    _replace_attention_subset_cache_with_placeholders(cache, [1])
+    assert cache.layers[1].keys.shape[2] == 0
+    assert cache.layers[1].values.shape[2] == 0
+
+    cache.layers[1].keys = key_tensor[:, :, :1, :].clone()
+    cache.layers[1].values = value_tensor[:, :, :1, :].clone()
+    _advance_attention_subset_cache_placeholder(cache, 1)
+    assert cache.layers[1].keys.shape[2] == 2
+    assert cache.layers[1].values.shape[2] == 2
 
 
 def test_qwen35_deltanet_state_adapter_wraps_only_linear_layers() -> None:

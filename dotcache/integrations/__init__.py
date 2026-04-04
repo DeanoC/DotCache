@@ -35,7 +35,7 @@ try:
         run_gemma4_text_replay_harness,
     )
     _gemma4_import_error = None
-except ModuleNotFoundError as exc:
+except Exception as exc:  # pragma: no cover - depends on local transformers surface
     _gemma4_import_error = exc
 from .qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,

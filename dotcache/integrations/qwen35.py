@@ -328,14 +328,10 @@ def _hybrid_layer_records(model_or_config: Any) -> list[dict[str, Any]]:
 
 
 def _extract_attention_subset_prefill_tensors(cache: Any, layer_ids: list[int]) -> dict[int, tuple[Any, Any]]:
-    key_cache = getattr(cache, "key_cache", None)
-    value_cache = getattr(cache, "value_cache", None)
-    if key_cache is None or value_cache is None:
-        raise ValueError("Qwen3.5 attention-subset DotCache path requires key_cache/value_cache on past_key_values")
     extracted: dict[int, tuple[Any, Any]] = {}
     for layer_id in layer_ids:
-        layer_keys = key_cache[layer_id]
-        layer_values = value_cache[layer_id]
+        layer_keys = _cache_component_value(cache, "key_cache", layer_id)
+        layer_values = _cache_component_value(cache, "value_cache", layer_id)
         if layer_keys is None or layer_values is None:
             raise ValueError(f"Qwen3.5 attention layer {layer_id} is missing prefill KV tensors")
         extracted[int(layer_id)] = (layer_keys, layer_values)
@@ -362,30 +358,29 @@ def _tensor_to_float32_numpy(value: Any) -> np.ndarray:
 
 
 def _replace_attention_subset_cache_with_placeholders(cache: Any, layer_ids: list[int]) -> None:
-    key_cache = getattr(cache, "key_cache", None)
-    value_cache = getattr(cache, "value_cache", None)
-    if key_cache is None or value_cache is None:
-        raise ValueError("Qwen3.5 attention-subset DotCache path requires key_cache/value_cache on past_key_values")
     for layer_id in layer_ids:
-        layer_keys = key_cache[layer_id]
-        layer_values = value_cache[layer_id]
+        layer_keys = _cache_component_value(cache, "key_cache", layer_id)
+        layer_values = _cache_component_value(cache, "value_cache", layer_id)
         if layer_keys is None or layer_values is None:
             continue
-        key_cache[layer_id] = layer_keys[..., :0].contiguous()
-        value_cache[layer_id] = layer_values[..., :0].contiguous()
+        key_placeholder = layer_keys[:, :, :0, :].contiguous()
+        value_placeholder = layer_values[:, :, :0, :].contiguous()
+        if not _set_cache_component_value(cache, "key_cache", layer_id, key_placeholder):
+            raise ValueError(f"Qwen3.5 attention layer {layer_id} key cache is not mutable")
+        if not _set_cache_component_value(cache, "value_cache", layer_id, value_placeholder):
+            raise ValueError(f"Qwen3.5 attention layer {layer_id} value cache is not mutable")
 
 
 def _advance_attention_subset_cache_placeholder(cache: Any, layer_id: int) -> None:
-    key_cache = getattr(cache, "key_cache", None)
-    value_cache = getattr(cache, "value_cache", None)
-    if key_cache is None or value_cache is None:
-        return
-    layer_keys = key_cache[layer_id]
-    layer_values = value_cache[layer_id]
+    layer_keys = _cache_component_value(cache, "key_cache", layer_id)
+    layer_values = _cache_component_value(cache, "value_cache", layer_id)
     if layer_keys is None or layer_values is None:
         return
-    key_cache[layer_id] = torch.cat([layer_keys, layer_keys[:, :, :1, :]], dim=2)
-    value_cache[layer_id] = torch.cat([layer_values, layer_values[:, :, :1, :]], dim=2)
+    if layer_keys.shape[2] == 0 or layer_values.shape[2] == 0:
+        return
+    if not _set_cache_component_value(cache, "key_cache", layer_id, torch.cat([layer_keys, layer_keys[:, :, :1, :]], dim=2)):
+        return
+    _set_cache_component_value(cache, "value_cache", layer_id, torch.cat([layer_values, layer_values[:, :, :1, :]], dim=2))
 
 
 def _clone_qwen35_past_key_values(cache: Any) -> Any:
@@ -509,12 +504,17 @@ def _iter_cache_tensors(cache: Any, *, _seen: set[int] | None = None):
         return
 
     for attr_name in (
+        "layers",
         "key_cache",
         "value_cache",
         "kv_states",
+        "keys",
+        "values",
         "conv_states",
+        "conv_state",
         "ssm_states",
         "recurrent_states",
+        "recurrent_state",
         "attention_mask_cache",
         "position_cache",
     ):
@@ -539,14 +539,7 @@ def _hybrid_cache_nbytes(cache: Any) -> int:
 
 
 def _cache_component_nbytes(cache: Any, attr_name: str, layer_id: int) -> int:
-    values = getattr(cache, attr_name, None)
-    if values is None:
-        return 0
-    if not isinstance(values, list | tuple):
-        return 0
-    if layer_id >= len(values):
-        return 0
-    value = values[layer_id]
+    value = _cache_component_value(cache, attr_name, layer_id)
     if value is None:
         return 0
     return _hybrid_cache_nbytes(value)
@@ -554,13 +547,64 @@ def _cache_component_nbytes(cache: Any, attr_name: str, layer_id: int) -> int:
 
 def _cache_component_value(cache: Any, attr_name: str, layer_id: int) -> Any | None:
     values = getattr(cache, attr_name, None)
-    if values is None:
-        return None
-    if not isinstance(values, list | tuple):
-        return None
-    if layer_id >= len(values):
-        return None
-    return values[layer_id]
+    if values is not None:
+        try:
+            return values[layer_id]
+        except Exception:
+            pass
+    layers = getattr(cache, "layers", None)
+    if layers is not None:
+        try:
+            layer = layers[layer_id]
+        except Exception:
+            layer = None
+        if layer is not None:
+            for layer_attr_name in _cache_component_layer_attr_names(attr_name):
+                if hasattr(layer, layer_attr_name):
+                    return getattr(layer, layer_attr_name)
+    to_legacy = getattr(cache, "to_legacy_cache", None)
+    if callable(to_legacy):
+        try:
+            legacy = to_legacy()
+        except Exception:
+            legacy = None
+        if legacy is not None and legacy is not cache:
+            return _cache_component_value(legacy, attr_name, layer_id)
+    return None
+
+
+def _set_cache_component_value(cache: Any, attr_name: str, layer_id: int, value: Any) -> bool:
+    values = getattr(cache, attr_name, None)
+    if values is not None:
+        try:
+            values[layer_id] = value
+            return True
+        except Exception:
+            pass
+    layers = getattr(cache, "layers", None)
+    if layers is not None:
+        try:
+            layer = layers[layer_id]
+        except Exception:
+            layer = None
+        if layer is not None:
+            for layer_attr_name in _cache_component_layer_attr_names(attr_name):
+                if hasattr(layer, layer_attr_name):
+                    setattr(layer, layer_attr_name, value)
+                    return True
+    return False
+
+
+def _cache_component_layer_attr_names(attr_name: str) -> tuple[str, ...]:
+    if attr_name == "key_cache":
+        return ("keys", "key_cache")
+    if attr_name == "value_cache":
+        return ("values", "value_cache")
+    if attr_name == "conv_states":
+        return ("conv_states", "conv_state")
+    if attr_name == "recurrent_states":
+        return ("recurrent_states", "recurrent_state")
+    return (attr_name,)
 
 
 @dataclass(slots=True)
