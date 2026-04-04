@@ -78,6 +78,16 @@ def gemma4_full_attention_source_layers(model_or_config: Any) -> tuple[int, ...]
     )
 
 
+def gemma4_sliding_attention_source_layers(model_or_config: Any) -> tuple[int, ...]:
+    layer_types = _gemma4_layer_types(model_or_config)
+    unique_layer_count = _gemma4_unique_kv_layer_count(model_or_config)
+    return tuple(
+        layer_idx
+        for layer_idx, layer_type in enumerate(layer_types[:unique_layer_count])
+        if layer_type == "sliding_attention"
+    )
+
+
 def _gemma4_first_shared_layer_idx(model_or_config: Any) -> int:
     config = _gemma4_text_config(model_or_config)
     shared_count = int(getattr(config, "num_kv_shared_layers", 0) or 0)
@@ -121,8 +131,16 @@ def gemma4_text_recommended_dotcache_config(
     tokens_per_page: int = 4,
     group_size: int = 32,
     profile: str = "balanced",
+    extra_exact_key_layers: Sequence[int] = (),
+    extra_exact_value_layers: Sequence[int] = (),
 ) -> DotCacheConfig:
     normalized_profile = str(profile).strip().lower()
+    if normalized_profile == "balanced_layer0":
+        normalized_profile = "balanced"
+        extra_exact_key_layers = tuple(extra_exact_key_layers) + (0,)
+    elif normalized_profile == "balanced_layer0_8":
+        normalized_profile = "balanced"
+        extra_exact_key_layers = tuple(extra_exact_key_layers) + (0, 8)
     base = DotCacheConfig(
         head_dim=int(_gemma4_text_config(model_or_config).head_dim),
         group_size=int(group_size),
@@ -131,23 +149,43 @@ def gemma4_text_recommended_dotcache_config(
         tokens_per_page=int(tokens_per_page),
     )
     full_attention_layers = gemma4_full_attention_source_layers(model_or_config)
+    extra_key_layers = tuple(sorted({int(layer_idx) for layer_idx in extra_exact_key_layers}))
+    extra_value_layers = tuple(sorted({int(layer_idx) for layer_idx in extra_exact_value_layers}))
     if normalized_profile == "aggressive":
         return replace(
             base,
-            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
-            value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
+            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in sorted(set(full_attention_layers) | set(extra_key_layers))),
+            value_mode_overrides=tuple(
+                f"layer:{layer_idx}=M3" for layer_idx in sorted(set(full_attention_layers) | set(extra_value_layers))
+            ),
         )
     if normalized_profile == "value_exact":
-        return replace(base, default_mode_v="M3")
+        return replace(
+            base,
+            default_mode_v="M3",
+            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_key_layers),
+            value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
+        )
     if normalized_profile == "balanced":
         return replace(
             base,
             default_mode_v="M3",
-            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
+            key_mode_overrides=tuple(
+                f"layer:{layer_idx}=M3" for layer_idx in sorted(set(full_attention_layers) | set(extra_key_layers))
+            ),
+            value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
         )
     if normalized_profile == "exact":
-        return replace(base, default_mode_k="M3", default_mode_v="M3")
-    raise ValueError("profile must be one of aggressive, value_exact, balanced, exact")
+        return replace(
+            base,
+            default_mode_k="M3",
+            default_mode_v="M3",
+            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_key_layers),
+            value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
+        )
+    raise ValueError(
+        "profile must be one of aggressive, value_exact, balanced, balanced_layer0, balanced_layer0_8, exact"
+    )
 
 
 def _merge_summary_dicts(lhs: dict[str, Any], rhs: dict[str, Any]) -> dict[str, Any]:
@@ -244,13 +282,29 @@ class _Gemma4AggregateModelPagedKVCache:
         for cache in self._source_caches.values():
             cache.clear()
 
-    def ingest_prefill_cache(self, layer_id: int, keys: np.ndarray, values: np.ndarray, *, trace=None) -> None:
+    def ingest_prefill_cache(
+        self,
+        layer_id: int,
+        keys: np.ndarray,
+        values: np.ndarray,
+        *,
+        context_length: int | None = None,
+        trace=None,
+    ) -> None:
         cache, source_layer_id = self._resolve_cache(layer_id)
-        cache.ingest_prefill_cache(source_layer_id, keys, values, trace=trace)
+        cache.ingest_prefill_cache(source_layer_id, keys, values, context_length=context_length, trace=trace)
 
-    def ingest_prefill_cache_torch(self, layer_id: int, keys, values, *, trace=None) -> None:
+    def ingest_prefill_cache_torch(
+        self,
+        layer_id: int,
+        keys,
+        values,
+        *,
+        context_length: int | None = None,
+        trace=None,
+    ) -> None:
         cache, source_layer_id = self._resolve_cache(layer_id)
-        cache.ingest_prefill_cache_torch(source_layer_id, keys, values, trace=trace)
+        cache.ingest_prefill_cache_torch(source_layer_id, keys, values, context_length=context_length, trace=trace)
 
     def prepare_static_pages(self, *, trace=None) -> None:
         for cache in self._source_caches.values():
@@ -693,6 +747,7 @@ class Gemma4TextModelAdapter(LlamaDotCacheModelAdapter):
         self,
         prefill_layers: Sequence[tuple[np.ndarray, np.ndarray]],
         *,
+        context_length: int | None = None,
         trace=None,
     ) -> None:
         unique_layer_count = _gemma4_unique_kv_layer_count(self.model)
@@ -700,13 +755,20 @@ class Gemma4TextModelAdapter(LlamaDotCacheModelAdapter):
             raise ValueError("prefill_layers must align with Gemma4 unique KV cache layers")
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers[:unique_layer_count]):
-            self.model_kv_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values, trace=trace)
+            self.model_kv_cache.ingest_prefill_cache(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=context_length,
+                trace=trace,
+            )
         self.model_kv_cache.prepare_static_pages(trace=trace)
 
     def load_prefill_cache_tensors(
         self,
         prefill_layers: Sequence[tuple[Any, Any]],
         *,
+        context_length: int | None = None,
         trace=None,
     ) -> None:
         unique_layer_count = _gemma4_unique_kv_layer_count(self.model)
@@ -714,7 +776,13 @@ class Gemma4TextModelAdapter(LlamaDotCacheModelAdapter):
             raise ValueError("prefill_layers must align with Gemma4 unique KV cache layers")
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers[:unique_layer_count]):
-            self.model_kv_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values, trace=trace)
+            self.model_kv_cache.ingest_prefill_cache_torch(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=context_length,
+                trace=trace,
+            )
         self.model_kv_cache.prepare_static_pages(trace=trace)
 
 

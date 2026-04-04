@@ -659,36 +659,64 @@ class LlamaDotCacheModelAdapter:
             "per_layer": per_layer,
         }
 
-    def load_prefill_cache(self, past_key_values, *, trace: ExecutionTrace | None = None) -> None:
+    def load_prefill_cache(
+        self,
+        past_key_values,
+        *,
+        context_length: int | None = None,
+        trace: ExecutionTrace | None = None,
+    ) -> None:
         if _torch_backend_matches_device(self.backend, self.device.type):
-            self.load_prefill_cache_tensors(extract_past_key_values_tensors(past_key_values), trace=trace)
+            self.load_prefill_cache_tensors(
+                extract_past_key_values_tensors(past_key_values),
+                context_length=context_length,
+                trace=trace,
+            )
         else:
-            self.load_prefill_cache_arrays(extract_past_key_values_arrays(past_key_values), trace=trace)
+            self.load_prefill_cache_arrays(
+                extract_past_key_values_arrays(past_key_values),
+                context_length=context_length,
+                trace=trace,
+            )
 
     def load_prefill_cache_arrays(
         self,
         prefill_layers: Sequence[tuple[np.ndarray, np.ndarray]],
         *,
+        context_length: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> None:
         if len(prefill_layers) != self.model.config.num_hidden_layers:
             raise ValueError("prefill_layers must align with model.config.num_hidden_layers")
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
-            self.model_kv_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values, trace=trace)
+            self.model_kv_cache.ingest_prefill_cache(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=context_length,
+                trace=trace,
+            )
         self.model_kv_cache.prepare_static_pages(trace=trace)
 
     def load_prefill_cache_tensors(
         self,
         prefill_layers: Sequence[tuple[Any, Any]],
         *,
+        context_length: int | None = None,
         trace: ExecutionTrace | None = None,
     ) -> None:
         if len(prefill_layers) != self.model.config.num_hidden_layers:
             raise ValueError("prefill_layers must align with model.config.num_hidden_layers")
         self.model_kv_cache.clear()
         for layer_idx, (layer_keys, layer_values) in enumerate(prefill_layers):
-            self.model_kv_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values, trace=trace)
+            self.model_kv_cache.ingest_prefill_cache_torch(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=context_length,
+                trace=trace,
+            )
         self.model_kv_cache.prepare_static_pages(trace=trace)
 
 
@@ -913,9 +941,9 @@ def _run_dotcache_decode_inputs(
     profile_backend: bool = False,
 ) -> dict[str, Any]:
     if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
-        adapter.load_prefill_cache_tensors(prefill_layers)
+        adapter.load_prefill_cache_tensors(prefill_layers, context_length=int(input_ids.shape[1]))
     else:
-        adapter.load_prefill_cache_arrays(prefill_layers)
+        adapter.load_prefill_cache_arrays(prefill_layers, context_length=int(input_ids.shape[1]))
     _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
@@ -1016,9 +1044,9 @@ def _run_dotcache_greedy_decode(
     profile_backend: bool = False,
 ) -> dict[str, Any]:
     if prefill_layers and torch.is_tensor(prefill_layers[0][0]):
-        adapter.load_prefill_cache_tensors(prefill_layers)
+        adapter.load_prefill_cache_tensors(prefill_layers, context_length=int(input_ids.shape[1]))
     else:
-        adapter.load_prefill_cache_arrays(prefill_layers)
+        adapter.load_prefill_cache_arrays(prefill_layers, context_length=int(input_ids.shape[1]))
     _prewarm_torch_decode_layers(adapter, device=input_ids.device)
     adapter.set_mode("dotcache")
     adapter.reset_runtime_metrics()
@@ -1215,9 +1243,17 @@ def run_llama_generation_harness(
     prefill_trace = ExecutionTrace(capture_timings=profile)
     prefill_cuda_baseline = _begin_cuda_memory_region(input_ids.device) if profile else None
     _, prefill_ingest_ms = _timed_call(
-        lambda: adapter.load_prefill_cache_tensors(dense_result["prefill_layers"], trace=prefill_trace)
+        lambda: adapter.load_prefill_cache_tensors(
+            dense_result["prefill_layers"],
+            context_length=int(input_ids.shape[1]),
+            trace=prefill_trace,
+        )
         if dense_result["prefill_layers"] and torch.is_tensor(dense_result["prefill_layers"][0][0])
-        else adapter.load_prefill_cache_arrays(dense_result["prefill_layers"], trace=prefill_trace),
+        else adapter.load_prefill_cache_arrays(
+            dense_result["prefill_layers"],
+            context_length=int(input_ids.shape[1]),
+            trace=prefill_trace,
+        ),
         device=input_ids.device,
     )
     prefill_cuda_stats = _end_cuda_memory_region(input_ids.device, prefill_cuda_baseline) if profile else {}

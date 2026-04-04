@@ -168,6 +168,84 @@ def test_gemma4_recommended_dotcache_config_balanced_keeps_values_exact_and_glob
     assert tuned.value_mode_overrides == ()
 
 
+def test_gemma4_recommended_dotcache_config_balanced_layer0_adds_first_sliding_key_layer() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+
+    tuned = gemma4_text_recommended_dotcache_config(config, profile="balanced_layer0")
+
+    assert tuned.default_mode_k == "M0"
+    assert tuned.default_mode_v == "M3"
+    assert tuned.key_mode_overrides == ("layer:0=M3", "layer:1=M3", "layer:3=M3")
+
+
+def test_gemma4_recommended_dotcache_config_balanced_layer0_8_adds_both_sliding_key_layers() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=12,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+
+    tuned = gemma4_text_recommended_dotcache_config(config, profile="balanced_layer0_8")
+
+    assert tuned.default_mode_k == "M0"
+    assert tuned.default_mode_v == "M3"
+    assert tuned.key_mode_overrides == (
+        "layer:0=M3",
+        "layer:1=M3",
+        "layer:3=M3",
+        "layer:5=M3",
+        "layer:7=M3",
+        "layer:8=M3",
+        "layer:9=M3",
+    )
+
+
 def test_gemma4_harness_from_pretrained_forwards_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, tuple[str, dict[str, object]]] = {}
 
@@ -224,3 +302,26 @@ def test_gemma4_harness_from_pretrained_forwards_hf_token(monkeypatch: pytest.Mo
     assert captured["tokenizer"][0] == "google/gemma-4-E2B"
     assert captured["tokenizer"][1]["token"] == "hf-secret"
     assert harness.tokenizer.pad_token_id == harness.tokenizer.eos_token_id
+
+
+def test_gemma4_prefill_ingest_preserves_absolute_context_for_truncated_sliding_layers() -> None:
+    model, adapter = _tiny_gemma4_model()
+    seq_len = 8
+    context_length = 12
+    head_dims = [32, 64, 32, 64]
+    prefill_layers = [
+        (
+            np.zeros((1, seq_len if layer_idx % 2 == 0 else context_length, head_dims[layer_idx]), dtype=np.float32),
+            np.zeros((1, seq_len if layer_idx % 2 == 0 else context_length, head_dims[layer_idx]), dtype=np.float32),
+        )
+        for layer_idx in range(4)
+    ]
+
+    adapter.load_prefill_cache_arrays(prefill_layers, context_length=context_length)
+
+    sliding_source_cache = adapter.model_kv_cache._source_caches[0]
+    full_source_cache = adapter.model_kv_cache._source_caches[1]
+    assert adapter.model_kv_cache.layer_sequence_length(0) == context_length
+    assert adapter.model_kv_cache.layer_sequence_length(1) == context_length
+    assert sliding_source_cache._state(0, 0).session.key_pages[0].header.token_start == context_length - seq_len
+    assert full_source_cache._state(1, 0).session.key_pages[0].header.token_start == 0
