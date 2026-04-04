@@ -3060,14 +3060,14 @@ class ModelPagedKVCache:
             resolved_basis = self.config.resolve_m4_project_basis_k(layer_id=layer_id)
             if resolved_basis != "svd_shared":
                 continue
-                key_page_mode = self._select_page_mode(
-                    full_keys[kv_head_id, :page_size],
-                    kind="K",
-                    layer_id=layer_id,
-                    kv_head_id=kv_head_id,
-                    token_start=token_start,
-                    sequence_length=sequence_length,
-                )
+            key_page_mode = self._select_page_mode(
+                full_keys[kv_head_id, :page_size],
+                kind="K",
+                layer_id=layer_id,
+                kv_head_id=kv_head_id,
+                token_start=token_start,
+                sequence_length=sequence_length,
+            )
             key_mode_name = (
                 key_page_mode.mode
                 if key_page_mode is not None

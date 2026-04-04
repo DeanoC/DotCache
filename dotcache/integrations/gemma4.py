@@ -1025,11 +1025,22 @@ def run_gemma4_text_replay_harness(
         config=adapter.dotcache_config,
         backend=adapter.backend,
     )
+    replay_context_length = int(input_ids.shape[1])
     for layer_idx, (layer_keys, layer_values) in enumerate(dense_result["prefill_layers"]):
         if torch.is_tensor(layer_keys):
-            replay_cache.ingest_prefill_cache_torch(layer_idx, layer_keys, layer_values)
+            replay_cache.ingest_prefill_cache_torch(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=replay_context_length,
+            )
         else:
-            replay_cache.ingest_prefill_cache(layer_idx, layer_keys, layer_values)
+            replay_cache.ingest_prefill_cache(
+                layer_idx,
+                layer_keys,
+                layer_values,
+                context_length=replay_context_length,
+            )
     replay_cache.prepare_static_pages()
 
     replay_context_max_abs = 0.0

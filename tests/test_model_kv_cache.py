@@ -141,6 +141,38 @@ def test_model_paged_kv_cache_accepts_batched_prefill_cache_tensors() -> None:
     assert outputs.shape == (4, config.head_dim)
 
 
+def test_model_paged_kv_cache_ingest_prefill_cache_supports_m4_svd_shared_keys_on_cpu() -> None:
+    rng = np.random.default_rng(3031)
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        default_mode_k="M4",
+        default_mode_v="M0",
+        quant_scheme_k="project",
+        m2_sketch_dim_k=8,
+        m4_project_basis_k="svd_shared",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+
+    shared_bases = [page.m2_basis for page in cache._state(0, 0).session.key_pages if page.header.mode_default == "M4"]
+    assert shared_bases
+    assert all(basis is shared_bases[0] for basis in shared_bases)
+
+
 def test_model_paged_kv_cache_query_scale_matches_scaled_reference_query() -> None:
     rng = np.random.default_rng(304)
     config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)

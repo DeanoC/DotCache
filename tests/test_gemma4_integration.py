@@ -516,3 +516,59 @@ def test_gemma4_prefill_ingest_preserves_absolute_context_for_truncated_sliding_
     assert adapter.model_kv_cache.layer_sequence_length(1) == context_length
     assert sliding_source_cache._state(0, 0).session.key_pages[0].header.token_start == context_length - seq_len
     assert full_source_cache._state(1, 0).session.key_pages[0].header.token_start == 0
+
+
+def test_gemma4_replay_harness_passes_absolute_context_length_to_replay_prefill_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, adapter = _tiny_gemma4_model()
+    captured_context_lengths: list[int | None] = []
+
+    class _FakeReplayCache:
+        def __init__(self, *, model, config, backend):
+            self.model = model
+            self.config = config
+            self.backend = backend
+
+        def ingest_prefill_cache(self, layer_id, keys, values, *, context_length=None, trace=None) -> None:
+            captured_context_lengths.append(context_length)
+
+        def ingest_prefill_cache_torch(self, layer_id, keys, values, *, context_length=None, trace=None) -> None:
+            captured_context_lengths.append(context_length)
+
+        def prepare_static_pages(self, *, trace=None) -> None:
+            return None
+
+        def append_step(self, layer_id, key_step, value_step, token_index, *, trace=None) -> None:
+            return None
+
+        def decode_layer(self, layer_id, query_states, q_head_to_kv_head):
+            return np.zeros_like(query_states, dtype=np.float32)
+
+    monkeypatch.setattr(gemma4_integration, "_Gemma4AggregateModelPagedKVCache", _FakeReplayCache)
+    monkeypatch.setattr(
+        gemma4_integration,
+        "_run_dense_greedy_decode",
+        lambda *args, **kwargs: {
+            "prefill_layers": [
+                (
+                    np.zeros((1, 8, 32), dtype=np.float32),
+                    np.zeros((1, 8, 32), dtype=np.float32),
+                )
+            ],
+            "capture_records": [],
+            "decode_inputs": [],
+            "step_logits": [],
+        },
+    )
+    monkeypatch.setattr(
+        gemma4_integration,
+        "_run_dotcache_decode_inputs",
+        lambda *args, **kwargs: {"step_logits": []},
+    )
+
+    input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]], dtype=torch.long)
+    result = run_gemma4_text_replay_harness(adapter.model, adapter, input_ids=input_ids, decode_steps=2)
+
+    assert result["decode_steps"] == 2
+    assert captured_context_lengths == [12]
