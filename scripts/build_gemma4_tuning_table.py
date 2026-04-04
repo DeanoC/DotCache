@@ -187,11 +187,16 @@ def build_tuning_table() -> dict[str, Any]:
     }
 
 
-def main() -> None:
+def write_tuning_table(output_path: Path = DEFAULT_OUTPUT_PATH) -> Path:
     payload = build_tuning_table()
-    DEFAULT_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DEFAULT_OUTPUT_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(DEFAULT_OUTPUT_PATH.relative_to(REPO_ROOT))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return output_path
+
+
+def main() -> None:
+    output_path = write_tuning_table()
+    print(output_path.relative_to(REPO_ROOT))
 
 
 if __name__ == "__main__":

@@ -8,8 +8,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 import torch
 from transformers import AutoConfig
+from build_gemma4_tuning_table import write_tuning_table
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -54,6 +59,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-max-new-tokens", type=int, default=0)
     parser.add_argument("--adaptive-knobs", action="store_true")
     parser.add_argument("--adaptive-values", action="store_true")
+    parser.add_argument(
+        "--refresh-tuning-table",
+        action="store_true",
+        help="Regenerate the Gemma 4 adaptive tuning table from benchmark artifacts after the sweep completes.",
+    )
     return parser.parse_args()
 
 
@@ -187,6 +197,10 @@ def _release_device_cache() -> None:
         torch.cuda.empty_cache()
 
 
+def _refresh_tuning_table() -> Path:
+    return write_tuning_table()
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -268,6 +282,19 @@ def main() -> None:
             _append_record(results_path, record)
             print(json.dumps(record, sort_keys=True), flush=True)
             _release_device_cache()
+
+    if args.refresh_tuning_table:
+        output_path = _refresh_tuning_table()
+        print(
+            json.dumps(
+                {
+                    "event": "refreshed_gemma4_tuning_table",
+                    "output_path": str(output_path.relative_to(REPO_ROOT)),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
