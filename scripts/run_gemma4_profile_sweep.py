@@ -107,6 +107,8 @@ def _run_case(
         group_size=group_size,
         tokens_per_page=tokens_per_page,
         profile=profile,
+        prompt_length=prompt_length,
+        decode_budget=max_new_tokens,
         extra_exact_key_layers=extra_exact_key_layers,
         extra_exact_value_layers=extra_exact_value_layers,
     )

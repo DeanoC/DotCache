@@ -13,6 +13,7 @@ from dotcache.integrations.gemma4 import (
     gemma4_full_attention_source_layers,
     gemma4_text_dotcache_supported,
     gemma4_text_recommended_dotcache_config,
+    gemma4_text_tuned_profile_for_workload,
     run_gemma4_text_generation_harness,
     run_gemma4_text_replay_harness,
 )
@@ -232,6 +233,68 @@ def test_gemma4_recommended_dotcache_config_balanced_layer0_8_adds_both_sliding_
     )
 
     tuned = gemma4_text_recommended_dotcache_config(config, profile="balanced_layer0_8")
+
+    assert tuned.default_mode_k == "M0"
+    assert tuned.default_mode_v == "M3"
+    assert tuned.key_mode_overrides == (
+        "layer:0=M3",
+        "layer:1=M3",
+        "layer:3=M3",
+        "layer:5=M3",
+        "layer:7=M3",
+        "layer:8=M3",
+        "layer:9=M3",
+    )
+
+
+def test_gemma4_tuned_profile_for_workload_matches_current_matrix_heuristic() -> None:
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=512, decode_budget=8) == "balanced_layer0"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=8) == "balanced_layer0_8"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=24) == "balanced"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=32) == "balanced"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=2048, decode_budget=16) == "balanced_layer0_8"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=16) == "balanced"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=24) == "balanced_layer0_8"
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=4096, decode_budget=32) == "balanced_layer0"
+
+
+def test_gemma4_recommended_dotcache_config_adaptive_routes_to_tuned_profile() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=12,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+
+    tuned = gemma4_text_recommended_dotcache_config(
+        config,
+        profile="adaptive",
+        prompt_length=1024,
+        decode_budget=8,
+    )
 
     assert tuned.default_mode_k == "M0"
     assert tuned.default_mode_v == "M3"

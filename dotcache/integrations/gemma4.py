@@ -123,6 +123,26 @@ def gemma4_text_dotcache_supported(model_or_config: Any) -> bool:
     return all(_gemma4_layer_head_dim(config, layer_idx) > 0 for layer_idx in range(int(config.num_hidden_layers)))
 
 
+def gemma4_text_tuned_profile_for_workload(*, prompt_length: int, decode_budget: int) -> str:
+    prompt_tokens = int(prompt_length)
+    decode_tokens = int(decode_budget)
+    if prompt_tokens <= 0:
+        raise ValueError("prompt_length must be positive")
+    if decode_tokens <= 0:
+        raise ValueError("decode_budget must be positive")
+    if prompt_tokens >= 4096:
+        if decode_tokens >= 32:
+            return "balanced_layer0"
+        if decode_tokens >= 24:
+            return "balanced_layer0_8"
+        return "balanced"
+    if prompt_tokens >= 2048:
+        return "balanced_layer0_8"
+    if prompt_tokens >= 1024:
+        return "balanced" if decode_tokens >= 24 else "balanced_layer0_8"
+    return "balanced_layer0"
+
+
 def gemma4_text_recommended_dotcache_config(
     model_or_config: Any,
     *,
@@ -131,10 +151,19 @@ def gemma4_text_recommended_dotcache_config(
     tokens_per_page: int = 4,
     group_size: int = 32,
     profile: str = "balanced",
+    prompt_length: int | None = None,
+    decode_budget: int | None = None,
     extra_exact_key_layers: Sequence[int] = (),
     extra_exact_value_layers: Sequence[int] = (),
 ) -> DotCacheConfig:
     normalized_profile = str(profile).strip().lower()
+    if normalized_profile == "adaptive":
+        if prompt_length is None or decode_budget is None:
+            raise ValueError("adaptive Gemma 4 tuning requires prompt_length and decode_budget")
+        normalized_profile = gemma4_text_tuned_profile_for_workload(
+            prompt_length=int(prompt_length),
+            decode_budget=int(decode_budget),
+        )
     if normalized_profile == "balanced_layer0":
         normalized_profile = "balanced"
         extra_exact_key_layers = tuple(extra_exact_key_layers) + (0,)
@@ -184,7 +213,7 @@ def gemma4_text_recommended_dotcache_config(
             value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
         )
     raise ValueError(
-        "profile must be one of aggressive, value_exact, balanced, balanced_layer0, balanced_layer0_8, exact"
+        "profile must be one of aggressive, value_exact, balanced, balanced_layer0, balanced_layer0_8, adaptive, exact"
     )
 
 
