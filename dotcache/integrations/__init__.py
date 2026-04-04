@@ -17,22 +17,26 @@ from .qwen2 import (
     run_qwen2_loss_harness,
     run_qwen2_replay_harness,
 )
-from .gemma4 import (
-    Gemma4TextHarness,
-    Gemma4TextModelAdapter,
-    gemma4_full_attention_source_layers,
-    gemma4_sliding_attention_source_layers,
-    gemma4_text_dotcache_supported,
-    gemma4_text_recommended_dotcache_config,
-    gemma4_text_tuned_preset_for_workload,
-    gemma4_text_tuned_knobs_for_workload,
-    gemma4_text_tuned_profile_for_workload,
-    gemma4_text_tuned_value_layers_for_workload,
-    load_gemma4_text_only_from_pretrained,
-    run_gemma4_text_generation_harness,
-    run_gemma4_text_loss_harness,
-    run_gemma4_text_replay_harness,
-)
+try:
+    from .gemma4 import (
+        Gemma4TextHarness,
+        Gemma4TextModelAdapter,
+        gemma4_full_attention_source_layers,
+        gemma4_sliding_attention_source_layers,
+        gemma4_text_dotcache_supported,
+        gemma4_text_recommended_dotcache_config,
+        gemma4_text_tuned_preset_for_workload,
+        gemma4_text_tuned_knobs_for_workload,
+        gemma4_text_tuned_profile_for_workload,
+        gemma4_text_tuned_value_layers_for_workload,
+        load_gemma4_text_only_from_pretrained,
+        run_gemma4_text_generation_harness,
+        run_gemma4_text_loss_harness,
+        run_gemma4_text_replay_harness,
+    )
+    _gemma4_import_error = None
+except ModuleNotFoundError as exc:
+    _gemma4_import_error = exc
 from .qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,
     Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -84,14 +88,6 @@ __all__ = [
     "export_llama_page_traces",
     "Qwen2DotCacheHarness",
     "Qwen2DotCacheModelAdapter",
-    "Gemma4TextHarness",
-    "Gemma4TextModelAdapter",
-    "gemma4_full_attention_source_layers",
-    "gemma4_sliding_attention_source_layers",
-    "gemma4_text_tuned_preset_for_workload",
-    "gemma4_text_tuned_knobs_for_workload",
-    "gemma4_text_tuned_profile_for_workload",
-    "gemma4_text_tuned_value_layers_for_workload",
     "Qwen35AttentionSubsetDotCacheHarness",
     "Qwen35AttentionSubsetDotCacheModelAdapter",
     "Qwen35AttentionSubsetHarness",
@@ -111,8 +107,6 @@ __all__ = [
     "VLLM_V1_MULTIPROCESSING_ENV",
     "configure_vllm_inprocess_runtime",
     "get_vllm_version",
-    "gemma4_text_recommended_dotcache_config",
-    "gemma4_text_dotcache_supported",
     "install_dotcache_on_vllm_model",
     "install_dotcache_on_vllm_runtime",
     "require_supported_vllm_version",
@@ -120,10 +114,6 @@ __all__ = [
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "export_attention_subset_page_traces",
-    "load_gemma4_text_only_from_pretrained",
-    "run_gemma4_text_generation_harness",
-    "run_gemma4_text_loss_harness",
-    "run_gemma4_text_replay_harness",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_attention_subset_page_trace_capture_harness",
     "run_qwen35_attention_subset_dotcache_harness",
@@ -143,3 +133,23 @@ __all__ = [
     "transformers_available",
     "vllm_available",
 ]
+
+if _gemma4_import_error is None:
+    __all__.extend(
+        [
+            "Gemma4TextHarness",
+            "Gemma4TextModelAdapter",
+            "gemma4_full_attention_source_layers",
+            "gemma4_sliding_attention_source_layers",
+            "gemma4_text_tuned_preset_for_workload",
+            "gemma4_text_tuned_knobs_for_workload",
+            "gemma4_text_tuned_profile_for_workload",
+            "gemma4_text_tuned_value_layers_for_workload",
+            "gemma4_text_recommended_dotcache_config",
+            "gemma4_text_dotcache_supported",
+            "load_gemma4_text_only_from_pretrained",
+            "run_gemma4_text_generation_harness",
+            "run_gemma4_text_loss_harness",
+            "run_gemma4_text_replay_harness",
+        ]
+    )

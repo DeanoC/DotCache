@@ -40,6 +40,7 @@ COMMON_ARGS=(
   --backend torch_cuda
   --device cuda
   --torch-dtype float16
+  --repeat-counts
   --target-prompt-lengths "${PROMPT_LENGTHS[@]}"
   --max-new-tokens "$MAX_NEW_TOKENS"
   --tokens-per-page "$TOKENS_PER_PAGE"
