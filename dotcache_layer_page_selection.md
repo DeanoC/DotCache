@@ -273,6 +273,7 @@ The repo now also contains a cleaner default-path checkpoint in [`selector_profi
 - task-level held-out checks on Qwen3.5 9B
 - the same task-level held-out checks on Llama 3.2 3B
 - a fixed LongBench-derived held-out QA mini-pack on Qwen3.5 9B with a sink-plus-recent reference lane
+- a native Qwen3.5 27B backend-truth rerun on the current `transformers 5.5.0` stack
 
 The current selector-profile summary is:
 
@@ -302,6 +303,15 @@ The new external-style LongBench check now points the same way. In [`longbench_s
 | held-out QA mini-pack | `8192` | `0.291` | `0.291` | `0.291` | `0.291` | `1066.43` | `798.47` | `159.38` |
 
 Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile matching the full-answer DotCache lanes on held-out QA F1 while still delivering about `6.23x` speedup over `quality` at `4096` and `5.01x` at `8192`, and while also beating the sink-plus-recent reference very comfortably on speed. The current mini-pack does not yet separate `systems` from sink-plus-recent on QA F1, so the cleaner claim is now latency-dominant rather than both-quality-and-latency dominant.
+
+The stronger-model serving lane now points the same way without the earlier environment caveat. In [`backend_truth_report.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_27b_backend_truth_20260404_native/backend_truth_report.md), the native Qwen3.5 27B learned selector remains the clear decode winner on the current `transformers 5.5.0` stack:
+
+| Qwen3.5 27B backend truth | Context | Exact decode ms/step | Shortlist decode ms/step | Learned decode ms/step | Learned vs exact | Learned vs shortlist |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native rerun | `1024` | `507.44` | `524.77` | `169.09` | `3.00x` | `3.10x` |
+| native rerun | `2048` | `824.98` | `642.79` | `224.14` | `3.68x` | `2.87x` |
+
+Those rows matter because they turn the bigger-model result from a transferred-artifact curiosity into a native-scale checkpoint on the intended modern runtime. The remaining backend story is still the same M3-heavy one: selector overhead stays small, the learned lane is almost entirely `M3`, and most of the win still comes from shifting time out of `score` and `mix`.
 
 The Llama 3.2 3B result is different in exactly the way a model-family-sensitive selector story should be different. The current learned selector is already saturated to `M3`, so the `systems` profile does not buy an extra win:
 

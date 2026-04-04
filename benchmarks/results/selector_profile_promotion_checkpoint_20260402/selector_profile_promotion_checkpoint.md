@@ -43,9 +43,17 @@
 | 4096 | 0.441 | 0.441 | 0.441 | 0.441 | 627.282 | 583.620 | 93.728 | 257.163 | 6.227 | 2.744 |
 | 8192 | 0.291 | 0.291 | 0.291 | 0.291 | 1066.429 | 798.470 | 159.378 | 283.477 | 5.010 | 1.779 |
 
+## Qwen 27B Native Backend Check
+
+| context | exact_decode_ms | shortlist_decode_ms | learned_decode_ms | learned_vs_exact_speedup | learned_vs_shortlist_speedup | learned_m3_frac | learned_score_ms | learned_mix_ms | selector_us_per_invocation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1024 | 520.855 | 522.212 | 171.895 | 3.030 | 3.038 | 0.995 | 44.046 | 38.038 | 24.955 |
+| 2048 | 838.435 | 621.426 | 228.777 | 3.665 | 2.716 | 0.995 | 79.922 | 67.007 | 24.822 |
+
 ## Notes
 
 - Qwen task rows come from the strengthened reasoning task slice, which now passes in `exact`, `quality`, and `systems`.
 - Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.
 - The fixed Qwen LongBench QA mini-pack now behaves like a real held-out external-style check: `systems` matches `exact` and `quality` on QA F1 while materially beating both and also beating the sink-plus-recent streaming reference.
+- The native Qwen3.5 27B backend-truth rerun now completes successfully on the intended newer `transformers` stack and still preserves the same learned-selector speedup story, so the Qwen default-path read is no longer just a 9B result.
 - This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.

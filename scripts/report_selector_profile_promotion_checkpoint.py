@@ -20,6 +20,9 @@ DEFAULT_LLAMA_TASK_JSON = (
 DEFAULT_QWEN_LONGBENCH_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_selector_compare_20260404" / "longbench_selector_compare.json"
 )
+DEFAULT_QWEN_27B_BACKEND_JSON = (
+    REPO_ROOT / "benchmarks" / "results" / "qwen35_27b_backend_truth_20260404_native" / "backend_truth_report.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-quality-json", default=str(DEFAULT_QWEN_QUALITY_JSON))
     parser.add_argument("--llama-task-json", default=str(DEFAULT_LLAMA_TASK_JSON))
     parser.add_argument("--qwen-longbench-json", default=str(DEFAULT_QWEN_LONGBENCH_JSON))
+    parser.add_argument("--qwen-27b-backend-json", default=str(DEFAULT_QWEN_27B_BACKEND_JSON))
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--json-output", required=True)
     return parser.parse_args()
@@ -64,11 +68,13 @@ def build_report(
     qwen_quality_payload: dict[str, Any],
     llama_task_payload: dict[str, Any],
     qwen_longbench_payload: dict[str, Any],
+    qwen_27b_backend_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
     qwen_task_rows = list(qwen_task_payload.get("rows", []))
     llama_task_rows = list(llama_task_payload.get("rows", []))
     qwen_quality_rows = list(qwen_quality_payload.get("comparisons", []))
     qwen_longbench_rows = list(qwen_longbench_payload.get("rows", []))
+    qwen_27b_backend_rows = list(qwen_27b_backend_payload.get("comparisons", []))
 
     qwen_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in qwen_task_rows]
     llama_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in llama_task_rows]
@@ -92,6 +98,7 @@ def build_report(
         "qwen_quality_rows": qwen_quality_rows,
         "llama_task_rows": llama_task_rows,
         "qwen_longbench_rows": qwen_longbench_rows,
+        "qwen_27b_backend_rows": qwen_27b_backend_rows,
     }
 
     overview_rows = [[
@@ -226,6 +233,37 @@ def build_report(
             ]
         )
 
+    qwen_27b_backend_table = [[
+        "context",
+        "exact_decode_ms",
+        "shortlist_decode_ms",
+        "learned_decode_ms",
+        "learned_vs_exact_speedup",
+        "learned_vs_shortlist_speedup",
+        "learned_m3_frac",
+        "learned_score_ms",
+        "learned_mix_ms",
+        "selector_us_per_invocation",
+    ]]
+    for row in sorted(qwen_27b_backend_rows, key=lambda item: int(item["prompt_length"])):
+        exact = row["variants"]["exact"]
+        shortlist = row["variants"]["shortlist_base"]
+        learned = row["variants"]["learned_selector"]
+        qwen_27b_backend_table.append(
+            [
+                str(int(row["prompt_length"])),
+                _fmt(exact["decode_ms_per_step"]),
+                _fmt(shortlist["decode_ms_per_step"]),
+                _fmt(learned["decode_ms_per_step"]),
+                _fmt(row["speedups"]["learned_selector"]["vs_exact"]),
+                _fmt(row["speedups"]["learned_selector"]["vs_shortlist"]),
+                _fmt(learned["m3_fraction"]),
+                _fmt(learned["score_ms_step"]),
+                _fmt(learned["mix_ms_step"]),
+                _fmt(learned["selector_us_per_invocation"]),
+            ]
+        )
+
     markdown = "\n".join(
         [
             "# Selector Profile Promotion Checkpoint",
@@ -251,11 +289,16 @@ def build_report(
             "",
             _markdown_table(longbench_table),
             "",
+            "## Qwen 27B Native Backend Check",
+            "",
+            _markdown_table(qwen_27b_backend_table),
+            "",
             "## Notes",
             "",
             "- Qwen task rows come from the strengthened reasoning task slice, which now passes in `exact`, `quality`, and `systems`.",
             "- Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.",
             "- The fixed Qwen LongBench QA mini-pack now behaves like a real held-out external-style check: `systems` matches `exact` and `quality` on QA F1 while materially beating both and also beating the sink-plus-recent streaming reference.",
+            "- The native Qwen3.5 27B backend-truth rerun now completes successfully on the intended newer `transformers` stack and still preserves the same learned-selector speedup story, so the Qwen default-path read is no longer just a 9B result.",
             "- This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.",
         ]
     )
@@ -269,6 +312,7 @@ def main() -> int:
         qwen_quality_payload=_load_json(args.qwen_quality_json),
         llama_task_payload=_load_json(args.llama_task_json),
         qwen_longbench_payload=_load_json(args.qwen_longbench_json),
+        qwen_27b_backend_payload=_load_json(args.qwen_27b_backend_json),
     )
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")

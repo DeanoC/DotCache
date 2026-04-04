@@ -89,9 +89,29 @@ def test_build_report_captures_qwen_and_llama_calls() -> None:
                 },
             ]
         },
+        qwen_27b_backend_payload={
+            "comparisons": [
+                {
+                    "prompt_length": 1024,
+                    "speedups": {"learned_selector": {"vs_exact": 3.0, "vs_shortlist": 3.1}},
+                    "variants": {
+                        "exact": {"decode_ms_per_step": 500.0},
+                        "shortlist_base": {"decode_ms_per_step": 520.0},
+                        "learned_selector": {
+                            "decode_ms_per_step": 170.0,
+                            "m3_fraction": 0.995,
+                            "score_ms_step": 44.0,
+                            "mix_ms_step": 38.0,
+                            "selector_us_per_invocation": 25.0,
+                        },
+                    },
+                }
+            ]
+        },
     )
     assert payload["promotion_calls"]["qwen"]["default_profile"] == "systems"
     assert payload["promotion_calls"]["llama"]["default_profile"] == "quality_or_systems_equivalent"
     assert "Promote systems as default" in markdown
     assert "Llama 3.2 3B" in markdown
     assert "Qwen LongBench External Check" in markdown
+    assert "Qwen 27B Native Backend Check" in markdown

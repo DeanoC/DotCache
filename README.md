@@ -54,6 +54,8 @@ That report packages the current decision:
 
 The checkpoint now also includes the fixed Qwen3.5 9B LongBench QA mini-pack result, where `systems` matches `exact` and `quality` on held-out QA F1 while materially outperforming them on decode and also beating the sink-plus-recent reference.
 
+It also now includes the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines.
+
 ## Larger-machine selector suite
 
 For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:
