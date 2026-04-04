@@ -10,7 +10,9 @@ from dotcache.integrations.gemma4 import (
     Gemma4TextHarness,
     Gemma4TextModelAdapter,
     Gemma4TextModelWrapper,
+    gemma4_full_attention_source_layers,
     gemma4_text_dotcache_supported,
+    gemma4_text_recommended_dotcache_config,
     run_gemma4_text_generation_harness,
     run_gemma4_text_replay_harness,
 )
@@ -93,6 +95,77 @@ def test_gemma4_support_check_accepts_mixed_head_dims() -> None:
     )
 
     assert gemma4_text_dotcache_supported(config) is True
+
+
+def test_gemma4_full_attention_source_layers_ignores_shared_tail() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+
+    assert gemma4_full_attention_source_layers(config) == (1, 3)
+
+
+def test_gemma4_recommended_dotcache_config_balanced_keeps_values_exact_and_global_keys_exact() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+
+    tuned = gemma4_text_recommended_dotcache_config(
+        config,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=8,
+        group_size=16,
+        profile="balanced",
+    )
+
+    assert tuned.head_dim == 32
+    assert tuned.tokens_per_page == 8
+    assert tuned.group_size == 16
+    assert tuned.default_mode_k == "M0"
+    assert tuned.default_mode_v == "M3"
+    assert tuned.key_mode_overrides == ("layer:1=M3", "layer:3=M3")
+    assert tuned.value_mode_overrides == ()
 
 
 def test_gemma4_harness_from_pretrained_forwards_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:

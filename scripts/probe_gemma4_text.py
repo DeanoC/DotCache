@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from dotcache.integrations import Gemma4TextHarness, gemma4_text_recommended_dotcache_config
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
 
@@ -20,6 +21,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attn-implementation", choices=["eager", "sdpa", "flash_attention_2"], default=None)
     parser.add_argument("--max-new-tokens", type=int, default=16)
     parser.add_argument("--prompt", default="Write one short sentence about cache locality.")
+    parser.add_argument("--run-dotcache", action="store_true")
+    parser.add_argument(
+        "--dotcache-profile",
+        choices=["aggressive", "value_exact", "balanced", "exact"],
+        default="balanced",
+    )
+    parser.add_argument("--tokens-per-page", type=int, default=4)
+    parser.add_argument("--bits-k", type=int, default=4)
+    parser.add_argument("--bits-v", type=int, default=4)
+    parser.add_argument("--group-size", type=int, default=32)
+    parser.add_argument("--dotcache-backend", default="auto")
     return parser.parse_args()
 
 
@@ -67,6 +79,31 @@ def _success_record(
     }
 
 
+def _dotcache_record(*, args: argparse.Namespace, result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "mode": "dotcache",
+        "model_id": args.model_id,
+        "dotcache_profile": args.dotcache_profile,
+        "tokens_per_page": int(args.tokens_per_page),
+        "bits_k": int(args.bits_k),
+        "bits_v": int(args.bits_v),
+        "group_size": int(args.group_size),
+        "dense_generated_ids": list(result["dense_generated_ids"]),
+        "dotcache_generated_ids": list(result["dotcache_generated_ids"]),
+        "greedy_token_agreement_rate": float(result["greedy_token_agreement_rate"]),
+        "teacher_forced_logit_max_abs_error": float(result["teacher_forced_logit_max_abs_error"]),
+        "teacher_forced_logit_max_rel_error": float(result["teacher_forced_logit_max_rel_error"]),
+        "resident_bytes": int(result["resident_bytes"]),
+        "kv_resident_bytes": int(result["kv_resident_bytes"]),
+        "decode_ms_per_step": float(result["decode_ms_per_step"]),
+        "m0_pages": int(result.get("m0_pages", 0)),
+        "m3_pages": int(result.get("m3_pages", 0)),
+        "dense_text": result.get("dense_text"),
+        "dotcache_text": result.get("dotcache_text"),
+    }
+
+
 def _error_record(args: argparse.Namespace, exc: Exception, *, elapsed_s: float) -> dict[str, Any]:
     return {
         "status": "error",
@@ -80,47 +117,65 @@ def _error_record(args: argparse.Namespace, exc: Exception, *, elapsed_s: float)
 
 def main() -> None:
     args = parse_args()
-    dtype = getattr(torch, args.torch_dtype)
-    auth_kwargs = resolve_hf_auth_kwargs()
     started_at = time.perf_counter()
 
     try:
-        config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
-        load_kwargs: dict[str, Any] = {
-            "dtype": dtype,
-            "device_map": args.device_map,
-            "trust_remote_code": False,
-            "low_cpu_mem_usage": True,
-            **auth_kwargs,
-        }
-        if args.attn_implementation is not None:
-            load_kwargs["attn_implementation"] = args.attn_implementation
-        model = AutoModelForCausalLM.from_pretrained(args.model_id, **load_kwargs)
-        model.eval()
-
-        inputs = tokenizer(args.prompt, return_tensors="pt")
-        inputs = inputs.to(model.device)
-        prompt_token_count = int(inputs["input_ids"].shape[-1])
-        with torch.inference_mode():
-            output_ids = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
-        generated_token_count = int(output_ids.shape[-1] - prompt_token_count)
-        text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-        elapsed_s = time.perf_counter() - started_at
-        print(
-            json.dumps(
-                _success_record(
-                    args=args,
-                    config=config,
-                    model=model,
-                    prompt_token_count=prompt_token_count,
-                    generated_token_count=generated_token_count,
-                    elapsed_s=elapsed_s,
-                    text=text,
+        if args.run_dotcache:
+            harness = Gemma4TextHarness.from_pretrained(
+                args.model_id,
+                gemma4_text_recommended_dotcache_config(
+                    AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs()),
+                    bits_k=args.bits_k,
+                    bits_v=args.bits_v,
+                    tokens_per_page=args.tokens_per_page,
+                    group_size=args.group_size,
+                    profile=args.dotcache_profile,
                 ),
-                sort_keys=True,
+                backend=args.dotcache_backend,
+                device="cuda" if args.device_map == "auto" else args.device_map,
+                torch_dtype=args.torch_dtype,
             )
-        )
+            result = harness.generate_greedy(prompt=args.prompt, max_new_tokens=args.max_new_tokens)
+            print(json.dumps(_dotcache_record(args=args, result=result), sort_keys=True))
+        else:
+            dtype = getattr(torch, args.torch_dtype)
+            auth_kwargs = resolve_hf_auth_kwargs()
+            config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
+            tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
+            load_kwargs: dict[str, Any] = {
+                "dtype": dtype,
+                "device_map": args.device_map,
+                "trust_remote_code": False,
+                "low_cpu_mem_usage": True,
+                **auth_kwargs,
+            }
+            if args.attn_implementation is not None:
+                load_kwargs["attn_implementation"] = args.attn_implementation
+            model = AutoModelForCausalLM.from_pretrained(args.model_id, **load_kwargs)
+            model.eval()
+
+            inputs = tokenizer(args.prompt, return_tensors="pt")
+            inputs = inputs.to(model.device)
+            prompt_token_count = int(inputs["input_ids"].shape[-1])
+            with torch.inference_mode():
+                output_ids = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False)
+            generated_token_count = int(output_ids.shape[-1] - prompt_token_count)
+            text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            elapsed_s = time.perf_counter() - started_at
+            print(
+                json.dumps(
+                    _success_record(
+                        args=args,
+                        config=config,
+                        model=model,
+                        prompt_token_count=prompt_token_count,
+                        generated_token_count=generated_token_count,
+                        elapsed_s=elapsed_s,
+                        text=text,
+                    ),
+                    sort_keys=True,
+                )
+            )
     except Exception as exc:
         elapsed_s = time.perf_counter() - started_at
         print(json.dumps(_error_record(args, exc, elapsed_s=elapsed_s), sort_keys=True))

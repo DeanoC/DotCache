@@ -68,6 +68,16 @@ def _gemma4_layer_head_dim(model_or_config: Any, layer_idx: int) -> int:
     return global_head_dim if layer_type == "full_attention" else int(config.head_dim)
 
 
+def gemma4_full_attention_source_layers(model_or_config: Any) -> tuple[int, ...]:
+    layer_types = _gemma4_layer_types(model_or_config)
+    unique_layer_count = _gemma4_unique_kv_layer_count(model_or_config)
+    return tuple(
+        layer_idx
+        for layer_idx, layer_type in enumerate(layer_types[:unique_layer_count])
+        if layer_type == "full_attention"
+    )
+
+
 def _gemma4_first_shared_layer_idx(model_or_config: Any) -> int:
     config = _gemma4_text_config(model_or_config)
     shared_count = int(getattr(config, "num_kv_shared_layers", 0) or 0)
@@ -101,6 +111,43 @@ def gemma4_text_dotcache_supported(model_or_config: Any) -> bool:
     if layer_types and len(layer_types) != int(config.num_hidden_layers):
         return False
     return all(_gemma4_layer_head_dim(config, layer_idx) > 0 for layer_idx in range(int(config.num_hidden_layers)))
+
+
+def gemma4_text_recommended_dotcache_config(
+    model_or_config: Any,
+    *,
+    bits_k: int = 4,
+    bits_v: int = 4,
+    tokens_per_page: int = 4,
+    group_size: int = 32,
+    profile: str = "balanced",
+) -> DotCacheConfig:
+    normalized_profile = str(profile).strip().lower()
+    base = DotCacheConfig(
+        head_dim=int(_gemma4_text_config(model_or_config).head_dim),
+        group_size=int(group_size),
+        bits_k=int(bits_k),
+        bits_v=int(bits_v),
+        tokens_per_page=int(tokens_per_page),
+    )
+    full_attention_layers = gemma4_full_attention_source_layers(model_or_config)
+    if normalized_profile == "aggressive":
+        return replace(
+            base,
+            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
+            value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
+        )
+    if normalized_profile == "value_exact":
+        return replace(base, default_mode_v="M3")
+    if normalized_profile == "balanced":
+        return replace(
+            base,
+            default_mode_v="M3",
+            key_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in full_attention_layers),
+        )
+    if normalized_profile == "exact":
+        return replace(base, default_mode_k="M3", default_mode_v="M3")
+    raise ValueError("profile must be one of aggressive, value_exact, balanced, exact")
 
 
 def _merge_summary_dicts(lhs: dict[str, Any], rhs: dict[str, Any]) -> dict[str, Any]:
