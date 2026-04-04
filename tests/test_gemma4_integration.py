@@ -250,8 +250,8 @@ def test_gemma4_recommended_dotcache_config_balanced_layer0_8_adds_both_sliding_
     )
 
 
-def test_gemma4_tuned_profile_for_workload_matches_current_matrix_heuristic() -> None:
-    assert gemma4_text_tuned_profile_for_workload(prompt_length=512, decode_budget=8) == "balanced_layer0"
+def test_gemma4_tuned_profile_for_workload_matches_generated_table() -> None:
+    assert gemma4_text_tuned_profile_for_workload(prompt_length=512, decode_budget=8) == "balanced_layer0_8"
     assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=8) == "balanced_layer0_8"
     assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=24) == "balanced"
     assert gemma4_text_tuned_profile_for_workload(prompt_length=1024, decode_budget=32) == "balanced"

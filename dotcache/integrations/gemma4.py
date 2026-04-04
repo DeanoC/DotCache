@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -123,6 +126,9 @@ def gemma4_text_dotcache_supported(model_or_config: Any) -> bool:
     return all(_gemma4_layer_head_dim(config, layer_idx) > 0 for layer_idx in range(int(config.num_hidden_layers)))
 
 
+_GEMMA4_TEXT_TUNING_TABLE_PATH = Path(__file__).resolve().with_name("data") / "gemma4_text_tuning_table.json"
+
+
 @dataclass(frozen=True, slots=True)
 class Gemma4TextTuningPreset:
     profile: str
@@ -149,106 +155,31 @@ class Gemma4TextTuningRule:
         )
 
 
-_GEMMA4_TEXT_TUNING_RULES: tuple[Gemma4TextTuningRule, ...] = (
-    Gemma4TextTuningRule(
-        min_prompt_length=1,
-        max_prompt_length=1023,
-        min_decode_budget=1,
-        max_decode_budget=None,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0",
-            bits_k=4,
-            group_size=32,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=1024,
-        max_prompt_length=2047,
-        min_decode_budget=1,
-        max_decode_budget=23,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0_8",
-            bits_k=4,
-            group_size=32,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=1024,
-        max_prompt_length=2047,
-        min_decode_budget=24,
-        max_decode_budget=None,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced",
-            bits_k=4,
-            group_size=32,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=2048,
-        max_prompt_length=4095,
-        min_decode_budget=1,
-        max_decode_budget=23,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0_8",
-            bits_k=4,
-            group_size=32,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=2048,
-        max_prompt_length=4095,
-        min_decode_budget=24,
-        max_decode_budget=None,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0_8",
-            bits_k=4,
-            group_size=16,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=4096,
-        max_prompt_length=None,
-        min_decode_budget=1,
-        max_decode_budget=23,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced",
-            bits_k=4,
-            group_size=32,
-            tokens_per_page=4,
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=4096,
-        max_prompt_length=None,
-        min_decode_budget=24,
-        max_decode_budget=31,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0_8",
-            bits_k=4,
-            group_size=16,
-            tokens_per_page=8,
-            exact_value_layers=(0, 4, 8, 9, 14),
-        ),
-    ),
-    Gemma4TextTuningRule(
-        min_prompt_length=4096,
-        max_prompt_length=None,
-        min_decode_budget=32,
-        max_decode_budget=None,
-        preset=Gemma4TextTuningPreset(
-            profile="balanced_layer0",
-            bits_k=4,
-            group_size=16,
-            tokens_per_page=8,
-            exact_value_layers=(0, 4, 8, 9, 14),
-        ),
-    ),
-)
+@lru_cache(maxsize=1)
+def _load_gemma4_text_tuning_rules() -> tuple[Gemma4TextTuningRule, ...]:
+    payload = json.loads(_GEMMA4_TEXT_TUNING_TABLE_PATH.read_text(encoding="utf-8"))
+    rules: list[Gemma4TextTuningRule] = []
+    for item in payload.get("rules", ()):
+        preset_payload = dict(item["preset"])
+        exact_value_layers = preset_payload.get("exact_value_layers")
+        rules.append(
+            Gemma4TextTuningRule(
+                min_prompt_length=int(item["min_prompt_length"]),
+                max_prompt_length=None if item["max_prompt_length"] is None else int(item["max_prompt_length"]),
+                min_decode_budget=int(item["min_decode_budget"]),
+                max_decode_budget=None if item["max_decode_budget"] is None else int(item["max_decode_budget"]),
+                preset=Gemma4TextTuningPreset(
+                    profile=str(preset_payload["profile"]),
+                    bits_k=int(preset_payload["bits_k"]),
+                    group_size=int(preset_payload["group_size"]),
+                    tokens_per_page=int(preset_payload["tokens_per_page"]),
+                    exact_value_layers=None
+                    if exact_value_layers is None
+                    else tuple(int(layer_idx) for layer_idx in exact_value_layers),
+                ),
+            )
+        )
+    return tuple(rules)
 
 
 def gemma4_text_tuned_preset_for_workload(*, prompt_length: int, decode_budget: int) -> Gemma4TextTuningPreset:
@@ -258,7 +189,7 @@ def gemma4_text_tuned_preset_for_workload(*, prompt_length: int, decode_budget: 
         raise ValueError("prompt_length must be positive")
     if decode_tokens <= 0:
         raise ValueError("decode_budget must be positive")
-    for rule in _GEMMA4_TEXT_TUNING_RULES:
+    for rule in _load_gemma4_text_tuning_rules():
         if rule.matches(prompt_length=prompt_tokens, decode_budget=decode_tokens):
             return rule.preset
     raise RuntimeError(
