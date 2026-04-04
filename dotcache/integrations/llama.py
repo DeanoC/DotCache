@@ -48,6 +48,7 @@ class LlamaReplayRecord:
     value_states: np.ndarray
     context_states: np.ndarray
     output_states: np.ndarray
+    cache_source_layer_id: int | None = None
     gate_states: np.ndarray | None = None
 
 
@@ -147,15 +148,21 @@ def _prewarm_torch_decode_layers(adapter: "LlamaDotCacheModelAdapter", *, device
     if adapter.model_kv_cache._torch_device_type is None:
         return
 
-    zero_query = torch.zeros(
-        (adapter.model.config.num_attention_heads, adapter.dotcache_config.head_dim),
-        dtype=torch.float32,
-        device=device,
-    )
+    layer_head_dim_fn = getattr(adapter.model_kv_cache, "layer_head_dim", None)
     with torch.no_grad():
         for layer_id in range(adapter.model.config.num_hidden_layers):
             if adapter.model_kv_cache.layer_sequence_length(layer_id) <= 0:
                 continue
+            layer_head_dim = (
+                int(layer_head_dim_fn(layer_id))
+                if callable(layer_head_dim_fn)
+                else int(adapter.dotcache_config.head_dim)
+            )
+            zero_query = torch.zeros(
+                (adapter.model.config.num_attention_heads, layer_head_dim),
+                dtype=torch.float32,
+                device=device,
+            )
             adapter.model_kv_cache.decode_layer_torch(
                 layer_id,
                 zero_query,
@@ -1131,13 +1138,15 @@ def run_llama_replay_harness(
     replay_context_max_rel = 0.0
     for step_records in dense_result["capture_records"]:
         for record in step_records:
-            replay_cache.append_step(
-                record.layer_id,
-                record.key_states[:, None, :],
-                record.value_states[:, None, :],
-                record.token_index,
-            )
-            replay_context = replay_cache.decode_layer(record.layer_id, record.query_states, adapter.q_head_to_kv_head)
+            cache_layer_id = record.layer_id if record.cache_source_layer_id is None else int(record.cache_source_layer_id)
+            if cache_layer_id == record.layer_id:
+                replay_cache.append_step(
+                    cache_layer_id,
+                    record.key_states[:, None, :],
+                    record.value_states[:, None, :],
+                    record.token_index,
+                )
+            replay_context = replay_cache.decode_layer(cache_layer_id, record.query_states, adapter.q_head_to_kv_head)
             delta = np.abs(replay_context - record.context_states)
             denom = np.maximum(np.abs(record.context_states), 1e-8)
             replay_context_max_abs = max(replay_context_max_abs, float(np.max(delta)))
