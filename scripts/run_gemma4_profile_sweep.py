@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-prompt-length", type=int, default=0)
     parser.add_argument("--scan-max-new-tokens", type=int, default=0)
     parser.add_argument("--adaptive-knobs", action="store_true")
+    parser.add_argument("--adaptive-values", action="store_true")
     return parser.parse_args()
 
 
@@ -105,6 +106,7 @@ def _run_case(
     extra_exact_key_layers: tuple[int, ...] = (),
     extra_exact_value_layers: tuple[int, ...] = (),
     adaptive_knobs: bool = False,
+    adaptive_values: bool = False,
 ) -> dict[str, Any]:
     config = gemma4_text_recommended_dotcache_config(
         harness.model,
@@ -116,6 +118,7 @@ def _run_case(
         prompt_length=prompt_length,
         decode_budget=max_new_tokens,
         adaptive_knobs=adaptive_knobs,
+        adaptive_values=adaptive_values,
         extra_exact_key_layers=extra_exact_key_layers,
         extra_exact_value_layers=extra_exact_value_layers,
     )
@@ -150,6 +153,7 @@ def _run_case(
         "extra_exact_key_layers": list(extra_exact_key_layers),
         "extra_exact_value_layers": list(extra_exact_value_layers),
         "adaptive_knobs": bool(adaptive_knobs),
+        "adaptive_values": bool(adaptive_values),
         "greedy_token_agreement_rate": float(result["greedy_token_agreement_rate"]),
         "teacher_forced_logit_max_abs_error": float(result["teacher_forced_logit_max_abs_error"]),
         "teacher_forced_logit_max_rel_error": float(result["teacher_forced_logit_max_rel_error"]),
@@ -223,6 +227,7 @@ def main() -> None:
                                     extra_exact_key_layers=extra_exact_key_layers,
                                     extra_exact_value_layers=extra_exact_value_layers,
                                     adaptive_knobs=bool(args.adaptive_knobs),
+                                    adaptive_values=bool(args.adaptive_values),
                                 )
                                 _append_record(results_path, record)
                                 print(json.dumps(record, sort_keys=True), flush=True)
@@ -245,6 +250,7 @@ def main() -> None:
                 tokens_per_page=tokens_per_page_values[0],
                 extra_exact_key_layers=(int(layer_idx),),
                 adaptive_knobs=bool(args.adaptive_knobs),
+                adaptive_values=bool(args.adaptive_values),
             )
             record["scan_mode"] = "single_sliding_key_layer"
             _append_record(results_path, record)

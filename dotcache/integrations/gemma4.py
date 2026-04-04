@@ -157,6 +157,18 @@ def gemma4_text_tuned_knobs_for_workload(*, prompt_length: int, decode_budget: i
     return 4, 32, 4
 
 
+def gemma4_text_tuned_value_layers_for_workload(*, prompt_length: int, decode_budget: int) -> tuple[int, ...] | None:
+    prompt_tokens = int(prompt_length)
+    decode_tokens = int(decode_budget)
+    if prompt_tokens <= 0:
+        raise ValueError("prompt_length must be positive")
+    if decode_tokens <= 0:
+        raise ValueError("decode_budget must be positive")
+    if prompt_tokens >= 4096 and decode_tokens >= 24:
+        return (0, 4, 8, 9, 14)
+    return None
+
+
 def gemma4_text_recommended_dotcache_config(
     model_or_config: Any,
     *,
@@ -168,6 +180,7 @@ def gemma4_text_recommended_dotcache_config(
     prompt_length: int | None = None,
     decode_budget: int | None = None,
     adaptive_knobs: bool = False,
+    adaptive_values: bool = False,
     extra_exact_key_layers: Sequence[int] = (),
     extra_exact_value_layers: Sequence[int] = (),
 ) -> DotCacheConfig:
@@ -180,6 +193,13 @@ def gemma4_text_recommended_dotcache_config(
                 prompt_length=int(prompt_length),
                 decode_budget=int(decode_budget),
             )
+        if adaptive_values:
+            tuned_value_layers = gemma4_text_tuned_value_layers_for_workload(
+                prompt_length=int(prompt_length),
+                decode_budget=int(decode_budget),
+            )
+            if tuned_value_layers is not None:
+                extra_exact_value_layers = tuple(extra_exact_value_layers) + tuple(tuned_value_layers)
         normalized_profile = gemma4_text_tuned_profile_for_workload(
             prompt_length=int(prompt_length),
             decode_budget=int(decode_budget),
@@ -216,14 +236,19 @@ def gemma4_text_recommended_dotcache_config(
             value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
         )
     if normalized_profile == "balanced":
-        return replace(
+        balanced = replace(
             base,
-            default_mode_v="M3",
+            default_mode_v="M3" if not adaptive_values else "M0",
             key_mode_overrides=tuple(
                 f"layer:{layer_idx}=M3" for layer_idx in sorted(set(full_attention_layers) | set(extra_key_layers))
             ),
             value_mode_overrides=tuple(f"layer:{layer_idx}=M3" for layer_idx in extra_value_layers),
         )
+        if not adaptive_values:
+            return balanced
+        if extra_value_layers:
+            return balanced
+        return replace(balanced, default_mode_v="M3")
     if normalized_profile == "exact":
         return replace(
             base,
