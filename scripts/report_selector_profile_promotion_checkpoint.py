@@ -18,7 +18,7 @@ DEFAULT_LLAMA_TASK_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "llama32_3b_task_selector_compare_20260402" / "task_selector_compare.json"
 )
 DEFAULT_QWEN_LONGBENCH_JSON = (
-    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_selector_compare_20260403" / "longbench_selector_compare.json"
+    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_selector_compare_20260404" / "longbench_selector_compare.json"
 )
 
 

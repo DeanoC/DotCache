@@ -294,14 +294,14 @@ For Qwen3.5 9B, the held-out task rows now stay clean across instruction followi
 
 The Qwen serving-quality harness points in the same direction. In [`selector_quality_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_selector_quality_compare_20260402/selector_quality_compare.md), the `systems` profile stays at `1.000` token agreement while improving decode from `67.66` to `45.23` ms/step at `1024` and from `82.91` to `49.99` ms/step at `2048`, with slightly lower logit RMSE than the `quality` profile in both contexts.
 
-The new external-style LongBench check now points the same way. In [`longbench_selector_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_longbench_selector_compare_20260403/longbench_selector_compare.md), the fixed Qwen3.5 9B mini-pack gives the same held-out QA F1 to `exact`, `quality`, and `systems` while the sink-plus-recent reference falls behind:
+The new external-style LongBench check now points the same way. In [`longbench_selector_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_longbench_selector_compare_20260404/longbench_selector_compare.md), the refreshed Qwen3.5 9B mini-pack gives the same held-out QA F1 to `exact`, `quality`, and `systems` while the sink-plus-recent reference falls behind:
 
 | Qwen3.5 9B LongBench QA | Context cap | Exact QA F1 | Quality QA F1 | Systems QA F1 | Streaming QA F1 | Exact decode ms/step | Quality decode ms/step | Systems decode ms/step |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| held-out QA mini-pack | `4096` | `0.292` | `0.292` | `0.292` | `0.237` | `609.55` | `611.89` | `95.41` |
-| held-out QA mini-pack | `8192` | `0.256` | `0.256` | `0.256` | `0.218` | `1050.85` | `810.30` | `150.95` |
+| held-out QA mini-pack | `4096` | `0.441` | `0.441` | `0.441` | `0.441` | `627.28` | `583.62` | `93.73` |
+| held-out QA mini-pack | `8192` | `0.291` | `0.291` | `0.291` | `0.291` | `1066.43` | `798.47` | `159.38` |
 
-Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile matching the full-answer DotCache lanes on held-out QA F1 while still delivering about `6.41x` speedup over `quality` at `4096` and `5.37x` at `8192`, and while also beating the sink-plus-recent reference on both quality and speed.
+Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile matching the full-answer DotCache lanes on held-out QA F1 while still delivering about `6.23x` speedup over `quality` at `4096` and `5.01x` at `8192`, and while also beating the sink-plus-recent reference very comfortably on speed. The current mini-pack does not yet separate `systems` from sink-plus-recent on QA F1, so the cleaner claim is now latency-dominant rather than both-quality-and-latency dominant.
 
 The Llama 3.2 3B result is different in exactly the way a model-family-sensitive selector story should be different. The current learned selector is already saturated to `M3`, so the `systems` profile does not buy an extra win:
 
