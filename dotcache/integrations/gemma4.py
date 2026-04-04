@@ -143,6 +143,20 @@ def gemma4_text_tuned_profile_for_workload(*, prompt_length: int, decode_budget:
     return "balanced_layer0"
 
 
+def gemma4_text_tuned_knobs_for_workload(*, prompt_length: int, decode_budget: int) -> tuple[int, int, int]:
+    prompt_tokens = int(prompt_length)
+    decode_tokens = int(decode_budget)
+    if prompt_tokens <= 0:
+        raise ValueError("prompt_length must be positive")
+    if decode_tokens <= 0:
+        raise ValueError("decode_budget must be positive")
+    if prompt_tokens >= 4096 and decode_tokens >= 24:
+        return 4, 16, 8
+    if prompt_tokens >= 2048 and decode_tokens >= 24:
+        return 4, 16, 4
+    return 4, 32, 4
+
+
 def gemma4_text_recommended_dotcache_config(
     model_or_config: Any,
     *,
@@ -153,6 +167,7 @@ def gemma4_text_recommended_dotcache_config(
     profile: str = "balanced",
     prompt_length: int | None = None,
     decode_budget: int | None = None,
+    adaptive_knobs: bool = False,
     extra_exact_key_layers: Sequence[int] = (),
     extra_exact_value_layers: Sequence[int] = (),
 ) -> DotCacheConfig:
@@ -160,6 +175,11 @@ def gemma4_text_recommended_dotcache_config(
     if normalized_profile == "adaptive":
         if prompt_length is None or decode_budget is None:
             raise ValueError("adaptive Gemma 4 tuning requires prompt_length and decode_budget")
+        if adaptive_knobs:
+            bits_k, group_size, tokens_per_page = gemma4_text_tuned_knobs_for_workload(
+                prompt_length=int(prompt_length),
+                decode_budget=int(decode_budget),
+            )
         normalized_profile = gemma4_text_tuned_profile_for_workload(
             prompt_length=int(prompt_length),
             decode_budget=int(decode_budget),

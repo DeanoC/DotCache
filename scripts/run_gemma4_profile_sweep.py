@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--tokens-per-page", type=int, default=4)
+    parser.add_argument("--bits-k-list", type=int, nargs="+")
+    parser.add_argument("--bits-v-list", type=int, nargs="+")
+    parser.add_argument("--group-size-list", type=int, nargs="+")
+    parser.add_argument("--tokens-per-page-list", type=int, nargs="+")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--append", action="store_true")
     parser.add_argument("--extra-exact-key-layers", type=int, nargs="*", default=[])
@@ -47,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-profile", default="balanced")
     parser.add_argument("--scan-prompt-length", type=int, default=0)
     parser.add_argument("--scan-max-new-tokens", type=int, default=0)
+    parser.add_argument("--adaptive-knobs", action="store_true")
     return parser.parse_args()
 
 
@@ -99,6 +104,7 @@ def _run_case(
     tokens_per_page: int,
     extra_exact_key_layers: tuple[int, ...] = (),
     extra_exact_value_layers: tuple[int, ...] = (),
+    adaptive_knobs: bool = False,
 ) -> dict[str, Any]:
     config = gemma4_text_recommended_dotcache_config(
         harness.model,
@@ -109,6 +115,7 @@ def _run_case(
         profile=profile,
         prompt_length=prompt_length,
         decode_budget=max_new_tokens,
+        adaptive_knobs=adaptive_knobs,
         extra_exact_key_layers=extra_exact_key_layers,
         extra_exact_value_layers=extra_exact_value_layers,
     )
@@ -132,12 +139,17 @@ def _run_case(
         "prompt_length": int(prompt_length),
         "max_new_tokens": int(max_new_tokens),
         "prompt_unit": prompt_unit,
-        "bits_k": int(bits_k),
-        "bits_v": int(bits_v),
-        "group_size": int(group_size),
-        "tokens_per_page": int(tokens_per_page),
+        "bits_k": int(config.bits_k),
+        "bits_v": int(config.bits_v),
+        "group_size": int(config.group_size),
+        "tokens_per_page": int(config.tokens_per_page),
+        "default_mode_k": str(config.default_mode_k),
+        "default_mode_v": str(config.default_mode_v),
+        "key_mode_overrides": list(config.key_mode_overrides),
+        "value_mode_overrides": list(config.value_mode_overrides),
         "extra_exact_key_layers": list(extra_exact_key_layers),
         "extra_exact_value_layers": list(extra_exact_value_layers),
+        "adaptive_knobs": bool(adaptive_knobs),
         "greedy_token_agreement_rate": float(result["greedy_token_agreement_rate"]),
         "teacher_forced_logit_max_abs_error": float(result["teacher_forced_logit_max_abs_error"]),
         "teacher_forced_logit_max_rel_error": float(result["teacher_forced_logit_max_rel_error"]),
@@ -185,27 +197,36 @@ def main() -> None:
     )
     extra_exact_key_layers = tuple(sorted({int(layer_idx) for layer_idx in args.extra_exact_key_layers}))
     extra_exact_value_layers = tuple(sorted({int(layer_idx) for layer_idx in args.extra_exact_value_layers}))
+    bits_k_values = sorted(set(args.bits_k_list or [args.bits_k]))
+    bits_v_values = sorted(set(args.bits_v_list or [args.bits_v]))
+    group_size_values = sorted(set(args.group_size_list or [args.group_size]))
+    tokens_per_page_values = sorted(set(args.tokens_per_page_list or [args.tokens_per_page]))
 
     for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
         for max_new_tokens in sorted(set(length for length in args.max_new_tokens_list if length > 0)):
-            for profile in args.profiles:
-                record = _run_case(
-                    harness,
-                    model_id=args.model_id,
-                    profile=profile,
-                    prompt_length=prompt_length,
-                    max_new_tokens=max_new_tokens,
-                    prompt_unit=args.prompt_unit,
-                    bits_k=args.bits_k,
-                    bits_v=args.bits_v,
-                    group_size=args.group_size,
-                    tokens_per_page=args.tokens_per_page,
-                    extra_exact_key_layers=extra_exact_key_layers,
-                    extra_exact_value_layers=extra_exact_value_layers,
-                )
-                _append_record(results_path, record)
-                print(json.dumps(record, sort_keys=True), flush=True)
-                _release_device_cache()
+            for bits_k in bits_k_values:
+                for bits_v in bits_v_values:
+                    for group_size in group_size_values:
+                        for tokens_per_page in tokens_per_page_values:
+                            for profile in args.profiles:
+                                record = _run_case(
+                                    harness,
+                                    model_id=args.model_id,
+                                    profile=profile,
+                                    prompt_length=prompt_length,
+                                    max_new_tokens=max_new_tokens,
+                                    prompt_unit=args.prompt_unit,
+                                    bits_k=bits_k,
+                                    bits_v=bits_v,
+                                    group_size=group_size,
+                                    tokens_per_page=tokens_per_page,
+                                    extra_exact_key_layers=extra_exact_key_layers,
+                                    extra_exact_value_layers=extra_exact_value_layers,
+                                    adaptive_knobs=bool(args.adaptive_knobs),
+                                )
+                                _append_record(results_path, record)
+                                print(json.dumps(record, sort_keys=True), flush=True)
+                                _release_device_cache()
 
     if args.scan_sliding_key_layers:
         scan_prompt_length = int(args.scan_prompt_length or max(args.target_prompt_lengths))
@@ -218,11 +239,12 @@ def main() -> None:
                 prompt_length=scan_prompt_length,
                 max_new_tokens=scan_max_new_tokens,
                 prompt_unit=args.prompt_unit,
-                bits_k=args.bits_k,
-                bits_v=args.bits_v,
-                group_size=args.group_size,
-                tokens_per_page=args.tokens_per_page,
+                bits_k=bits_k_values[0],
+                bits_v=bits_v_values[0],
+                group_size=group_size_values[0],
+                tokens_per_page=tokens_per_page_values[0],
                 extra_exact_key_layers=(int(layer_idx),),
+                adaptive_knobs=bool(args.adaptive_knobs),
             )
             record["scan_mode"] = "single_sliding_key_layer"
             _append_record(results_path, record)
