@@ -1,0 +1,41 @@
+{
+  "title": "Qwen Results Matrix V1",
+  "defaults": {
+    "backend": "torch_cuda",
+    "device": "cuda",
+    "torch_dtype": "float16",
+    "warmup_runs": 1,
+    "measured_runs": 5,
+    "task_prompt_lengths": [1024, 2048],
+    "longbench_max_prompt_tokens": [4096, 8192],
+    "backend_prompt_lengths": [1024, 2048],
+    "backend_max_new_tokens": 8,
+    "backend_tokens_per_page": 16
+  },
+  "models": [
+    {
+      "model_key": "qwen35_4b",
+      "model_id": "Qwen/Qwen3.5-4B",
+      "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
+      "task_compare": {},
+      "longbench": {},
+      "backend_truth": {}
+    },
+    {
+      "model_key": "qwen35_9b",
+      "model_id": "Qwen/Qwen3.5-9B",
+      "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json",
+      "task_compare": {},
+      "longbench": {},
+      "backend_truth": {}
+    },
+    {
+      "model_key": "qwen35_27b",
+      "model_id": "Qwen/Qwen3.5-27B",
+      "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/serving_selector_artifact/linear_selector_model.json",
+      "task_compare": {},
+      "longbench": {},
+      "backend_truth": {}
+    }
+  ]
+}
