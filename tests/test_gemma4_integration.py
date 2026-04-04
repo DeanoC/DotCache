@@ -572,3 +572,33 @@ def test_gemma4_replay_harness_passes_absolute_context_length_to_replay_prefill_
 
     assert result["decode_steps"] == 2
     assert captured_context_lengths == [12]
+
+
+def test_gemma4_aggregate_cache_resident_byte_summary_sums_prepared_chunk_bytes() -> None:
+    _, adapter = _tiny_gemma4_model()
+
+    class _FakeSourceCache:
+        def __init__(self, *, kv_resident_bytes: int, prepared_chunk_resident_bytes: int) -> None:
+            self._summary = {
+                "kv_resident_bytes": kv_resident_bytes,
+                "prepared_page_cache_resident_bytes": 10,
+                "direct_page_resident_bytes": 20,
+                "tail_resident_bytes": 30,
+                "prepared_chunk_cache_budget_bytes": 100,
+                "prepared_chunk_resident_bytes": prepared_chunk_resident_bytes,
+            }
+
+        def resident_byte_summary(self) -> dict[str, int]:
+            return dict(self._summary)
+
+    adapter.model_kv_cache._source_caches = {
+        0: _FakeSourceCache(kv_resident_bytes=1000, prepared_chunk_resident_bytes=200),
+        1: _FakeSourceCache(kv_resident_bytes=2000, prepared_chunk_resident_bytes=300),
+    }
+
+    summary = adapter.model_kv_cache.resident_byte_summary()
+
+    assert summary["kv_resident_bytes"] == 3000
+    assert summary["prepared_chunk_cache_budget_bytes"] == 100
+    assert summary["prepared_chunk_resident_bytes"] == 500
+    assert summary["resident_bytes"] == 3500

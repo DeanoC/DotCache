@@ -501,10 +501,7 @@ class _Gemma4AggregateModelPagedKVCache:
                 prepared_chunk_cache_budget_bytes,
                 int(summary["prepared_chunk_cache_budget_bytes"]),
             )
-            prepared_chunk_resident_bytes = max(
-                prepared_chunk_resident_bytes,
-                int(summary["prepared_chunk_resident_bytes"]),
-            )
+            prepared_chunk_resident_bytes += int(summary["prepared_chunk_resident_bytes"])
         return {
             "prepared_page_cache_resident_bytes": int(prepared_page_cache_resident_bytes),
             "direct_page_resident_bytes": int(direct_page_resident_bytes),

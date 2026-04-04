@@ -143,7 +143,7 @@ def main() -> None:
             config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
             tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
             load_kwargs: dict[str, Any] = {
-                "dtype": dtype,
+                "torch_dtype": dtype,
                 "device_map": args.device_map,
                 "trust_remote_code": False,
                 "low_cpu_mem_usage": True,
