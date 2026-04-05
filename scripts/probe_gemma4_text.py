@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--dotcache-backend", default="auto")
+    parser.add_argument("--output-path", default=None)
     return parser.parse_args()
 
 
@@ -51,6 +52,7 @@ def _success_record(
     generated_token_count: int,
     elapsed_s: float,
     text: str,
+    runtime_torch_dtype: str,
 ) -> dict[str, Any]:
     text_config = getattr(config, "text_config", config)
     layer_types = tuple(getattr(text_config, "layer_types", ()))
@@ -63,6 +65,8 @@ def _success_record(
         "model_type": str(getattr(config, "model_type", "")),
         "text_model_type": str(getattr(text_config, "model_type", "")),
         "torch_dtype": args.torch_dtype,
+        "runtime_torch_dtype": runtime_torch_dtype,
+        "requested_device_map": str(args.device_map),
         "model_device": model_device,
         "device_map": _stringify_device_map(getattr(model, "hf_device_map", None)),
         "num_hidden_layers": int(getattr(text_config, "num_hidden_layers", 0)),
@@ -85,6 +89,10 @@ def _dotcache_record(*, args: argparse.Namespace, result: dict[str, Any]) -> dic
         "status": "ok",
         "mode": "dotcache",
         "model_id": args.model_id,
+        "requested_device_map": str(args.device_map),
+        "torch_dtype": args.torch_dtype,
+        "runtime_device": str(result.get("runtime_device", "")),
+        "runtime_torch_dtype": str(result.get("runtime_torch_dtype", args.torch_dtype)),
         "dotcache_profile": args.dotcache_profile,
         "tokens_per_page": int(args.tokens_per_page),
         "bits_k": int(args.bits_k),
@@ -116,17 +124,27 @@ def _error_record(args: argparse.Namespace, exc: Exception, *, elapsed_s: float)
     }
 
 
+def _write_record(record: dict[str, Any], *, output_path: str | None) -> None:
+    if output_path:
+        from pathlib import Path
+
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    print(json.dumps(record, sort_keys=True))
+
+
 def main() -> None:
     args = parse_args()
     started_at = time.perf_counter()
+    requested_device = None if args.device_map == "auto" else args.device_map
+    resolved_device, resolved_torch_dtype = resolve_gemma4_text_runtime(
+        device=requested_device,
+        torch_dtype=args.torch_dtype,
+    )
 
     try:
         if args.run_dotcache:
-            requested_device = None if args.device_map == "auto" else args.device_map
-            resolved_device, resolved_torch_dtype = resolve_gemma4_text_runtime(
-                device=requested_device,
-                torch_dtype=args.torch_dtype,
-            )
             harness = Gemma4TextHarness.from_pretrained(
                 args.model_id,
                 gemma4_text_recommended_dotcache_config(
@@ -142,14 +160,20 @@ def main() -> None:
                 torch_dtype=resolved_torch_dtype,
             )
             result = harness.generate_greedy(prompt=args.prompt, max_new_tokens=args.max_new_tokens)
-            print(json.dumps(_dotcache_record(args=args, result=result), sort_keys=True))
+            if isinstance(result, dict):
+                result = {
+                    **result,
+                    "runtime_device": resolved_device,
+                    "runtime_torch_dtype": resolved_torch_dtype,
+                }
+            _write_record(_dotcache_record(args=args, result=result), output_path=args.output_path)
         else:
-            dtype = getattr(torch, args.torch_dtype)
+            dtype = getattr(torch, resolved_torch_dtype)
             auth_kwargs = resolve_hf_auth_kwargs()
             config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
             tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=False, **auth_kwargs)
             load_kwargs: dict[str, Any] = {
-                "torch_dtype": dtype,
+                "dtype": dtype,
                 "device_map": args.device_map,
                 "trust_remote_code": False,
                 "low_cpu_mem_usage": True,
@@ -168,23 +192,22 @@ def main() -> None:
             generated_token_count = int(output_ids.shape[-1] - prompt_token_count)
             text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
             elapsed_s = time.perf_counter() - started_at
-            print(
-                json.dumps(
-                    _success_record(
-                        args=args,
-                        config=config,
-                        model=model,
-                        prompt_token_count=prompt_token_count,
-                        generated_token_count=generated_token_count,
-                        elapsed_s=elapsed_s,
-                        text=text,
-                    ),
-                    sort_keys=True,
-                )
+            _write_record(
+                _success_record(
+                    args=args,
+                    config=config,
+                    model=model,
+                    prompt_token_count=prompt_token_count,
+                    generated_token_count=generated_token_count,
+                    elapsed_s=elapsed_s,
+                    text=text,
+                    runtime_torch_dtype=resolved_torch_dtype,
+                ),
+                output_path=args.output_path,
             )
     except Exception as exc:
         elapsed_s = time.perf_counter() - started_at
-        print(json.dumps(_error_record(args, exc, elapsed_s=elapsed_s), sort_keys=True))
+        _write_record(_error_record(args, exc, elapsed_s=elapsed_s), output_path=args.output_path)
         raise SystemExit(1) from exc
 
 
