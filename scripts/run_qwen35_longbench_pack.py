@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -110,8 +111,14 @@ def main() -> int:
         f"{args.model_id} LongBench {args.pack} Pack Compare",
     ]
 
-    subprocess.run(run_command, cwd=str(REPO_ROOT), check=True)
-    subprocess.run(report_command, cwd=str(REPO_ROOT), check=True)
+    child_env = os.environ.copy()
+    pythonpath_entries = [str(REPO_ROOT)]
+    if child_env.get("PYTHONPATH"):
+        pythonpath_entries.append(child_env["PYTHONPATH"])
+    child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
+    subprocess.run(run_command, cwd=str(REPO_ROOT), env=child_env, check=True)
+    subprocess.run(report_command, cwd=str(REPO_ROOT), env=child_env, check=True)
     print(markdown_path)
     print(json_path)
     return 0

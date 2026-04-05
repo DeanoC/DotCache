@@ -7123,8 +7123,28 @@ def run_qwen35_attention_subset_dotcache_harness(
             float(np.max(output_delta)),
         )
 
-    dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
-    dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
+    dense_logits = (
+        np.concatenate(
+            [
+                logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
+                for logits in dense_capture["step_logits"]
+            ],
+            axis=0,
+        )
+        if dense_capture["step_logits"]
+        else np.zeros((0, 1), dtype=np.float32)
+    )
+    dotcache_logits = (
+        np.concatenate(
+            [
+                logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
+                for logits in dotcache_step_logits
+            ],
+            axis=0,
+        )
+        if dotcache_step_logits
+        else np.zeros((0, 1), dtype=np.float32)
+    )
     generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
@@ -7894,8 +7914,28 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             float(np.max(output_delta)),
         )
 
-    dense_logits = np.stack(dense_capture["step_logits"], axis=0) if dense_capture["step_logits"] else np.zeros((0, 1))
-    dotcache_logits = np.stack(dotcache_step_logits, axis=0) if dotcache_step_logits else np.zeros((0, 1))
+    dense_logits = (
+        np.concatenate(
+            [
+                logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
+                for logits in dense_capture["step_logits"]
+            ],
+            axis=0,
+        )
+        if dense_capture["step_logits"]
+        else np.zeros((0, 1), dtype=np.float32)
+    )
+    dotcache_logits = (
+        np.concatenate(
+            [
+                logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
+                for logits in dotcache_step_logits
+            ],
+            axis=0,
+        )
+        if dotcache_step_logits
+        else np.zeros((0, 1), dtype=np.float32)
+    )
     if dense_logits.size == 0:
         teacher_forced_max_abs = 0.0
         teacher_forced_max_rel = 0.0
