@@ -302,9 +302,16 @@ bash scripts/run_qwen25_compare.sh
 ```bash
 bash scripts/run_gemma4_apple_smoke.sh
 bash scripts/run_gemma4_mps_short_bench.sh
+.venv/bin/python scripts/report_gemma4_apple_smoke.py
 ```
 
 Observed Apple compatibility notes for `google/gemma-4-E2B` live in [docs/gemma4_apple_compatibility.md](./docs/gemma4_apple_compatibility.md).
+
+For an opt-in local regression gate that runs the full test suite plus the tiny-random Gemma MPS test and the bounded Apple smoke, use:
+
+```bash
+RUN_GEMMA4_APPLE_SMOKE=1 ./scripts/run_unit_tests.sh
+```
 
 10. External GGUF / llama.cpp reference lane:
 

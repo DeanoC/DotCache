@@ -10,3 +10,5 @@ dist/
 *.egg-info/
 .env.local
 .secrets/
+benchmarks/results/gemma4_apple_smoke*/
+benchmarks/results/gemma4_mps_smoke*/
