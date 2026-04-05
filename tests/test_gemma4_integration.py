@@ -553,7 +553,7 @@ def test_gemma4_load_from_pretrained_uses_float16_on_mps(monkeypatch: pytest.Mon
 
     assert isinstance(model, Gemma4TextModelWrapper)
     assert tokenizer.pad_token_id == tokenizer.eos_token_id
-    assert captured["model_kwargs"]["torch_dtype"] == torch.float16
+    assert captured["model_kwargs"]["dtype"] == torch.float16
     assert captured["model_device"] == "mps"
 
 

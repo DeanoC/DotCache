@@ -297,21 +297,30 @@ bash scripts/run_llama32_compare.sh
 bash scripts/run_qwen25_compare.sh
 ```
 
-9. External GGUF / llama.cpp reference lane:
+9. Gemma 4 Apple smoke and short DotCache lane:
+
+```bash
+bash scripts/run_gemma4_apple_smoke.sh
+bash scripts/run_gemma4_mps_short_bench.sh
+```
+
+Observed Apple compatibility notes for `google/gemma-4-E2B` live in [docs/gemma4_apple_compatibility.md](./docs/gemma4_apple_compatibility.md).
+
+10. External GGUF / llama.cpp reference lane:
 
 ```bash
 bash scripts/run_llama32_gguf_reference.sh
 bash scripts/run_qwen25_gguf_reference.sh
 ```
 
-10. Optional mounted-HF fetch lane via `hf-mount`:
+11. Optional mounted-HF fetch lane via `hf-mount`:
 
 ```bash
 bash scripts/run_llama32_compare_mounted.sh
 bash scripts/run_qwen25_compare_mounted.sh
 ```
 
-11. CUDA scale-up lane on a large NVIDIA pod:
+12. CUDA scale-up lane on a large NVIDIA pod:
 
 ```bash
 bash scripts/run_qwen25_compare_cuda.sh

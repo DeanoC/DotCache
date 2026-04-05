@@ -18,7 +18,7 @@ def _load_module(module_name: str, relative_path: str):
     return module
 
 
-def test_probe_gemma4_text_uses_torch_dtype_kwarg(monkeypatch, capsys) -> None:
+def test_probe_gemma4_text_uses_dtype_kwarg(monkeypatch, capsys) -> None:
     module = _load_module("probe_gemma4_text", "scripts/probe_gemma4_text.py")
     captured_load_kwargs: dict[str, object] = {}
 
@@ -64,7 +64,13 @@ def test_probe_gemma4_text_uses_torch_dtype_kwarg(monkeypatch, capsys) -> None:
             bits_v=4,
             group_size=32,
             dotcache_backend="auto",
+            output_path=None,
         ),
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_gemma4_text_runtime",
+        lambda *, device, torch_dtype: ("cpu", "float32"),
     )
     monkeypatch.setattr(
         module.AutoConfig,
@@ -92,9 +98,97 @@ def test_probe_gemma4_text_uses_torch_dtype_kwarg(monkeypatch, capsys) -> None:
     output = json.loads(capsys.readouterr().out)
 
     assert output["status"] == "ok"
-    assert "torch_dtype" in captured_load_kwargs
-    assert captured_load_kwargs["torch_dtype"] == torch.float32
-    assert "dtype" not in captured_load_kwargs
+    assert "dtype" in captured_load_kwargs
+    assert captured_load_kwargs["dtype"] == torch.float32
+    assert "torch_dtype" not in captured_load_kwargs
+    assert output["runtime_torch_dtype"] == "float32"
+
+
+def test_probe_gemma4_text_dense_uses_resolved_mps_runtime_and_output_path(monkeypatch, capsys, tmp_path) -> None:
+    module = _load_module("probe_gemma4_text_dense_mps", "scripts/probe_gemma4_text.py")
+    captured_load_kwargs: dict[str, object] = {}
+    output_path = tmp_path / "dense_probe.json"
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.device = torch.device("mps")
+            self.hf_device_map = None
+
+        def eval(self) -> None:
+            return None
+
+        def parameters(self):
+            yield torch.zeros(1, device="cpu")
+
+        def generate(self, **kwargs):
+            return torch.tensor([[1, 2, 3]], dtype=torch.long)
+
+    class _FakeTokenizer:
+        def __call__(self, prompt, return_tensors=None):
+            class _Inputs(dict):
+                def to(self, device):
+                    return self
+
+            return _Inputs({"input_ids": torch.tensor([[1, 2]], dtype=torch.long)})
+
+        def decode(self, ids, skip_special_tokens=True):
+            return "decoded"
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: Namespace(
+            model_id="google/gemma-4-E2B",
+            device_map="mps",
+            torch_dtype="bfloat16",
+            attn_implementation=None,
+            max_new_tokens=1,
+            prompt="hello",
+            run_dotcache=False,
+            dotcache_profile="balanced",
+            tokens_per_page=4,
+            bits_k=4,
+            bits_v=4,
+            group_size=32,
+            dotcache_backend="auto",
+            output_path=str(output_path),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_gemma4_text_runtime",
+        lambda *, device, torch_dtype: ("mps", "float16"),
+    )
+    monkeypatch.setattr(
+        module.AutoConfig,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: type("FakeConfig", (), {"model_type": "gemma4"})()),
+    )
+    monkeypatch.setattr(
+        module.AutoTokenizer,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: _FakeTokenizer()),
+    )
+
+    def _fake_model_from_pretrained(*args, **kwargs):
+        captured_load_kwargs.update(kwargs)
+        return _FakeModel()
+
+    monkeypatch.setattr(
+        module.AutoModelForCausalLM,
+        "from_pretrained",
+        staticmethod(_fake_model_from_pretrained),
+    )
+    monkeypatch.setattr(module, "resolve_hf_auth_kwargs", lambda: {})
+
+    module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["status"] == "ok"
+    assert output["runtime_torch_dtype"] == "float16"
+    assert captured_load_kwargs["dtype"] == torch.float16
+    assert output_path.exists()
+    assert json.loads(output_path.read_text()) == output
 
 
 def test_probe_gemma4_text_dotcache_auto_device_uses_resolved_mps_runtime(monkeypatch, capsys) -> None:
@@ -118,6 +212,7 @@ def test_probe_gemma4_text_dotcache_auto_device_uses_resolved_mps_runtime(monkey
             bits_v=4,
             group_size=32,
             dotcache_backend="torch_mps",
+            output_path=None,
         ),
     )
     monkeypatch.setattr(
@@ -173,3 +268,5 @@ def test_probe_gemma4_text_dotcache_auto_device_uses_resolved_mps_runtime(monkey
     assert output["mode"] == "dotcache"
     assert captured["kwargs"]["device"] == "mps"
     assert captured["kwargs"]["torch_dtype"] == "float16"
+    assert output["runtime_device"] == "mps"
+    assert output["runtime_torch_dtype"] == "float16"

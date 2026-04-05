@@ -561,7 +561,7 @@ def load_gemma4_text_only_from_pretrained(
     auth_kwargs = resolve_hf_auth_kwargs()
     root_model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=dtype,
+        dtype=dtype,
         trust_remote_code=False,
         **auth_kwargs,
     )
