@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-ModelFamily = Literal["llama", "qwen2", "qwen3_5_hybrid"]
+ModelFamily = Literal["llama", "qwen2", "qwen3_5_hybrid", "nemotron_h"]
 SourceFormat = Literal["hf", "gguf"]
 RuntimeName = Literal["transformers", "dotcache_hf", "vllm", "llama_cpp"]
 LocalTier = Literal["works_here", "stretch_here", "reference_only"]
@@ -165,6 +165,21 @@ _MODEL_REGISTRY: dict[str, ModelSpec] = {
         benchmark_harness="qwen35_text",
         prompt_lengths=(512, 1024),
         notes="Dense text lane on non-CUDA backends and the default CUDA StateCache lane on this pod. The current recommended CUDA runtime is DeltaNet StateCache post_update_m0 at 8-bit with renorm disabled.",
+    ),
+    "nemotron3_nano_4b_hf": ModelSpec(
+        key="nemotron3_nano_4b_hf",
+        display_name="NVIDIA Nemotron 3 Nano 4B BF16",
+        model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+        tokenizer_model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+        family="nemotron_h",
+        source_format="hf",
+        runtime="transformers",
+        context_window=262144,
+        local_tier="stretch_here",
+        dotcache_ready=False,
+        benchmark_harness="nemotron_h_text",
+        prompt_lengths=(512, 1024, 2048),
+        notes="Hybrid Mamba-attention Nemotron-H target. Current local probe confirms the published 42-block layout, but dense load still depends on remote code plus mamba-ssm, the native Transformers parser currently rejects the published hybrid pattern, and the shared ROCm Python 3.14 env failed to build mamba-ssm locally.",
     ),
     "llama32_3b_gguf": ModelSpec(
         key="llama32_3b_gguf",
