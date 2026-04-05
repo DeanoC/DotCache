@@ -95,3 +95,81 @@ def test_probe_gemma4_text_uses_torch_dtype_kwarg(monkeypatch, capsys) -> None:
     assert "torch_dtype" in captured_load_kwargs
     assert captured_load_kwargs["torch_dtype"] == torch.float32
     assert "dtype" not in captured_load_kwargs
+
+
+def test_probe_gemma4_text_dotcache_auto_device_uses_resolved_mps_runtime(monkeypatch, capsys) -> None:
+    module = _load_module("probe_gemma4_text_dotcache", "scripts/probe_gemma4_text.py")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: Namespace(
+            model_id="google/gemma-4-E2B",
+            device_map="auto",
+            torch_dtype="bfloat16",
+            attn_implementation=None,
+            max_new_tokens=2,
+            prompt="hello",
+            run_dotcache=True,
+            dotcache_profile="balanced",
+            tokens_per_page=4,
+            bits_k=4,
+            bits_v=4,
+            group_size=32,
+            dotcache_backend="torch_mps",
+        ),
+    )
+    monkeypatch.setattr(
+        module.AutoConfig,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: object()),
+    )
+    monkeypatch.setattr(module, "resolve_hf_auth_kwargs", lambda: {})
+    monkeypatch.setattr(
+        module,
+        "resolve_gemma4_text_runtime",
+        lambda *, device, torch_dtype: ("mps", "float16"),
+    )
+    monkeypatch.setattr(
+        module,
+        "gemma4_text_recommended_dotcache_config",
+        lambda *args, **kwargs: "fake-config",
+    )
+
+    class _FakeHarness:
+        def generate_greedy(self, prompt=None, max_new_tokens=0):
+            return {
+                "dense_generated_ids": [1, 2],
+                "dotcache_generated_ids": [1, 2],
+                "greedy_token_agreement_rate": 1.0,
+                "teacher_forced_logit_max_abs_error": 0.0,
+                "teacher_forced_logit_max_rel_error": 0.0,
+                "resident_bytes": 1,
+                "kv_resident_bytes": 1,
+                "decode_ms_per_step": 1.0,
+                "m0_pages": 1,
+                "m3_pages": 0,
+                "dense_text": "dense",
+                "dotcache_text": "dotcache",
+            }
+
+    def _fake_from_pretrained(model_id, config, **kwargs):
+        captured["model_id"] = model_id
+        captured["config"] = config
+        captured["kwargs"] = dict(kwargs)
+        return _FakeHarness()
+
+    monkeypatch.setattr(
+        module.Gemma4TextHarness,
+        "from_pretrained",
+        staticmethod(_fake_from_pretrained),
+    )
+
+    module.main()
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["status"] == "ok"
+    assert output["mode"] == "dotcache"
+    assert captured["kwargs"]["device"] == "mps"
+    assert captured["kwargs"]["torch_dtype"] == "float16"

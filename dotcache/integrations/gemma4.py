@@ -55,6 +55,14 @@ def _gemma4_text_model(model_or_config: Any) -> Any:
     return model
 
 
+def resolve_gemma4_text_runtime(*, device: str | None, torch_dtype: str) -> tuple[str, str]:
+    resolved_device = _default_model_device() if device is None else str(device)
+    resolved_torch_dtype = str(torch_dtype)
+    if resolved_device == "mps" and resolved_torch_dtype == "bfloat16":
+        resolved_torch_dtype = "float16"
+    return resolved_device, resolved_torch_dtype
+
+
 def _gemma4_layer_types(model_or_config: Any) -> tuple[str, ...]:
     config = _gemma4_text_config(model_or_config)
     raw_types = tuple(str(layer_type) for layer_type in getattr(config, "layer_types", ()))
@@ -545,8 +553,11 @@ def load_gemma4_text_only_from_pretrained(
     torch_dtype: str = "bfloat16",
 ) -> tuple[Gemma4TextModelWrapper, Any]:
     _require_transformers()
-    dtype = getattr(torch, torch_dtype)
-    resolved_device = _default_model_device() if device is None else device
+    resolved_device, resolved_torch_dtype = resolve_gemma4_text_runtime(
+        device=device,
+        torch_dtype=torch_dtype,
+    )
+    dtype = getattr(torch, resolved_torch_dtype)
     auth_kwargs = resolve_hf_auth_kwargs()
     root_model = AutoModelForCausalLM.from_pretrained(
         model_id,

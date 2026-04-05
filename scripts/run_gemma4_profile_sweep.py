@@ -26,6 +26,7 @@ from dotcache.integrations import (
     gemma4_text_recommended_dotcache_config,
     gemma4_text_tuned_preset_for_workload,
 )
+from dotcache.integrations.gemma4 import resolve_gemma4_text_runtime
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "benchmarks" / "results" / "gemma4_profile_sweep_20260404"
@@ -218,12 +219,16 @@ def main() -> None:
         tokens_per_page=args.tokens_per_page,
         profile="balanced",
     )
+    resolved_device, resolved_torch_dtype = resolve_gemma4_text_runtime(
+        device=args.device,
+        torch_dtype=args.torch_dtype,
+    )
     harness = Gemma4TextHarness.from_pretrained(
         args.model_id,
         seed_config,
         backend=args.backend,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
+        device=resolved_device,
+        torch_dtype=resolved_torch_dtype,
     )
     extra_exact_key_layers = tuple(sorted({int(layer_idx) for layer_idx in args.extra_exact_key_layers}))
     extra_exact_value_layers = tuple(sorted({int(layer_idx) for layer_idx in args.extra_exact_value_layers}))

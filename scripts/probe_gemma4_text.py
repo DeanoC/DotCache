@@ -10,6 +10,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from dotcache.integrations import Gemma4TextHarness, gemma4_text_recommended_dotcache_config
+from dotcache.integrations.gemma4 import resolve_gemma4_text_runtime
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 
 
@@ -121,6 +122,11 @@ def main() -> None:
 
     try:
         if args.run_dotcache:
+            requested_device = None if args.device_map == "auto" else args.device_map
+            resolved_device, resolved_torch_dtype = resolve_gemma4_text_runtime(
+                device=requested_device,
+                torch_dtype=args.torch_dtype,
+            )
             harness = Gemma4TextHarness.from_pretrained(
                 args.model_id,
                 gemma4_text_recommended_dotcache_config(
@@ -132,8 +138,8 @@ def main() -> None:
                     profile=args.dotcache_profile,
                 ),
                 backend=args.dotcache_backend,
-                device="cuda" if args.device_map == "auto" else args.device_map,
-                torch_dtype=args.torch_dtype,
+                device=resolved_device,
+                torch_dtype=resolved_torch_dtype,
             )
             result = harness.generate_greedy(prompt=args.prompt, max_new_tokens=args.max_new_tokens)
             print(json.dumps(_dotcache_record(args=args, result=result), sort_keys=True))
