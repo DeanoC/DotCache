@@ -4,6 +4,7 @@ import pytest
 transformers = pytest.importorskip("transformers")
 torch = pytest.importorskip("torch")
 
+from dotcache.backends import mps_available
 from dotcache.config import DotCacheConfig
 from dotcache.integrations import gemma4 as gemma4_integration
 from dotcache.integrations.gemma4 import (
@@ -25,6 +26,8 @@ from dotcache.integrations.gemma4 import (
 
 Gemma4TextConfig = transformers.Gemma4TextConfig
 Gemma4ForCausalLM = transformers.Gemma4ForCausalLM
+
+requires_mps = pytest.mark.skipif(not mps_available(), reason="torch_mps is unavailable")
 
 
 def _tiny_gemma4_model():
@@ -80,6 +83,44 @@ def test_gemma4_generation_harness_runs_on_tiny_random_model() -> None:
     assert len(result["dotcache_generated_ids"]) == 4
     assert np.isfinite(result["decode_ms_per_step"])
     assert np.isfinite(result["teacher_forced_logit_max_abs_error"])
+
+
+@requires_mps
+def test_gemma4_generation_harness_runs_on_mps_tiny_random_model() -> None:
+    config = Gemma4TextConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        global_head_dim=64,
+        hidden_size_per_layer_input=0,
+        vocab_size=128,
+        max_position_embeddings=64,
+        sliding_window=8,
+        layer_types=[
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+        num_kv_shared_layers=2,
+        use_cache=True,
+    )
+    root_model = Gemma4ForCausalLM(config).to("mps")
+    root_model.eval()
+    model = Gemma4TextModelWrapper(root_model)
+    dotcache_config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16)
+    adapter = Gemma4TextModelAdapter(model, dotcache_config, backend="torch_mps")
+    input_ids = torch.tensor([[2, 4, 6, 8]], dtype=torch.long, device="mps")
+
+    result = run_gemma4_text_generation_harness(model, adapter, input_ids=input_ids, max_new_tokens=3)
+
+    assert len(result["dotcache_generated_ids"]) == 3
+    assert result["resident_bytes"] >= 0
 
 
 def test_gemma4_support_check_accepts_mixed_head_dims() -> None:
