@@ -336,10 +336,11 @@ What is still missing:
 
 The current checkpoint already supports one narrow but real promotion call:
 
-- Qwen3.5 9B can default to the `systems` selector profile for serving
+- Qwen3.5 `4B`, `9B`, and native `27B` can default to the `systems` selector profile for serving
+- the Qwen family matrix now shows the same basic read across compact held-out tasks, the current LongBench QA mini-pack, and backend-truth serving rows
 - native Qwen3.5 27B backend truth now reproduces the same learned-selector win on the intended `transformers 5.5.0` stack
 - Llama 3.2 3B currently does not need an extra systems bias because `quality` and `systems` are effectively the same operating point
-- the fixed Qwen3.5 9B LongBench QA mini-pack now supports the same local Qwen default-path read against a small held-out external-style QA family and a sink-plus-recent reference
+- the current Qwen LongBench QA mini-pack supports the same local default-path read as a small held-out external-style QA family plus sink-plus-recent reference, even though it is still too small to be the last word on quality separation
 
 That means the project is improving on measurement discipline, and the selector-profile question is much less ambiguous than it was one week ago, but it is not yet benchmark-complete.
 

@@ -267,51 +267,56 @@ That status table is the honest indicator of direction of travel. The project is
 
 ### 5.3.1. Cross-Family Selector-Profile Checkpoint
 
-The repo now also contains a cleaner default-path checkpoint in [`selector_profile_promotion_checkpoint_20260402.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md). This is narrower than a full external-baseline courtroom, but it is much closer to a paper-facing promotion decision than the earlier profile sweeps because it combines:
+The repo now also contains a cleaner default-path checkpoint in [`selector_profile_promotion_checkpoint_20260402.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md). This is narrower than a full external-baseline courtroom, but it is much closer to a paper-facing promotion decision than the earlier profile sweeps because it now combines:
 
+- a completed Qwen3.5 `4B / 9B / 27B` matrix across compact task checks, LongBench mini-pack rows, and backend-truth serving runs
 - repeated serving-quality comparisons on Qwen3.5 9B
-- task-level held-out checks on Qwen3.5 9B
 - the same task-level held-out checks on Llama 3.2 3B
-- a fixed LongBench-derived held-out QA mini-pack on Qwen3.5 9B with a sink-plus-recent reference lane
+- a fixed LongBench-derived held-out QA mini-pack with a sink-plus-recent reference lane
 - a native Qwen3.5 27B backend-truth rerun on the current `transformers 5.5.0` stack
 
 The current selector-profile summary is:
 
 | Model | Exact success | Quality success | Systems success | Mean systems vs quality speedup | Current default-path read |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `Qwen3.5 9B` | `1.000` | `1.000` | `1.000` | `3.679x` | promote `systems` |
+| `Qwen3.5 4B` | `1.000` | `1.000` | `1.000` | `2.676x` | promote `systems` |
+| `Qwen3.5 9B` | `1.000` | `1.000` | `1.000` | `3.496x` | promote `systems` |
+| `Qwen3.5 27B` | `0.833` | `0.833` | `0.833` | `3.510x` | promote `systems` |
 | `Llama 3.2 3B` | `1.000` | `1.000` | `1.000` | `0.981x` | `quality` and `systems` are effectively the same |
 
-For Qwen3.5 9B, the held-out task rows now stay clean across instruction following, retrieval, and a strengthened reasoning slice:
+The compact Qwen task rows now stay clean across instruction following, retrieval, and the strengthened reasoning slice at `4B` and `9B`, and stay clean on `5/6` rows at native `27B`:
 
-| Qwen3.5 9B task | Context | Quality decode ms/step | Systems decode ms/step | Systems vs quality speedup |
-| --- | ---: | ---: | ---: | ---: |
-| instruction | `1024` | `129.97` | `42.84` | `3.03x` |
-| instruction | `2048` | `166.00` | `54.50` | `3.05x` |
-| reasoning | `1024` | `172.19` | `41.98` | `4.10x` |
-| reasoning | `2048` | `233.69` | `54.20` | `4.31x` |
-| retrieval | `1024` | `166.33` | `45.14` | `3.68x` |
-| retrieval | `2048` | `230.65` | `59.22` | `3.89x` |
+| Qwen task checkpoint | Context | Exact success | Quality decode ms/step | Systems decode ms/step | Systems vs quality speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `4B` instruction | `1024` | `1.000` | `193.95` | `71.35` | `2.72x` |
+| `4B` reasoning | `2048` | `1.000` | `295.82` | `127.59` | `2.32x` |
+| `9B` instruction | `1024` | `1.000` | `141.54` | `47.50` | `2.98x` |
+| `9B` retrieval | `2048` | `1.000` | `247.25` | `69.30` | `3.57x` |
+| `27B` instruction | `1024` | `1.000` | `356.52` | `118.88` | `3.00x` |
+| `27B` retrieval`*` | `2048` | `0.000` | `560.84` | `145.17` | `3.86x` |
 
 The Qwen serving-quality harness points in the same direction. In [`selector_quality_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_selector_quality_compare_20260402/selector_quality_compare.md), the `systems` profile stays at `1.000` token agreement while improving decode from `67.66` to `45.23` ms/step at `1024` and from `82.91` to `49.99` ms/step at `2048`, with slightly lower logit RMSE than the `quality` profile in both contexts.
 
-The new external-style LongBench check now points the same way. In [`longbench_selector_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_longbench_selector_compare_20260404/longbench_selector_compare.md), the refreshed Qwen3.5 9B mini-pack gives the same held-out QA F1 to `exact`, `quality`, and `systems` while the sink-plus-recent reference falls behind:
+The new external-style LongBench check now points the same way, but with a narrower claim than the compact task matrix. In [`qwen_results_matrix.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md), the current mini-pack gives tied QA F1 across `exact`, `quality`, `systems`, and `streaming_sink_recent` within each model/context row, while `systems` still wins strongly on decode:
 
-| Qwen3.5 9B LongBench QA | Context cap | Exact QA F1 | Quality QA F1 | Systems QA F1 | Streaming QA F1 | Exact decode ms/step | Quality decode ms/step | Systems decode ms/step |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| held-out QA mini-pack | `4096` | `0.441` | `0.441` | `0.441` | `0.441` | `627.28` | `583.62` | `93.73` |
-| held-out QA mini-pack | `8192` | `0.291` | `0.291` | `0.291` | `0.291` | `1066.43` | `798.47` | `159.38` |
+| Qwen LongBench QA | Context cap | Exact QA F1 | Quality QA F1 | Systems QA F1 | Streaming QA F1 | Exact decode ms/step | Quality decode ms/step | Systems decode ms/step | Streaming decode ms/step |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `4B` mini-pack | `4096` | `0.253` | `0.253` | `0.253` | `0.253` | `625.45` | `1165.36` | `373.60` | `258.88` |
+| `9B` mini-pack | `4096` | `0.441` | `0.441` | `0.441` | `0.441` | `632.71` | `592.30` | `96.20` | `260.80` |
+| `27B` mini-pack | `4096` | `0.358` | `0.358` | `0.358` | `0.358` | `1263.52` | `1737.08` | `331.79` | `538.43` |
 
-Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile matching the full-answer DotCache lanes on held-out QA F1 while still delivering about `6.23x` speedup over `quality` at `4096` and `5.01x` at `8192`, and while also beating the sink-plus-recent reference very comfortably on speed. The current mini-pack does not yet separate `systems` from sink-plus-recent on QA F1, so the cleaner claim is now latency-dominant rather than both-quality-and-latency dominant.
+Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile preserving the current mini-pack quality row while materially improving decode, but they also show that this mini-pack does not yet separate `systems` from the full-answer lanes on QA F1. The cleaner current claim is therefore latency-dominant and quality-neutral on the present LongBench slice rather than “strictly better on both.”
 
-The stronger-model serving lane now points the same way without the earlier environment caveat. In [`backend_truth_report.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_27b_backend_truth_20260404_native/backend_truth_report.md), the native Qwen3.5 27B learned selector remains the clear decode winner on the current `transformers 5.5.0` stack:
+The serving decomposition rows now point the same way across the full validated Qwen family. In [`qwen_results_matrix.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md), the learned selector remains the clear decode winner in native backend-truth runs:
 
-| Qwen3.5 27B backend truth | Context | Exact decode ms/step | Shortlist decode ms/step | Learned decode ms/step | Learned vs exact | Learned vs shortlist |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| native rerun | `1024` | `507.44` | `524.77` | `169.09` | `3.00x` | `3.10x` |
-| native rerun | `2048` | `824.98` | `642.79` | `224.14` | `3.68x` | `2.87x` |
+| Qwen backend truth | Context | Exact decode ms/step | Shortlist decode ms/step | Learned decode ms/step | Learned vs exact | Learned vs shortlist | Learned M3 fraction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `4B` | `1024` | `232.19` | `242.41` | `71.47` | `3.25x` | `3.39x` | `0.982` |
+| `9B` | `1024` | `242.52` | `242.64` | `74.78` | `3.24x` | `3.25x` | `0.988` |
+| `27B` | `1024` | `485.96` | `504.26` | `149.39` | `3.25x` | `3.38x` | `0.995` |
+| `27B` native rerun | `2048` | `821.41` | `626.31` | `236.01` | `3.48x` | `2.65x` | `0.995` |
 
-Those rows matter because they turn the bigger-model result from a transferred-artifact curiosity into a native-scale checkpoint on the intended modern runtime. The remaining backend story is still the same M3-heavy one: selector overhead stays small, the learned lane is almost entirely `M3`, and most of the win still comes from shifting time out of `score` and `mix`.
+Those rows matter because they turn the bigger-model result from a transferred-artifact curiosity into a native-scale checkpoint on the intended modern runtime, and because they show the same basic serving story at `4B`, `9B`, and `27B`. The remaining backend story is still the same M3-heavy one: selector overhead stays small, the learned lane is almost entirely `M3`, and most of the win still comes from shifting time out of `score` and `mix`.
 
 The Llama 3.2 3B result is different in exactly the way a model-family-sensitive selector story should be different. The current learned selector is already saturated to `M3`, so the `systems` profile does not buy an extra win:
 
@@ -329,7 +334,7 @@ This is useful because it narrows the selector claim in a healthy way. The proje
 - selector profiles should be family-sensitive
 - `systems` is the correct default for the current Qwen3.5 serving lane
 - Llama does not currently need an extra systems bias beyond the learned selector itself
-- the Qwen default-path read now survives one small held-out LongBench-style QA check in addition to the compact task harnesses
+- the Qwen default-path read now survives a family-wide compact task matrix and one small held-out LongBench-style QA check in addition to the serving decomposition rows
 
 This is enough evidence to support a local default-path switch in the repo. It is not, by itself, enough to say that matched-budget external-baseline Gate C is already cleared.
 

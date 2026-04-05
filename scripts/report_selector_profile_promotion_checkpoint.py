@@ -8,8 +8,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_QWEN_TASK_JSON = (
-    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_task_selector_compare_20260402_reasoning_v2" / "task_selector_compare.json"
+DEFAULT_QWEN_MATRIX_JSON = (
+    REPO_ROOT / "benchmarks" / "results" / "qwen_results_matrix_20260404" / "qwen_results_matrix.json"
 )
 DEFAULT_QWEN_QUALITY_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_selector_quality_compare_20260402" / "selector_quality_compare.json"
@@ -17,21 +17,13 @@ DEFAULT_QWEN_QUALITY_JSON = (
 DEFAULT_LLAMA_TASK_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "llama32_3b_task_selector_compare_20260402" / "task_selector_compare.json"
 )
-DEFAULT_QWEN_LONGBENCH_JSON = (
-    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_selector_compare_20260404" / "longbench_selector_compare.json"
-)
-DEFAULT_QWEN_27B_BACKEND_JSON = (
-    REPO_ROOT / "benchmarks" / "results" / "qwen35_27b_backend_truth_20260404_native" / "backend_truth_report.json"
-)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a cross-family selector profile promotion checkpoint report.")
-    parser.add_argument("--qwen-task-json", default=str(DEFAULT_QWEN_TASK_JSON))
+    parser.add_argument("--qwen-matrix-json", default=str(DEFAULT_QWEN_MATRIX_JSON))
     parser.add_argument("--qwen-quality-json", default=str(DEFAULT_QWEN_QUALITY_JSON))
     parser.add_argument("--llama-task-json", default=str(DEFAULT_LLAMA_TASK_JSON))
-    parser.add_argument("--qwen-longbench-json", default=str(DEFAULT_QWEN_LONGBENCH_JSON))
-    parser.add_argument("--qwen-27b-backend-json", default=str(DEFAULT_QWEN_27B_BACKEND_JSON))
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--json-output", required=True)
     return parser.parse_args()
@@ -64,17 +56,15 @@ def _mean(values: list[float]) -> float:
 
 def build_report(
     *,
-    qwen_task_payload: dict[str, Any],
+    qwen_matrix_payload: dict[str, Any],
     qwen_quality_payload: dict[str, Any],
     llama_task_payload: dict[str, Any],
-    qwen_longbench_payload: dict[str, Any],
-    qwen_27b_backend_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    qwen_task_rows = list(qwen_task_payload.get("rows", []))
+    qwen_task_rows = list(qwen_matrix_payload.get("task_rows", []))
+    qwen_longbench_rows = list(qwen_matrix_payload.get("longbench_rows", []))
+    qwen_backend_rows = list(qwen_matrix_payload.get("backend_rows", []))
     llama_task_rows = list(llama_task_payload.get("rows", []))
     qwen_quality_rows = list(qwen_quality_payload.get("comparisons", []))
-    qwen_longbench_rows = list(qwen_longbench_payload.get("rows", []))
-    qwen_27b_backend_rows = list(qwen_27b_backend_payload.get("comparisons", []))
 
     qwen_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in qwen_task_rows]
     llama_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in llama_task_rows]
@@ -84,7 +74,7 @@ def build_report(
         "promotion_calls": {
             "qwen": {
                 "default_profile": "systems",
-                "rationale": "systems preserves task success and materially outperforms quality in serving decode.",
+                "rationale": "systems preserves the currently trusted task rows and materially outperforms quality in serving decode across the validated Qwen lanes.",
                 "mean_task_speedup_vs_quality": _mean(qwen_task_speedups),
                 "mean_quality_harness_speedup_vs_quality": _mean(qwen_quality_speedups),
             },
@@ -98,7 +88,7 @@ def build_report(
         "qwen_quality_rows": qwen_quality_rows,
         "llama_task_rows": llama_task_rows,
         "qwen_longbench_rows": qwen_longbench_rows,
-        "qwen_27b_backend_rows": qwen_27b_backend_rows,
+        "qwen_backend_rows": qwen_backend_rows,
     }
 
     overview_rows = [[
@@ -109,16 +99,26 @@ def build_report(
         "mean_systems_vs_quality_speedup",
         "promotion_call",
     ]]
-    overview_rows.append(
-        [
-            "Qwen3.5 9B",
-            "1.000",
-            "1.000",
-            "1.000",
-            _fmt(summary["promotion_calls"]["qwen"]["mean_task_speedup_vs_quality"]),
-            "Promote systems as default",
-        ]
-    )
+    for model_key, model_name in (
+        ("qwen35_4b", "Qwen3.5 4B"),
+        ("qwen35_9b", "Qwen3.5 9B"),
+        ("qwen35_27b", "Qwen3.5 27B"),
+    ):
+        rows = [row for row in qwen_task_rows if row.get("model_key") == model_key]
+        exact_success = _mean([float(row.get("exact_success", 0.0)) for row in rows]) if rows else None
+        quality_success = _mean([float(row.get("quality_success", 0.0)) for row in rows]) if rows else None
+        systems_success = _mean([float(row.get("systems_success", 0.0)) for row in rows]) if rows else None
+        speedup = _mean([float(row.get("systems_vs_quality_speedup", 0.0)) for row in rows]) if rows else None
+        overview_rows.append(
+            [
+                model_name,
+                _fmt(exact_success),
+                _fmt(quality_success),
+                _fmt(systems_success),
+                _fmt(speedup),
+                "Promote systems as default",
+            ]
+        )
     overview_rows.append(
         [
             "Llama 3.2 3B",
@@ -164,6 +164,7 @@ def build_report(
         "model",
         "task",
         "prompt_length",
+        "exact_success",
         "quality_decode_ms",
         "systems_decode_ms",
         "systems_vs_quality_speedup",
@@ -171,7 +172,9 @@ def build_report(
         "systems_success",
     ]]
     for model_name, rows in (
-        ("Qwen3.5 9B", qwen_task_rows),
+        ("Qwen3.5 4B", [row for row in qwen_task_rows if row.get("model_key") == "qwen35_4b"]),
+        ("Qwen3.5 9B", [row for row in qwen_task_rows if row.get("model_key") == "qwen35_9b"]),
+        ("Qwen3.5 27B", [row for row in qwen_task_rows if row.get("model_key") == "qwen35_27b"]),
         ("Llama 3.2 3B", llama_task_rows),
     ):
         for row in sorted(rows, key=lambda item: (str(item["task_name"]), int(item["prompt_length"]))):
@@ -180,6 +183,7 @@ def build_report(
                     model_name,
                     str(row["task_name"]),
                     str(int(row["prompt_length"])),
+                    _fmt(row.get("exact_success")),
                     _fmt(row["quality_decode_ms_per_step"]),
                     _fmt(row["systems_decode_ms_per_step"]),
                     _fmt(row["systems_vs_quality_speedup"]),
@@ -189,6 +193,7 @@ def build_report(
             )
 
     longbench_table = [[
+        "model",
         "context_cap",
         "exact_qa_f1",
         "quality_qa_f1",
@@ -201,39 +206,47 @@ def build_report(
         "systems_vs_quality_speedup",
         "systems_vs_streaming_speedup",
     ]]
-    longbench_by_key = {
-        (int(row["max_prompt_tokens"]), str(row["comparison_case"])): row for row in qwen_longbench_rows
-    }
-    for context_cap in sorted({int(row["max_prompt_tokens"]) for row in qwen_longbench_rows}):
-        exact = longbench_by_key.get((context_cap, "exact"))
-        quality = longbench_by_key.get((context_cap, "quality"))
-        systems = longbench_by_key.get((context_cap, "systems"))
-        streaming = longbench_by_key.get((context_cap, "streaming_sink_recent"))
-        longbench_table.append(
-            [
-                str(context_cap),
-                _fmt(exact.get("mean_qa_f1") if exact else None),
-                _fmt(quality.get("mean_qa_f1") if quality else None),
-                _fmt(systems.get("mean_qa_f1") if systems else None),
-                _fmt(streaming.get("mean_qa_f1") if streaming else None),
-                _fmt(exact.get("mean_decode_ms_per_step") if exact else None),
-                _fmt(quality.get("mean_decode_ms_per_step") if quality else None),
-                _fmt(systems.get("mean_decode_ms_per_step") if systems else None),
-                _fmt(streaming.get("mean_decode_ms_per_step") if streaming else None),
-                _fmt(
-                    (float(quality["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
-                    if quality and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
-                    else None
-                ),
-                _fmt(
-                    (float(streaming["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
-                    if streaming and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
-                    else None
-                ),
-            ]
-        )
+    for model_key, model_name in (
+        ("qwen35_4b", "Qwen3.5 4B"),
+        ("qwen35_9b", "Qwen3.5 9B"),
+        ("qwen35_27b", "Qwen3.5 27B"),
+    ):
+        rows = [row for row in qwen_longbench_rows if row.get("model_key") == model_key]
+        longbench_by_key = {
+            (int(row["max_prompt_tokens"]), str(row["comparison_case"])): row for row in rows
+        }
+        for context_cap in sorted({int(row["max_prompt_tokens"]) for row in rows}):
+            exact = longbench_by_key.get((context_cap, "exact"))
+            quality = longbench_by_key.get((context_cap, "quality"))
+            systems = longbench_by_key.get((context_cap, "systems"))
+            streaming = longbench_by_key.get((context_cap, "streaming_sink_recent"))
+            longbench_table.append(
+                [
+                    model_name,
+                    str(context_cap),
+                    _fmt(exact.get("mean_qa_f1") if exact else None),
+                    _fmt(quality.get("mean_qa_f1") if quality else None),
+                    _fmt(systems.get("mean_qa_f1") if systems else None),
+                    _fmt(streaming.get("mean_qa_f1") if streaming else None),
+                    _fmt(exact.get("mean_decode_ms_per_step") if exact else None),
+                    _fmt(quality.get("mean_decode_ms_per_step") if quality else None),
+                    _fmt(systems.get("mean_decode_ms_per_step") if systems else None),
+                    _fmt(streaming.get("mean_decode_ms_per_step") if streaming else None),
+                    _fmt(
+                        (float(quality["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
+                        if quality and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
+                        else None
+                    ),
+                    _fmt(
+                        (float(streaming["mean_decode_ms_per_step"]) / float(systems["mean_decode_ms_per_step"]))
+                        if streaming and systems and float(systems["mean_decode_ms_per_step"]) > 0.0
+                        else None
+                    ),
+                ]
+            )
 
-    qwen_27b_backend_table = [[
+    qwen_backend_table = [[
+        "model",
         "context",
         "exact_decode_ms",
         "shortlist_decode_ms",
@@ -245,24 +258,31 @@ def build_report(
         "learned_mix_ms",
         "selector_us_per_invocation",
     ]]
-    for row in sorted(qwen_27b_backend_rows, key=lambda item: int(item["prompt_length"])):
-        exact = row["variants"]["exact"]
-        shortlist = row["variants"]["shortlist_base"]
-        learned = row["variants"]["learned_selector"]
-        qwen_27b_backend_table.append(
-            [
-                str(int(row["prompt_length"])),
-                _fmt(exact["decode_ms_per_step"]),
-                _fmt(shortlist["decode_ms_per_step"]),
-                _fmt(learned["decode_ms_per_step"]),
-                _fmt(row["speedups"]["learned_selector"]["vs_exact"]),
-                _fmt(row["speedups"]["learned_selector"]["vs_shortlist"]),
-                _fmt(learned["m3_fraction"]),
-                _fmt(learned["score_ms_step"]),
-                _fmt(learned["mix_ms_step"]),
-                _fmt(learned["selector_us_per_invocation"]),
-            ]
-        )
+    for model_key, model_name in (
+        ("qwen35_4b", "Qwen3.5 4B"),
+        ("qwen35_9b", "Qwen3.5 9B"),
+        ("qwen35_27b", "Qwen3.5 27B"),
+    ):
+        rows = [row for row in qwen_backend_rows if row.get("model_key") == model_key]
+        for row in sorted(rows, key=lambda item: int(item["prompt_length"])):
+            exact = row["variants"]["exact"]
+            shortlist = row["variants"]["shortlist_base"]
+            learned = row["variants"]["learned_selector"]
+            qwen_backend_table.append(
+                [
+                    model_name,
+                    str(int(row["prompt_length"])),
+                    _fmt(exact["decode_ms_per_step"]),
+                    _fmt(shortlist["decode_ms_per_step"]),
+                    _fmt(learned["decode_ms_per_step"]),
+                    _fmt(row["speedups"]["learned_selector"]["vs_exact"]),
+                    _fmt(row["speedups"]["learned_selector"]["vs_shortlist"]),
+                    _fmt(learned["m3_fraction"]),
+                    _fmt(learned["score_ms_step"]),
+                    _fmt(learned["mix_ms_step"]),
+                    _fmt(learned["selector_us_per_invocation"]),
+                ]
+            )
 
     markdown = "\n".join(
         [
@@ -270,7 +290,7 @@ def build_report(
             "",
             "## Promotion Call",
             "",
-            "- Qwen3.5 9B: promote `systems` as the default serving selector profile. It preserves task success while delivering materially lower decode latency than `quality`.",
+            "- Qwen3.5 4B / 9B / 27B: promote `systems` as the default serving selector profile. The new matrix shows the same basic read across all three validated Qwen sizes.",
             "- Llama 3.2 3B: keep `quality` and `systems` as equivalent operating points for now. The selector is already saturated to `M3`, so the extra systems tuning does not unlock additional speed.",
             "",
             "## Cross-Family Overview",
@@ -289,16 +309,17 @@ def build_report(
             "",
             _markdown_table(longbench_table),
             "",
-            "## Qwen 27B Native Backend Check",
+            "## Qwen Backend Check",
             "",
-            _markdown_table(qwen_27b_backend_table),
+            _markdown_table(qwen_backend_table),
             "",
             "## Notes",
             "",
-            "- Qwen task rows come from the strengthened reasoning task slice, which now passes in `exact`, `quality`, and `systems`.",
+            "- The Qwen matrix now gives a single family-wide read across `4B`, `9B`, and native `27B` on compact tasks, LongBench, and backend truth.",
+            "- All compact Qwen task rows pass except the previously-known shared `27B @ 2048 retrieval_passkey` miss, which still fails in `exact`, `quality`, and `systems` and therefore does not read like a selector regression.",
             "- Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.",
-            "- The fixed Qwen LongBench QA mini-pack now behaves like a real held-out external-style check: `systems` matches `exact` and `quality` on QA F1 while materially beating both and also beating the sink-plus-recent streaming reference.",
-            "- The native Qwen3.5 27B backend-truth rerun now completes successfully on the intended newer `transformers` stack and still preserves the same learned-selector speedup story, so the Qwen default-path read is no longer just a 9B result.",
+            "- The Qwen LongBench matrix currently behaves more like a comparative systems check than a selector-separating quality benchmark: quality is tied across methods on the present pack, but `systems` remains much faster than `quality` and `exact` and retains lower RMSE than the streaming reference.",
+            "- Backend truth stays consistent across Qwen scale: learned lanes are strongly M3-heavy, selector overhead stays around `25 us/inv`, and the remaining dominant cost is still backend `score + mix` rather than selector computation.",
             "- This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.",
         ]
     )
@@ -308,11 +329,9 @@ def build_report(
 def main() -> int:
     args = parse_args()
     payload, markdown = build_report(
-        qwen_task_payload=_load_json(args.qwen_task_json),
+        qwen_matrix_payload=_load_json(args.qwen_matrix_json),
         qwen_quality_payload=_load_json(args.qwen_quality_json),
         llama_task_payload=_load_json(args.llama_task_json),
-        qwen_longbench_payload=_load_json(args.qwen_longbench_json),
-        qwen_27b_backend_payload=_load_json(args.qwen_27b_backend_json),
     )
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")

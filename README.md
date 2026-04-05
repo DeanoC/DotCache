@@ -47,14 +47,21 @@ The current cross-family promotion checkpoint is summarized in:
 
 - [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
 
-That report packages the current decision:
+That report now packages the current decision across the completed Qwen family matrix:
 
-- Qwen3.5 9B should default to `systems`
+- Qwen3.5 `4B`, `9B`, and native `27B` should default to `systems`
 - Llama 3.2 3B is already effectively saturated, so `quality` and `systems` are equivalent today
 
-The checkpoint now also includes the fixed Qwen3.5 9B LongBench QA mini-pack result, where `systems` matches `exact` and `quality` on held-out QA F1 while materially outperforming them on decode and also beating the sink-plus-recent reference.
+The checkpoint now includes the full Qwen `4B / 9B / 27B` matrix, including:
 
-It also now includes the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines.
+- compact held-out task rows where `systems` preserves the currently trusted task success profile while materially reducing decode
+- the fixed Qwen LongBench QA mini-pack, where `systems` stays quality-neutral on the current pack while sharply improving decode
+- the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines
+
+The main matrix artifacts are:
+
+- [qwen_results_matrix.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md)
+- [qwen_results_matrix.json](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.json)
 
 For broader LongBench coverage, the repo now also supports named pack tiers:
 
