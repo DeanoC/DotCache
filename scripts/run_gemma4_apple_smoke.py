@@ -80,6 +80,8 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     probe_output_path = output_dir / "dotcache_mps_balanced.json"
     summary_path = output_dir / "smoke_runner.json"
+    if probe_output_path.exists():
+        probe_output_path.unlink()
 
     command = _probe_command(args, probe_output_path=probe_output_path)
     env = os.environ.copy()
@@ -121,6 +123,9 @@ def main() -> int:
     if timed_out:
         summary["error_type"] = "TimeoutExpired"
         summary["error_message"] = f"timed out after {args.timeout_seconds}s"
+    elif process.returncode != 0:
+        summary["error_type"] = "ProbeProcessError"
+        summary["error_message"] = f"probe subprocess exited {process.returncode}"
     elif probe_record is None:
         summary["error_type"] = "MissingProbeRecord"
         summary["error_message"] = "probe did not write a JSON record"
@@ -135,7 +140,7 @@ def main() -> int:
     _write_summary(summary_path, summary)
     print(json.dumps(summary, sort_keys=True))
 
-    if timed_out or probe_record is None:
+    if timed_out or process.returncode != 0 or probe_record is None:
         return 1
     return 0 if probe_record.get("status") == "ok" else 1
 

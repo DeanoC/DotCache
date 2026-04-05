@@ -103,3 +103,46 @@ def test_run_gemma4_apple_smoke_runner_reports_timeout(monkeypatch, tmp_path, ca
     assert output["status"] == "timeout"
     assert output["error_type"] == "TimeoutExpired"
     assert kill_calls == [(4321, module.signal.SIGKILL)]
+
+
+def test_run_gemma4_apple_smoke_runner_rejects_stale_success_when_probe_process_fails(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    module = _load_module("run_gemma4_apple_smoke_stale", "scripts/run_gemma4_apple_smoke.py")
+
+    output_dir = tmp_path / "smoke"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stale_probe_path = output_dir / "dotcache_mps_balanced.json"
+    stale_probe_path.write_text(json.dumps({"status": "ok", "mode": "dotcache"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: Namespace(
+            model_id="google/gemma-4-E2B",
+            prompt="hello",
+            max_new_tokens=1,
+            timeout_seconds=30,
+            output_dir=str(output_dir),
+        ),
+    )
+
+    class _FakeProcess:
+        pid = 999
+        returncode = 2
+
+        def communicate(self, timeout=None):
+            return ("", "import failed")
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: _FakeProcess(),
+    )
+
+    assert module.main() == 1
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["status"] == "error"
+    assert output["error_type"] == "ProbeProcessError"
+    assert output["probe_record"] is None
