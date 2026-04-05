@@ -7903,6 +7903,12 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         teacher_forced_rmse = 0.0
         teacher_forced_token_agreement = 1.0
         teacher_forced_per_step_max_abs: list[float] = []
+        dense_teacher_forced_loss = 0.0
+        dense_teacher_forced_perplexity = 1.0
+        dotcache_teacher_forced_loss = 0.0
+        dotcache_teacher_forced_perplexity = 1.0
+        teacher_forced_loss_delta = 0.0
+        teacher_forced_perplexity_ratio = 1.0
     else:
         logit_delta = np.abs(dotcache_logits - dense_logits)
         logit_denom = np.maximum(np.abs(dense_logits), 1e-8)
@@ -7910,11 +7916,28 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         teacher_forced_max_rel = float(np.max(logit_delta / logit_denom))
         teacher_forced_mean_abs = float(np.mean(logit_delta))
         teacher_forced_rmse = float(np.sqrt(np.mean(np.square(dotcache_logits - dense_logits))))
+        dense_target_tokens = np.argmax(dense_logits, axis=-1).astype(np.int64, copy=False)
+        dense_stabilized = dense_logits - np.max(dense_logits, axis=-1, keepdims=True)
+        dense_log_probs = dense_stabilized - np.log(np.sum(np.exp(dense_stabilized), axis=-1, keepdims=True))
+        dense_token_losses = -dense_log_probs[np.arange(dense_target_tokens.shape[0]), dense_target_tokens]
+        dense_teacher_forced_loss = float(np.mean(dense_token_losses))
+        dense_teacher_forced_perplexity = float(np.exp(min(dense_teacher_forced_loss, 50.0)))
+        dotcache_stabilized = dotcache_logits - np.max(dotcache_logits, axis=-1, keepdims=True)
+        dotcache_log_probs = dotcache_stabilized - np.log(
+            np.sum(np.exp(dotcache_stabilized), axis=-1, keepdims=True)
+        )
+        dotcache_token_losses = -dotcache_log_probs[np.arange(dense_target_tokens.shape[0]), dense_target_tokens]
+        dotcache_teacher_forced_loss = float(np.mean(dotcache_token_losses))
+        dotcache_teacher_forced_perplexity = float(np.exp(min(dotcache_teacher_forced_loss, 50.0)))
+        teacher_forced_loss_delta = float(dotcache_teacher_forced_loss - dense_teacher_forced_loss)
+        teacher_forced_perplexity_ratio = float(
+            dotcache_teacher_forced_perplexity / max(dense_teacher_forced_perplexity, 1e-8)
+        )
         teacher_forced_token_agreement = float(
             np.mean(
                 (
                     np.argmax(dotcache_logits, axis=-1).astype(np.int64, copy=False)
-                    == np.argmax(dense_logits, axis=-1).astype(np.int64, copy=False)
+                    == dense_target_tokens
                 ).astype(np.float32)
             )
         )
@@ -7948,6 +7971,12 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "replay_output_max_rel_error": replay_output_max_rel,
             "replay_context_max_abs_error_by_layer": dict(sorted(per_layer_context_max_abs.items())),
             "replay_output_max_abs_error_by_layer": dict(sorted(per_layer_output_max_abs.items())),
+            "dense_teacher_forced_loss": dense_teacher_forced_loss,
+            "dense_teacher_forced_perplexity": dense_teacher_forced_perplexity,
+            "dotcache_teacher_forced_loss": dotcache_teacher_forced_loss,
+            "dotcache_teacher_forced_perplexity": dotcache_teacher_forced_perplexity,
+            "teacher_forced_loss_delta": teacher_forced_loss_delta,
+            "teacher_forced_perplexity_ratio": teacher_forced_perplexity_ratio,
             "teacher_forced_logit_max_abs_error": teacher_forced_max_abs,
             "teacher_forced_logit_max_rel_error": teacher_forced_max_rel,
             "teacher_forced_logit_mean_abs_error": teacher_forced_mean_abs,

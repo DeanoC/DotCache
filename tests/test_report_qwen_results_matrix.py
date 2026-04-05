@@ -103,3 +103,38 @@ def test_build_report_renders_task_longbench_and_backend_tables(tmp_path: Path) 
     assert "LongBench Matrix" in markdown
     assert "Backend Truth Matrix" in markdown
     assert "Qwen/Qwen3.5-27B" in markdown
+
+
+def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path) -> None:
+    manifest = {
+        "title": "Qwen Matrix Missing PPL",
+        "models": [
+            {"model_key": "qwen35_9b", "model_id": "Qwen/Qwen3.5-9B"},
+        ],
+    }
+
+    longbench_dir = tmp_path / "qwen35_9b" / "longbench"
+    longbench_dir.mkdir(parents=True)
+    (longbench_dir / "longbench_selector_compare.json").write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "comparison_case": "systems",
+                        "max_prompt_tokens": 4096,
+                        "mean_exact_match": 0.25,
+                        "mean_qa_f1": 0.44,
+                        "mean_decode_ms_per_step": 90.0,
+                        "p95_decode_ms_per_step": 91.0,
+                        "mean_teacher_forced_perplexity_ratio": None,
+                        "mean_teacher_forced_logit_rmse": 0.02,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload, markdown = MODULE.build_report(manifest, output_dir=tmp_path)
+    assert len(payload["longbench_rows"]) == 1
+    assert "| Qwen/Qwen3.5-9B | 4096 | systems | 0.250 | 0.440 | 90.000 | 91.000 | - | 0.020 |" in markdown

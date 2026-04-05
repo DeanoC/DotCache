@@ -603,7 +603,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.25256286266924566,
       "mean_teacher_forced_logit_rmse": 0.5190095230937004,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 633.9255851595226
@@ -615,7 +615,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.25256286266924566,
       "mean_teacher_forced_logit_rmse": 0.49583957344293594,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 1210.8642798818437
@@ -627,7 +627,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.25256286266924566,
       "mean_teacher_forced_logit_rmse": 1.203211024403572,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 270.25211250966095
@@ -639,7 +639,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.25256286266924566,
       "mean_teacher_forced_logit_rmse": 0.4910302758216858,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 388.3827564997773
@@ -651,7 +651,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.24676508901432914,
       "mean_teacher_forced_logit_rmse": 0.5192018151283264,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 1069.01662049695
@@ -663,7 +663,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.24676508901432914,
       "mean_teacher_forced_logit_rmse": 0.532360352575779,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 2186.6431341225507
@@ -675,7 +675,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.24676508901432914,
       "mean_teacher_forced_logit_rmse": 1.1887066662311554,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 275.8453224107143
@@ -687,7 +687,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.24676508901432914,
       "mean_teacher_forced_logit_rmse": 0.5340722799301147,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_4b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 806.3324279676635
@@ -699,7 +699,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.4409722222222222,
       "mean_teacher_forced_logit_rmse": 0.4141283854842186,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 649.0387593891683
@@ -711,7 +711,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.4409722222222222,
       "mean_teacher_forced_logit_rmse": 0.38477467745542526,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 612.5700356652487
@@ -723,7 +723,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.4409722222222222,
       "mean_teacher_forced_logit_rmse": 1.0456187725067139,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 265.24593893500423
@@ -735,7 +735,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.4409722222222222,
       "mean_teacher_forced_logit_rmse": 0.38276515156030655,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 97.77773902997069
@@ -747,7 +747,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.2909722222222222,
       "mean_teacher_forced_logit_rmse": 0.36117903888225555,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 1053.646800158549
@@ -759,7 +759,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.2909722222222222,
       "mean_teacher_forced_logit_rmse": 0.33307065069675446,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 800.2251043063552
@@ -771,7 +771,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.2909722222222222,
       "mean_teacher_forced_logit_rmse": 1.0397696197032928,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 278.4126382379327
@@ -783,7 +783,7 @@
       "mean_exact_match": 0.0,
       "mean_qa_f1": 0.2909722222222222,
       "mean_teacher_forced_logit_rmse": 0.3309038206934929,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_9b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 154.32030572765143
@@ -795,7 +795,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5210466608405113,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 1273.3984317258546
@@ -807,7 +807,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5132962167263031,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 1761.1365955321162
@@ -819,7 +819,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.7788880169391632,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 542.083840577925
@@ -831,7 +831,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5114579796791077,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 335.3051155551839
@@ -843,7 +843,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5636129006743431,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 2117.4351986221154
@@ -855,7 +855,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5503180921077728,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 3581.2153445515833
@@ -867,7 +867,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.9477301388978958,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 569.9256187142055
@@ -879,7 +879,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5499755665659904,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "model_key": "qwen35_27b",
       "n_rows": 4,
       "p95_decode_ms_per_step": 813.2950632254506

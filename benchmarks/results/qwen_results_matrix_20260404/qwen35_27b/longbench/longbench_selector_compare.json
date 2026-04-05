@@ -7,7 +7,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5210466608405113,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 1273.3984317258546
     },
@@ -18,7 +18,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5132962167263031,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 1761.1365955321162
     },
@@ -29,7 +29,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.7788880169391632,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 542.083840577925
     },
@@ -40,7 +40,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.35806451612903223,
       "mean_teacher_forced_logit_rmse": 0.5114579796791077,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 335.3051155551839
     },
@@ -51,7 +51,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5636129006743431,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 2117.4351986221154
     },
@@ -62,7 +62,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5503180921077728,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 3581.2153445515833
     },
@@ -73,7 +73,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.9477301388978958,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 569.9256187142055
     },
@@ -84,7 +84,7 @@
       "mean_exact_match": 0.25,
       "mean_qa_f1": 0.34139784946236557,
       "mean_teacher_forced_logit_rmse": 0.5499755665659904,
-      "mean_teacher_forced_perplexity_ratio": 0.0,
+      "mean_teacher_forced_perplexity_ratio": null,
       "n_rows": 4,
       "p95_decode_ms_per_step": 813.2950632254506
     }

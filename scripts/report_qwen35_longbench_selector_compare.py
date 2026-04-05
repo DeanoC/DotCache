@@ -40,6 +40,13 @@ def _fmt_float(value: object) -> str:
     return f"{float(value):.3f}"
 
 
+def _mean_optional(values: list[object]) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    if not present:
+        return None
+    return float(mean(present))
+
+
 def _markdown_table(rows: list[list[str]]) -> str:
     header = rows[0]
     lines = [
@@ -147,8 +154,8 @@ def build_report(
         qa_f1 = [float(row.get("longbench_qa_f1_max_cleaned", 0.0) or 0.0) for row in case_rows]
         decode = [float(row.get("dotcache_decode_ms_per_step", 0.0) or 0.0) for row in case_rows]
         decode_p95 = [float(row.get("dotcache_decode_ms_per_step_p95", row.get("dotcache_decode_ms_per_step", 0.0)) or 0.0) for row in case_rows]
-        ppl_ratio = [float(row.get("teacher_forced_perplexity_ratio", 0.0) or 0.0) for row in case_rows]
-        rmse = [float(row.get("teacher_forced_logit_rmse", 0.0) or 0.0) for row in case_rows]
+        ppl_ratio = [row.get("teacher_forced_perplexity_ratio") for row in case_rows]
+        rmse = [row.get("teacher_forced_logit_rmse") for row in case_rows]
         summary = {
             "max_prompt_tokens": int(max_prompt_tokens),
             "comparison_case": case,
@@ -157,8 +164,8 @@ def build_report(
             "mean_qa_f1": float(mean(qa_f1)),
             "mean_decode_ms_per_step": float(mean(decode)),
             "p95_decode_ms_per_step": float(mean(decode_p95)),
-            "mean_teacher_forced_perplexity_ratio": float(mean(ppl_ratio)),
-            "mean_teacher_forced_logit_rmse": float(mean(rmse)),
+            "mean_teacher_forced_perplexity_ratio": _mean_optional(ppl_ratio),
+            "mean_teacher_forced_logit_rmse": _mean_optional(rmse),
         }
         summary_rows.append(summary)
         markdown_rows.append(

@@ -137,3 +137,27 @@ def test_build_report_rejects_missing_expected_case() -> None:
 
     with pytest.raises(SystemExit, match="missing cases by context: 4096: systems"):
         MODULE.build_report(rows, title="Qwen LongBench Selector Compare")
+
+
+def test_build_report_renders_missing_perplexity_ratio_as_dash() -> None:
+    rows = [
+        {
+            "measurement_kind": "aggregate",
+            "comparison_max_prompt_tokens": 4096,
+            "comparison_case": case,
+            "evaluation_prompt_id": "hotpot_0",
+            "longbench_dataset": "hotpotqa",
+            "longbench_answer_exact_match_cleaned": False,
+            "longbench_qa_f1_max_cleaned": 0.25,
+            "dotcache_decode_ms_per_step": 10.0,
+            "dotcache_decode_ms_per_step_p95": 11.0,
+            "teacher_forced_perplexity_ratio": None,
+            "teacher_forced_logit_rmse": 0.50,
+        }
+        for case in ("exact", "quality", "systems", "streaming_sink_recent")
+    ]
+
+    payload, markdown = MODULE.build_report(rows, title="Missing PPL")
+
+    assert payload["rows"][0]["mean_teacher_forced_perplexity_ratio"] is None
+    assert "| 4096 | exact | 1 | 0.000 | 0.250 | 10.000 | 11.000 | - | 0.500 |" in markdown
