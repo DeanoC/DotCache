@@ -11,12 +11,14 @@ from dotcache.integrations.gemma4 import (
     Gemma4TextModelAdapter,
     Gemma4TextModelWrapper,
     gemma4_full_attention_source_layers,
+    load_gemma4_text_only_from_pretrained,
     gemma4_text_dotcache_supported,
     gemma4_text_recommended_dotcache_config,
     gemma4_text_tuned_knobs_for_workload,
     gemma4_text_tuned_preset_for_workload,
     gemma4_text_tuned_profile_for_workload,
     gemma4_text_tuned_value_layers_for_workload,
+    resolve_gemma4_text_runtime,
     run_gemma4_text_generation_harness,
     run_gemma4_text_replay_harness,
 )
@@ -493,6 +495,66 @@ def test_gemma4_harness_from_pretrained_forwards_hf_token(monkeypatch: pytest.Mo
     assert captured["tokenizer"][0] == "google/gemma-4-E2B"
     assert captured["tokenizer"][1]["token"] == "hf-secret"
     assert harness.tokenizer.pad_token_id == harness.tokenizer.eos_token_id
+
+
+def test_gemma4_runtime_resolution_downcasts_default_bfloat16_on_mps() -> None:
+    resolved_device, resolved_dtype = resolve_gemma4_text_runtime(device="mps", torch_dtype="bfloat16")
+
+    assert resolved_device == "mps"
+    assert resolved_dtype == "float16"
+
+
+def test_gemma4_load_from_pretrained_uses_float16_on_mps(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.config = object()
+            self.sent_to_device = None
+
+        def to(self, device: str):
+            self.sent_to_device = device
+            captured["model_device"] = device
+            return self
+
+        def eval(self) -> None:
+            return None
+
+    class _FakeTokenizer:
+        pad_token_id = None
+        eos_token_id = 5
+
+    def _fake_model_from_pretrained(model_id: str, **kwargs):
+        captured["model_id"] = model_id
+        captured["model_kwargs"] = dict(kwargs)
+        return _FakeModel()
+
+    def _fake_tokenizer_from_pretrained(model_id: str, **kwargs):
+        captured["tokenizer_id"] = model_id
+        captured["tokenizer_kwargs"] = dict(kwargs)
+        return _FakeTokenizer()
+
+    monkeypatch.setattr(
+        gemma4_integration,
+        "AutoModelForCausalLM",
+        type("FakeAutoModelForCausalLM", (), {"from_pretrained": staticmethod(_fake_model_from_pretrained)}),
+    )
+    monkeypatch.setattr(
+        gemma4_integration,
+        "AutoTokenizer",
+        type("FakeAutoTokenizer", (), {"from_pretrained": staticmethod(_fake_tokenizer_from_pretrained)}),
+    )
+
+    model, tokenizer = load_gemma4_text_only_from_pretrained(
+        "google/gemma-4-E2B",
+        device="mps",
+        torch_dtype="bfloat16",
+    )
+
+    assert isinstance(model, Gemma4TextModelWrapper)
+    assert tokenizer.pad_token_id == tokenizer.eos_token_id
+    assert captured["model_kwargs"]["torch_dtype"] == torch.float16
+    assert captured["model_device"] == "mps"
 
 
 def test_gemma4_prefill_ingest_preserves_absolute_context_for_truncated_sliding_layers() -> None:
