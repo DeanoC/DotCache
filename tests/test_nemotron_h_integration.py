@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
+import dotcache.integrations.nemotron_h as nemotron_h_mod
 from dotcache.integrations.nemotron_h import (
     NemotronHTextModelAdapter,
     inspect_nemotron_h_native_config_compatibility,
@@ -51,7 +53,12 @@ def test_nemotron_h_block_summary_reads_published_pattern_shape() -> None:
 
 
 def test_inspect_nemotron_h_native_config_compatibility_reports_current_parser_failure() -> None:
-    result = inspect_nemotron_h_native_config_compatibility("nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16")
+    with patch.object(
+        nemotron_h_mod.AutoConfig,
+        "from_pretrained",
+        side_effect=KeyError("-"),
+    ):
+        result = inspect_nemotron_h_native_config_compatibility("nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16")
     assert result["native_autoconfig_ok"] is False
     assert result["native_autoconfig_error_type"] == "KeyError"
     assert "-" in result["native_autoconfig_error_message"]
@@ -67,7 +74,7 @@ def test_partition_nemotron_h_hybrid_state_separates_attention_mamba_and_mlp_lay
         layers=[
             SimpleNamespace(
                 conv_states=torch.zeros((1, 2, 4), dtype=torch.float32),
-                recurrent_states=torch.zeros((1, 2, 3), dtype=torch.float32),
+                ssm_states=torch.zeros((1, 2, 3), dtype=torch.float32),
             ),
             SimpleNamespace(),
             SimpleNamespace(
@@ -128,7 +135,7 @@ def test_nemotron_h_adapter_tracks_native_runtime_state_growth() -> None:
         layers=[
             SimpleNamespace(
                 conv_states=torch.zeros((1, 2, 4), dtype=torch.float32),
-                recurrent_states=torch.zeros((1, 2, 3), dtype=torch.float32),
+                ssm_states=torch.zeros((1, 2, 3), dtype=torch.float32),
             ),
             SimpleNamespace(
                 keys=torch.zeros((1, 2, 5, 8), dtype=torch.float32),
@@ -146,7 +153,7 @@ def test_nemotron_h_adapter_tracks_native_runtime_state_growth() -> None:
         layers=[
             SimpleNamespace(
                 conv_states=torch.zeros((1, 2, 4), dtype=torch.float32),
-                recurrent_states=torch.zeros((1, 2, 3), dtype=torch.float32),
+                ssm_states=torch.zeros((1, 2, 3), dtype=torch.float32),
             ),
             SimpleNamespace(
                 keys=torch.zeros((1, 2, 7, 8), dtype=torch.float32),

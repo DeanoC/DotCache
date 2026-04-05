@@ -248,6 +248,8 @@ def partition_nemotron_h_hybrid_state(cache: Any, model_or_config: Any) -> Nemot
                 _nemotron_h_cache_component_value(cache, "conv_state", layer_id),
             ),
             recurrent_state=_first_present(
+                _nemotron_h_cache_component_value(cache, "ssm_states", layer_id),
+                _nemotron_h_cache_component_value(cache, "ssm_state", layer_id),
                 _nemotron_h_cache_component_value(cache, "recurrent_states", layer_id),
                 _nemotron_h_cache_component_value(cache, "recurrent_state", layer_id),
             ),
