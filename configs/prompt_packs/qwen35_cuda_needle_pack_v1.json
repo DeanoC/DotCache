@@ -1,0 +1,30 @@
+[
+  {
+    "prompt_id": "passphrase_red",
+    "needle_key": "hidden passphrase",
+    "needle_value": "crimson-velvet-472",
+    "needle_position_fraction": 0.5
+  },
+  {
+    "prompt_id": "archive_code",
+    "needle_key": "archive verification code",
+    "needle_value": "amber-ledger-581",
+    "needle_position_fraction": 0.35,
+    "haystack_unit": "Logistics note about manifests, approvals, and routing. This sentence is filler and not the answer.\\n"
+  },
+  {
+    "prompt_id": "shipment_token",
+    "needle_key": "shipment recovery token",
+    "needle_value": "cobalt-signal-903",
+    "needle_position_fraction": 0.65,
+    "needle_template": "Critical reminder: the {needle_key} is {needle_value}. Keep the token unchanged.\\n",
+    "question_template": "Question: What is the {needle_key}? Reply with the exact token only.\\nAnswer:"
+  },
+  {
+    "prompt_id": "vault_phrase",
+    "needle_key": "vault access phrase",
+    "needle_value": "silver-harbor-264",
+    "needle_position_fraction": 0.8,
+    "haystack_unit": "Operations memo on schedules, budgets, and staging areas. This sentence is filler and not the answer.\\n"
+  }
+]

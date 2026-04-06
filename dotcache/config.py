@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
+import math
 
 from .modes.m4_key_project import valid_m4_basis_families
 from .planner import LayerPolicy, PageModeSpec, make_explicit_policy, make_tier_candidates, parse_page_mode_token
@@ -185,6 +186,13 @@ class DotCacheConfig:
     value_layer_sensitivity: tuple[str, ...] = ()
     key_policy_overrides: tuple[str, ...] = ()
     value_policy_overrides: tuple[str, ...] = ()
+    learned_page_selector_path: str | None = None
+    learned_page_selector_prompt_family: str | None = None
+    learned_page_selector_prompt_variant: str | None = None
+    learned_page_selector_profile: str = "quality"
+    learned_page_selector_scope: str = "KV"
+    learned_page_selector_target_candidate: str = "M3/affine/4/float16"
+    learned_page_selector_logit_offset: float = 0.0
 
     def __post_init__(self) -> None:
         if self.head_dim <= 0:
@@ -357,6 +365,20 @@ class DotCacheConfig:
             _parse_layer_candidate_spec(spec, field_name="key_policy_overrides")
         for spec in self.value_policy_overrides:
             _parse_layer_candidate_spec(spec, field_name="value_policy_overrides")
+        if self.learned_page_selector_path is not None and not str(self.learned_page_selector_path).strip():
+            raise ValueError("learned_page_selector_path must be a non-empty string when provided")
+        if self.learned_page_selector_prompt_family is not None and not str(self.learned_page_selector_prompt_family).strip():
+            raise ValueError("learned_page_selector_prompt_family must be a non-empty string when provided")
+        if self.learned_page_selector_prompt_variant is not None and not str(self.learned_page_selector_prompt_variant).strip():
+            raise ValueError("learned_page_selector_prompt_variant must be a non-empty string when provided")
+        if str(self.learned_page_selector_profile) not in {"quality", "systems", "manual"}:
+            raise ValueError("learned_page_selector_profile must be quality, systems, or manual")
+        if str(self.learned_page_selector_scope) not in {"KV", "K", "V"}:
+            raise ValueError("learned_page_selector_scope must be KV, K, or V")
+        if not str(self.learned_page_selector_target_candidate).strip():
+            raise ValueError("learned_page_selector_target_candidate must be a non-empty string")
+        if not math.isfinite(float(self.learned_page_selector_logit_offset)):
+            raise ValueError("learned_page_selector_logit_offset must be finite")
 
     @property
     def num_groups(self) -> int:
@@ -386,6 +408,15 @@ class DotCacheConfig:
             or self.key_policy_tier != "exact"
             or self.value_policy_tier != "exact"
         )
+
+    def learned_page_selector_enabled(self) -> bool:
+        return self.learned_page_selector_path is not None and bool(str(self.learned_page_selector_path).strip())
+
+    def learned_page_selector_applies_to_kind(self, *, kind: str) -> bool:
+        scope = str(self.learned_page_selector_scope)
+        if scope == "KV":
+            return kind in {"K", "V"}
+        return str(kind) == scope
 
     def resolve_page_mode(self, *, kind: str, layer_id: int, kv_head_id: int) -> str:
         if kind == "K":

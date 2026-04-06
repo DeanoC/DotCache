@@ -45,7 +45,11 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_generation_harness,
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
+    _advance_attention_subset_cache_placeholder,
+    _extract_attention_subset_prefill_tensors,
     _configure_qwen35_linear_attention_runtime,
+    _replace_attention_subset_cache_with_placeholders,
+    _decode_input_id_sequence,
     _qwen35_mps_serving_shortlist_heuristic,
 )
 from dotcache.model_kv_cache import ModelPagedKVCache
@@ -77,6 +81,19 @@ class _TinyTokenizer:
                 continue
             filtered.append(str(int(token_id)))
         return " ".join(filtered)
+
+
+class _FakeLayerCacheRecord:
+    def __init__(self, *, keys=None, values=None):
+        self.keys = keys
+        self.values = values
+
+
+class _FakeLayerStructuredCache:
+    def __init__(self, *, layers, conv_states=None, recurrent_states=None):
+        self.layers = list(layers)
+        self.conv_states = list(conv_states or [])
+        self.recurrent_states = list(recurrent_states or [])
 
 
 def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
@@ -467,6 +484,51 @@ def test_qwen35_adapter_partitions_native_hybrid_state() -> None:
     assert summary["hybrid_token_growing_layer_count"] == 1
     assert summary["hybrid_fixed_resident_layer_ids"] == [0, 1, 2]
     assert summary["hybrid_token_growing_layer_ids"] == [3]
+
+
+def test_qwen35_adapter_partitions_layer_structured_hybrid_state() -> None:
+    model = _tiny_qwen35_model()
+    key_tensor = torch.ones((1, 1, 3, 16), dtype=torch.float32)
+    value_tensor = torch.full((1, 1, 3, 16), 2.0, dtype=torch.float32)
+    cache = _FakeLayerStructuredCache(
+        layers=[
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(keys=key_tensor, values=value_tensor),
+        ],
+        conv_states=[torch.zeros((1, 16), dtype=torch.float32) for _ in range(3)],
+        recurrent_states=[torch.zeros((1, 16), dtype=torch.float32) for _ in range(3)],
+    )
+    partition = Qwen35TextModelAdapter(model=model).partition_hybrid_state(cache)
+    assert partition.fixed_resident_layer_ids == [0, 1, 2]
+    assert partition.token_growing_layer_ids == [3]
+    assert torch.equal(partition.token_growing_layers[0].key_cache, key_tensor)
+    assert torch.equal(partition.token_growing_layers[0].value_cache, value_tensor)
+
+
+def test_qwen35_attention_subset_prefill_helpers_support_layer_structured_cache() -> None:
+    key_tensor = torch.randn((1, 1, 4, 8), dtype=torch.float32)
+    value_tensor = torch.randn((1, 1, 4, 8), dtype=torch.float32)
+    cache = _FakeLayerStructuredCache(
+        layers=[
+            _FakeLayerCacheRecord(),
+            _FakeLayerCacheRecord(keys=key_tensor.clone(), values=value_tensor.clone()),
+        ]
+    )
+    extracted = _extract_attention_subset_prefill_tensors(cache, [1])
+    assert torch.equal(extracted[1][0], key_tensor)
+    assert torch.equal(extracted[1][1], value_tensor)
+
+    _replace_attention_subset_cache_with_placeholders(cache, [1])
+    assert cache.layers[1].keys.shape[2] == 0
+    assert cache.layers[1].values.shape[2] == 0
+
+    cache.layers[1].keys = key_tensor[:, :, :1, :].clone()
+    cache.layers[1].values = value_tensor[:, :, :1, :].clone()
+    _advance_attention_subset_cache_placeholder(cache, 1)
+    assert cache.layers[1].keys.shape[2] == 2
+    assert cache.layers[1].values.shape[2] == 2
 
 
 def test_qwen35_deltanet_state_adapter_wraps_only_linear_layers() -> None:
@@ -1755,6 +1817,15 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "python_gc_count_delta" in first_step
 
 
+def test_decode_input_id_sequence_flattens_decode_steps() -> None:
+    decode_inputs = [
+        torch.tensor([[11]], dtype=torch.long),
+        torch.tensor([[22]], dtype=torch.long),
+        torch.tensor([[33]], dtype=torch.long),
+    ]
+    assert _decode_input_id_sequence(decode_inputs) == [11, 22, 33]
+
+
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
@@ -2330,6 +2401,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--trace-python-allocations",
             "--blas-num-threads",
             "1",
+            "--warmup-runs",
+            "2",
+            "--measured-runs",
+            "3",
             "--tokens-per-page",
             "8",
             "--execution-recent-window",
@@ -2387,6 +2462,16 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
             "--execution-value-escape-prewarm",
             "--execution-value-escape-prewarm-min-context",
             "49152",
+            "--learned-page-selector-scope",
+            "K",
+            "--learned-page-selector-target-candidate",
+            "M3/affine/4/float16",
+            "--learned-page-selector-logit-offset",
+            "1.5",
+            "--learned-page-selector-profile",
+            "manual",
+            "--prepared-chunk-cache-min-page-count",
+            "2",
             "--scorer-diagnostic",
             "--execution-relevance-mode",
             "envelope",
@@ -2418,7 +2503,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.profile_backend is True
     assert serving_args.trace_python_allocations is True
     assert serving_args.blas_num_threads == 1
+    assert serving_args.warmup_runs == 2
+    assert serving_args.measured_runs == 3
     assert serving_args.tokens_per_page == 8
+    assert serving_args.prepared_chunk_cache_min_page_count == 2
     assert serving_args.execution_recent_window == 64
     assert serving_args.execution_sink_window == 16
     assert serving_args.execution_recent_window_layer == ["layer:23=96"]
@@ -2460,6 +2548,10 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     assert serving_args.execution_value_escape_top_k == 64
     assert serving_args.execution_value_escape_prewarm is True
     assert serving_args.execution_value_escape_prewarm_min_context == 49152
+    assert serving_args.learned_page_selector_profile == "manual"
+    assert serving_args.learned_page_selector_scope == "K"
+    assert serving_args.learned_page_selector_target_candidate == "M3/affine/4/float16"
+    assert serving_args.learned_page_selector_logit_offset == 1.5
     assert serving_args.scorer_diagnostic is True
     assert serving_args.execution_exact_refine_top_k == 2
     assert serving_args.execution_exact_refine_layer == [23]
@@ -2471,6 +2563,18 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
         [
             "run_qwen35_serving_sweep.py",
             "--dotcache-profile-backend",
+            "--warmup-runs",
+            "1",
+            "--measured-runs",
+            "4",
+            "--learned-page-selector-scope",
+            "V",
+            "--learned-page-selector-target-candidate",
+            "M0/affine/4",
+            "--learned-page-selector-logit-offset",
+            "-0.75",
+            "--learned-page-selector-profile",
+            "systems",
             "--contexts",
             "4096",
             "16384",
@@ -2478,6 +2582,12 @@ def test_qwen35_dotcache_serving_cli_parse_supports_backend_profile(monkeypatch:
     )
     sweep_args = serving_sweep.parse_args()
     assert sweep_args.dotcache_profile_backend is True
+    assert sweep_args.warmup_runs == 1
+    assert sweep_args.measured_runs == 4
+    assert sweep_args.learned_page_selector_profile == "systems"
+    assert sweep_args.learned_page_selector_scope == "V"
+    assert sweep_args.learned_page_selector_target_candidate == "M0/affine/4"
+    assert sweep_args.learned_page_selector_logit_offset == -0.75
     assert sweep_args.contexts == [4096, 16384]
 
 
@@ -2772,6 +2882,23 @@ def test_qwen35_value_escape_layer_scan_presets_apply_expected_defaults(
     assert args.layers == [7, 19]
     assert args.contexts == [32768]
     assert args.selector_modes == ["approx_shortlist", "layer_full_context"]
+    assert args.kv_modes == ["exact_m0", "m0_v_escape"]
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_qwen35_value_escape_layer_scan.py",
+            "--preset",
+            "qwen35_9b_initial_scan",
+            "--quality-check",
+        ],
+    )
+    args = script_module.parse_args()
+    assert args.model_id == "Qwen/Qwen3.5-9B"
+    assert args.weight_quantization == "bnb_8bit"
+    assert args.layers == [3, 7, 11, 15, 19, 23]
+    assert args.contexts == [8192]
+    assert args.selector_modes == ["approx_shortlist"]
     assert args.kv_modes == ["exact_m0", "m0_v_escape"]
 
 

@@ -1,0 +1,82 @@
+{
+  "rows": [
+    {
+      "exact_decode_ms_per_step": 209.4860482805719,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 134.62570802463839,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.04272737354040146,
+      "systems_decode_ms_per_step": 43.959855140807726,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.011694886721670628,
+      "systems_vs_quality_speedup": 3.0624693278314736,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 353.59293199144304,
+      "exact_success": 0.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 170.5863744718954,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.04068104177713394,
+      "systems_decode_ms_per_step": 55.814964890790485,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.011630949564278126,
+      "systems_vs_quality_speedup": 3.056283826491169,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 208.8094149949029,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 170.7710326105977,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.026647187769412994,
+      "systems_decode_ms_per_step": 41.61839897278696,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.01268390379846096,
+      "systems_vs_quality_speedup": 4.1032580979931454,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 355.9415766891713,
+      "exact_success": 0.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 234.65411780246845,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.02505275048315525,
+      "systems_decode_ms_per_step": 53.594682831317186,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.012795640155673027,
+      "systems_vs_quality_speedup": 4.378309664430967,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 209.4694672462841,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 171.78937416368476,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.03592754527926445,
+      "systems_decode_ms_per_step": 46.772167241821684,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.014025246724486351,
+      "systems_vs_quality_speedup": 3.6728974579154845,
+      "task_name": "retrieval_passkey"
+    },
+    {
+      "exact_decode_ms_per_step": 356.4406954295312,
+      "exact_success": 0.0,
+      "prompt_length": 2048,
+      "quality_decode_ms_per_step": 237.9302456198881,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.03912610560655594,
+      "systems_decode_ms_per_step": 60.93899440020323,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": 0.017577186226844788,
+      "systems_vs_quality_speedup": 3.9044005888468454,
+      "task_name": "retrieval_passkey"
+    }
+  ]
+}

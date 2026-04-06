@@ -20,6 +20,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     "qwen35_4b_initial_scan": {
         "model_id": "Qwen/Qwen3.5-4B",
         "layer_profile": "none",
+        "weight_quantization": "none",
         "layers": list(DEFAULT_4B_ATTENTION_LAYERS),
         "contexts": [16384],
         "selector_modes": ["approx_shortlist"],
@@ -28,9 +29,19 @@ PRESETS: dict[str, dict[str, Any]] = {
     "qwen35_4b_confirm_32768": {
         "model_id": "Qwen/Qwen3.5-4B",
         "layer_profile": "none",
+        "weight_quantization": "none",
         "layers": [7, 19],
         "contexts": [32768],
         "selector_modes": ["approx_shortlist", "layer_full_context"],
+        "kv_modes": ["exact_m0", "m0_v_escape"],
+    },
+    "qwen35_9b_initial_scan": {
+        "model_id": "Qwen/Qwen3.5-9B",
+        "layer_profile": "none",
+        "weight_quantization": "bnb_8bit",
+        "layers": list(DEFAULT_4B_ATTENTION_LAYERS),
+        "contexts": [8192],
+        "selector_modes": ["approx_shortlist"],
         "kv_modes": ["exact_m0", "m0_v_escape"],
     },
 }
@@ -48,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", default="torch_cuda")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="float16")
+    parser.add_argument("--weight-quantization", choices=["none", "bnb_8bit"], default="none")
     parser.add_argument("--layer-profile", default="none")
     parser.add_argument("--layers", type=int, nargs="+", default=list(DEFAULT_4B_ATTENTION_LAYERS))
     parser.add_argument("--contexts", type=int, nargs="+", default=[16384, 32768])
@@ -72,6 +84,7 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
     preset = PRESETS[str(args.preset)]
     args.model_id = str(preset["model_id"])
     args.layer_profile = str(preset["layer_profile"])
+    args.weight_quantization = str(preset.get("weight_quantization", args.weight_quantization))
     args.layers = [int(layer_id) for layer_id in preset["layers"]]
     args.contexts = [int(context) for context in preset["contexts"]]
     args.selector_modes = [str(mode) for mode in preset["selector_modes"]]
@@ -150,6 +163,8 @@ def _benchmark_command(
         args.device,
         "--torch-dtype",
         args.torch_dtype,
+        "--weight-quantization",
+        args.weight_quantization,
         "--default-mode-k",
         "M0",
         "--default-mode-v",
@@ -238,6 +253,7 @@ def _run_single_case(
             "backend": args.backend,
             "device": args.device,
             "torch_dtype": args.torch_dtype,
+            "weight_quantization": args.weight_quantization,
             "layer_profile": _normalized_layer_profile(args.layer_profile),
             "prompt_mode": "exact_length",
             "prompt_length": context,

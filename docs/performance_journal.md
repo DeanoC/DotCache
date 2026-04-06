@@ -6,6 +6,80 @@ Raw append-only run history lives in [benchmarks/results/history.jsonl](/Users/d
 The latest targeted envelope sweep lives in [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
 The latest long-context tuner output lives in [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
 
+## 2026-03-31 CUDA Shortlist Paper-Table Rerun
+
+This rerun was executed on branch `codex/qwen35-9b-value-escape-scan` with:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_paper_table.sh
+```
+
+Primary artifact:
+
+- [benchmarks/results/qwen35_cuda_shortlist_probe.jsonl](../benchmarks/results/qwen35_cuda_shortlist_probe.jsonl)
+
+Repo-side fixes carried onto this branch before the rerun:
+
+- restore the `_build_llama_cli_command(..., prompt_text=...)` helper shape expected by the TurboQuant tests
+- restore `qwen35_4b_hf` to `reference_only` in the model registry
+
+### Positive Results
+
+- The dedicated paper-table wrapper itself works on the CUDA box:
+  - it completed successfully
+  - it emitted the full `9` expected rows
+  - no old leaking-wrapper failure showed up in this rerun
+- The shortlist rows are still valid runnable CUDA lanes at all requested contexts:
+  - `4096`, `8192`, `16384`
+  - both `shortlist_base` and `shortlist_l23_ctx`
+- All nine runs stayed on the same decode path:
+  - `grouped_batched=0`
+  - `per_kv_fallback=24`
+- The shortlist still gives a real decode win at `4096` in this rerun:
+  - exact: `257.14 ms/step`
+  - shortlist base: `164.88 ms/step`
+  - layer-23 context override: `163.02 ms/step`
+  - speedup versus exact: about `1.56x` to `1.58x`
+
+### Negative Results
+
+- This rerun does not reproduce the earlier paper-note claim that the shortlist is clearly faster through `16384`.
+- At `8192`, the rerun is effectively flat:
+  - exact: `167.94 ms/step`
+  - shortlist base: `167.37 ms/step`
+  - layer-23 context override: `171.77 ms/step`
+- At `16384`, the rerun is slightly worse than exact:
+  - exact: `194.55 ms/step`
+  - shortlist base: `198.41 ms/step`
+  - layer-23 context override: `201.60 ms/step`
+- The layer-23 context-aware override is not helping in this rerun:
+  - it slightly increases selected pages at long context: `4080 -> 4112`
+  - it is slower than the plain shortlist at both `8192` and `16384`
+- The full expected grouped-batching speed path still does not activate here:
+  - every row stayed in `per_kv_fallback`
+  - this remains the main negative systems read from the rerun
+- Prefill timings in the exact rows are highly inconsistent with the shortlist rows in this run:
+  - exact `4096` prefill recorded `34777.82 ms`
+  - exact `8192` and `16384` prefill recorded `8653.62 ms` and `8757.75 ms`
+  - shortlist prefill sat around `468-581 ms`
+  - treat the prefill numbers from this rerun as noisy / not paper-grade until revalidated
+- The run was also unauthenticated against the HF Hub:
+  - stderr warned that `HF_TOKEN` was not set
+  - the models still loaded, but this is an avoidable source of external variability
+
+### Current Read
+
+- Keep this rerun as an honest paper-table regeneration artifact, not as clean evidence that shortlist speedup persists through `16384`.
+- The wrapper is now trustworthy enough to use as the rerun entrypoint.
+- The performance conclusion is mixed:
+  - `4096` still looks good
+  - `8192` is neutral
+  - `16384` is slightly negative in this rerun
+- The most important unresolved issue is unchanged:
+  - the shortlist path is still not reaching grouped-batched decode on this CUDA lane
+  - until that changes, long-context wins are not stable enough to treat as locked-in
+  - the paper note should be revised to reflect this rerun if we plan to cite fresh numbers
+
 ## 2026-03-30 ROCm 890M Bring-up And Sweep
 
 This is the current AMD laptop baseline for the shared ROCm lane. The detailed run outputs are split across:
@@ -3945,6 +4019,1196 @@ So the corrected `4B` local serving read is:
 - the practical exact-length boundary for this lane is still below `8192`
 
 I stopped the ladder after the first exact-length OOM at `8192`, so there is no useful `16384` result to promote from this run.
+
+## 2026-03-31 16:05 UTC - CUDA large-context shortlist rerun at 32k and 49k
+
+I pulled the large-context helper branch state and ran both new wrappers on the CUDA box:
+
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh`
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_quality_tail.sh`
+
+Artifacts written:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail.jsonl`
+
+### Serving probe
+
+The serving pass was a real systems win for shortlist decode throughput at both target contexts.
+
+`32768` prompt:
+
+- `exact`: decode `2298.36 ms/step`, prefill `9312.56 ms`, selected pages `0 / 0`
+- `shortlist_base`: decode `673.12 ms/step`, prefill `754.54 ms`, selected pages `4080 / 98352`
+- `shortlist_l23_ctx`: decode `671.80 ms/step`, prefill `757.75 ms`, selected pages `4112 / 98352`
+
+`49152` prompt:
+
+- `exact`: decode `3675.23 ms/step`, prefill `9634.22 ms`, selected pages `0 / 0`
+- `shortlist_base`: decode `786.35 ms/step`, prefill `980.81 ms`, selected pages `4080 / 147504`
+- `shortlist_l23_ctx`: decode `844.04 ms/step`, prefill `988.60 ms`, selected pages `4112 / 147504`
+
+Positive serving conclusions:
+
+- the exact rows were truly no-shortlist baselines: `selected_pages = 0`, `total_pages = 0`
+- shortlist stayed bounded at both contexts rather than expanding with total page count
+- `shortlist_base` was a large decode win over exact at both `32768` and `49152`
+- `shortlist_l23_ctx` matched `shortlist_base` at `32768`, but was slower at `49152`
+
+Negative serving conclusions:
+
+- grouped decode batching still did not activate; the path remained `per_kv`
+- the layer-23 context override did not produce a serving win worth promoting
+
+### Quality tail
+
+The quality tail read was materially less clean than the serving-only numbers.
+
+`32768` prompt:
+
+- `exact`: decode `2229.00 ms/step`, loss delta `-1.668e-06`, max logit abs error `0.8984375`, token agreement `1.0`
+- `shortlist_base`: decode `622.16 ms/step`, loss delta `-1.454e-05`, max logit abs error `3.509765625`, token agreement `1.0`, selected pages `3060 / 73764`
+- `shortlist_l23_ctx`: decode `679.91 ms/step`, loss delta `-1.451e-05`, max logit abs error `3.513671875`, token agreement `1.0`, selected pages `3084 / 73764`
+
+`49152` prompt:
+
+- `exact`: decode `3567.01 ms/step`, loss delta `+0.00204764`, max logit abs error `4.57421875`, token agreement `1.0`
+- `shortlist_base`: decode `823.96 ms/step`, loss delta `+0.0130062`, max logit abs error `7.0`, token agreement `1.0`, selected pages `3060 / 110628`
+- `shortlist_l23_ctx`: decode `778.40 ms/step`, loss delta `+0.0128626`, max logit abs error `6.96484375`, token agreement `1.0`, selected pages `3084 / 110628`
+
+Positive quality conclusions:
+
+- all six rows completed successfully with no timeout or OOM
+- target match and token agreement stayed at `1.0` in every row
+- at `32768`, both shortlist variants were slightly better than the exact row on the reported loss delta
+- at `49152`, the layer-23 context override was marginally better than `shortlist_base` on both decode and loss delta
+
+Negative quality conclusions:
+
+- the exact baseline itself already showed nontrivial long-context drift at `49152`
+- shortlist max-logit error was much larger than exact at `32768`
+- at `49152`, both shortlist variants materially worsened the loss tail versus exact
+- the layer-23 context override did not fix the large-context quality problem in a meaningful way
+
+Operational note:
+
+- every wrapper invocation emitted the unauthenticated HF Hub warning; the runs still completed, but the box is not using an `HF_TOKEN`
+
+Current CUDA large-context decision:
+
+- promote the systems result, not a blanket quality claim
+- `shortlist_base` is a real decode-speed story at `32768` and `49152`
+- do not promote the `49152` shortlist configuration as quality-clean
+- do not promote `shortlist_l23_ctx` as the new default from this rerun
+
+## 2026-03-31 16:40 UTC - 49k follow-up ablation with `top_k=8`
+
+The most obvious follow-up after the large-context rerun was to test whether the `49152` quality problem was simply caused by a shortlist that was too narrow.
+
+I ran four targeted one-off probes at `49152`:
+
+- base shortlist serving with `execution_relevance_top_k=8`
+- base shortlist loss-tail with `execution_relevance_top_k=8`
+- layer-23 context-aware serving with `execution_relevance_top_k=8`
+- layer-23 context-aware loss-tail with `execution_relevance_top_k=8`
+
+Artifacts written:
+
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_base.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_base.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_serving_l23.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_49152_topk8_quality_l23.jsonl`
+
+Compared with the earlier `top_k=4` large-context rerun:
+
+- `top_k=4` base serving: decode `786.35 ms/step`, selected pages `4080 / 147504`
+- `top_k=8` base serving: decode `819.41 ms/step`, selected pages `4272 / 147504`
+- `top_k=4` base loss-tail: loss delta `+0.0130062`, max logit abs error `7.0`
+- `top_k=8` base loss-tail: loss delta `+0.0113542`, max logit abs error `6.87109375`
+
+Positive follow-up read:
+
+- broadening the shortlist from `4` to `8` did improve the `49152` loss tail modestly
+- max logit error also fell slightly versus the `top_k=4` base run
+- the quality improvement was achieved without blowing up the selected-set size; the increase was small rather than catastrophic
+
+Negative follow-up read:
+
+- the quality problem did not go away; `+0.0113542` is still materially worse than the exact `49152` row
+- serving slowed down versus the already-committed `top_k=4` base run
+- grouped decode still did not activate; serving remained entirely on `per_kv_fallback`
+
+Layer-23 context-aware result at `top_k=8`:
+
+- serving decode: `893.25 ms/step`
+- loss-tail decode: `1062.99 ms/step`
+- loss delta: `+0.0113542`
+- max logit abs error: `6.87109375`
+- selected pages: `3204 / 110628` in the loss harness, `4272 / 147504` in serving
+
+That is a useful negative result:
+
+- once the global shortlist is widened to `top_k=8`, the layer-23 override no longer changes the selected page counts in these `49152` probes
+- it also does not improve the reported quality metrics
+- it is slower than the base `top_k=8` run, so there is no reason to promote it
+
+Current follow-up decision:
+
+- `top_k=8` is not the missing fix for the `49152` quality tail
+- it gives a modest quality improvement, but not enough to make the configuration paper-clean
+- the working blocker remains the same combination as before: shortlist helps throughput, but the long-context quality story is still unstable and grouped decode is still absent
+
+## 2026-03-31 17:05 UTC - Instrumented grouped-decode rerun on CUDA
+
+After the grouped-batch rejection counters landed, I re-ran the large-context serving wrapper:
+
+- `bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh`
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl`
+
+I also summarized the new counters with:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe.jsonl
+```
+
+Fresh serving rows:
+
+- `32768 exact`: decode `2312.64 ms/step`, grouped paths `0`, per-KV fallback `24`
+- `49152 exact`: decode `3580.59 ms/step`, grouped paths `0`, per-KV fallback `24`
+- `32768 shortlist_base`: decode `632.43 ms/step`, selected pages `4080`, grouped paths `0`, per-KV fallback `24`
+- `49152 shortlist_base`: decode `752.13 ms/step`, selected pages `4080`, grouped paths `0`, per-KV fallback `24`
+- `32768 shortlist_l23_ctx`: decode `619.39 ms/step`, selected pages `4112`, grouped paths `0`, per-KV fallback `24`
+- `49152 shortlist_l23_ctx`: decode `767.97 ms/step`, selected pages `4112`, grouped paths `0`, per-KV fallback `24`
+
+Positive read:
+
+- the fresh instrumented rerun reproduced the same overall systems story: shortlist still gives a large decode win versus exact at both long contexts
+- the new rejection-summary script works on the fresh artifact and confirms the counters are being emitted
+
+Negative read:
+
+- every row still stayed on `per_kv_fallback`
+- both new grouped-batch rejection counter families stayed empty in all six rows:
+  - `decode_grouped_batch_rejection_reason_counts = {}`
+  - `execution_shortlist_grouping_rejection_reason_counts = {}`
+
+That empty-counter result is itself diagnostic. It does **not** mean grouped batching was attempted and accepted cleanly. The code path shows why:
+
+- in `dotcache/integrations/qwen35.py`, the CUDA serving lane calls `decode_layer_torch(..., prefer_grouped_batching=hidden_states.device.type != "cuda")`
+- on CUDA, that expression is `False`
+- so the grouped-batch validation and rejection accounting in `model_kv_cache.py` never executes for this lane
+
+Current conclusion from the instrumented rerun:
+
+- the new counters are useful, but this particular Qwen3.5 CUDA lane is bypassing grouped batching before those counters can fire
+- the blocker is now narrower and more concrete than before: the immediate reason we do not see grouped decode on this lane is that grouped batching is explicitly disabled on CUDA for this workload
+- the next meaningful step is therefore not "collect more rejection reasons from the same path"; it is to revisit that CUDA-specific `prefer_grouped_batching=False` decision or add instrumentation around the policy that disables it
+
+## 2026-03-31 17:25 UTC - Forced grouped batching test on CUDA
+
+I added a benchmark-only override in `dotcache/integrations/qwen35.py` so the Qwen3.5 CUDA lane can be forced to use grouped batching without changing the default behavior:
+
+- env flag: `DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1`
+
+Then I re-ran the large-context serving wrapper into a separate artifact:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl
+```
+
+I summarized the result with:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped.jsonl`
+
+### What happened
+
+Grouped batching does activate on CUDA when forced.
+
+Exact rows:
+
+- `32768 exact`: decode `2309.26 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback reason `key_value_chunk_signature_mismatch=12`
+- `49152 exact`: decode `3643.76 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback reason `key_value_chunk_signature_mismatch=12`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `1916.62 ms/step`, selected pages `4220`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_value_chunk_signature_mismatch=12`, grouped fallback `key_value_chunk_signature_mismatch=8`
+- `49152 shortlist_base`: decode `2116.18 ms/step`, selected pages `4224`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_value_chunk_signature_mismatch=8`, grouped fallback `key_value_chunk_signature_mismatch=4`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `1843.35 ms/step`, selected pages `4270`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_value_chunk_signature_mismatch=12`, grouped fallback `key_value_chunk_signature_mismatch=8`
+- `49152 shortlist_l23_ctx`: decode `2059.90 ms/step`, selected pages `4276`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_value_chunk_signature_mismatch=8`, grouped fallback `key_value_chunk_signature_mismatch=4`
+
+### Positive result
+
+- the forced test disproves the strongest pessimistic hypothesis; grouped batching is not fundamentally dead on this CUDA lane
+- the new rejection instrumentation is now producing an actual concrete blocker string rather than empty counters
+- the blocker is consistent across shortlist grouping and decode fallback: `key_value_chunk_signature_mismatch`
+
+### Negative result
+
+- forcing grouped batching makes the shortlist runs drastically slower than the default CUDA path
+- compared with the default non-forced rerun:
+  - `32768 shortlist_base`: `632.43 ms/step` -> `1916.62 ms/step`
+  - `49152 shortlist_base`: `752.13 ms/step` -> `2116.18 ms/step`
+  - `32768 shortlist_l23_ctx`: `619.39 ms/step` -> `1843.35 ms/step`
+  - `49152 shortlist_l23_ctx`: `767.97 ms/step` -> `2059.90 ms/step`
+- exact rows also did not improve under forcing
+- forcing grouped batching increased selected page counts in the shortlist rows, which is another practical negative for this configuration
+
+### Current interpretation
+
+- the old CUDA guard was directionally correct for the current workload: forcing grouped batching is worse, not better
+- the immediate technical blocker is now concrete enough to target: `key_value_chunk_signature_mismatch`
+- any future grouped CUDA work on this lane should focus on making chunk signatures line up across the grouped path rather than simply turning grouped batching on globally
+
+## 2026-03-31 17:45 UTC - Forced grouped batching after key/value chunk-schedule split
+
+After the follow-up patch that stopped rejecting mismatched key/value chunk schedules up front and carried separate key/value chunk lengths through the grouped backend, I re-ran the same forced-grouped CUDA serving matrix:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl`
+
+Summary command:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_kvsplit.jsonl
+```
+
+### What changed
+
+The previous forced-grouped blocker was:
+
+- `key_value_chunk_signature_mismatch`
+
+After the key/value chunk-schedule split patch, the blocker became:
+
+- `key_signature_mismatch_across_groups`
+
+So the patch did remove the original key/value schedule mismatch failure mode.
+
+### Fresh forced-grouped rows
+
+Exact rows:
+
+- `32768 exact`: decode `2296.00 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback `key_signature_mismatch_across_groups=12`
+- `49152 exact`: decode `3616.69 ms/step`, paths `grouped_batched=12, per_kv_fallback=12`, grouped fallback `key_signature_mismatch_across_groups=12`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `1486.36 ms/step`, selected pages `4226`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_signature_mismatch_across_groups=8`, grouped fallback `key_signature_mismatch_across_groups=8`
+- `49152 shortlist_base`: decode `1439.28 ms/step`, selected pages `4226`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_signature_mismatch_across_groups=4`, grouped fallback `key_signature_mismatch_across_groups=4`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `1458.24 ms/step`, selected pages `4276`, paths `grouped_batched=16, per_kv_fallback=8`, shortlist grouping rejection `key_signature_mismatch_across_groups=8`, grouped fallback `key_signature_mismatch_across_groups=8`
+- `49152 shortlist_l23_ctx`: decode `1453.39 ms/step`, selected pages `4278`, paths `grouped_batched=20, per_kv_fallback=4`, shortlist grouping rejection `key_signature_mismatch_across_groups=4`, grouped fallback `key_signature_mismatch_across_groups=4`
+
+### Positive read
+
+- the key/value chunk-schedule patch materially improved the forced grouped shortlist path
+- compared with the previous forced-grouped run:
+  - `32768 shortlist_base`: `1916.62 -> 1486.36 ms/step`
+  - `49152 shortlist_base`: `2116.18 -> 1439.28 ms/step`
+  - `32768 shortlist_l23_ctx`: `1843.35 -> 1458.24 ms/step`
+  - `49152 shortlist_l23_ctx`: `2059.90 -> 1453.39 ms/step`
+- the remaining mismatch is now narrower and more actionable than before: key scheduling across groups, not key/value schedule disagreement
+
+### Negative read
+
+- even after this improvement, the forced grouped path is still much slower than the normal non-forced CUDA shortlist path
+- compared with the default non-forced rerun:
+  - `32768 shortlist_base`: default `632.43 ms/step`, forced-after-fix `1486.36 ms/step`
+  - `49152 shortlist_base`: default `752.13 ms/step`, forced-after-fix `1439.28 ms/step`
+  - `32768 shortlist_l23_ctx`: default `619.39 ms/step`, forced-after-fix `1458.24 ms/step`
+  - `49152 shortlist_l23_ctx`: default `767.97 ms/step`, forced-after-fix `1453.39 ms/step`
+- the exact rows also remain essentially unchanged and still do not benefit from forcing grouped batching
+
+### Current interpretation
+
+- the key/value chunk-schedule patch is a real backend improvement; it removed the original grouped-path blocker and made the forced path substantially less bad
+- it is not enough to justify enabling grouped batching on this Qwen3.5 CUDA lane by default
+- the next grouped-CUDA target is now specific: eliminate `key_signature_mismatch_across_groups` and then remeasure whether grouped batching can beat the current per-KV fallback on shortlist workloads
+
+## 2026-03-31 18:05 UTC - Forced grouped batching after mixed-signature bucketing
+
+After the follow-up patch that buckets mixed-signature grouped chunks instead of rejecting the whole grouped path, I re-ran the same forced-grouped CUDA serving matrix:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  bash scripts/run_qwen35_cuda_shortlist_large_context_serving.sh \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl
+```
+
+Fresh artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl`
+
+Summary command:
+
+```bash
+.venv/bin/python scripts/summarize_grouped_batch_rejections.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_probe_forced_grouped_bucketed.jsonl
+```
+
+The first matrix pass came back with one wrapper-level miss on `32768 shortlist_base` (`NoExactRow`), so I re-ran that single case directly:
+
+```bash
+DOTCACHE_QWEN35_FORCE_GROUPED_BATCHING=1 \
+  .venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache_serving.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --torch-dtype float16 \
+  --layer-profile /workspace/DotCache/configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml \
+  --repeat-counts \
+  --target-prompt-lengths 32768 \
+  --max-new-tokens 4 \
+  --continue-on-error \
+  --profile-backend \
+  --execution-recent-window 1024 \
+  --execution-sink-window 256 \
+  --execution-relevance-top-k 4 \
+  --execution-relevance-mode envelope
+```
+
+That one-off rerun succeeded, so the missing row was a wrapper capture issue rather than a backend failure.
+
+### Fresh forced-grouped rows
+
+Exact rows:
+
+- `32768 exact`: decode `2335.11 ms/step`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 exact`: decode `3658.27 ms/step`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `716.36 ms/step` on the direct rerun, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 shortlist_base`: decode `777.28 ms/step`, selected pages `4222`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `693.11 ms/step`, selected pages `4282`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+- `49152 shortlist_l23_ctx`: decode `766.36 ms/step`, selected pages `4274`, paths `grouped_batched=24, per_kv_fallback=0`, grouped fallback `none`
+
+### Positive read
+
+- the mixed-signature bucketing patch is the first grouped-CUDA change that fully removes the grouped fallback reason on this lane
+- the remaining rejection reason from the previous run, `key_signature_mismatch_across_groups`, disappeared entirely in the completed rows
+- grouped decode is now fully active in all successful rows: `grouped_batched=24, per_kv_fallback=0`
+- forced grouped shortlist performance moved dramatically closer to the default non-forced path
+- compared with the previous forced `kvsplit` run:
+  - `32768 shortlist_base`: `1486.36 -> 716.36 ms/step`
+  - `49152 shortlist_base`: `1439.28 -> 777.28 ms/step`
+  - `32768 shortlist_l23_ctx`: `1458.24 -> 693.11 ms/step`
+  - `49152 shortlist_l23_ctx`: `1453.39 -> 766.36 ms/step`
+
+### Negative read
+
+- the exact rows still do not meaningfully benefit from forced grouped batching
+- the successful shortlist rows are now close to, but not clearly better than, the default non-forced CUDA shortlist path
+- the wrapper-level `32768 shortlist_base` miss means the single-shot runner path is cleaner than the wrapper for interpreting this exact row; that operational wrinkle should still be recorded
+
+### Current interpretation
+
+- the new bucketing patch eliminates the signature-mismatch blocker strongly enough that grouped batching now runs end-to-end on the successful shortlist rows
+- this is the first result that makes grouped CUDA look operational rather than purely exploratory on this lane
+- however, it still does not yet prove that grouped decode should replace the current default path, because the grouped shortlist rows are roughly at parity rather than a decisive win
+- the next step should be a clean rerun focused on reproducibility and possibly a quality-tail spot-check under forced grouped mode now that the backend path itself is functioning
+
+## 2026-03-31 19:10 UTC - Forced grouped quality tail at 32768 and 49152
+
+I pulled the forced-grouped follow-up wrappers from `78a3ab4` and ran the quality-tail pass:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_large_context_forced_grouped_quality_tail.sh
+```
+
+Final artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_quality_tail_forced_grouped.jsonl`
+
+Operational note:
+
+- the first wrapper run stopped after the two `exact` rows and left a partial two-row artifact
+- I re-ran the missing shortlist cases directly through `scripts/run_qwen35_cuda_shortlist_probe.py`, merged the four successful shortlist rows back into the main artifact, and treated the original short output as a wrapper interruption rather than a backend failure
+
+### Forced-grouped quality rows
+
+Exact rows:
+
+- `32768 exact`: decode `2300.76 ms/step`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-6.2546e-07`, max logit abs error `0.890625`
+- `49152 exact`: decode `3701.99 ms/step`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.00199284`, max logit abs error `4.5625`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `718.62 ms/step`, selected pages `3174`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-1.33765e-05`, max logit abs error `3.49609375`
+- `49152 shortlist_base`: decode `776.57 ms/step`, selected pages `3160`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.0124781`, max logit abs error `6.953125`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `680.20 ms/step`, selected pages `3210`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `-1.42405e-05`, max logit abs error `3.49609375`
+- `49152 shortlist_l23_ctx`: decode `805.39 ms/step`, selected pages `3204`, paths `grouped_decode_calls=18, per_kv_decode_calls=0`, loss delta `0.0121616`, max logit abs error `6.9140625`
+
+### Positive read
+
+- forced grouped decode is fully active in all six quality rows; there is no residual per-KV fallback on this path
+- the shortlist quality picture stays materially aligned with the earlier non-forced quality-tail read
+- at `32768`, forced-grouped shortlist remains quality-clean in the same practical sense as the default shortlist path
+- at `49152`, forced-grouped shortlist does not repair the existing loss-tail problem, but it also does not materially worsen it
+- the layer-23 override still gives the better grouped quality-tail read at both contexts:
+  - `32768`: `718.62 -> 680.20 ms/step`, loss delta `-1.33765e-05 -> -1.42405e-05`
+  - `49152`: `776.57 -> 805.39 ms/step`, loss delta `0.0124781 -> 0.0121616`
+
+### Negative read
+
+- the `49152` quality-tail issue remains; grouped decode does not make that read clean
+- compared with the earlier default non-forced quality-tail rows, the grouped numbers are broadly comparable rather than clearly better:
+  - `32768 shortlist_base`: default loss delta `-1.45385e-05`, forced grouped `-1.33765e-05`
+  - `49152 shortlist_base`: default loss delta `0.0130062`, forced grouped `0.0124781`
+  - `32768 shortlist_l23_ctx`: default loss delta `-1.45087e-05`, forced grouped `-1.42405e-05`
+  - `49152 shortlist_l23_ctx`: default loss delta `0.0128626`, forced grouped `0.0121616`
+- the wrapper interruption on the first batch is operational debt that should be recorded separately from model quality
+
+### Current interpretation
+
+- forced grouped batching is now quality-stable enough to test seriously on this lane
+- it does not unlock a new quality regime; the main open problem is still the `49152` shortlist loss tail itself, not grouped decode correctness
+- the next deciding question is reproducibility of the serving-speed story, not whether grouped mode breaks quality
+
+## 2026-03-31 19:35 UTC - 3x serving reproducibility pass for default vs forced grouped
+
+I ran the new reproducibility wrapper:
+
+```bash
+bash scripts/run_qwen35_cuda_shortlist_large_context_repro_serving.sh
+```
+
+Final artifacts:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat1.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat2.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/default_repeat3.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat1.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat2.jsonl`
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving/forced_grouped_repeat3.jsonl`
+
+Operational notes:
+
+- the wrapper exited once with `forced_grouped_repeat3.jsonl` only partially written
+- I re-ran just `forced_grouped_repeat3` directly through `scripts/run_qwen35_cuda_shortlist_probe.py`
+- that filename then contained duplicate rows from the interrupted pass and the rerun, so I cleaned it by keeping the latest row for each `(runner_case, prompt_length)` pair before summarizing
+
+### Repro summary
+
+Default path, `shortlist_base`:
+
+- `32768`: mean `623.88 ms/step`, min `610.76`, max `634.03`, paths always `grouped_batched=0, per_kv_fallback=24`
+- `49152`: mean `741.45 ms/step`, min `722.64`, max `768.11`, paths always `grouped_batched=0, per_kv_fallback=24`
+
+Default path, `shortlist_l23_ctx`:
+
+- `32768`: mean `626.15 ms/step`, min `623.92`, max `628.93`, paths always `grouped_batched=0, per_kv_fallback=24`
+- `49152`: mean `792.68 ms/step`, min `760.28`, max `809.87`, paths always `grouped_batched=0, per_kv_fallback=24`
+
+Forced grouped path, `shortlist_base`:
+
+- `32768`: mean `669.76 ms/step`, min `650.74`, max `688.73`, paths always `grouped_batched=24, per_kv_fallback=0`
+- `49152`: mean `775.01 ms/step`, min `751.77`, max `807.00`, paths always `grouped_batched=24, per_kv_fallback=0`
+
+Forced grouped path, `shortlist_l23_ctx`:
+
+- `32768`: mean `672.73 ms/step`, min `668.41`, max `678.05`, paths always `grouped_batched=24, per_kv_fallback=0`
+- `49152`: mean `788.97 ms/step`, min `775.86`, max `800.22`, paths always `grouped_batched=24, per_kv_fallback=0`
+
+### Positive read
+
+- the grouped path is reproducible in the operational sense: all forced-grouped rows stayed fully grouped across all repeats
+- there was no grouped-to-per-KV regression during the reproducibility pass
+- the grouped path is now close enough to the default path that the comparison is about a narrow speed tradeoff, not a catastrophic backend gap
+- one case did edge out the default mean:
+  - `49152 shortlist_l23_ctx`: default mean `792.68`, forced grouped mean `788.97`, grouped ahead by `3.70 ms/step` (`0.47%`)
+
+### Negative read
+
+- grouped decode is not a reproducible win overall
+- compared with the default means:
+  - `32768 shortlist_base`: grouped slower by `45.88 ms/step` (`7.35%`)
+  - `49152 shortlist_base`: grouped slower by `33.56 ms/step` (`4.53%`)
+  - `32768 shortlist_l23_ctx`: grouped slower by `46.58 ms/step` (`7.44%`)
+  - `49152 shortlist_l23_ctx`: grouped faster by only `3.70 ms/step` (`0.47%`)
+- the only grouped advantage in this repro pass is the narrow `49152 shortlist_l23_ctx` case, and that margin is small enough that it is not a compelling default-switch argument on its own
+- the wrapper-level interruption and dedupe cleanup are additional operational noise that count against claiming this path is production-ready by default
+
+### Current interpretation
+
+- the bucketed grouped CUDA path is now real, repeatable, and quality-stable
+- however, the 3-repeat serving pass does not support enabling grouped batching by default for this Qwen3.5 CUDA shortlist workload
+- the strongest defensible statement is narrower: grouped decode has been rehabilitated from “broken/slower with hard fallbacks” to “near-parity, occasionally marginally ahead, but not a consistent win”
+
+## 2026-03-31 20:05 UTC - Standardized evaluation metadata wired into the shortlist probe
+
+I pulled the protocol update from `fd56958` and pushed the contract down into the Qwen3.5 shortlist tooling instead of leaving it only in docs.
+
+Changed runner behavior:
+
+- `scripts/run_qwen35_cuda_shortlist_probe.py` now records:
+  - `evaluation_split`
+  - `evaluation_lane`
+  - `evaluation_prompt_family`
+  - `evaluation_prompt_suite_name`
+  - `evaluation_prompt_count`
+  - `evaluation_batch_size`
+  - `evaluation_protocol_version`
+  - optional `evaluation_notes`
+- the large-context wrappers now pass honest defaults:
+  - quality wrappers mark rows as `held_out` / `quality`
+  - serving wrappers mark rows as `held_out` / `systems`
+  - all current Qwen3.5 large-context wrappers mark the prompt family as `synthetic_exact_length_filler`
+  - the notes field explicitly warns that the synthetic filler is useful for disciplined tracking but is not a publication-grade final quality source
+
+### Positive read
+
+- the protocol is now executable on the CUDA lane instead of just aspirational
+- new rows can be classified immediately as `calibration` or `held_out`, and as `systems`, `quality`, or `diagnostic`
+- prompt count and batch size are now emitted directly into the probe records rather than reconstructed later from filenames or wrapper intent
+
+### Negative read
+
+- this does not solve the missing natural-text held-out pack
+- the current Qwen3.5 large-context evidence is still synthetic-prompt evidence, just now labeled honestly
+
+### Current interpretation
+
+- the next experiment no longer has to rely on implicit provenance
+- the repo now enforces a cleaner distinction between "held-out under this local contract" and "publication-grade benchmark evidence"
+
+## 2026-03-31 20:10 UTC - Systems variance summary artifact added
+
+I added a summary script for the repeated serving lane:
+
+```bash
+.venv/bin/python scripts/summarize_qwen35_cuda_shortlist_repro_serving.py \
+  benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving \
+  --markdown-output benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md
+```
+
+New summary artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_large_context_repro_serving_summary.md`
+
+The summary now reports, per `(mode, case, context)`:
+
+- `n prompts`
+- mean decode ms/step
+- min and max
+- standard deviation
+- `95%` confidence interval
+- selected-page count
+- decode-path counts
+
+### Positive read
+
+- the main systems comparison now has an actual prompt-count/variance artifact instead of only prose summaries in the journal
+- the default vs forced-grouped comparison can now be cited with explicit `n=3` repeat counts and spread
+
+### Negative read
+
+- this is still a synthetic exact-length filler systems lane, not a named benchmark suite
+- the summary is generated from repeated single-prompt rows, so it improves discipline but does not by itself broaden dataset coverage
+
+### Current interpretation
+
+- the systems lane now satisfies more of the protocol contract: prompt count, repeat statistics, and decode-path provenance are all visible in one place
+- this should be the source for future paper-facing systems tables until a broader prompt pack exists
+
+## 2026-03-31 20:20 UTC - First explicitly tagged `held_out quality` 49152 rescue row-set
+
+With the protocol fields in place, I reran the `49152` quality rescue lane as an explicitly tagged `held_out` / `quality` experiment:
+
+```bash
+.venv/bin/python scripts/run_qwen35_cuda_shortlist_probe.py \
+  --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_third_pass.yaml \
+  --contexts 49152 \
+  --cases exact shortlist_base shortlist_l23_ctx \
+  --timeout-seconds 900 \
+  --quality-check \
+  --quality-mode loss_tail \
+  --quality-eval-steps 4 \
+  --evaluation-split held_out \
+  --evaluation-lane quality \
+  --evaluation-prompt-family synthetic_exact_length_filler \
+  --evaluation-prompt-suite-name qwen35_cuda_shortlist_49152_rescue_heldout_quality_synthetic \
+  --evaluation-prompt-count 1 \
+  --evaluation-batch-size 1 \
+  --evaluation-notes "Synthetic exact-length filler only; held-out lane discipline run for 49152 rescue tracking." \
+  --profile-backend \
+  --output benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl
+```
+
+New artifact:
+
+- `benchmarks/results/qwen35_cuda_shortlist_49152_heldout_quality_protocol.jsonl`
+
+Tagged rows:
+
+- `49152 exact`: split `held_out`, lane `quality`, decode `3630.24 ms/step`, loss delta `0.00204764`, max logit abs error `4.57421875`
+- `49152 shortlist_base`: split `held_out`, lane `quality`, decode `768.86 ms/step`, loss delta `0.0130062`, max logit abs error `7.0`
+- `49152 shortlist_l23_ctx`: split `held_out`, lane `quality`, decode `779.43 ms/step`, loss delta `0.0128626`, max logit abs error `6.96484375`
+
+### Positive read
+
+- this is the first Qwen3.5 `49152` rescue artifact on the branch that is clearly self-labeled as `held_out` / `quality`
+- the metadata fields landed exactly as intended on all three rows
+- the result is consistent with the earlier read, which is useful: the tagged run did not introduce a new quality regression or a contradictory story
+
+### Negative read
+
+- the actual quality conclusion does not change
+- `49152 shortlist_base` still sits at `+0.0130062` loss delta
+- `49152 shortlist_l23_ctx` still only modestly improves that to `+0.0128626`
+- because the prompt family is still synthetic filler, this row-set is disciplined held-out tracking, not final publication-grade held-out natural-text evidence
+
+### Current interpretation
+
+- the repo now has a concrete example of how the new protocol should be used in practice
+- the `49152` rescue story is now both explicit and honest: a held-out quality lane under the local contract, still synthetic, still not quality-clean, and still not a default-switch justification
+
+## 2026-03-31 21:05 UTC - First named Needle-in-a-Haystack protocol run on the CUDA lane
+
+I pulled the new named-benchmark wiring from `c69152d` and ran the wrapper exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_needle_protocol.sh
+```
+
+New artifact:
+
+- `benchmarks/results/qwen35_cuda_needle_protocol.jsonl`
+
+This is the first Qwen3.5 CUDA row-set on the branch that is both:
+
+- tagged under the standardized evaluation contract
+- driven by a named task-style prompt family rather than the synthetic repeated filler sentence
+
+All six rows are tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `needle_in_a_haystack`
+- suite `qwen35_cuda_needle_in_a_haystack_v1`
+- prompt count `1`
+- batch size `1`
+
+### Needle rows
+
+Exact rows:
+
+- `32768 exact`: decode `2217.21 ms/step`, prefill `874.17 ms`, selected pages `0`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 exact`: decode `3510.51 ms/step`, prefill `1004.33 ms`, selected pages `0`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+Shortlist base rows:
+
+- `32768 shortlist_base`: decode `453.15 ms/step`, prefill `777.13 ms`, selected pages `12240`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 shortlist_base`: decode `612.97 ms/step`, prefill `1006.25 ms`, selected pages `12240`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+Layer-23 context-aware rows:
+
+- `32768 shortlist_l23_ctx`: decode `471.57 ms/step`, prefill `781.54 ms`, selected pages `12336`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+- `49152 shortlist_l23_ctx`: decode `634.09 ms/step`, prefill `1006.32 ms`, selected pages `12336`, paths `grouped_batched=0, per_kv_fallback=72`, retrieval exact-match `true`
+
+The generated first line was the planted answer in every row:
+
+- `crimson-velvet-472.`
+
+### Positive read
+
+- the named Needle lane worked end-to-end on the CUDA box on the first real run
+- retrieval stayed exact in all six rows, including both shortlist rows at `49152`
+- the shortlist systems win also remains real on this named task-style lane:
+  - `32768 shortlist_base` vs `32768 exact`: `2217.21 -> 453.15 ms/step`
+  - `49152 shortlist_base` vs `49152 exact`: `3510.51 -> 612.97 ms/step`
+  - `32768 shortlist_l23_ctx` vs `32768 exact`: `2217.21 -> 471.57 ms/step`
+  - `49152 shortlist_l23_ctx` vs `49152 exact`: `3510.51 -> 634.09 ms/step`
+- unlike the loss-tail lane, this first named benchmark result does not show an immediate quality failure at `49152`
+- this is the first artifact on the branch that plausibly belongs in a paper-facing benchmark table rather than only in claim-narrowing notes
+
+### Negative read
+
+- this is still only `n=1` per `(context, case)`
+- the lane currently measures retrieval correctness from generated text plus serving metrics; it does not yet provide the richer variance and multi-prompt coverage expected for a final main paper table
+- the default CUDA path still remains entirely on `per_kv_fallback`; this run does not change the grouped-decode default story
+- the layer-23 context-aware variant is slightly slower than `shortlist_base` on Needle at both contexts:
+  - `32768`: `453.15 -> 471.57 ms/step`
+  - `49152`: `612.97 -> 634.09 ms/step`
+- because both shortlist variants retrieved correctly, this first run does not provide a reason to prefer the layer-23 override on Needle
+
+### Current interpretation
+
+- the named benchmark lane materially improves the evidence quality of the project
+- Needle currently tells a cleaner story than the synthetic loss-tail lane: shortlist can preserve task retrieval while delivering a large decode-speed win at `32768` and `49152`
+- however, the correct manuscript stance is still disciplined: this is a strong first named-benchmark point, not yet a full benchmark-suite result
+- the next obvious follow-up is to expand this lane from `n=1` into a small prompt pack so the same table can report prompt count and variance instead of a single successful exemplar
+
+## 2026-03-31 23:58 UTC - Needle prompt-pack expansion on the CUDA lane (`n=4`)
+
+I expanded the first named Needle lane from a single prompt into a fixed four-prompt pack and ran it under the standardized contract:
+
+```bash
+bash scripts/run_qwen35_cuda_needle_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_needle_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_needle_pack_protocol_v1_summary.md`
+
+The pack rows are all tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `needle_in_a_haystack`
+- suite `qwen35_cuda_needle_in_a_haystack_pack_v1`
+- prompt count `4`
+- batch size `1`
+
+### Positive read
+
+- the branch now has a small fixed prompt pack rather than a single successful Needle exemplar
+- after rerunning the two failed vault rows and rebuilding the canonical artifact, all `24` `(prompt, case, context)` rows completed successfully
+- retrieval correctness stayed perfect across the pack:
+  - retrieval accuracy `1.00` for all six `(case, context)` buckets
+  - all `24/24` rows contained the planted answer
+- the shortlist systems win remains large under prompt variation:
+  - `32768 exact` mean decode `2496.10 ms/step`
+  - `32768 shortlist_base` mean decode `561.51 ms/step` (`4.45x` faster than exact)
+  - `32768 shortlist_l23_ctx` mean decode `509.53 ms/step` (`4.90x` faster than exact)
+  - `49152 exact` mean decode `3966.83 ms/step`
+  - `49152 shortlist_base` mean decode `759.82 ms/step` (`5.22x` faster than exact)
+  - `49152 shortlist_l23_ctx` mean decode `641.14 ms/step` (`6.19x` faster than exact)
+- shortlist page counts were stable across the pack:
+  - `shortlist_base`: mean selected pages `12240`
+  - `shortlist_l23_ctx`: mean selected pages `12336`
+- the default CUDA path still stayed on `per_kv_fallback` for every successful row, so the shortlist win here is independent of grouped decode becoming active
+
+### Negative read
+
+- the first pack wrapper did not finish cleanly; it stopped partway through and left a partial artifact, so I had to recover the missing rows with targeted reruns and then rebuild the canonical JSONL
+- the first vault recovery sweep also produced two `NoNeedleRow` error payloads:
+  - `vault_phrase exact 32768`
+  - `vault_phrase shortlist_l23_ctx 49152`
+- I reran the missing `vault_phrase exact 32768` row successfully and rebuilt the final branch artifact to keep only successful canonical rows, but the operational failure still belongs in the record
+- exact-match is not perfect even though retrieval correctness is:
+  - exact-match rate is `0.75` for `exact @ 32768`, `exact @ 49152`, `shortlist_base @ 49152`, and `shortlist_l23_ctx @ 49152`
+  - the misses all come from the `shipment_token` prompt, where the model emitted the correct token and then continued with `Question:`, so `needle_answer_correct=true` but `needle_answer_exact_match=false`
+- the layer-23 story is now mixed rather than uniformly negative:
+  - at `49152`, `shortlist_l23_ctx` was faster than `shortlist_base` for all four prompts
+  - at `32768`, three of four prompts were slightly slower, and the mean win came from one large `archive_code` outlier (`-281.80 ms/step`)
+  - that is enough to say the earlier single-prompt “layer-23 is just slower” story is too simple, but not enough to justify a confident default switch
+- pack-level variance is still non-trivial, especially for `shortlist_base`:
+  - `32768 shortlist_base`: stddev `147.68 ms`, `95% CI +/- 144.72 ms`
+  - `49152 shortlist_base`: stddev `180.16 ms`, `95% CI +/- 176.56 ms`
+
+### Tooling follow-up
+
+- the first version of `scripts/summarize_qwen35_cuda_needle_pack.py` crashed on error rows because it assumed every JSONL row had decode metrics
+- I fixed it so the summarizer now skips malformed/error rows and reports them in a dedicated section instead of failing outright
+
+### Current interpretation
+
+- the repo now has a more credible named-benchmark result than the original single-row Needle artifact because prompt count and variance are visible
+- the strongest stable claim remains systems-focused: shortlist preserves retrieval on this small fixed Needle pack while producing large decode-speed wins at `32768` and `49152`
+- the exact-match caveat should be stated honestly in paper-facing text if this pack is cited, because correctness and strict exact-match are no longer identical on the `shipment_token` variant
+- the layer-23 override is no longer cleanly dismissible, but the evidence is still too noisy and prompt-sensitive to elevate it beyond a follow-up candidate
+
+## 2026-03-31 14:01 UTC - Streaming-window external-style comparator on the Needle pack
+
+I pulled the new comparator lane from `edce32a` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_streaming_window_needle_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_streaming_window_needle_pack_v1_summary.md`
+
+This run adds a cheap external-style reference baseline on the same fixed four-prompt Needle pack:
+
+- `exact`
+- `streaming_sink_recent`
+- `shortlist_base`
+- `shortlist_l23_ctx`
+
+The streaming case is the intended sink-plus-recent reference:
+
+- sink window `256`
+- recent window `1024`
+- no query-aware shortlist expansion
+
+### Positive read
+
+- the three-way comparison we were missing is now real on the branch: exact vs streaming-window reference vs DotCache shortlist on the same named pack
+- both DotCache shortlist lanes preserved retrieval across the full pack:
+  - all non-streaming rows were retrieval-correct
+  - `shortlist_base` retrieval accuracy stayed `1.00` at both `32768` and `49152`
+  - `shortlist_l23_ctx` retrieval accuracy stayed `1.00` at both `32768` and `49152`
+- shortlist remained much faster than exact:
+  - at `32768`: `exact 2521.60 ms/step`, `shortlist_base 474.23`, `shortlist_l23_ctx 492.86`
+  - at `49152`: `exact 3909.29 ms/step`, `shortlist_base 629.46`, `shortlist_l23_ctx 636.96`
+  - speedup vs exact:
+    - `32768 shortlist_base`: `5.32x`
+    - `32768 shortlist_l23_ctx`: `5.12x`
+    - `49152 shortlist_base`: `6.21x`
+    - `49152 shortlist_l23_ctx`: `6.14x`
+- the external-style baseline does exactly what an honest reference baseline should do here: it demonstrates the speed/quality tradeoff sharply rather than flattering DotCache accidentally
+
+### Negative read
+
+- the streaming sink-plus-recent reference was catastrophically bad on retrieval:
+  - retrieval accuracy `0.00` at `32768`
+  - retrieval accuracy `0.00` at `49152`
+  - exact-match rate `0.00` at both contexts
+- the generated answers show the failure mode clearly:
+  - `passphrase_red`: `crimson.` / `crimson`
+  - `archive_code`: `amber`
+  - `shipment_token`: `cobalt-100000000` / `cobalt`
+  - `vault_phrase`: `silver`
+- streaming is much faster than every other lane, but that speed is not usable on this task:
+  - `32768 streaming_sink_recent`: `156.65 ms/step`
+  - `49152 streaming_sink_recent`: `188.55 ms/step`
+  - compared with streaming, DotCache shortlist is about `3.0x` to `3.4x` slower on decode, but preserves retrieval while streaming does not
+- the layer-23 override still does not earn a clean recommendation on this comparator run:
+  - it is slightly slower than `shortlist_base` on average at both contexts
+  - `32768`: mean `+18.63 ms/step`
+  - `49152`: mean `+7.50 ms/step`
+- exact-match still has the same `shipment_token` formatting caveat as the earlier Needle pack:
+  - `exact @ 32768`: exact-match `0.75`
+  - `exact @ 49152`: exact-match `0.75`
+  - `shortlist_base @ 49152`: exact-match `0.75`
+  - `shortlist_l23_ctx @ 49152`: exact-match `0.75`
+  - these are formatting misses caused by the model appending `Question:` after the correct token, not retrieval failures
+
+### Operational failures
+
+- the first full comparator pass completed with two transient `NoNeedleRow` failures:
+  - `archive_code shortlist_l23_ctx 49152`
+  - `shipment_token exact 32768`
+- both error payloads carried a `transformers` tokenizer traceback ending in a missing `protobuf` import complaint, but that failure was not stable
+- I reran those two rows individually and both succeeded cleanly
+- the canonical branch artifact now contains the successful reruns only, but the original operational failure remains recorded here because it happened during the first full pass
+
+### Current interpretation
+
+- this is the first branch artifact that supports the paper’s external-baseline framing with real data instead of a placeholder plan
+- the honest claim is now sharper:
+  - a cheap StreamingLLM-style sink-plus-recent reference is faster than DotCache shortlist on Needle
+  - but it fails retrieval completely on this pack
+  - DotCache shortlist gives back a large fraction of exact quality at a much lower cost than exact, without collapsing the task the way the streaming baseline does
+- this comparator does not justify promoting `shortlist_l23_ctx`; it mainly strengthens the case that `shortlist_base` is the cleanest default shortlist story against a simple external-style baseline
+
+## 2026-03-31 14:18 UTC - First RULER-style passkey family pack on the CUDA lane
+
+I pulled the new passkey family from `9ab4e3b` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_passkey_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_passkey_pack_protocol_v1_summary.md`
+
+This is the second named family on the branch, framed honestly as a fixed four-prompt RULER-style passkey retrieval pack rather than a full RULER reproduction.
+
+All rows are tagged as:
+
+- split `held_out`
+- lane `systems`
+- prompt family `passkey_retrieval`
+- suite `qwen35_cuda_passkey_pack_v1`
+- prompt count `4`
+- batch size `1`
+
+### Positive read
+
+- the passkey family worked end-to-end on the CUDA lane and the final canonical artifact contains `24` successful rows with `0` error payloads
+- retrieval correctness stayed perfect across the entire family:
+  - `24/24` rows were retrieval-correct
+  - retrieval accuracy `1.00` for every `(case, context)` bucket
+- DotCache shortlist again delivered a large systems win versus exact:
+  - `32768 exact`: `2390.28 ms/step`
+  - `32768 shortlist_base`: `500.58 ms/step` (`4.77x` faster than exact)
+  - `32768 shortlist_l23_ctx`: `511.36 ms/step` (`4.67x` faster than exact)
+  - `49152 exact`: `3823.87 ms/step`
+  - `49152 shortlist_base`: `662.52 ms/step` (`5.77x` faster than exact)
+  - `49152 shortlist_l23_ctx`: `657.81 ms/step` (`5.81x` faster than exact)
+- shortlist page counts remained stable and matched the Needle-family behavior:
+  - `shortlist_base`: mean selected pages `12240`
+  - `shortlist_l23_ctx`: mean selected pages `12336`
+- the default CUDA path still stayed entirely on `per_kv_fallback`, so the passkey-family shortlist win also does not depend on grouped decode activation
+
+### Negative read
+
+- strict exact-match is low even though retrieval correctness is perfect:
+  - exact-match rate is only `0.25` in every fully populated `(case, context)` bucket
+- this is not a retrieval failure; it is almost entirely output-format bleed:
+  - `archive_pin` often emitted `90317` and then continued with `Question: What is`
+  - `shipment_code` often emitted `26488` and then continued with `Question: What is` or repeated blank lines
+  - `vault_sequence` often emitted `41736` and then continued with `Question: What is` or `Vault record: the`
+- in other words, the model keeps the right digits but does not reliably stop after the answer on this family
+- the layer-23 override still does not earn a clean recommendation:
+  - at `32768`, it is slightly slower than `shortlist_base` on average (`+10.78 ms/step`)
+  - at `49152`, it is slightly faster on average (`-4.72 ms/step`)
+  - the per-prompt deltas are mixed and too small to justify promoting it as the cleaner default story
+
+### Operational failure
+
+- the first full pass finished with one transient `NoPasskeyRow` failure:
+  - `vault_sequence shortlist_l23_ctx 49152`
+- the error payload carried the same tokenizer-side `protobuf` import complaint seen earlier on the branch
+- I reran just that row and it succeeded cleanly, then rebuilt the canonical branch artifact with the successful rerun while keeping the failure recorded here
+
+### Current interpretation
+
+- the second named family reinforces the same high-level thesis as Needle:
+  - DotCache shortlist preserves task retrieval on a named long-context family while delivering a large decode-speed win versus exact
+- passkey retrieval is in one sense even cleaner than Needle because retrieval correctness is perfect on all rows
+- however, it also exposes a paper-facing evaluation nuance that should be stated honestly:
+  - strict exact-match can be much lower than retrieval correctness when the model repeats parts of the prompt after the correct answer
+- taken together with Needle, the branch now has two named task-style families showing the same core systems story from different prompt constructions
+
+## 2026-03-31 15:05 UTC - First LongBench-derived QA mini-pack on the CUDA lane
+
+I pulled the new non-synthetic family from `78e4e22` and ran it on the CUDA box:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md`
+
+This is a fixed four-row LongBench-derived QA mini-pack using real benchmark rows, official task prompts, and official QA F1 scoring:
+
+- `hotpotqa`, row `0`
+- `2wikimqa`, row `0`
+- `multifieldqa_en`, row `1`
+- `qasper`, row `1`
+
+### Positive read
+
+- the branch now has a third named family, and this one is not synthetic retrieval prompting; it uses real benchmark rows and the official LongBench QA F1 metric
+- the systems story still holds:
+  - `exact` mean decode `743.41 ms/step`
+  - `shortlist_base` mean decode `178.55 ms/step`
+  - `shortlist_l23_ctx` mean decode `176.41 ms/step`
+- that translates to roughly:
+  - `shortlist_base`: `4.16x` faster than exact on mean decode
+  - `shortlist_l23_ctx`: `4.21x` faster than exact on mean decode
+- shortlist did not uniformly degrade every row:
+  - on `multifieldqa_en`, exact F1 was `0.1951` while both shortlist variants reached `0.2051`
+  - on `qasper`, `shortlist_l23_ctx` was slightly faster than `shortlist_base` (`153.67` vs `159.73 ms/step`)
+
+### Negative read
+
+- unlike the Needle and passkey families, this LongBench-derived mini-pack does not currently preserve exact-task quality under shortlist:
+  - exact mean QA F1: `0.1425`
+  - shortlist_base mean QA F1: `0.0825`
+  - shortlist_l23_ctx mean QA F1: `0.0825`
+- exact-match rate is `0.00` for every `(case)` bucket in this pack
+- the pack is small and noisy, but the current read is still directionally important:
+  - `hotpotqa`: exact `0.375`, shortlist `0.125`
+  - `2wikimqa`: all variants `0.0`
+  - `multifieldqa_en`: exact `0.1951`, shortlist `0.2051`
+  - `qasper`: all variants `0.0`
+- this is therefore not a paper-table-quality “win” artifact in the same way as Needle or passkey
+- the layer-23 override again does not earn a clean recommendation:
+  - mean F1 is identical to `shortlist_base`
+  - mean decode is only slightly lower
+  - the per-row behavior is too mixed to justify elevating it beyond a follow-up candidate
+
+### Operational failure and fix
+
+- the first attempt at this run exposed a real probe bug rather than a benchmark outcome:
+  - every LongBench row with `row_index=0` came back as `NoLongBenchRow` even though the underlying benchmark command exited successfully
+- root cause:
+  - `run_qwen35_cuda_longbench_qa_probe.py` used `int(candidate.get("longbench_row_index") or -1)`, which collapses a legitimate `0` row index into `-1`
+- I patched that parser bug, reran the pack from scratch, and the final canonical artifact now contains `12` clean rows with `0` error payloads
+
+### Current interpretation
+
+- this run fills an important benchmark-breadth gap because it moves the branch beyond the two synthetic retrieval families into real benchmark rows
+- the honest story is now more nuanced:
+  - DotCache shortlist still delivers the expected decode-speed win
+  - but on this tiny LongBench-derived QA pack, that systems win does not yet carry over into a clear quality-preserving story
+- taken together with Needle, passkey, and LongBench QA, the branch now has a more credible mixed evaluation record:
+  - strong systems wins on named task-style retrieval families
+  - a cheap external-style baseline that is fast but collapses task retrieval
+  - an initial real-benchmark QA mini-pack showing that quality retention on real benchmark rows is still an open problem rather than a solved claim
+
+## 2026-03-31 15:44 UTC - LongBench QA rescue matrix on the CUDA lane
+
+I pulled the LongBench rescue lane from `37aa54d` and ran it exactly as added:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md`
+
+This matrix compares five cases on the same four-row LongBench-derived QA mini-pack:
+
+- `exact`
+- `shortlist_base`
+- `shortlist_l23_ctx`
+- `shortlist_topk8`
+- `shortlist_quality_profile`
+
+It also records cleaned-answer diagnostics so we can separate formatting spillover from real answer loss.
+
+### Positive read
+
+- the rescue matrix completed cleanly with `20` rows and `0` error payloads
+- the new diagnostics are informative even though they did not help the scores:
+  - the cleaned-answer F1 is identical to the raw F1 in every row
+  - that is a useful negative result because it rules out “mostly formatting junk” as the main explanation for the LongBench misses
+- the systems win remains large across all shortlist variants:
+  - `exact` mean decode `743.05 ms/step`
+  - `shortlist_base` mean decode `174.91`
+  - `shortlist_l23_ctx` mean decode `178.86`
+  - `shortlist_topk8` mean decode `183.53`
+  - `shortlist_quality_profile` mean decode `186.30`
+- among the shortlist variants, the baseline remains the fastest mean option in this matrix
+- the only clear per-row quality positive still comes from `multifieldqa_en`, where:
+  - exact F1 `0.1951`
+  - `shortlist_base` / `shortlist_l23_ctx` / `shortlist_quality_profile` each reached `0.2051`
+
+### Negative read
+
+- the central LongBench problem is not formatting:
+  - mean raw F1 equals mean cleaned F1 for every case
+  - the cleaned-answer diagnostics did not rescue a single row
+- none of the rescue variants improved the overall shortlist quality story:
+  - exact mean F1 `0.1425`
+  - `shortlist_base` mean F1 `0.0825`
+  - `shortlist_l23_ctx` mean F1 `0.0825`
+  - `shortlist_topk8` mean F1 `0.0800`
+  - `shortlist_quality_profile` mean F1 `0.0825`
+- `shortlist_topk8` is strictly worse on this pack:
+  - slower than `shortlist_base`
+  - slightly lower mean F1
+- the “quality profile” also failed to buy back quality:
+  - it matches `shortlist_base` on mean F1
+  - but is slower on mean decode
+- `hotpotqa` remains the clearest miss:
+  - exact F1 `0.375`
+  - every shortlist rescue variant stayed at `0.125`
+- `2wikimqa` and `qasper` remained `0.0` across every case in this mini-pack, so the rescue lane does not change the current claim there
+- the layer-23 override still does not earn promotion:
+  - it matches `shortlist_base` on mean F1
+  - but is slightly slower on mean decode in this matrix
+
+### Current interpretation
+
+- this rescue matrix answers the immediate diagnostic question cleanly:
+  - the current LongBench shortlist misses are mostly not caused by chat-format answer junk
+  - they are mostly actual answer-quality / shortlist-recall misses
+- that means the next quality-improvement work should target retrieval/selection behavior, not output post-processing
+- it also narrows the paper story:
+  - LongBench QA is now a real benchmark-family counterexample to any broad “shortlist preserves quality” claim
+  - Needle and passkey remain the cleaner evidence for the current paper-facing systems claim
+
+## 2026-03-31 16:11 UTC - Focused `hotpotqa` shortlist diagnostic
+
+I pulled the focused hotpot diagnostic lane from `8e38888` and ran it on the CUDA box:
+
+```bash
+bash scripts/run_qwen35_cuda_longbench_hotpot_diagnostic.sh
+```
+
+New artifacts:
+
+- `benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1.jsonl`
+- `benchmarks/results/qwen35_cuda_longbench_hotpot_diagnostic_v1_summary.md`
+
+This is a one-row diagnostic on the real failing `hotpotqa` row (`row 0`), with:
+
+- one `exact` reference row
+- four shortlist diagnostic rows:
+  - `shortlist_base`
+  - `shortlist_l23_ctx`
+  - `shortlist_topk8`
+  - `shortlist_quality_profile`
+
+### Positive read
+
+- the diagnostic lane worked end-to-end and produced the per-layer shortlist traces we were missing
+- it gives a much more concrete answer than the pack average:
+  - exact F1 `0.375`
+  - all four shortlist variants land at `0.250`
+- that means the focused hotpot row is slightly less bad than the earlier rescue-matrix average suggested, but still materially below exact
+- the hotpot systems story remains consistent:
+  - exact decode `1072.73 ms/step`
+  - `shortlist_base` `197.16`
+  - `shortlist_l23_ctx` `210.03`
+  - `shortlist_topk8` `201.97`
+  - `shortlist_quality_profile` `215.41`
+- the dominant repeated miss ranges are now explicit rather than inferred:
+  - `1296:1312`
+  - `5824:5840`
+  - `1376:1392`
+  - `624:640`
+  - `8800:8816`
+
+### Negative read
+
+- none of the rescue variants actually fix the hotpot failure:
+  - `shortlist_base`, `shortlist_l23_ctx`, `shortlist_topk8`, and `shortlist_quality_profile` all stay at `0.250`
+- this is therefore not a “pick the right shortlist knob” problem, at least on this row
+- `shortlist_topk8` does not help the hotpot answer and appears to worsen the repeated miss profile:
+  - same F1 as the other shortlist variants
+  - more concentrated repeated misses on the dominant exact pages
+  - worst layer shifts from `7` to `3`, but the row-level answer does not improve
+- `shortlist_l23_ctx` and the quality profile also fail to improve answer quality, and both are slower than `shortlist_base`
+- the generated shortlist text still contains obvious chat-style spillover such as `assistant` and repeated answer fragments, but the page-miss diagnostics show that formatting is not the whole story
+
+### Diagnostic interpretation
+
+- the hotpot failure is now much less mysterious:
+  - the shortlist scorer repeatedly misses the same old exact pages across steps
+  - the misses are persistent enough that simply widening to `top_k=8` or swapping to the quality profile does not rescue the answer
+- layer `7` is still the most consistently problematic shortlist layer on the baseline, layer-23, and quality-profile variants
+- the best-ranked layer by correlation is not the limiting factor here; the problem is repeated exact-page omission on a small set of pages rather than globally chaotic ranking
+- the next quality-improvement work for LongBench should therefore target why those specific old pages are repeatedly absent from shortlist selection, not answer post-processing
 
 ## 2026-03-31 16:05 UTC - 890M combined DotCache + StateCache does not beat the local StateCache-only lane
 

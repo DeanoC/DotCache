@@ -1,0 +1,38 @@
+{
+  "suite_name": "local_smoke_suite",
+  "splits": [
+    {
+      "split_name": "retrieval_layer23_holdout",
+      "output_subdir": "retrieval_layer23",
+      "holdout_prompt_families": ["retrieval"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [23],
+      "annotations": {
+        "scope": "local_smoke",
+        "tier": "family_layer"
+      }
+    },
+    {
+      "split_name": "variant_logic_holdout",
+      "output_subdir": "variant_logic",
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": ["logic"],
+      "holdout_layers": [],
+      "annotations": {
+        "scope": "local_smoke",
+        "tier": "variant"
+      }
+    },
+    {
+      "split_name": "family_reasoning_holdout",
+      "output_subdir": "family_reasoning",
+      "holdout_prompt_families": ["reasoning"],
+      "holdout_prompt_variants": [],
+      "holdout_layers": [],
+      "annotations": {
+        "scope": "local_smoke",
+        "tier": "family"
+      }
+    }
+  ]
+}
