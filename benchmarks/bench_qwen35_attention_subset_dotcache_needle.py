@@ -5,8 +5,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import torch
-from transformers import AutoConfig
+try:
+    import torch
+except ImportError:  # pragma: no cover - import-time fallback for unit tests.
+    torch = None  # type: ignore[assignment]
 
 from dotcache.config import DotCacheConfig
 from dotcache.config_io import load_layer_profile
@@ -647,6 +649,8 @@ def main() -> None:
     args = parse_args()
     if not transformers_available():
         raise SystemExit("bench_qwen35_attention_subset_dotcache_needle.py requires the optional transformers dependencies")
+    from transformers import AutoConfig
+
     _apply_missing_serving_defaults(args)
 
     model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())

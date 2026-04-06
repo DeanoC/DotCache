@@ -272,7 +272,7 @@ try:  # pragma: no cover - optional HF path
         transformers_available,
         vllm_available,
     )
-except ImportError:  # pragma: no cover - exercised when optional deps are absent
+except Exception:  # pragma: no cover - exercised when optional deps are absent
     pass
 else:
     __all__.extend(

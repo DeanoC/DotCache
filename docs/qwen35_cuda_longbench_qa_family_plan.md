@@ -1,71 +1,79 @@
-# Qwen3.5 CUDA LongBench QA Family Plan
+# Qwen3.5 LongBench Closure Plan
 
-This note defines the first non-synthetic named task family on the Qwen3.5 shortlist lane. The goal is to move beyond synthetic retrieval packs without waiting for a full LongBench reproduction.
+This note replaces the earlier QA mini-pack plan as the main paper-facing benchmark target.
 
-## Chosen Family
+The old mini, medium, and full QA packs still matter, but only as cheap regression gates. They are no longer the benchmark courtroom for the paper.
 
-- LongBench-derived QA mini-pack
+## Current Milestone
 
-Why this family:
+- one combined benchmark-closure milestone
+- courtroom model: `Qwen/Qwen3.5-9B`
+- benchmark coverage target: full original LongBench suite
+- external parity rows:
+  - `streaming_sink_recent`
+  - `quest_like`
+- fairness views:
+  - `matched_quality`
+  - `matched_memory`
 
-- it uses real benchmark rows rather than handcrafted prompts
-- it reuses the official task prompt templates from the LongBench repository
-- it reuses the official LongBench QA F1 metric for the selected QA-style datasets
-- it is much cheaper to run than a broad LongBench sweep
+## Implementation Path On Branch
 
-## Branch Components
+- task registry: [longbench_v1.py](/workspace/DotCache/dotcache/longbench_v1.py)
+- benchmark harness: [bench_qwen35_attention_subset_dotcache_longbench_qa.py](/workspace/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py)
+- compare runner: [run_qwen35_longbench_selector_compare.py](/workspace/DotCache/scripts/run_qwen35_longbench_selector_compare.py)
+- pack runner: [run_qwen35_longbench_pack.py](/workspace/DotCache/scripts/run_qwen35_longbench_pack.py)
+- report: [report_qwen35_longbench_selector_compare.py](/workspace/DotCache/scripts/report_qwen35_longbench_selector_compare.py)
+- failure workbook: [report_qwen35_longbench_failure_workbook.py](/workspace/DotCache/scripts/report_qwen35_longbench_failure_workbook.py)
 
-- benchmark harness: [bench_qwen35_attention_subset_dotcache_longbench_qa.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_qwen35_attention_subset_dotcache_longbench_qa.py)
-- prompt pack: [qwen35_cuda_longbench_qa_pack_v1.json](/Users/deanocalver/Documents/Projects/DotCache/configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json)
-- runner: [run_qwen35_cuda_longbench_qa_probe.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_probe.py)
-- protocol wrapper: [run_qwen35_cuda_longbench_qa_pack_protocol.sh](/Users/deanocalver/Documents/Projects/DotCache/scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh)
-- summary tool: [summarize_qwen35_cuda_longbench_qa_pack.py](/Users/deanocalver/Documents/Projects/DotCache/scripts/summarize_qwen35_cuda_longbench_qa_pack.py)
+## Default Entry Points
 
-## Pack Shape
-
-- `hotpotqa`, row `0`
-- `2wikimqa`, row `0`
-- `multifieldqa_en`, row `1`
-- `qasper`, row `1`
-
-These are fixed held-out rows from the original LongBench `data.zip` bundle, not from the earlier synthetic prompt packs.
-
-## CUDA Command
+Main 9B shell wrappers now target the closure path by default:
 
 ```bash
-scripts/run_qwen35_cuda_longbench_qa_pack_protocol.sh
+scripts/run_qwen35_9b_longbench_selector_compare.sh
+scripts/run_qwen35_9b_longbench_pack.sh <output-dir>
 ```
 
-Default outputs:
+Those wrappers now:
 
-- [qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1.jsonl)
-- [qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_pack_protocol_v1_summary.md)
+- enumerate the original LongBench suite from the official `data.zip`
+- run `exact`, `quality`, `systems`, `streaming_sink_recent`, and `quest_like`
+- emit both the main comparison report and the failure workbook
 
-## Follow-Up Rescue Matrix
+## Expected Outputs
 
-Once the base mini-pack is in place, the next targeted CUDA pass is:
+For a standard run directory, the branch now expects:
 
-```bash
-scripts/run_qwen35_cuda_longbench_qa_rescue_matrix.sh
-```
+- `qwen35_9b_longbench_selector_compare.jsonl`
+- `longbench_selector_compare.md`
+- `longbench_selector_compare.json`
+- `longbench_failure_workbook.md`
+- `longbench_failure_workbook.json`
 
-Default outputs:
+## Reporting Contract
 
-- [qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1.jsonl)
-- [qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_cuda_longbench_qa_rescue_matrix_v1_summary.md)
+The main comparison report must expose:
 
-This rescue matrix compares:
+- official LongBench task score
+- task-family breakdown
+- worst-dataset floor
+- decode ms/step and `p95`
+- effective bytes per token
+- matched-quality parity picks
+- matched-memory parity picks
 
-- `exact`
-- `shortlist_base`
-- `shortlist_l23_ctx`
-- `shortlist_topk8`
-- `shortlist_quality_profile`
+The failure workbook must record every held-out `systems` miss versus `exact` and classify it as:
 
-It also records cleaned-answer diagnostic scores so we can separate chat-format spillover from real answer-quality loss.
+- `selection_miss`
+- `write_format_damage`
+- `downstream_under_attention`
 
-## Honest Caveats
+## Historical Note
 
-- this is a LongBench-derived mini-pack, not a full LongBench table
-- it currently covers only English QA-style tasks with the official QA F1 metric
-- it is meant to fill the benchmark-breadth gap with real benchmark rows, not to replace a fuller benchmark sweep later
+The earlier LongBench QA mini-pack branch work is still useful for:
+
+- fast smoke checks
+- wrapper regressions
+- targeted Hotpot-style diagnostics
+
+It should not be cited as the main external quality closure result once the full-suite `Qwen3.5-9B` run exists.

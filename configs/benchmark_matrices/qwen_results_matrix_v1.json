@@ -18,7 +18,6 @@
       "model_id": "Qwen/Qwen3.5-4B",
       "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
       "task_compare": {},
-      "longbench": {},
       "backend_truth": {}
     },
     {
@@ -26,7 +25,9 @@
       "model_id": "Qwen/Qwen3.5-9B",
       "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json",
       "task_compare": {},
-      "longbench": {},
+      "longbench": {
+        "prompt_pack_preset": "original_full_suite"
+      },
       "backend_truth": {}
     },
     {
@@ -34,7 +35,6 @@
       "model_id": "Qwen/Qwen3.5-27B",
       "selector_artifact": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/serving_selector_artifact/linear_selector_model.json",
       "task_compare": {},
-      "longbench": {},
       "backend_truth": {}
     }
   ]

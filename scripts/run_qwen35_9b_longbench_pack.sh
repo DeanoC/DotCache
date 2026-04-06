@@ -6,7 +6,7 @@ usage() {
 usage: bash scripts/run_qwen35_9b_longbench_pack.sh <output-dir> [extra pack args...]
 
 Runs the generic LongBench pack compare for Qwen3.5-9B.
-Default pack is `mini`; pass `--pack medium` or `--pack full` for broader coverage.
+Default pack is `original_suite`; pass `--pack mini`, `--pack medium`, `--pack full`, `--pack stratified_16`, or `--pack stratified_32`.
 EOF
   exit 1
 }
@@ -25,5 +25,6 @@ shift
   --device cuda \
   --torch-dtype float16 \
   --selector-artifact "$ROOT_DIR/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json" \
+  --pack original_suite \
   --output-dir "$OUTPUT_DIR" \
   "$@"

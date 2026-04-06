@@ -24,6 +24,11 @@ hf = [
   "sentencepiece>=0.2.1",
   "safetensors>=0.7.0",
 ]
+longbench = [
+  "jieba>=0.42.1",
+  "fuzzywuzzy>=0.18.0",
+  "rouge>=1.0.1",
+]
 vllm = [
   "torch>=2.5",
   "vllm>=0.18,<0.19",

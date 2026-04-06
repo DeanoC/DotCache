@@ -8,6 +8,8 @@ shift || true
 JSONL_PATH="$OUTPUT_DIR/qwen35_9b_longbench_selector_compare.jsonl"
 MARKDOWN_PATH="$OUTPUT_DIR/longbench_selector_compare.md"
 JSON_PATH="$OUTPUT_DIR/longbench_selector_compare.json"
+WORKBOOK_MARKDOWN_PATH="$OUTPUT_DIR/longbench_failure_workbook.md"
+WORKBOOK_JSON_PATH="$OUTPUT_DIR/longbench_failure_workbook.json"
 DEFAULT_SELECTOR_ARTIFACT="$ROOT_DIR/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json"
 SHARED_SELECTOR_ARTIFACT="/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json"
 
@@ -35,7 +37,7 @@ fi
   --device cuda \
   --torch-dtype float16 \
   --selector-artifact "$SELECTOR_ARTIFACT" \
-  --prompt-pack "$ROOT_DIR/configs/prompt_packs/qwen35_cuda_longbench_qa_pack_v1.json" \
+  --prompt-pack-preset original_full_suite \
   --max-prompt-tokens 4096 8192 \
   --warmup-runs 1 \
   --measured-runs 5 \
@@ -49,4 +51,15 @@ fi
   --json-output "$JSON_PATH" \
   >/dev/null
 
-printf 'Wrote:\n- %s\n- %s\n- %s\n' "$JSONL_PATH" "$MARKDOWN_PATH" "$JSON_PATH"
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/report_qwen35_longbench_failure_workbook.py" \
+  --input "$JSONL_PATH" \
+  --markdown-output "$WORKBOOK_MARKDOWN_PATH" \
+  --json-output "$WORKBOOK_JSON_PATH" \
+  >/dev/null
+
+printf 'Wrote:\n- %s\n- %s\n- %s\n- %s\n- %s\n' \
+  "$JSONL_PATH" \
+  "$MARKDOWN_PATH" \
+  "$JSON_PATH" \
+  "$WORKBOOK_MARKDOWN_PATH" \
+  "$WORKBOOK_JSON_PATH"

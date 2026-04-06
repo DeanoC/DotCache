@@ -131,6 +131,8 @@ def _longbench_command(
     report_md = output_dir / "longbench_selector_compare.md"
     report_json = output_dir / "longbench_selector_compare.json"
     max_prompt_tokens = model.get("longbench", {}).get("max_prompt_tokens", defaults["longbench_max_prompt_tokens"])
+    prompt_pack = model.get("longbench", {}).get("prompt_pack")
+    prompt_pack_preset = model.get("longbench", {}).get("prompt_pack_preset")
     command = [
         _python_bin(),
         str(REPO_ROOT / "scripts" / "run_qwen35_longbench_selector_compare.py"),
@@ -153,6 +155,10 @@ def _longbench_command(
         "--output",
         str(run_jsonl),
     ]
+    if prompt_pack:
+        command.extend(["--prompt-pack", str(prompt_pack)])
+    if prompt_pack_preset:
+        command.extend(["--prompt-pack-preset", str(prompt_pack_preset)])
     if model.get("layer_profile"):
         command.extend(["--layer-profile", str(model["layer_profile"])])
     report_command = [

@@ -908,15 +908,19 @@ class _PersistentTailPage:
             escape_payload=host_buffer[:0],
             escape_scales=None if host_scales is None else host_scales[:0],
         )
-        device_payload = torch.zeros(
-            (self.config.tokens_per_page, self.config.head_dim),
-            dtype=torch_dtype,
-            device=self.device_type,
-        )
-        device_scales = None
-        if dtype_name == "int8":
-            scale_dtype = torch.float32 if self.device_type == "mps" else torch.float16
-            device_scales = torch.zeros((self.config.tokens_per_page,), dtype=scale_dtype, device=self.device_type)
+        # These buffers are mutated incrementally during serving. If they are
+        # created under torch.inference_mode(), later appends fail with
+        # "Inplace update to inference tensor outside InferenceMode".
+        with torch.inference_mode(False):
+            device_payload = torch.zeros(
+                (self.config.tokens_per_page, self.config.head_dim),
+                dtype=torch_dtype,
+                device=self.device_type,
+            )
+            device_scales = None
+            if dtype_name == "int8":
+                scale_dtype = torch.float32 if self.device_type == "mps" else torch.float16
+                device_scales = torch.zeros((self.config.tokens_per_page,), dtype=scale_dtype, device=self.device_type)
         prepared_page = PreparedPageTorch(
             device_type=self.device_type,
             source_page=source_page,

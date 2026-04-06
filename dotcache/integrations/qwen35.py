@@ -48,7 +48,10 @@ else:  # pragma: no cover - exercised in environments without transformers
     AutoTokenizer = None
     Qwen3_5ForConditionalGeneration = None
     BitsAndBytesConfig = None  # type: ignore[assignment]
-    nn = object  # type: ignore[assignment]
+    class _FallbackNN:
+        class Module:
+            pass
+    nn = _FallbackNN()  # type: ignore[assignment]
     qwen35_mod = None
 
 
