@@ -341,6 +341,7 @@ The current checkpoint already supports one narrow but real promotion call:
 - native Qwen3.5 27B backend truth now reproduces the same learned-selector win on the intended `transformers 5.5.0` stack
 - Llama 3.2 3B currently does not need an extra systems bias because `quality` and `systems` are effectively the same operating point
 - the current Qwen LongBench QA mini-pack supports the same local default-path read as a small held-out external-style QA family plus sink-plus-recent reference, even though it is still too small to be the last word on quality separation
+- the broader Qwen3.5 9B LongBench medium pack now strengthens that same read with real teacher-forced perplexity ratios and a larger held-out slice
 
 That means the project is improving on measurement discipline, and the selector-profile question is much less ambiguous than it was one week ago, but it is not yet benchmark-complete.
 

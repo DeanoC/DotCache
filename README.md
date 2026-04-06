@@ -56,6 +56,7 @@ The checkpoint now includes the full Qwen `4B / 9B / 27B` matrix, including:
 
 - compact held-out task rows where `systems` preserves the currently trusted task success profile while materially reducing decode
 - the fixed Qwen LongBench QA mini-pack, where `systems` stays quality-neutral on the current pack while sharply improving decode
+- the broader Qwen3.5 9B LongBench medium pack, where `systems` remains quality-neutral relative to `exact` and `quality`, now with real teacher-forced perplexity ratios
 - the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines
 
 The main matrix artifacts are:
@@ -76,6 +77,12 @@ Run those via:
 
 ```bash
 bash scripts/run_qwen35_9b_longbench_pack.sh /path/to/output_dir --pack medium
+```
+
+There is now also a 27B convenience wrapper:
+
+```bash
+bash scripts/run_qwen35_27b_longbench_pack.sh /path/to/output_dir --pack medium
 ```
 
 ## Larger-machine selector suite

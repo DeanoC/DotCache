@@ -61,6 +61,13 @@
 | Qwen3.5 27B | 4096 | 0.358 | 0.358 | 0.358 | 0.358 | 1263.516 | 1737.076 | 331.793 | 538.435 | 5.235 | 1.623 |
 | Qwen3.5 27B | 8192 | 0.341 | 0.341 | 0.341 | 0.341 | 2096.277 | 3512.227 | 804.331 | 566.767 | 4.367 | 0.705 |
 
+## Qwen 9B LongBench Medium Check
+
+| context_cap | exact_em | quality_em | systems_em | streaming_em | exact_qa_f1 | quality_qa_f1 | systems_qa_f1 | streaming_qa_f1 | exact_ppl_ratio | quality_ppl_ratio | systems_ppl_ratio | streaming_ppl_ratio | exact_decode_ms | quality_decode_ms | systems_decode_ms | streaming_decode_ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4096 | 0.167 | 0.167 | 0.167 | 0.167 | 0.270 | 0.270 | 0.270 | 0.270 | 1.012 | 1.013 | 1.012 | 1.307 | 614.239 | 574.427 | 91.621 | 257.917 |
+| 8192 | 0.167 | 0.167 | 0.167 | 0.167 | 0.280 | 0.280 | 0.280 | 0.280 | 1.023 | 1.020 | 1.021 | 1.345 | 981.825 | 773.764 | 145.521 | 278.335 |
+
 ## Qwen Backend Check
 
 | model | context | exact_decode_ms | shortlist_decode_ms | learned_decode_ms | learned_vs_exact_speedup | learned_vs_shortlist_speedup | learned_m3_frac | learned_score_ms | learned_mix_ms | selector_us_per_invocation |
@@ -78,5 +85,6 @@
 - All compact Qwen task rows pass except the previously-known shared `27B @ 2048 retrieval_passkey` miss, which still fails in `exact`, `quality`, and `systems` and therefore does not read like a selector regression.
 - Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.
 - The Qwen LongBench matrix currently behaves more like a comparative systems check than a selector-separating quality benchmark: quality is tied across methods on the present pack, but `systems` remains much faster than `quality` and `exact` and retains lower RMSE than the streaming reference.
+- The broader Qwen3.5 9B LongBench medium pack is now the strongest external-style Qwen check in the repo: `systems` stays quality-neutral relative to `exact` and `quality`, carries real teacher-forced perplexity ratios, and remains much faster at both `4096` and `8192`.
 - Backend truth stays consistent across Qwen scale: learned lanes are strongly M3-heavy, selector overhead stays around `25 us/inv`, and the remaining dominant cost is still backend `score + mix` rather than selector computation.
 - This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.

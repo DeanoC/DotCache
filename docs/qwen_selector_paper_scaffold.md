@@ -56,9 +56,9 @@ Current read:
 - Backend truth:
   - learned selector wins clearly over exact and shortlist at all three Qwen sizes
   - learned lanes stay strongly M3-heavy and selector cost stays near `25 us/inv`
-- LongBench mini-pack:
-  - `systems` stays much faster than `quality` and `exact`
-  - quality is tied across current methods on this pack, so this is currently a comparative systems check more than a selector-separating quality benchmark
+- LongBench:
+  - the original mini-pack stays useful as a fast regression gate
+  - the stronger current external check is now the Qwen3.5 9B medium pack, where `systems` stays quality-neutral relative to `exact` and `quality`, carries real teacher-forced perplexity ratios, and remains much faster at both `4096` and `8192`
 
 ### Cross-Family Checkpoint
 
@@ -75,7 +75,7 @@ Current read:
 
 The matrix closed the main Qwen scale question. The remaining open items are now:
 
-- broader LongBench coverage beyond the current mini-pack
+- broader LongBench coverage beyond the current 9B medium pack
 - one stronger matched-budget external baseline beyond `streaming_sink_recent`
 - selector-to-task linkage packaging for the paper
 - final figure and table polish
@@ -169,6 +169,7 @@ Placeholder:
 | LongBench QA mini-pack | small external-style held-out check | ready |
 | backend truth | serving decomposition and speed truth | ready |
 | broader Qwen matrix | scale/context consistency | ready |
+| Qwen 9B LongBench medium pack | broader external-style held-out QA check | ready |
 
 #### 4.3 Baselines
 
@@ -232,11 +233,11 @@ Fill from the new matrix report.
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `Qwen3.5-4B` | `4096` | `exact` | `0.000` | `0.253` | `625.45` | `633.93` | `0.000` | `0.519` |
 | `Qwen3.5-4B` | `4096` | `systems` | `0.000` | `0.253` | `373.60` | `388.38` | `0.000` | `0.491` |
-| `Qwen3.5-9B` | `4096` | `exact` | `0.250` | `0.441` | `632.71` | `649.04` | `0.000` | `0.414` |
-| `Qwen3.5-9B` | `4096` | `quality` | `0.250` | `0.441` | `592.30` | `612.57` | `0.000` | `0.385` |
-| `Qwen3.5-9B` | `4096` | `systems` | `0.250` | `0.441` | `96.20` | `97.78` | `0.000` | `0.383` |
-| `Qwen3.5-9B` | `4096` | `streaming` | `0.250` | `0.441` | `260.80` | `265.25` | `0.000` | `1.046` |
-| `Qwen3.5-9B` | `8192` | `systems` | `0.000` | `0.291` | `152.94` | `154.32` | `0.000` | `0.331` |
+| `Qwen3.5-9B` | `4096` | `exact` | `0.167` | `0.270` | `614.24` | `625.64` | `1.012` | `0.460` |
+| `Qwen3.5-9B` | `4096` | `quality` | `0.167` | `0.270` | `574.43` | `588.54` | `1.013` | `0.433` |
+| `Qwen3.5-9B` | `4096` | `systems` | `0.167` | `0.270` | `91.62` | `94.27` | `1.012` | `0.431` |
+| `Qwen3.5-9B` | `4096` | `streaming` | `0.167` | `0.270` | `257.92` | `262.83` | `1.307` | `0.810` |
+| `Qwen3.5-9B` | `8192` | `systems` | `0.167` | `0.280` | `145.52` | `147.46` | `1.021` | `0.400` |
 | `Qwen3.5-27B` | `4096` | `systems` | `0.250` | `0.358` | `331.79` | `335.31` | `0.000` | `0.511` |
 
 #### Table C. Backend Truth Matrix

@@ -17,6 +17,9 @@ DEFAULT_QWEN_QUALITY_JSON = (
 DEFAULT_LLAMA_TASK_JSON = (
     REPO_ROOT / "benchmarks" / "results" / "llama32_3b_task_selector_compare_20260402" / "task_selector_compare.json"
 )
+DEFAULT_QWEN_9B_LONGBENCH_MEDIUM_JSON = (
+    REPO_ROOT / "benchmarks" / "results" / "qwen35_9b_longbench_medium_20260405" / "longbench_selector_compare.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen-matrix-json", default=str(DEFAULT_QWEN_MATRIX_JSON))
     parser.add_argument("--qwen-quality-json", default=str(DEFAULT_QWEN_QUALITY_JSON))
     parser.add_argument("--llama-task-json", default=str(DEFAULT_LLAMA_TASK_JSON))
+    parser.add_argument("--qwen-9b-longbench-medium-json", default=str(DEFAULT_QWEN_9B_LONGBENCH_MEDIUM_JSON))
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--json-output", required=True)
     return parser.parse_args()
@@ -59,12 +63,14 @@ def build_report(
     qwen_matrix_payload: dict[str, Any],
     qwen_quality_payload: dict[str, Any],
     llama_task_payload: dict[str, Any],
+    qwen_9b_longbench_medium_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
     qwen_task_rows = list(qwen_matrix_payload.get("task_rows", []))
     qwen_longbench_rows = list(qwen_matrix_payload.get("longbench_rows", []))
     qwen_backend_rows = list(qwen_matrix_payload.get("backend_rows", []))
     llama_task_rows = list(llama_task_payload.get("rows", []))
     qwen_quality_rows = list(qwen_quality_payload.get("comparisons", []))
+    qwen_9b_longbench_medium_rows = list(qwen_9b_longbench_medium_payload.get("rows", []))
 
     qwen_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in qwen_task_rows]
     llama_task_speedups = [float(row["systems_vs_quality_speedup"]) for row in llama_task_rows]
@@ -88,6 +94,7 @@ def build_report(
         "qwen_quality_rows": qwen_quality_rows,
         "llama_task_rows": llama_task_rows,
         "qwen_longbench_rows": qwen_longbench_rows,
+        "qwen_9b_longbench_medium_rows": qwen_9b_longbench_medium_rows,
         "qwen_backend_rows": qwen_backend_rows,
     }
 
@@ -245,6 +252,55 @@ def build_report(
                 ]
             )
 
+    qwen_9b_medium_longbench_table = [[
+        "context_cap",
+        "exact_em",
+        "quality_em",
+        "systems_em",
+        "streaming_em",
+        "exact_qa_f1",
+        "quality_qa_f1",
+        "systems_qa_f1",
+        "streaming_qa_f1",
+        "exact_ppl_ratio",
+        "quality_ppl_ratio",
+        "systems_ppl_ratio",
+        "streaming_ppl_ratio",
+        "exact_decode_ms",
+        "quality_decode_ms",
+        "systems_decode_ms",
+        "streaming_decode_ms",
+    ]]
+    qwen_9b_medium_by_key = {
+        (int(row["max_prompt_tokens"]), str(row["comparison_case"])): row for row in qwen_9b_longbench_medium_rows
+    }
+    for context_cap in sorted({int(row["max_prompt_tokens"]) for row in qwen_9b_longbench_medium_rows}):
+        exact = qwen_9b_medium_by_key.get((context_cap, "exact"))
+        quality = qwen_9b_medium_by_key.get((context_cap, "quality"))
+        systems = qwen_9b_medium_by_key.get((context_cap, "systems"))
+        streaming = qwen_9b_medium_by_key.get((context_cap, "streaming_sink_recent"))
+        qwen_9b_medium_longbench_table.append(
+            [
+                str(context_cap),
+                _fmt(exact.get("mean_exact_match") if exact else None),
+                _fmt(quality.get("mean_exact_match") if quality else None),
+                _fmt(systems.get("mean_exact_match") if systems else None),
+                _fmt(streaming.get("mean_exact_match") if streaming else None),
+                _fmt(exact.get("mean_qa_f1") if exact else None),
+                _fmt(quality.get("mean_qa_f1") if quality else None),
+                _fmt(systems.get("mean_qa_f1") if systems else None),
+                _fmt(streaming.get("mean_qa_f1") if streaming else None),
+                _fmt(exact.get("mean_teacher_forced_perplexity_ratio") if exact else None),
+                _fmt(quality.get("mean_teacher_forced_perplexity_ratio") if quality else None),
+                _fmt(systems.get("mean_teacher_forced_perplexity_ratio") if systems else None),
+                _fmt(streaming.get("mean_teacher_forced_perplexity_ratio") if streaming else None),
+                _fmt(exact.get("mean_decode_ms_per_step") if exact else None),
+                _fmt(quality.get("mean_decode_ms_per_step") if quality else None),
+                _fmt(systems.get("mean_decode_ms_per_step") if systems else None),
+                _fmt(streaming.get("mean_decode_ms_per_step") if streaming else None),
+            ]
+        )
+
     qwen_backend_table = [[
         "model",
         "context",
@@ -309,6 +365,10 @@ def build_report(
             "",
             _markdown_table(longbench_table),
             "",
+            "## Qwen 9B LongBench Medium Check",
+            "",
+            _markdown_table(qwen_9b_medium_longbench_table),
+            "",
             "## Qwen Backend Check",
             "",
             _markdown_table(qwen_backend_table),
@@ -319,6 +379,7 @@ def build_report(
             "- All compact Qwen task rows pass except the previously-known shared `27B @ 2048 retrieval_passkey` miss, which still fails in `exact`, `quality`, and `systems` and therefore does not read like a selector regression.",
             "- Llama task rows confirm the same task success profile, but with `systems` and `quality` effectively tied on decode.",
             "- The Qwen LongBench matrix currently behaves more like a comparative systems check than a selector-separating quality benchmark: quality is tied across methods on the present pack, but `systems` remains much faster than `quality` and `exact` and retains lower RMSE than the streaming reference.",
+            "- The broader Qwen3.5 9B LongBench medium pack is now the strongest external-style Qwen check in the repo: `systems` stays quality-neutral relative to `exact` and `quality`, carries real teacher-forced perplexity ratios, and remains much faster at both `4096` and `8192`.",
             "- Backend truth stays consistent across Qwen scale: learned lanes are strongly M3-heavy, selector overhead stays around `25 us/inv`, and the remaining dominant cost is still backend `score + mix` rather than selector computation.",
             "- This checkpoint supports the current repo policy: Qwen serving defaults to `systems`, while Llama does not need extra systems bias.",
         ]
@@ -332,6 +393,7 @@ def main() -> int:
         qwen_matrix_payload=_load_json(args.qwen_matrix_json),
         qwen_quality_payload=_load_json(args.qwen_quality_json),
         llama_task_payload=_load_json(args.llama_task_json),
+        qwen_9b_longbench_medium_payload=_load_json(args.qwen_9b_longbench_medium_json),
     )
     Path(args.json_output).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")

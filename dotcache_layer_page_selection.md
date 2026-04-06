@@ -297,15 +297,14 @@ The compact Qwen task rows now stay clean across instruction following, retrieva
 
 The Qwen serving-quality harness points in the same direction. In [`selector_quality_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_selector_quality_compare_20260402/selector_quality_compare.md), the `systems` profile stays at `1.000` token agreement while improving decode from `67.66` to `45.23` ms/step at `1024` and from `82.91` to `49.99` ms/step at `2048`, with slightly lower logit RMSE than the `quality` profile in both contexts.
 
-The new external-style LongBench check now points the same way, but with a narrower claim than the compact task matrix. In [`qwen_results_matrix.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md), the current mini-pack gives tied QA F1 across `exact`, `quality`, `systems`, and `streaming_sink_recent` within each model/context row, while `systems` still wins strongly on decode:
+The new external-style LongBench check now points the same way, but with a narrower claim than the compact task matrix. In the broader Qwen3.5 9B medium-pack report [`longbench_selector_compare.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen35_9b_longbench_medium_20260405/longbench_selector_compare.md), `systems` stays quality-neutral relative to `exact` and `quality`, now with real teacher-forced perplexity ratios, while still winning strongly on decode:
 
-| Qwen LongBench QA | Context cap | Exact QA F1 | Quality QA F1 | Systems QA F1 | Streaming QA F1 | Exact decode ms/step | Quality decode ms/step | Systems decode ms/step | Streaming decode ms/step |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `4B` mini-pack | `4096` | `0.253` | `0.253` | `0.253` | `0.253` | `625.45` | `1165.36` | `373.60` | `258.88` |
-| `9B` mini-pack | `4096` | `0.441` | `0.441` | `0.441` | `0.441` | `632.71` | `592.30` | `96.20` | `260.80` |
-| `27B` mini-pack | `4096` | `0.358` | `0.358` | `0.358` | `0.358` | `1263.52` | `1737.08` | `331.79` | `538.43` |
+| Qwen3.5 9B LongBench QA | Context cap | Exact EM | Quality EM | Systems EM | Exact QA F1 | Quality QA F1 | Systems QA F1 | Exact ppl ratio | Quality ppl ratio | Systems ppl ratio | Systems decode ms/step |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| medium pack | `4096` | `0.167` | `0.167` | `0.167` | `0.270` | `0.270` | `0.270` | `1.012` | `1.013` | `1.012` | `91.62` |
+| medium pack | `8192` | `0.167` | `0.167` | `0.167` | `0.280` | `0.280` | `0.280` | `1.023` | `1.020` | `1.021` | `145.52` |
 
-Those rows matter because they are no longer just internal task harnesses. They show the current Qwen `systems` profile preserving the current mini-pack quality row while materially improving decode, but they also show that this mini-pack does not yet separate `systems` from the full-answer lanes on QA F1. The cleaner current claim is therefore latency-dominant and quality-neutral on the present LongBench slice rather than “strictly better on both.”
+Those rows matter because they are no longer just internal task harnesses, and they now carry real teacher-forced perplexity ratios rather than placeholder-missing cells. They show the current Qwen `systems` profile preserving the held-out medium-pack quality row while materially improving decode, but they also show that this LongBench slice still does not separate `systems` from the full-answer lanes on EM/F1. The cleaner current claim is therefore latency-dominant and quality-neutral on the present LongBench slice rather than “strictly better on both.”
 
 The serving decomposition rows now point the same way across the full validated Qwen family. In [`qwen_results_matrix.md`](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md), the learned selector remains the clear decode winner in native backend-truth runs:
 

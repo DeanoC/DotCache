@@ -133,6 +133,42 @@ def test_build_report_captures_qwen_and_llama_calls() -> None:
                 }
             ]
         },
+        qwen_9b_longbench_medium_payload={
+            "rows": [
+                {
+                    "comparison_case": "exact",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 614.0,
+                    "mean_exact_match": 0.167,
+                    "mean_qa_f1": 0.270,
+                    "mean_teacher_forced_perplexity_ratio": 1.012,
+                },
+                {
+                    "comparison_case": "quality",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 574.0,
+                    "mean_exact_match": 0.167,
+                    "mean_qa_f1": 0.270,
+                    "mean_teacher_forced_perplexity_ratio": 1.013,
+                },
+                {
+                    "comparison_case": "systems",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 91.6,
+                    "mean_exact_match": 0.167,
+                    "mean_qa_f1": 0.270,
+                    "mean_teacher_forced_perplexity_ratio": 1.012,
+                },
+                {
+                    "comparison_case": "streaming_sink_recent",
+                    "max_prompt_tokens": 4096,
+                    "mean_decode_ms_per_step": 258.0,
+                    "mean_exact_match": 0.167,
+                    "mean_qa_f1": 0.270,
+                    "mean_teacher_forced_perplexity_ratio": 1.307,
+                },
+            ]
+        },
     )
     assert payload["promotion_calls"]["qwen"]["default_profile"] == "systems"
     assert payload["promotion_calls"]["llama"]["default_profile"] == "quality_or_systems_equivalent"
@@ -141,4 +177,5 @@ def test_build_report_captures_qwen_and_llama_calls() -> None:
     assert "Promote systems as default" in markdown
     assert "Llama 3.2 3B" in markdown
     assert "Qwen LongBench External Check" in markdown
+    assert "Qwen 9B LongBench Medium Check" in markdown
     assert "Qwen Backend Check" in markdown
