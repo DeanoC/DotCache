@@ -6407,6 +6407,17 @@ def _decode_input_id_sequence(decode_inputs: list[Any]) -> list[int]:
     return generated_ids
 
 
+def _greedy_id_sequence_from_step_logits(step_logits: list[Any]) -> list[int]:
+    generated_ids: list[int] = []
+    for logits in step_logits:
+        logits_array = np.asarray(logits)
+        if logits_array.size == 0:
+            continue
+        token_ids = np.argmax(logits_array, axis=-1)
+        generated_ids.extend(int(token_id) for token_id in np.asarray(token_ids).reshape(-1).tolist())
+    return generated_ids
+
+
 def _run_qwen35_attention_subset_dense_teacher_forced_capture(
     model,
     adapter: Qwen35AttentionSubsetModelAdapter,
@@ -6779,7 +6790,6 @@ def run_qwen35_attention_subset_page_trace_capture_harness(
         decode_steps=decode_steps,
     )
     prefill_tensors = dense_capture["prefill_tensors"]
-    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
@@ -7145,8 +7155,6 @@ def run_qwen35_attention_subset_dotcache_harness(
         if dotcache_step_logits
         else np.zeros((0, 1), dtype=np.float32)
     )
-    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
-    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
     if dense_logits.size == 0:
         teacher_forced_max_abs = 0.0
@@ -7986,7 +7994,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             for dense_step, dotcache_step in zip(dense_logits, dotcache_logits, strict=True)
         ]
 
-    generated_ids = _decode_input_id_sequence(dense_capture["decode_inputs"])
+    dense_generated_ids = _greedy_id_sequence_from_step_logits(dense_capture["step_logits"])
+    dotcache_generated_ids = _greedy_id_sequence_from_step_logits(dotcache_step_logits)
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
@@ -8001,8 +8010,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "dotcache_ready": False,
             "runtime_mode": "dotcache_attention_subset_serving_quality",
             "dotcache_prefill_ms": float(dotcache_prefill_ms),
-            "dense_generated_ids": list(generated_ids),
-            "dotcache_generated_ids": list(generated_ids),
+            "dense_generated_ids": list(dense_generated_ids),
+            "dotcache_generated_ids": list(dotcache_generated_ids),
             "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
             "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
             "replay_context_max_abs_error": replay_context_max_abs,
@@ -8135,10 +8144,12 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
-    decoded_text = _decode_text(tokenizer, generated_ids)
-    if decoded_text is not None:
-        result["dense_text"] = decoded_text
-        result["dotcache_text"] = decoded_text
+    dense_text = _decode_text(tokenizer, dense_generated_ids)
+    if dense_text is not None:
+        result["dense_text"] = dense_text
+    dotcache_text = _decode_text(tokenizer, dotcache_generated_ids)
+    if dotcache_text is not None:
+        result["dotcache_text"] = dotcache_text
     return result
 
 

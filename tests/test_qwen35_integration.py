@@ -50,6 +50,7 @@ from dotcache.integrations.qwen35 import (
     _configure_qwen35_linear_attention_runtime,
     _replace_attention_subset_cache_with_placeholders,
     _decode_input_id_sequence,
+    _greedy_id_sequence_from_step_logits,
     _qwen35_mps_serving_shortlist_heuristic,
 )
 from dotcache.model_kv_cache import ModelPagedKVCache
@@ -1824,6 +1825,212 @@ def test_decode_input_id_sequence_flattens_decode_steps() -> None:
         torch.tensor([[33]], dtype=torch.long),
     ]
     assert _decode_input_id_sequence(decode_inputs) == [11, 22, 33]
+
+
+def test_greedy_id_sequence_from_step_logits_flattens_argmax_tokens() -> None:
+    step_logits = [
+        np.array([[[0.1, 0.8, 0.1]]], dtype=np.float32),
+        np.array([[[0.7, 0.2, 0.1]]], dtype=np.float32),
+        np.array([[[0.1, 0.3, 0.6]]], dtype=np.float32),
+    ]
+
+    assert _greedy_id_sequence_from_step_logits(step_logits) == [1, 0, 2]
+
+
+def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_dotcache_ids_from_dotcache_logits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRuntimeState:
+        model_past_key_values = None
+
+        def advance(self, _past_key_values) -> None:
+            return None
+
+        def summary(self) -> dict[str, object]:
+            return {"hybrid_dotcache_runtime_ready": True}
+
+    class _FakeTrace:
+        def to_dict(self) -> dict[str, object]:
+            return {}
+
+    class _FakeModelKVCache:
+        def decode_path_summary(self) -> dict[str, object]:
+            return {}
+
+        def decode_stage_summary(self) -> dict[str, object]:
+            return {}
+
+        def builtin_selector_summary(self) -> dict[str, object]:
+            return {}
+
+        def chunk_budget_summary(self) -> dict[str, object]:
+            return {}
+
+        def execution_value_escape_summary(self) -> dict[str, object]:
+            return {}
+
+    class _FakeConfig:
+        execution_recent_window = 1
+        execution_sink_window = 1
+        execution_recent_window_overrides = ()
+        execution_recent_window_context_overrides = ()
+        execution_relevance_top_k = 1
+        execution_relevance_top_k_overrides = ()
+        execution_relevance_top_k_context_overrides = ()
+        execution_full_context_layers = ()
+        execution_disable_grouped_batching_layers = ()
+        execution_recent_old_bonus_window = 0
+        execution_recent_old_bonus_strength = 0.0
+        execution_recent_old_bonus_layers = ()
+        execution_relevance_mode = "none"
+        execution_secondary_relevance_mode = "none"
+        execution_secondary_relevance_top_k = 0
+        execution_secondary_relevance_min_overlap = 0.0
+        execution_secondary_relevance_layers = ()
+        execution_recent_neighbor_rescue_top_k = 0
+        execution_recent_neighbor_rescue_anchor_window = 0
+        execution_recent_neighbor_rescue_min_anchor_pages = 0
+        execution_recent_neighbor_rescue_layers = ()
+        execution_exact_promote_top_k = 0
+        execution_exact_promote_min_margin_threshold = 0.0
+        execution_exact_promote_max_context = 0
+        execution_exact_promote_margin_threshold = 0.0
+        execution_exact_promote_layers = ()
+        execution_exact_promote_union_rescue_top_k = 0
+        execution_grouped_decode_compact = False
+        execution_grouped_mix_compact = False
+        execution_grouped_mix_disable_packed_cuda = False
+        execution_freeze_chunk_budget_during_decode = False
+        execution_builtin_selector_cache = False
+        execution_builtin_selector_score_all_pages = False
+        execution_builtin_selector_candidate_only = False
+        execution_builtin_selector_score_all_pages_min_candidate_fraction = 0.0
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.dotcache_config = _FakeConfig()
+            self.decode_backend_trace = _FakeTrace()
+            self.model_kv_cache = _FakeModelKVCache()
+            self.append_runtime_ms_total = 0.0
+            self.decode_runtime_ms_total = 0.0
+            self.qkv_projection_ms_total = 0.0
+            self.output_projection_ms_total = 0.0
+
+        def set_mode(self, _mode: str) -> None:
+            return None
+
+        def begin_capture_step(self, _step_index: int) -> None:
+            return None
+
+        def set_current_token_index(self, _token_index: int | None) -> None:
+            return None
+
+        def end_capture_step(self) -> list[object]:
+            return []
+
+        def per_layer_runtime_summary(self) -> dict[str, object]:
+            return {}
+
+        def hybrid_block_summary(self) -> dict[str, object]:
+            return {}
+
+        def hybrid_fit_summary(self) -> dict[str, object]:
+            return {}
+
+    dense_step_logits = [
+        np.array([[[0.0, 0.0, 0.0, 0.9, 0.1, 0.0, 0.0]]], dtype=np.float32),
+        np.array([[[0.0, 0.0, 0.0, 0.1, 0.9, 0.0, 0.0]]], dtype=np.float32),
+    ]
+    dotcache_step_logits = [
+        np.array([[[0.0, 0.0, 0.0, 0.1, 0.0, 0.9, 0.0]]], dtype=np.float32),
+        np.array([[[0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.9]]], dtype=np.float32),
+    ]
+    dotcache_outputs = [
+        type("Outputs", (), {"logits": torch.tensor(step_logits), "past_key_values": None})()
+        for step_logits in dotcache_step_logits
+    ]
+    output_iter = iter(dotcache_outputs)
+
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._normalize_text_inputs",
+        lambda adapter, **kwargs: (kwargs["input_ids"], kwargs["attention_mask"]),
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._run_qwen35_attention_subset_dense_capture",
+        lambda *args, **kwargs: {
+            "prefill_ms": 1.0,
+            "decode_ms_total": 2.0,
+            "decode_inputs": [
+                torch.tensor([[3]], dtype=torch.long),
+                torch.tensor([[4]], dtype=torch.long),
+            ],
+            "step_logits": dense_step_logits,
+            "capture_records": [[], []],
+        },
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._prepare_qwen35_attention_subset_dotcache_runtime",
+        lambda *args, **kwargs: {
+            "dotcache_prefill_outputs": type(
+                "PrefillOutputs",
+                (),
+                {"logits": torch.tensor([[[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]]], dtype=torch.float32)},
+            )(),
+            "dotcache_prefill_ms": 1.5,
+            "dotcache_prefill_cuda_memory": {},
+            "runtime_state": _FakeRuntimeState(),
+            "serving_shortlist_heuristic_applied": False,
+        },
+    )
+    monkeypatch.setattr("dotcache.integrations.qwen35._begin_cuda_memory_region", lambda _device: None)
+    monkeypatch.setattr("dotcache.integrations.qwen35._end_cuda_memory_region", lambda _device, _baseline: {})
+    monkeypatch.setattr("dotcache.integrations.qwen35._ensure_python_allocation_tracing", lambda _enabled: False)
+    monkeypatch.setattr("dotcache.integrations.qwen35._adapter_runtime_snapshot", lambda _adapter: {})
+    monkeypatch.setattr("dotcache.integrations.qwen35._chunk_budget_reason_counts_snapshot", lambda _adapter: {})
+    monkeypatch.setattr("dotcache.integrations.qwen35._backend_trace_snapshot", lambda _adapter: {})
+    monkeypatch.setattr("dotcache.integrations.qwen35._python_allocation_snapshot", lambda _enabled: {})
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._summarize_step_runtime_breakdown",
+        lambda **kwargs: {
+            "backend_decode_ms_total": 0.0,
+            "decode_non_backend_ms_total": 0.0,
+            "model_step_non_adapter_ms_total": 0.0,
+            "python_tracemalloc_peak_bytes": 0,
+            "python_tracemalloc_current_bytes_delta": 0,
+            "python_allocated_blocks_delta": 0,
+            "python_gc_count_delta": [0, 0, 0],
+        },
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._run_dense_decode_step",
+        lambda *args, **kwargs: next(output_iter),
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._timed_call",
+        lambda fn, device=None: (fn(), 0.5),
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._summarize_attention_subset_capture",
+        lambda *args, **kwargs: {},
+    )
+
+    tokenizer = _TinyTokenizer()
+    input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_attention_subset_dotcache_serving_quality_harness(
+        model=None,
+        adapter=_FakeAdapter(),
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+
+    assert result["dense_generated_ids"] == [3, 4]
+    assert result["dotcache_generated_ids"] == [5, 6]
+    assert result["dense_text"] == "3 4"
+    assert result["dotcache_text"] == "5 6"
+    assert result["teacher_forced_token_agreement_rate"] == 0.0
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
