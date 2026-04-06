@@ -13,6 +13,7 @@ from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.model_kv_cache import (
     ModelPagedKVCache,
+    _TailPageBuilder,
     _build_prepared_decode_view_layout,
     _grouped_pages_can_batch,
     default_q_head_to_kv_head,
@@ -122,6 +123,35 @@ def test_model_paged_kv_cache_tail_buffer_matches_incremental_reference() -> Non
             )
             expected_outputs.append(decode_step(queries[q_head_id], key_pages, value_pages, backend="cpu_ref")[2])
         np.testing.assert_allclose(outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)
+
+
+def test_tail_page_builder_uses_injected_page_mode_selector() -> None:
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    selector_calls: list[tuple[str, int, int]] = []
+
+    def _select(values: np.ndarray, *, kind: str, layer_id: int, kv_head_id: int, **_: object) -> None:
+        selector_calls.append((kind, layer_id, kv_head_id))
+        return None
+
+    tail = _TailPageBuilder(
+        config=config,
+        layer_id=3,
+        kv_head_id=1,
+        select_page_mode=_select,
+    )
+    key_rows = np.ones((4, config.head_dim), dtype=np.float32)
+    value_rows = np.ones((4, config.head_dim), dtype=np.float32)
+
+    finalized_key_pages, finalized_value_pages = tail.append_step_rows(
+        key_rows,
+        value_rows,
+        token_start=0,
+        sequence_length=4,
+    )
+
+    assert len(finalized_key_pages) == 1
+    assert len(finalized_value_pages) == 1
+    assert selector_calls == [("K", 3, 1), ("V", 3, 1)]
 
 
 def test_model_paged_kv_cache_accepts_batched_prefill_cache_tensors() -> None:

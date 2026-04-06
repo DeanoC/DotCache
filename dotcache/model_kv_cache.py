@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -646,6 +646,7 @@ class _TailPageBuilder:
     config: DotCacheConfig
     layer_id: int
     kv_head_id: int
+    select_page_mode: Callable[..., PageModeSpec | None] | None = None
     token_start: int | None = None
     key_rows: list[np.ndarray] = field(default_factory=list)
     value_rows: list[np.ndarray] = field(default_factory=list)
@@ -714,7 +715,7 @@ class _TailPageBuilder:
             dense_keys = np.stack(self.key_rows, axis=0).astype(np.float32, copy=False)
             dense_values = np.stack(self.value_rows, axis=0).astype(np.float32, copy=False)
             current_sequence_length = int(sequence_length if sequence_length is not None else (token_start + key_rows.shape[0]))
-            key_page_mode = self._select_page_mode(
+            key_page_mode = self.select_page_mode(
                 dense_keys,
                 kind="K",
                 layer_id=self.layer_id,
@@ -724,7 +725,7 @@ class _TailPageBuilder:
                 stage="decode",
             )
             key_mode = None if key_page_mode is not None else self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
-            value_page_mode = self._select_page_mode(
+            value_page_mode = self.select_page_mode(
                 dense_values,
                 kind="V",
                 layer_id=self.layer_id,
@@ -3356,7 +3357,12 @@ class ModelPagedKVCache:
             torch_device_type = self._torch_device_type
             state = _HeadSessionState(
                 session=PagedDecodeSession(backend=self.backend, cache=self.cache),
-                tail=_TailPageBuilder(self.config, layer_id=layer_id, kv_head_id=kv_head_id),
+                tail=_TailPageBuilder(
+                    self.config,
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    select_page_mode=self._select_page_mode,
+                ),
                 persistent_key_tail=_PersistentTailPage(
                     self.config,
                     layer_id=layer_id,
