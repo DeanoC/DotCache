@@ -1,0 +1,315 @@
+{
+  "benchmarks": [
+    "task_compare",
+    "longbench",
+    "backend_truth"
+  ],
+  "dry_run": true,
+  "manifest": "/workspace/DotCache/configs/benchmark_matrices/qwen_results_matrix_v1.json",
+  "models": [
+    "qwen35_4b",
+    "qwen35_9b",
+    "qwen35_27b"
+  ],
+  "output_dir": "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404",
+  "runs": [
+    {
+      "benchmark": "task_compare",
+      "model_id": "Qwen/Qwen3.5-4B",
+      "model_key": "qwen35_4b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_task_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/task_compare/qwen35_4b_task_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/task_compare/task_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/task_compare/task_selector_compare.json"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_task_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-4B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
+        "--prompt-lengths",
+        "1024",
+        "2048",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/task_compare/qwen35_4b_task_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "longbench",
+      "model_id": "Qwen/Qwen3.5-4B",
+      "model_key": "qwen35_4b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_longbench_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/longbench/qwen35_4b_longbench_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/longbench/longbench_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/longbench/longbench_selector_compare.json",
+        "--title",
+        "qwen35_4b LongBench Selector Compare"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_longbench_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-4B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
+        "--max-prompt-tokens",
+        "4096",
+        "8192",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/longbench/qwen35_4b_longbench_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "backend_truth",
+      "environment": {
+        "LEARNED_SELECTOR_ARTIFACT": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_4b_suite_20260401_longer/serving_selector_artifact/linear_selector_model.json",
+        "QWEN35_BACKEND_TRUTH_MAX_NEW_TOKENS": "8",
+        "QWEN35_BACKEND_TRUTH_MODEL_ID": "Qwen/Qwen3.5-4B",
+        "QWEN35_BACKEND_TRUTH_PROMPT_LENGTHS": "1024 2048",
+        "QWEN35_BACKEND_TRUTH_TOKENS_PER_PAGE": "16"
+      },
+      "model_id": "Qwen/Qwen3.5-4B",
+      "model_key": "qwen35_4b",
+      "run_command": [
+        "bash",
+        "/workspace/DotCache/scripts/run_qwen35_9b_backend_truth.sh",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_4b/backend_truth",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5"
+      ]
+    },
+    {
+      "benchmark": "task_compare",
+      "model_id": "Qwen/Qwen3.5-9B",
+      "model_key": "qwen35_9b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_task_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/task_compare/qwen35_9b_task_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/task_compare/task_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/task_compare/task_selector_compare.json"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_task_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-9B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json",
+        "--prompt-lengths",
+        "1024",
+        "2048",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/task_compare/qwen35_9b_task_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "longbench",
+      "model_id": "Qwen/Qwen3.5-9B",
+      "model_key": "qwen35_9b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_longbench_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/longbench/qwen35_9b_longbench_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/longbench/longbench_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/longbench/longbench_selector_compare.json",
+        "--title",
+        "qwen35_9b LongBench Selector Compare"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_longbench_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-9B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json",
+        "--max-prompt-tokens",
+        "4096",
+        "8192",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/longbench/qwen35_9b_longbench_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "backend_truth",
+      "environment": {
+        "LEARNED_SELECTOR_ARTIFACT": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/serving_selector_artifact/linear_selector_model.json",
+        "QWEN35_BACKEND_TRUTH_MAX_NEW_TOKENS": "8",
+        "QWEN35_BACKEND_TRUTH_MODEL_ID": "Qwen/Qwen3.5-9B",
+        "QWEN35_BACKEND_TRUTH_PROMPT_LENGTHS": "1024 2048",
+        "QWEN35_BACKEND_TRUTH_TOKENS_PER_PAGE": "16"
+      },
+      "model_id": "Qwen/Qwen3.5-9B",
+      "model_key": "qwen35_9b",
+      "run_command": [
+        "bash",
+        "/workspace/DotCache/scripts/run_qwen35_9b_backend_truth.sh",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_9b/backend_truth",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5"
+      ]
+    },
+    {
+      "benchmark": "task_compare",
+      "model_id": "Qwen/Qwen3.5-27B",
+      "model_key": "qwen35_27b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_task_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/task_compare/qwen35_27b_task_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/task_compare/task_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/task_compare/task_selector_compare.json"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_task_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-27B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/serving_selector_artifact/linear_selector_model.json",
+        "--prompt-lengths",
+        "1024",
+        "2048",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/task_compare/qwen35_27b_task_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "longbench",
+      "model_id": "Qwen/Qwen3.5-27B",
+      "model_key": "qwen35_27b",
+      "report_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/report_qwen35_longbench_selector_compare.py",
+        "--input",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/longbench/qwen35_27b_longbench_selector_compare.jsonl",
+        "--markdown-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/longbench/longbench_selector_compare.md",
+        "--json-output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/longbench/longbench_selector_compare.json",
+        "--title",
+        "qwen35_27b LongBench Selector Compare"
+      ],
+      "run_command": [
+        "/workspace/DotCache/.venv/bin/python",
+        "/workspace/DotCache/scripts/run_qwen35_longbench_selector_compare.py",
+        "--model-id",
+        "Qwen/Qwen3.5-27B",
+        "--backend",
+        "torch_cuda",
+        "--device",
+        "cuda",
+        "--torch-dtype",
+        "float16",
+        "--selector-artifact",
+        "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/serving_selector_artifact/linear_selector_model.json",
+        "--max-prompt-tokens",
+        "4096",
+        "8192",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5",
+        "--output",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/longbench/qwen35_27b_longbench_selector_compare.jsonl"
+      ]
+    },
+    {
+      "benchmark": "backend_truth",
+      "environment": {
+        "LEARNED_SELECTOR_ARTIFACT": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/serving_selector_artifact/linear_selector_model.json",
+        "QWEN35_BACKEND_TRUTH_MAX_NEW_TOKENS": "8",
+        "QWEN35_BACKEND_TRUTH_MODEL_ID": "Qwen/Qwen3.5-27B",
+        "QWEN35_BACKEND_TRUTH_PROMPT_LENGTHS": "1024 2048",
+        "QWEN35_BACKEND_TRUTH_TOKENS_PER_PAGE": "16"
+      },
+      "model_id": "Qwen/Qwen3.5-27B",
+      "model_key": "qwen35_27b",
+      "run_command": [
+        "bash",
+        "/workspace/DotCache/scripts/run_qwen35_9b_backend_truth.sh",
+        "/workspace/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen35_27b/backend_truth",
+        "--warmup-runs",
+        "1",
+        "--measured-runs",
+        "5"
+      ]
+    }
+  ],
+  "title": "Qwen Results Matrix V1"
+}

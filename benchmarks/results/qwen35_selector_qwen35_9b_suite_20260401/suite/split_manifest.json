@@ -1,0 +1,189 @@
+{
+  "manifest_version": 1,
+  "split_count": 11,
+  "splits": [
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [
+        "cache"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_cache",
+      "split_name": "family_cache_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_cache/split_summary.json",
+      "test_label_count": 251,
+      "train_label_count": 773
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [
+        "instruction"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_instruction",
+      "split_name": "family_instruction_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_instruction/split_summary.json",
+      "test_label_count": 250,
+      "train_label_count": 774
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [
+        "reasoning"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_reasoning",
+      "split_name": "family_reasoning_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_reasoning/split_summary.json",
+      "test_label_count": 259,
+      "train_label_count": 765
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [
+        "retrieval"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_retrieval",
+      "split_name": "family_retrieval_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/family_retrieval/split_summary.json",
+      "test_label_count": 264,
+      "train_label_count": 760
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "variant"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": [
+        "arithmetic"
+      ],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_arithmetic",
+      "split_name": "variant_arithmetic_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_arithmetic/split_summary.json",
+      "test_label_count": 127,
+      "train_label_count": 897
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "variant"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": [
+        "constraints"
+      ],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_constraints",
+      "split_name": "variant_constraints_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_constraints/split_summary.json",
+      "test_label_count": 125,
+      "train_label_count": 899
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "variant"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": [
+        "logic"
+      ],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_logic",
+      "split_name": "variant_logic_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_logic/split_summary.json",
+      "test_label_count": 132,
+      "train_label_count": 892
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "variant"
+      },
+      "holdout_layers": [],
+      "holdout_prompt_families": [],
+      "holdout_prompt_variants": [
+        "memo"
+      ],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_memo",
+      "split_name": "variant_memo_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/variant_memo/split_summary.json",
+      "test_label_count": 122,
+      "train_label_count": 902
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family_layer"
+      },
+      "holdout_layers": [
+        23
+      ],
+      "holdout_prompt_families": [
+        "cache"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/cache_layer23",
+      "split_name": "cache_layer23_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/cache_layer23/split_summary.json",
+      "test_label_count": 35,
+      "train_label_count": 989
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family_layer"
+      },
+      "holdout_layers": [
+        23
+      ],
+      "holdout_prompt_families": [
+        "reasoning"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/reasoning_layer23",
+      "split_name": "reasoning_layer23_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/reasoning_layer23/split_summary.json",
+      "test_label_count": 35,
+      "train_label_count": 989
+    },
+    {
+      "annotations": {
+        "scope": "larger_machine",
+        "tier": "family_layer"
+      },
+      "holdout_layers": [
+        23
+      ],
+      "holdout_prompt_families": [
+        "retrieval"
+      ],
+      "holdout_prompt_variants": [],
+      "split_dir": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/retrieval_layer23",
+      "split_name": "retrieval_layer23_holdout",
+      "split_summary_path": "/workspace/DotCache/benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite/retrieval_layer23/split_summary.json",
+      "test_label_count": 26,
+      "train_label_count": 998
+    }
+  ],
+  "suite_name": "larger_machine_comprehensive_suite"
+}

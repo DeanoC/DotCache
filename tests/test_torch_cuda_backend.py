@@ -8,9 +8,12 @@ from dotcache.attention_runtime import decode_step, prepare_page
 from dotcache.backends import (
     PreparedPageTorch,
     clear_prepared_chunk_cache,
+    configure_prepared_chunk_cache,
     cuda_available,
     decode_grouped_multiquery_step_prepared_cuda_tensor,
     decode_grouped_multiquery_step_prepared_cuda_tensor_output_only,
+    decode_multi_query_step_cuda_tensor,
+    prepared_chunk_cache_resident_bytes,
 )
 from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
@@ -107,6 +110,42 @@ def test_m3_pages_work_on_cuda(escape_dtype: str) -> None:
         atol=0.12 if escape_dtype == "int8" else 1e-3,
         rtol=0.12 if escape_dtype == "int8" else 1e-3,
     )
+
+
+@requires_cuda
+@pytest.mark.parametrize("escape_dtype", ["float16", "int8"])
+def test_m3_pages_reuse_prepared_chunk_cache_on_cuda(escape_dtype: str) -> None:
+    rng = np.random.default_rng(90205)
+    config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=8,
+        escape_dtype=escape_dtype,
+    )
+    context_length = 16
+    keys = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    values = rng.normal(size=(context_length, config.head_dim)).astype(np.float32)
+    query = rng.normal(size=(config.head_dim,)).astype(np.float32)
+    key_pages = [prepare_page(page, backend="torch_cuda") for page in _encode_paged(keys, config, kind="K")]
+    value_pages = [prepare_page(page, backend="torch_cuda") for page in _encode_paged(values, config, kind="V")]
+    clear_prepared_chunk_cache()
+    configure_prepared_chunk_cache(max_resident_bytes=64 * 1024 * 1024, min_page_count=1, clear=False)
+    try:
+        first_logits, first_weights, first_output = decode_step(query, key_pages, value_pages, backend="torch_cuda")
+        resident_after_first_decode = prepared_chunk_cache_resident_bytes()
+        second_logits, second_weights, second_output = decode_step(query, key_pages, value_pages, backend="torch_cuda")
+        resident_after_second_decode = prepared_chunk_cache_resident_bytes()
+    finally:
+        configure_prepared_chunk_cache(max_resident_bytes=64 * 1024 * 1024, min_page_count=4, clear=False)
+        clear_prepared_chunk_cache()
+
+    np.testing.assert_allclose(second_logits, first_logits, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(second_weights, first_weights, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(second_output, first_output, atol=1e-4, rtol=1e-4)
+    assert resident_after_first_decode > 0
+    assert resident_after_second_decode == resident_after_first_decode
 
 
 @requires_cuda
@@ -625,6 +664,210 @@ def test_grouped_prepared_cuda_handles_misaligned_key_value_chunk_signatures() -
     )
 
     np.testing.assert_allclose(output_only.detach().cpu().numpy(), full_output.detach().cpu().numpy(), atol=3e-3, rtol=3e-3)
+
+
+@requires_cuda
+def test_grouped_prepared_cuda_respects_distinct_key_and_value_chunk_lengths() -> None:
+    rng = np.random.default_rng(90721)
+    key_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_k="sketch",
+    )
+    value_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_v="lut",
+    )
+    key_pages_by_group = []
+    value_pages_by_group = []
+    query_groups = []
+    for kv_head_id in range(2):
+        keys = rng.normal(size=(8, key_config.head_dim)).astype(np.float32)
+        values = rng.normal(size=(8, value_config.head_dim)).astype(np.float32)
+        key_pages_by_group.append(
+            [
+                prepare_page(
+                    encode_page(
+                        keys[:4],
+                        key_config,
+                        kind="K",
+                        kv_head_id=kv_head_id,
+                        token_start=0,
+                        mode="M0",
+                        quant_scheme="affine",
+                    ),
+                    backend="torch_cuda",
+                ),
+                prepare_page(
+                    encode_page(
+                        keys[4:8],
+                        key_config,
+                        kind="K",
+                        kv_head_id=kv_head_id,
+                        token_start=4,
+                        mode="M2",
+                    ),
+                    backend="torch_cuda",
+                ),
+            ]
+        )
+        value_pages_by_group.append(
+            [
+                prepare_page(
+                    encode_page(
+                        values[:4],
+                        value_config,
+                        kind="V",
+                        kv_head_id=kv_head_id,
+                        token_start=0,
+                        mode="M1",
+                    ),
+                    backend="torch_cuda",
+                ),
+                prepare_page(
+                    encode_page(
+                        values[4:8],
+                        value_config,
+                        kind="V",
+                        kv_head_id=kv_head_id,
+                        token_start=4,
+                        mode="M1",
+                    ),
+                    backend="torch_cuda",
+                ),
+            ]
+        )
+        query_groups.append(torch.from_numpy(rng.normal(size=(2, key_config.head_dim)).astype(np.float32)).to(device="cuda"))
+
+    _, _, aligned_output = decode_grouped_multiquery_step_prepared_cuda_tensor(
+        query_groups,
+        key_pages_by_group,
+        value_pages_by_group,
+    )
+    _, _, explicit_output = decode_grouped_multiquery_step_prepared_cuda_tensor(
+        query_groups,
+        key_pages_by_group,
+        value_pages_by_group,
+        key_chunk_lengths=(1, 1),
+        value_chunk_lengths=(2,),
+    )
+
+    np.testing.assert_allclose(
+        explicit_output.detach().cpu().numpy(),
+        aligned_output.detach().cpu().numpy(),
+        atol=3e-3,
+        rtol=3e-3,
+    )
+
+
+@requires_cuda
+def test_grouped_prepared_cuda_handles_key_signature_mismatch_across_groups() -> None:
+    rng = np.random.default_rng(90722)
+    key_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_k="sketch",
+    )
+    value_config = DotCacheConfig(
+        head_dim=64,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        quant_scheme_v="lut",
+    )
+    key_pages_by_group = []
+    value_pages_by_group = []
+    query_groups = []
+    expected_outputs = []
+    for kv_head_id in range(2):
+        keys = rng.normal(size=(8, key_config.head_dim)).astype(np.float32)
+        values = rng.normal(size=(8, value_config.head_dim)).astype(np.float32)
+        key_modes = ("M0", "M2") if kv_head_id == 0 else ("M2", "M2")
+        key_pages = [
+            prepare_page(
+                encode_page(
+                    keys[:4],
+                    key_config,
+                    kind="K",
+                    kv_head_id=kv_head_id,
+                    token_start=0,
+                    mode=key_modes[0],
+                    quant_scheme="affine" if key_modes[0] == "M0" else "sketch",
+                ),
+                backend="torch_cuda",
+            ),
+            prepare_page(
+                encode_page(
+                    keys[4:8],
+                    key_config,
+                    kind="K",
+                    kv_head_id=kv_head_id,
+                    token_start=4,
+                    mode=key_modes[1],
+                    quant_scheme="affine" if key_modes[1] == "M0" else "sketch",
+                ),
+                backend="torch_cuda",
+            ),
+        ]
+        value_pages = [
+            prepare_page(
+                encode_page(
+                    values[:4],
+                    value_config,
+                    kind="V",
+                    kv_head_id=kv_head_id,
+                    token_start=0,
+                    mode="M1",
+                ),
+                backend="torch_cuda",
+            ),
+            prepare_page(
+                encode_page(
+                    values[4:8],
+                    value_config,
+                    kind="V",
+                    kv_head_id=kv_head_id,
+                    token_start=4,
+                    mode="M1",
+                ),
+                backend="torch_cuda",
+            ),
+        ]
+        query_group = torch.from_numpy(rng.normal(size=(2, key_config.head_dim)).astype(np.float32)).to(device="cuda")
+        key_pages_by_group.append(key_pages)
+        value_pages_by_group.append(value_pages)
+        query_groups.append(query_group)
+        expected_outputs.append(
+            decode_multi_query_step_cuda_tensor(
+                query_group,
+                key_pages,
+                value_pages,
+            )[2]
+        )
+
+    _, _, grouped_output = decode_grouped_multiquery_step_prepared_cuda_tensor(
+        query_groups,
+        key_pages_by_group,
+        value_pages_by_group,
+    )
+
+    np.testing.assert_allclose(
+        grouped_output.detach().cpu().numpy(),
+        torch.stack(expected_outputs, dim=0).detach().cpu().numpy(),
+        atol=3e-3,
+        rtol=3e-3,
+    )
 
 
 @requires_cuda

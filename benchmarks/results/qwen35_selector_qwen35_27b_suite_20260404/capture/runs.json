@@ -1,0 +1,434 @@
+[
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "cache",
+    "prompt_length": 256,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "cache",
+    "prompt_length": 256,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "cache",
+    "prompt_length": 512,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "cache",
+    "prompt_length": 512,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "cache",
+    "prompt_length": 1024,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-locality_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "cache",
+    "prompt_length": 1024,
+    "prompt_variant": "locality",
+    "run_name": "family-cache_variant-locality_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "cache",
+    "prompt_length": 256,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "cache",
+    "prompt_length": 256,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "cache",
+    "prompt_length": 512,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "cache",
+    "prompt_length": 512,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "cache",
+    "prompt_length": 1024,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-cache_variant-bandwidth_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "cache",
+    "prompt_length": 1024,
+    "prompt_variant": "bandwidth",
+    "run_name": "family-cache_variant-bandwidth_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "reasoning",
+    "prompt_length": 256,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "reasoning",
+    "prompt_length": 256,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "reasoning",
+    "prompt_length": 512,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "reasoning",
+    "prompt_length": 512,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "reasoning",
+    "prompt_length": 1024,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-arithmetic_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "reasoning",
+    "prompt_length": 1024,
+    "prompt_variant": "arithmetic",
+    "run_name": "family-reasoning_variant-arithmetic_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "reasoning",
+    "prompt_length": 256,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "reasoning",
+    "prompt_length": 256,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "reasoning",
+    "prompt_length": 512,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "reasoning",
+    "prompt_length": 512,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "reasoning",
+    "prompt_length": 1024,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-reasoning_variant-logic_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "reasoning",
+    "prompt_length": 1024,
+    "prompt_variant": "logic",
+    "run_name": "family-reasoning_variant-logic_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "instruction",
+    "prompt_length": 256,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "instruction",
+    "prompt_length": 256,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "instruction",
+    "prompt_length": 512,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "instruction",
+    "prompt_length": 512,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "instruction",
+    "prompt_length": 1024,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-constraints_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "instruction",
+    "prompt_length": 1024,
+    "prompt_variant": "constraints",
+    "run_name": "family-instruction_variant-constraints_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "instruction",
+    "prompt_length": 256,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "instruction",
+    "prompt_length": 256,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "instruction",
+    "prompt_length": 512,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "instruction",
+    "prompt_length": 512,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "instruction",
+    "prompt_length": 1024,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-instruction_variant-formatting_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "instruction",
+    "prompt_length": 1024,
+    "prompt_variant": "formatting",
+    "run_name": "family-instruction_variant-formatting_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "retrieval",
+    "prompt_length": 256,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "retrieval",
+    "prompt_length": 256,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "retrieval",
+    "prompt_length": 512,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "retrieval",
+    "prompt_length": 512,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "retrieval",
+    "prompt_length": 1024,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-memo_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "retrieval",
+    "prompt_length": 1024,
+    "prompt_variant": "memo",
+    "run_name": "family-retrieval_variant-memo_prompt1024_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt256_decode04",
+    "page_trace_count": 2176,
+    "prompt_family": "retrieval",
+    "prompt_length": 256,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt256_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt256_decode08",
+    "page_trace_count": 2176,
+    "prompt_family": "retrieval",
+    "prompt_length": 256,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt256_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt512_decode04",
+    "page_trace_count": 4224,
+    "prompt_family": "retrieval",
+    "prompt_length": 512,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt512_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt512_decode08",
+    "page_trace_count": 4224,
+    "prompt_family": "retrieval",
+    "prompt_length": 512,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt512_decode08"
+  },
+  {
+    "decode_steps": 4,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt1024_decode04",
+    "page_trace_count": 8320,
+    "prompt_family": "retrieval",
+    "prompt_length": 1024,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt1024_decode04"
+  },
+  {
+    "decode_steps": 8,
+    "output_dir": "benchmarks/results/qwen35_selector_qwen35_27b_suite_20260404/capture/family-retrieval_variant-transcript_prompt1024_decode08",
+    "page_trace_count": 8320,
+    "prompt_family": "retrieval",
+    "prompt_length": 1024,
+    "prompt_variant": "transcript",
+    "run_name": "family-retrieval_variant-transcript_prompt1024_decode08"
+  }
+]

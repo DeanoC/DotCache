@@ -1,0 +1,16 @@
+*
+!.gitignore
+!batch_eval/
+!batch_eval/selector_split_batch_summary.json
+!batch_eval/selector_split_batch_summary.md
+!capture/
+!capture/manifest.json
+!capture/runs.json
+!labels/
+!labels/summary.json
+!labels/summary.md
+!labels/selector_schema.json
+!labels/selector_candidate_schema.json
+!suite/
+!suite/split_manifest.json
+!suite/split_suite_summary.json

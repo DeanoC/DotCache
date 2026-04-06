@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -21,9 +21,10 @@ from .backends import (
 from .config import DotCacheConfig
 from .decode_reference import decode_page
 from .encode import encode_page
-from .planner import choose_page_mode, observe_page
+from .planner import PageModeSpec, choose_page_mode, observe_page, parse_page_mode_token
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
+from .selector_baselines import adjust_linear_selector_model_logits, LinearSelectorModel, load_linear_selector_model
 from .session_runtime import PagedDecodeSession, score_page_relevance, select_execution_page_indices, select_window_page_indices
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
@@ -348,6 +349,14 @@ def _grouped_pages_can_batch(
     value_pages_by_group: Sequence[Sequence[PageLike]],
     query_groups: Sequence[Any],
 ) -> bool:
+    return _grouped_pages_batch_rejection_reason(key_pages_by_group, value_pages_by_group, query_groups) is None
+
+
+def _grouped_pages_batch_rejection_reason(
+    key_pages_by_group: Sequence[Sequence[PageLike]],
+    value_pages_by_group: Sequence[Sequence[PageLike]],
+    query_groups: Sequence[Any],
+) -> str | None:
     def _page_batch_signature(page: PreparedPageTorch) -> tuple[int | str, ...]:
         sketch = page.m2_sketch
         basis = page.m2_basis
@@ -374,122 +383,34 @@ def _grouped_pages_can_batch(
             centered,
         )
 
-    def _chunk_length_signature(pages: Sequence[PreparedPageTorch]) -> tuple[int, ...]:
-        chunk_lengths: list[int] = []
-        current_signature: tuple[int | str, ...] | None = None
-        current_length = 0
-        for page in pages:
-            signature = _page_batch_signature(page)
-            if current_signature is not None and signature != current_signature:
-                chunk_lengths.append(current_length)
-                current_length = 0
-            current_signature = signature
-            current_length += 1
-        if current_length > 0:
-            chunk_lengths.append(current_length)
-        return tuple(chunk_lengths)
-
-    def _m2_segment_count(page: PageLike) -> int:
-        basis = getattr(page, "m2_basis", None)
-        if basis is None:
-            return 0
-        ndim = int(basis.ndim) if hasattr(basis, "ndim") else int(basis.dim())
-        return int(basis.shape[1]) if ndim == 4 else 1
-
-    if not key_pages_by_group or len(key_pages_by_group) != len(value_pages_by_group):
-        return False
+    if not key_pages_by_group:
+        return "no_key_groups"
+    if len(key_pages_by_group) != len(value_pages_by_group):
+        return "group_count_mismatch"
     group_count = len(key_pages_by_group)
     if len(query_groups) != group_count:
-        return False
+        return "query_group_count_mismatch"
     try:
         query_count = int(query_groups[0].shape[0])
     except Exception:
-        return False
+        return "query_shape_invalid"
     page_count = len(key_pages_by_group[0])
     if page_count == 0:
-        return False
+        return "page_count_zero"
     for group_index in range(group_count):
         if len(key_pages_by_group[group_index]) != page_count or len(value_pages_by_group[group_index]) != page_count:
-            return False
+            return "page_count_mismatch"
         if int(query_groups[group_index].shape[0]) != query_count:
-            return False
+            return "query_count_mismatch"
         if not all(isinstance(page, PreparedPageTorch) for page in key_pages_by_group[group_index]):
-            return False
+            return "key_page_not_prepared"
         if not all(isinstance(page, PreparedPageTorch) for page in value_pages_by_group[group_index]):
-            return False
+            return "value_page_not_prepared"
         if any(page.device_type != key_pages_by_group[0][0].device_type for page in key_pages_by_group[group_index]):
-            return False
+            return "key_device_mismatch"
         if any(page.device_type != value_pages_by_group[0][0].device_type for page in value_pages_by_group[group_index]):
-            return False
-        if _chunk_length_signature(key_pages_by_group[group_index]) != _chunk_length_signature(value_pages_by_group[group_index]):
-            return False
-    for page_index in range(page_count):
-        key_signature = (
-            key_pages_by_group[0][page_index].header.mode_default,
-            key_pages_by_group[0][page_index].header.escape_dtype if key_pages_by_group[0][page_index].header.mode_default == "M3" else "",
-            key_pages_by_group[0][page_index].header.token_count,
-            key_pages_by_group[0][page_index].header.head_dim,
-            key_pages_by_group[0][page_index].header.padded_head_dim,
-            key_pages_by_group[0][page_index].header.group_size,
-            key_pages_by_group[0][page_index].header.num_groups,
-            key_pages_by_group[0][page_index].header.bits,
-            key_pages_by_group[0][page_index].header.words_per_group,
-            key_pages_by_group[0][page_index].header.layout,
-            key_pages_by_group[0][page_index].header.quant_scheme,
-            int(key_pages_by_group[0][page_index].m2_sketch.shape[-1]) if key_pages_by_group[0][page_index].m2_sketch is not None else 0,
-            _m2_segment_count(key_pages_by_group[0][page_index]),
-        )
-        value_signature = (
-            value_pages_by_group[0][page_index].header.mode_default,
-            value_pages_by_group[0][page_index].header.escape_dtype if value_pages_by_group[0][page_index].header.mode_default == "M3" else "",
-            value_pages_by_group[0][page_index].header.token_count,
-            value_pages_by_group[0][page_index].header.head_dim,
-            value_pages_by_group[0][page_index].header.padded_head_dim,
-            value_pages_by_group[0][page_index].header.group_size,
-            value_pages_by_group[0][page_index].header.num_groups,
-            value_pages_by_group[0][page_index].header.bits,
-            value_pages_by_group[0][page_index].header.words_per_group,
-            value_pages_by_group[0][page_index].header.layout,
-            value_pages_by_group[0][page_index].header.quant_scheme,
-            int(value_pages_by_group[0][page_index].m2_sketch.shape[-1]) if value_pages_by_group[0][page_index].m2_sketch is not None else 0,
-            _m2_segment_count(value_pages_by_group[0][page_index]),
-        )
-        for group_index in range(1, group_count):
-            key_page = key_pages_by_group[group_index][page_index]
-            value_page = value_pages_by_group[group_index][page_index]
-            if (
-                key_page.header.mode_default,
-                key_page.header.escape_dtype if key_page.header.mode_default == "M3" else "",
-                key_page.header.token_count,
-                key_page.header.head_dim,
-                key_page.header.padded_head_dim,
-                key_page.header.group_size,
-                key_page.header.num_groups,
-                key_page.header.bits,
-                key_page.header.words_per_group,
-                key_page.header.layout,
-                key_page.header.quant_scheme,
-                int(key_page.m2_sketch.shape[-1]) if key_page.m2_sketch is not None else 0,
-                _m2_segment_count(key_page),
-            ) != key_signature:
-                return False
-            if (
-                value_page.header.mode_default,
-                value_page.header.escape_dtype if value_page.header.mode_default == "M3" else "",
-                value_page.header.token_count,
-                value_page.header.head_dim,
-                value_page.header.padded_head_dim,
-                value_page.header.group_size,
-                value_page.header.num_groups,
-                value_page.header.bits,
-                value_page.header.words_per_group,
-                value_page.header.layout,
-                value_page.header.quant_scheme,
-                int(value_page.m2_sketch.shape[-1]) if value_page.m2_sketch is not None else 0,
-                _m2_segment_count(value_page),
-            ) != value_signature:
-                return False
-    return True
+            return "value_device_mismatch"
+    return None
 
 
 @dataclass(slots=True)
@@ -603,14 +524,13 @@ def _build_prepared_decode_view_layout(
         return None
     prepared_key_pages = tuple(key_pages)
     prepared_value_pages = tuple(value_pages)
-    aligned_chunk_lengths = _prepared_page_aligned_chunk_lengths(prepared_key_pages, prepared_value_pages)
     return _PreparedDecodeViewLayout(
         grouped_batch_signature=tuple(
             (_prepared_page_group_signature(key_page), _prepared_page_group_signature(value_page))
             for key_page, value_page in zip(prepared_key_pages, prepared_value_pages, strict=True)
         ),
-        key_chunk_lengths=aligned_chunk_lengths,
-        value_chunk_lengths=aligned_chunk_lengths,
+        key_chunk_lengths=_prepared_page_chunk_lengths(prepared_key_pages),
+        value_chunk_lengths=_prepared_page_chunk_lengths(prepared_value_pages),
     )
 
 
@@ -618,22 +538,29 @@ def _grouped_layouts_can_batch(
     layouts: Sequence[_PreparedDecodeViewLayout | None],
     query_groups: Sequence[Any],
 ) -> bool:
+    return _grouped_layout_batch_rejection_reason(layouts, query_groups) is None
+
+
+def _grouped_layout_batch_rejection_reason(
+    layouts: Sequence[_PreparedDecodeViewLayout | None],
+    query_groups: Sequence[Any],
+) -> str | None:
     if not layouts or any(layout is None for layout in layouts):
-        return False
+        return "layout_missing"
     try:
         query_count = int(query_groups[0].shape[0])
     except Exception:
-        return False
+        return "query_shape_invalid"
     first_layout = layouts[0]
     assert first_layout is not None
     for group_index in range(1, len(layouts)):
         layout = layouts[group_index]
         assert layout is not None
         if layout.grouped_batch_signature != first_layout.grouped_batch_signature:
-            return False
+            return "layout_signature_mismatch"
         if int(query_groups[group_index].shape[0]) != query_count:
-            return False
-    return True
+            return "query_count_mismatch"
+    return None
 
 
 def _normalize_prefill_tensor(
@@ -719,6 +646,7 @@ class _TailPageBuilder:
     config: DotCacheConfig
     layer_id: int
     kv_head_id: int
+    select_page_mode: Callable[..., PageModeSpec | None] | None = None
     token_start: int | None = None
     key_rows: list[np.ndarray] = field(default_factory=list)
     value_rows: list[np.ndarray] = field(default_factory=list)
@@ -787,30 +715,26 @@ class _TailPageBuilder:
             dense_keys = np.stack(self.key_rows, axis=0).astype(np.float32, copy=False)
             dense_values = np.stack(self.value_rows, axis=0).astype(np.float32, copy=False)
             current_sequence_length = int(sequence_length if sequence_length is not None else (token_start + key_rows.shape[0]))
-            if self.config.has_policy_overrides(kind="K") or self.config.has_mode_overrides(kind="K"):
-                key_page_mode = choose_page_mode(
-                    self.layer_id,
-                    "K",
-                    max(0, current_sequence_length - int(self.token_start) - 1),
-                    observe_page(dense_keys),
-                    layer_policy=self.config.resolve_layer_policy(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
-                )
-                key_mode = None
-            else:
-                key_page_mode = None
-                key_mode = self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
-            if self.config.has_policy_overrides(kind="V") or self.config.has_mode_overrides(kind="V"):
-                value_page_mode = choose_page_mode(
-                    self.layer_id,
-                    "V",
-                    max(0, current_sequence_length - int(self.token_start) - 1),
-                    observe_page(dense_values),
-                    layer_policy=self.config.resolve_layer_policy(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id),
-                )
-                value_mode = None
-            else:
-                value_page_mode = None
-                value_mode = self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
+            key_page_mode = self.select_page_mode(
+                dense_keys,
+                kind="K",
+                layer_id=self.layer_id,
+                kv_head_id=self.kv_head_id,
+                token_start=self.token_start,
+                sequence_length=current_sequence_length,
+                stage="decode",
+            )
+            key_mode = None if key_page_mode is not None else self.config.resolve_page_mode(kind="K", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
+            value_page_mode = self.select_page_mode(
+                dense_values,
+                kind="V",
+                layer_id=self.layer_id,
+                kv_head_id=self.kv_head_id,
+                token_start=self.token_start,
+                sequence_length=current_sequence_length,
+                stage="decode",
+            )
+            value_mode = None if value_page_mode is not None else self.config.resolve_page_mode(kind="V", layer_id=self.layer_id, kv_head_id=self.kv_head_id)
             finalized_key_pages.append(
                 encode_page(
                     dense_keys,
@@ -1260,6 +1184,8 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = 0
         self._execution_shortlist_group_union_applied = 0
         self._execution_shortlist_grouping_rejections = 0
+        self._execution_shortlist_grouping_rejection_reason_counts: dict[str, int] = {}
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer: dict[int, dict[str, int]] = {}
         self._execution_shortlist_total_pages = 0
         self._execution_shortlist_selected_pages = 0
         self._execution_shortlist_invocations_by_layer: dict[int, int] = {}
@@ -1275,6 +1201,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer: dict[int, int] = {}
         self._execution_exact_refine_candidate_pages_by_layer: dict[int, int] = {}
         self._execution_exact_refine_selected_pages_by_layer: dict[int, int] = {}
+        self._decode_grouped_batch_rejection_reason_counts: dict[str, int] = {}
+        self._decode_grouped_batch_rejection_reason_counts_by_layer: dict[int, dict[str, int]] = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer: dict[int, dict[str, float]] = {}
         self._direct_prepared_page_resident_bytes = 0
@@ -1314,6 +1242,26 @@ class ModelPagedKVCache:
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
+        self._learned_page_selector_model: LinearSelectorModel | None = None
+        self._learned_page_selector_invocations = 0
+        self._learned_page_selector_predictions: dict[str, int] = {}
+        self._learned_page_selector_fallbacks = 0
+        self._learned_page_selector_ms_total = 0.0
+        self._learned_page_selector_invocations_by_stage: dict[str, int] = {}
+        self._learned_page_selector_fallbacks_by_stage: dict[str, int] = {}
+        self._learned_page_selector_ms_total_by_stage: dict[str, float] = {}
+        self._learned_page_selector_predictions_by_stage: dict[str, dict[str, int]] = {}
+        if self.config.learned_page_selector_enabled():
+            self._learned_page_selector_model = load_linear_selector_model(str(self.config.learned_page_selector_path))
+            if float(self.config.learned_page_selector_logit_offset) != 0.0:
+                self._learned_page_selector_model = adjust_linear_selector_model_logits(
+                    self._learned_page_selector_model,
+                    candidate_logit_offsets={
+                        str(self.config.learned_page_selector_target_candidate): float(
+                            self.config.learned_page_selector_logit_offset
+                        )
+                    },
+                )
 
     @property
     def resident_bytes(self) -> int:
@@ -1813,6 +1761,13 @@ class ModelPagedKVCache:
                 str(layer_id): dict(sorted(counts.items()))
                 for layer_id, counts in sorted(self._decode_path_counts_by_layer.items())
             },
+            "decode_grouped_batch_rejection_reason_counts": dict(
+                sorted(self._decode_grouped_batch_rejection_reason_counts.items())
+            ),
+            "decode_grouped_batch_rejection_reason_counts_by_layer": {
+                str(layer_id): dict(sorted(counts.items()))
+                for layer_id, counts in sorted(self._decode_grouped_batch_rejection_reason_counts_by_layer.items())
+            },
         }
 
     def _record_execution_shortlist(
@@ -1824,6 +1779,7 @@ class ModelPagedKVCache:
         applied: bool,
         group_union_applied: bool = False,
         grouping_rejected: bool = False,
+        grouping_rejection_reason: str | None = None,
     ) -> None:
         self._execution_shortlist_invocations += 1
         self._execution_shortlist_total_pages += int(total_pages)
@@ -1852,6 +1808,23 @@ class ModelPagedKVCache:
             self._execution_shortlist_grouping_rejections_by_layer[int(layer_id)] = (
                 self._execution_shortlist_grouping_rejections_by_layer.get(int(layer_id), 0) + 1
             )
+            if grouping_rejection_reason:
+                self._execution_shortlist_grouping_rejection_reason_counts[grouping_rejection_reason] = (
+                    self._execution_shortlist_grouping_rejection_reason_counts.get(grouping_rejection_reason, 0) + 1
+                )
+                layer_reason_counts = self._execution_shortlist_grouping_rejection_reason_counts_by_layer.setdefault(
+                    int(layer_id), {}
+                )
+                layer_reason_counts[grouping_rejection_reason] = (
+                    layer_reason_counts.get(grouping_rejection_reason, 0) + 1
+                )
+
+    def _record_decode_grouped_batch_rejection(self, *, layer_id: int, reason: str) -> None:
+        self._decode_grouped_batch_rejection_reason_counts[reason] = (
+            self._decode_grouped_batch_rejection_reason_counts.get(reason, 0) + 1
+        )
+        layer_reason_counts = self._decode_grouped_batch_rejection_reason_counts_by_layer.setdefault(int(layer_id), {})
+        layer_reason_counts[reason] = layer_reason_counts.get(reason, 0) + 1
 
     def _record_execution_exact_refine(
         self,
@@ -2114,6 +2087,13 @@ class ModelPagedKVCache:
             "execution_shortlist_group_union_applied_by_layer": {
                 str(layer_id): int(count)
                 for layer_id, count in sorted(self._execution_shortlist_group_union_applied_by_layer.items())
+            },
+            "execution_shortlist_grouping_rejection_reason_counts": dict(
+                sorted(self._execution_shortlist_grouping_rejection_reason_counts.items())
+            ),
+            "execution_shortlist_grouping_rejection_reason_counts_by_layer": {
+                str(layer_id): dict(sorted(counts.items()))
+                for layer_id, counts in sorted(self._execution_shortlist_grouping_rejection_reason_counts_by_layer.items())
             },
             "execution_shortlist_grouping_rejections_by_layer": {
                 str(layer_id): int(count)
@@ -2948,6 +2928,8 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = 0
         self._execution_shortlist_group_union_applied = 0
         self._execution_shortlist_grouping_rejections = 0
+        self._execution_shortlist_grouping_rejection_reason_counts = {}
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer = {}
         self._execution_shortlist_total_pages = 0
         self._execution_shortlist_selected_pages = 0
         self._execution_shortlist_invocations_by_layer = {}
@@ -2963,6 +2945,8 @@ class ModelPagedKVCache:
         self._execution_exact_refine_invocations_by_layer = {}
         self._execution_exact_refine_candidate_pages_by_layer = {}
         self._execution_exact_refine_selected_pages_by_layer = {}
+        self._decode_grouped_batch_rejection_reason_counts = {}
+        self._decode_grouped_batch_rejection_reason_counts_by_layer = {}
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         self._decode_stage_timings_by_layer = {}
         self._reset_resident_accounting()
@@ -2996,11 +2980,13 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_group_union_applied_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_grouping_rejections_by_layer.pop(int(layer_id), None)
+        self._execution_shortlist_grouping_rejection_reason_counts_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_total_pages_by_layer.pop(int(layer_id), None)
         self._execution_shortlist_selected_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_invocations_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_candidate_pages_by_layer.pop(int(layer_id), None)
         self._execution_exact_refine_selected_pages_by_layer.pop(int(layer_id), None)
+        self._decode_grouped_batch_rejection_reason_counts_by_layer.pop(int(layer_id), None)
         self._prepared_chunk_cache_frozen_budget_bytes = None
         self._prepared_chunk_cache_applied_budget_bytes = None
         self._prepared_chunk_cache_budget_dirty = True
@@ -3009,11 +2995,23 @@ class ModelPagedKVCache:
         self._execution_shortlist_applied = sum(self._execution_shortlist_applied_by_layer.values())
         self._execution_shortlist_group_union_applied = sum(self._execution_shortlist_group_union_applied_by_layer.values())
         self._execution_shortlist_grouping_rejections = sum(self._execution_shortlist_grouping_rejections_by_layer.values())
+        self._execution_shortlist_grouping_rejection_reason_counts = {}
+        for layer_reason_counts in self._execution_shortlist_grouping_rejection_reason_counts_by_layer.values():
+            for reason, count in layer_reason_counts.items():
+                self._execution_shortlist_grouping_rejection_reason_counts[reason] = (
+                    self._execution_shortlist_grouping_rejection_reason_counts.get(reason, 0) + int(count)
+                )
         self._execution_shortlist_total_pages = sum(self._execution_shortlist_total_pages_by_layer.values())
         self._execution_shortlist_selected_pages = sum(self._execution_shortlist_selected_pages_by_layer.values())
         self._execution_exact_refine_invocations = sum(self._execution_exact_refine_invocations_by_layer.values())
         self._execution_exact_refine_candidate_pages = sum(self._execution_exact_refine_candidate_pages_by_layer.values())
         self._execution_exact_refine_selected_pages = sum(self._execution_exact_refine_selected_pages_by_layer.values())
+        self._decode_grouped_batch_rejection_reason_counts = {}
+        for layer_reason_counts in self._decode_grouped_batch_rejection_reason_counts_by_layer.values():
+            for reason, count in layer_reason_counts.items():
+                self._decode_grouped_batch_rejection_reason_counts[reason] = (
+                    self._decode_grouped_batch_rejection_reason_counts.get(reason, 0) + int(count)
+                )
         self._decode_stage_timings = _empty_decode_stage_timing_totals()
         for layer_timings in self._decode_stage_timings_by_layer.values():
             for stage, value in layer_timings.items():
@@ -3067,6 +3065,7 @@ class ModelPagedKVCache:
                 kv_head_id=kv_head_id,
                 token_start=token_start,
                 sequence_length=sequence_length,
+                stage="prefill",
             )
             key_mode_name = (
                 key_page_mode.mode
@@ -3093,6 +3092,7 @@ class ModelPagedKVCache:
                     kv_head_id=kv_head_id,
                     token_start=absolute_page_start,
                     sequence_length=sequence_length,
+                    stage="prefill",
                 )
                 key_pages_by_head[kv_head_id].append(
                     encode_page(
@@ -3135,6 +3135,7 @@ class ModelPagedKVCache:
                         kv_head_id=kv_head_id,
                         token_start=absolute_page_start,
                         sequence_length=sequence_length,
+                        stage="prefill",
                     ),
                     build_runtime_metadata=False,
                 )
@@ -3148,6 +3149,8 @@ class ModelPagedKVCache:
 
     def _can_direct_prepare_full_prefill_pages_torch(self) -> bool:
         if not self._use_persistent_torch_tail:
+            return False
+        if self.config.learned_page_selector_enabled():
             return False
         if int(self.config.m2_prefilter_top_k) > 0:
             return False
@@ -3170,7 +3173,19 @@ class ModelPagedKVCache:
         kv_head_id: int,
         token_start: int,
         sequence_length: int,
-    ):
+        stage: str = "unknown",
+    ) -> PageModeSpec | None:
+        learned_page_mode = self._select_page_mode_with_learned_selector(
+            values,
+            kind=kind,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            token_start=token_start,
+            sequence_length=sequence_length,
+            stage=stage,
+        )
+        if learned_page_mode is not None:
+            return learned_page_mode
         if not self.config.has_policy_overrides(kind=kind) and not self.config.has_mode_overrides(kind=kind):
             return None
         layer_policy = self.config.resolve_layer_policy(kind=kind, layer_id=layer_id, kv_head_id=kv_head_id)
@@ -3183,6 +3198,76 @@ class ModelPagedKVCache:
             page_stats,
             layer_policy=layer_policy,
         )
+
+    def _select_page_mode_with_learned_selector(
+        self,
+        values: np.ndarray,
+        *,
+        kind: str,
+        layer_id: int,
+        kv_head_id: int,
+        token_start: int,
+        sequence_length: int,
+        stage: str,
+    ) -> PageModeSpec | None:
+        model = self._learned_page_selector_model
+        if model is None:
+            return None
+        if not self.config.learned_page_selector_applies_to_kind(kind=str(kind)):
+            return None
+        stage_name = str(stage)
+        started_at = perf_counter()
+        page_stats = observe_page(values)
+        row = {
+            "stage": stage_name,
+            "kind": str(kind),
+            "prompt_family": self.config.learned_page_selector_prompt_family,
+            "prompt_variant": self.config.learned_page_selector_prompt_variant,
+            "query_present": False,
+            "layer_fraction": float(int(layer_id) / max(self.num_hidden_layers - 1, 1)),
+            "kv_head_fraction": float(int(kv_head_id) / max(self.num_key_value_heads - 1, 1)),
+            "token_start": int(token_start),
+            "token_age": max(0, int(sequence_length) - int(token_start) - int(values.shape[0])),
+            "token_count": int(values.shape[0]),
+            "head_dim": int(values.shape[1]),
+            "safe_candidate_count": 0.0,
+            "trace_rms": float(page_stats.rms),
+            "trace_abs_max": float(page_stats.abs_max),
+            "trace_channel_range_mean": float(page_stats.channel_range_mean),
+            "trace_outlier_fraction": float(page_stats.outlier_fraction),
+            "age_per_token": float(max(0, int(sequence_length) - int(token_start) - int(values.shape[0])) / max(int(values.shape[0]), 1)),
+        }
+        predicted = model.predict_row(row)
+        elapsed_ms = float((perf_counter() - started_at) * 1000.0)
+        self._learned_page_selector_ms_total += elapsed_ms
+        self._learned_page_selector_invocations += 1
+        self._learned_page_selector_invocations_by_stage[stage_name] = (
+            self._learned_page_selector_invocations_by_stage.get(stage_name, 0) + 1
+        )
+        self._learned_page_selector_ms_total_by_stage[stage_name] = (
+            float(self._learned_page_selector_ms_total_by_stage.get(stage_name, 0.0)) + elapsed_ms
+        )
+        if predicted is None:
+            self._learned_page_selector_fallbacks += 1
+            self._learned_page_selector_fallbacks_by_stage[stage_name] = (
+                self._learned_page_selector_fallbacks_by_stage.get(stage_name, 0) + 1
+            )
+            return None
+        try:
+            page_mode = parse_page_mode_token(predicted)
+        except ValueError:
+            self._learned_page_selector_fallbacks += 1
+            self._learned_page_selector_fallbacks_by_stage[stage_name] = (
+                self._learned_page_selector_fallbacks_by_stage.get(stage_name, 0) + 1
+            )
+            return None
+        token = f"{page_mode.mode}/{page_mode.quant_scheme}/{page_mode.bits}" + (
+            "" if page_mode.escape_dtype is None else f"/{page_mode.escape_dtype}"
+        )
+        self._learned_page_selector_predictions[token] = self._learned_page_selector_predictions.get(token, 0) + 1
+        stage_predictions = self._learned_page_selector_predictions_by_stage.setdefault(stage_name, {})
+        stage_predictions[token] = stage_predictions.get(token, 0) + 1
+        return page_mode
 
     def prepare_static_pages(self, *, trace: ExecutionTrace | None = None) -> None:
         if self._torch_device_type is None:
@@ -3272,7 +3357,12 @@ class ModelPagedKVCache:
             torch_device_type = self._torch_device_type
             state = _HeadSessionState(
                 session=PagedDecodeSession(backend=self.backend, cache=self.cache),
-                tail=_TailPageBuilder(self.config, layer_id=layer_id, kv_head_id=kv_head_id),
+                tail=_TailPageBuilder(
+                    self.config,
+                    layer_id=layer_id,
+                    kv_head_id=kv_head_id,
+                    select_page_mode=self._select_page_mode,
+                ),
                 persistent_key_tail=_PersistentTailPage(
                     self.config,
                     layer_id=layer_id,
@@ -3549,6 +3639,49 @@ class ModelPagedKVCache:
         summary["m2_prefilter_invocations"] = int(self._m2_prefilter_invocations)
         summary["m2_prefilter_candidate_pages"] = int(self._m2_prefilter_candidate_pages)
         summary["m2_prefilter_selected_pages"] = int(self._m2_prefilter_selected_pages)
+        summary["learned_page_selector_enabled"] = bool(self._learned_page_selector_model is not None)
+        summary["learned_page_selector_path"] = (
+            None
+            if self.config.learned_page_selector_path is None
+            else str(self.config.learned_page_selector_path)
+        )
+        summary["learned_page_selector_prompt_family"] = (
+            None
+            if self.config.learned_page_selector_prompt_family is None
+            else str(self.config.learned_page_selector_prompt_family)
+        )
+        summary["learned_page_selector_prompt_variant"] = (
+            None
+            if self.config.learned_page_selector_prompt_variant is None
+            else str(self.config.learned_page_selector_prompt_variant)
+        )
+        summary["learned_page_selector_profile"] = str(self.config.learned_page_selector_profile)
+        summary["learned_page_selector_scope"] = str(self.config.learned_page_selector_scope)
+        summary["learned_page_selector_target_candidate"] = str(self.config.learned_page_selector_target_candidate)
+        summary["learned_page_selector_logit_offset"] = float(self.config.learned_page_selector_logit_offset)
+        summary["learned_page_selector_invocations"] = int(self._learned_page_selector_invocations)
+        summary["learned_page_selector_fallbacks"] = int(self._learned_page_selector_fallbacks)
+        summary["learned_page_selector_ms_total"] = float(self._learned_page_selector_ms_total)
+        summary["learned_page_selector_invocations_by_stage"] = {
+            stage: int(count)
+            for stage, count in sorted(self._learned_page_selector_invocations_by_stage.items())
+        }
+        summary["learned_page_selector_fallbacks_by_stage"] = {
+            stage: int(count)
+            for stage, count in sorted(self._learned_page_selector_fallbacks_by_stage.items())
+        }
+        summary["learned_page_selector_ms_total_by_stage"] = {
+            stage: float(ms)
+            for stage, ms in sorted(self._learned_page_selector_ms_total_by_stage.items())
+        }
+        summary["learned_page_selector_prediction_counts"] = {
+            token: int(count)
+            for token, count in sorted(self._learned_page_selector_predictions.items())
+        }
+        summary["learned_page_selector_prediction_counts_by_stage"] = {
+            stage: {token: int(count) for token, count in sorted(stage_counts.items())}
+            for stage, stage_counts in sorted(self._learned_page_selector_predictions_by_stage.items())
+        }
         return summary
 
     def _batch_upload_persistent_tail_rows(
@@ -3997,7 +4130,18 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
-                    mode=self.config.resolve_page_mode(kind="K", layer_id=layer_id, kv_head_id=kv_head_id),
+                    mode=None,
+                    page_mode=(
+                        self._select_page_mode(
+                            dense_keys,
+                            kind="K",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=token_start_full,
+                            sequence_length=int(token_index + token_count),
+                            stage="decode",
+                        )
+                    ),
                     build_runtime_metadata=self._should_build_execution_runtime_metadata(kind="K"),
                     build_m2_sidecar=(
                         self.config.m2_prefilter_top_k > 0
@@ -4011,7 +4155,18 @@ class ModelPagedKVCache:
                     layer_id=layer_id,
                     kv_head_id=kv_head_id,
                     token_start=token_start_full,
-                    mode=self.config.resolve_page_mode(kind="V", layer_id=layer_id, kv_head_id=kv_head_id),
+                    mode=None,
+                    page_mode=(
+                        self._select_page_mode(
+                            dense_values,
+                            kind="V",
+                            layer_id=layer_id,
+                            kv_head_id=kv_head_id,
+                            token_start=token_start_full,
+                            sequence_length=int(token_index + token_count),
+                            stage="decode",
+                        )
+                    ),
                     build_runtime_metadata=False,
                 )
                 state.session.append([finalized_key_page], [finalized_value_page], trace=trace)
@@ -4813,7 +4968,12 @@ class ModelPagedKVCache:
 
         grouping_validation_started_at = _stage_start()
         if shortlist_attempted and shortlist_applied and layer_prefer_grouped_batching and len(active_queries) > 1:
-            shortlisted_can_batch = _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
+            shortlist_grouping_rejection_reason = _grouped_pages_batch_rejection_reason(
+                active_key_pages,
+                active_value_pages,
+                active_queries,
+            )
+            shortlisted_can_batch = shortlist_grouping_rejection_reason is None
             if not shortlisted_can_batch:
                 self._record_execution_shortlist(
                     layer_id=layer_id,
@@ -4822,6 +4982,7 @@ class ModelPagedKVCache:
                     applied=False,
                     group_union_applied=shortlist_group_union_applied,
                     grouping_rejected=True,
+                    grouping_rejection_reason=shortlist_grouping_rejection_reason,
                 )
                 active_key_pages = list(original_key_pages_by_group)
                 active_value_pages = list(original_value_pages_by_group)
@@ -4843,10 +5004,17 @@ class ModelPagedKVCache:
                 applied=shortlist_applied,
                 group_union_applied=shortlist_group_union_applied,
             )
-        cached_group_layout = layer_prefer_grouped_batching and _grouped_layouts_can_batch(active_layouts, active_queries)
-        grouped_path_ready = cached_group_layout or (
-            layer_prefer_grouped_batching and _grouped_pages_can_batch(active_key_pages, active_value_pages, active_queries)
-        )
+        grouped_layout_rejection_reason = None
+        grouped_page_rejection_reason = None
+        if layer_prefer_grouped_batching:
+            grouped_layout_rejection_reason = _grouped_layout_batch_rejection_reason(active_layouts, active_queries)
+            grouped_page_rejection_reason = _grouped_pages_batch_rejection_reason(
+                active_key_pages,
+                active_value_pages,
+                active_queries,
+            )
+        cached_group_layout = layer_prefer_grouped_batching and grouped_layout_rejection_reason is None
+        grouped_path_ready = cached_group_layout or (layer_prefer_grouped_batching and grouped_page_rejection_reason is None)
         _stage_finish("grouping_validation", grouping_validation_started_at)
 
         if grouped_path_ready:
@@ -4884,6 +5052,18 @@ class ModelPagedKVCache:
                 outputs[list(q_head_ids)] = kv_outputs
             return outputs
 
+        if layer_prefer_grouped_batching:
+            grouped_batch_rejection_reason = grouped_page_rejection_reason
+            if grouped_batch_rejection_reason is None and grouped_layout_rejection_reason is not None:
+                grouped_batch_rejection_reason = f"layout_{grouped_layout_rejection_reason}"
+            if grouped_batch_rejection_reason is None and len(active_queries) <= 1:
+                grouped_batch_rejection_reason = "single_query_group"
+            if grouped_batch_rejection_reason is None:
+                grouped_batch_rejection_reason = "unknown"
+            self._record_decode_grouped_batch_rejection(
+                layer_id=int(layer_id),
+                reason=grouped_batch_rejection_reason,
+            )
         self._record_decode_path(layer_id, "per_kv_fallback")
         for q_head_ids, kv_queries, key_pages, value_pages in zip(
             active_q_head_ids,

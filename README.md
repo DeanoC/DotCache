@@ -12,6 +12,137 @@ The current bootstrap intentionally focuses on the boring, load-bearing pieces f
 - streaming `score_page` and `mix_page` that avoid full-page materialization by default
 - tests that compare compressed-domain execution against an explicit dequantized baseline built from the same quantized pages
 
+## Selector smoke suite
+
+For the local selector-oracle path, the checked-in smoke suite config lives at:
+
+- [configs/selector_split_suites/local_smoke_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/local_smoke_suite.json)
+
+If you already have an oracle label bundle with `labels.jsonl`, `selector_dataset.jsonl`, and `selector_candidate_dataset.jsonl`, the shortest end-to-end command is:
+
+```bash
+bash scripts/run_page_selector_local_smoke_suite.sh /path/to/oracle_bundle
+```
+
+That wrapper materializes the checked-in local smoke split suite, runs the manifest-driven batch selector eval, and prints the resulting summary paths.
+
+## Serving selector profiles
+
+Serving entrypoints now support named learned-selector profiles so we do not have to keep passing model-specific bias flags by hand:
+
+- `--learned-page-selector-profile quality`
+  uses the unbiased learned selector operating point
+- `--learned-page-selector-profile systems`
+  uses the current systems-tuned operating point
+  for Qwen3.5 lanes this resolves to `M3/affine/4/float16` with `+2.0` logit bias
+  for the current Llama lane it resolves to the unbiased selector because that selector is already saturated to `M3`
+- `--learned-page-selector-profile manual`
+  respects explicit `--learned-page-selector-target-candidate` and `--learned-page-selector-logit-offset`
+
+Qwen serving entrypoints now default to the `systems` profile. Use `--learned-page-selector-profile quality` when you want the unbiased research/eval operating point.
+
+The standard Qwen backend-truth wrappers also default their learned lane to the `systems` profile.
+
+The current cross-family promotion checkpoint is summarized in:
+
+- [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
+
+That report now packages the current decision across the completed Qwen family matrix:
+
+- Qwen3.5 `4B`, `9B`, and native `27B` should default to `systems`
+- Llama 3.2 3B is already effectively saturated, so `quality` and `systems` are equivalent today
+
+The checkpoint now includes the full Qwen `4B / 9B / 27B` matrix, including:
+
+- compact held-out task rows where `systems` preserves the currently trusted task success profile while materially reducing decode
+- the fixed Qwen LongBench QA mini-pack, where `systems` stays quality-neutral on the current pack while sharply improving decode
+- the broader Qwen3.5 9B LongBench medium pack, where `systems` remains quality-neutral relative to `exact` and `quality`, now with real teacher-forced perplexity ratios
+- the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines
+
+The main matrix artifacts are:
+
+- [qwen_results_matrix.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md)
+- [qwen_results_matrix.json](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.json)
+
+For broader LongBench coverage, the repo now also supports named pack tiers:
+
+- `mini`
+  the current 4-row checkpoint pack
+- `medium`
+  a 12-row broader pack across the same supported QA datasets
+- `full`
+  a 20-row broader pack across the same supported QA datasets
+
+Run those via:
+
+```bash
+bash scripts/run_qwen35_9b_longbench_pack.sh /path/to/output_dir --pack medium
+```
+
+There is now also a 27B convenience wrapper:
+
+```bash
+bash scripts/run_qwen35_27b_longbench_pack.sh /path/to/output_dir --pack medium
+```
+
+## Larger-machine selector suite
+
+For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:
+
+- [configs/selector_split_suites/larger_machine_comprehensive_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/larger_machine_comprehensive_suite.json)
+
+The fastest way to run the full capture-to-bakeoff path on a CUDA box is:
+
+```bash
+bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root
+```
+
+If Qwen3.5 4B is the first stronger-model lane you want to standardize on, there is also a dedicated wrapper:
+
+```bash
+bash scripts/run_page_selector_qwen35_4b_suite.sh /path/to/output_root
+```
+
+For the first non-Qwen replication lane, use the dedicated Llama 3.2 3B wrapper:
+
+```bash
+bash scripts/run_page_selector_llama32_3b_suite.sh /path/to/output_root
+```
+
+That path requires `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` because `meta-llama/Llama-3.2-3B-Instruct` is gated.
+
+By default that wrapper runs:
+
+- model `Qwen/Qwen3.5-4B`
+- device `cuda`
+- dtype `float16`
+- prompt families `cache`, `reasoning`, `instruction`, `retrieval`
+- prompt lengths `128`, `256`, `512`, `1024`
+- decode steps `4`, `8`
+- `tokens_per_page=16`
+- oracle sampling cap `max_per_stage_kind=256`
+
+It writes a stable output layout under the chosen root:
+
+- `capture/`
+  merged trace manifest plus per-run trace directories
+- `labels/`
+  oracle labels, selector datasets, and label summary
+- `suite/`
+  frozen comprehensive split suite plus split manifest
+- `batch_eval/`
+  aggregate and per-split selector bakeoff reports
+
+If you want a lighter first pass on a new GPU box, start with:
+
+```bash
+bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root \
+  --prompt-length 128 \
+  --prompt-length 256 \
+  --decode-steps 4 \
+  --max-per-stage-kind 128
+```
+
 ## Reference docs
 
 - [dotcache_full.tex](./dotcache_full.tex)

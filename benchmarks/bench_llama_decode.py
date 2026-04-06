@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from dotcache.backends import configure_prepared_chunk_cache
 from dotcache.config import DotCacheConfig
 from dotcache.integrations.llama import (
     LlamaDotCacheHarness,
@@ -11,6 +12,17 @@ from dotcache.integrations.llama import (
     run_llama_generation_harness,
     transformers_available,
 )
+
+
+def _resolve_selector_profile(args: argparse.Namespace):
+    from dotcache.selector_profiles import resolve_learned_page_selector_profile
+
+    return resolve_learned_page_selector_profile(
+        profile=args.learned_page_selector_profile,
+        model_id=args.model_id,
+        target_candidate=args.learned_page_selector_target_candidate,
+        logit_offset=args.learned_page_selector_logit_offset,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +37,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--tokens-per-page", type=int, default=256)
+    parser.add_argument("--learned-page-selector-path", default=None)
+    parser.add_argument("--learned-page-selector-prompt-family", default=None)
+    parser.add_argument("--learned-page-selector-prompt-variant", default=None)
+    parser.add_argument("--learned-page-selector-profile", choices=["quality", "systems", "manual"], default="quality")
+    parser.add_argument("--learned-page-selector-scope", choices=["KV", "K", "V"], default="KV")
+    parser.add_argument("--learned-page-selector-target-candidate", default="M3/affine/4/float16")
+    parser.add_argument("--learned-page-selector-logit-offset", type=float, default=0.0)
+    parser.add_argument("--prepared-chunk-cache-min-page-count", type=int, default=1)
     parser.add_argument("--random-tiny", action="store_true")
     parser.add_argument("--profile", action="store_true")
     return parser.parse_args()
@@ -46,12 +66,20 @@ def _build_random_harness(args: argparse.Namespace):
     model = LlamaForCausalLM(config)
     model.to(args.device)
     model.eval()
+    selector_profile = _resolve_selector_profile(args)
     dotcache_config = DotCacheConfig(
         head_dim=32,
         group_size=args.group_size,
         bits_k=args.bits_k,
         bits_v=args.bits_v,
         tokens_per_page=args.tokens_per_page,
+        learned_page_selector_path=args.learned_page_selector_path,
+        learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
+        learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
+        learned_page_selector_profile=selector_profile.profile,
+        learned_page_selector_scope=args.learned_page_selector_scope,
+        learned_page_selector_target_candidate=selector_profile.target_candidate,
+        learned_page_selector_logit_offset=selector_profile.logit_offset,
     )
     adapter = LlamaDotCacheModelAdapter(model, dotcache_config, backend=args.backend)
     input_ids = torch.tensor([[1, 2, 3, 4, 5, 6]], dtype=torch.long, device=args.device)
@@ -60,6 +88,9 @@ def _build_random_harness(args: argparse.Namespace):
 
 def main() -> None:
     args = parse_args()
+    selector_profile = _resolve_selector_profile(args)
+    if args.prepared_chunk_cache_min_page_count is not None:
+        configure_prepared_chunk_cache(min_page_count=args.prepared_chunk_cache_min_page_count, clear=False)
     if not transformers_available():
         raise SystemExit("bench_llama_decode.py requires the optional transformers dependencies")
 
@@ -77,6 +108,14 @@ def main() -> None:
                 "backend": args.backend,
                 "benchmark": "llama_decode",
                 "device": args.device,
+                "learned_page_selector_path": args.learned_page_selector_path,
+                "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+                "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "learned_page_selector_profile": selector_profile.profile,
+                "learned_page_selector_scope": args.learned_page_selector_scope,
+                "learned_page_selector_target_candidate": selector_profile.target_candidate,
+                "learned_page_selector_logit_offset": selector_profile.logit_offset,
+                "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "model_id": "tiny-random-llama",
                 "tokens_per_page": args.tokens_per_page,
             }
@@ -93,6 +132,13 @@ def main() -> None:
             bits_k=args.bits_k,
             bits_v=args.bits_v,
             tokens_per_page=args.tokens_per_page,
+            learned_page_selector_path=args.learned_page_selector_path,
+            learned_page_selector_prompt_family=args.learned_page_selector_prompt_family,
+            learned_page_selector_prompt_variant=args.learned_page_selector_prompt_variant,
+            learned_page_selector_profile=selector_profile.profile,
+            learned_page_selector_scope=args.learned_page_selector_scope,
+            learned_page_selector_target_candidate=selector_profile.target_candidate,
+            learned_page_selector_logit_offset=selector_profile.logit_offset,
         )
         harness = LlamaDotCacheHarness.from_pretrained(
             args.model_id,
@@ -110,6 +156,14 @@ def main() -> None:
                 "model_id": args.model_id,
                 "tokens_per_page": args.tokens_per_page,
                 "prompt": args.prompt,
+                "learned_page_selector_path": args.learned_page_selector_path,
+                "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
+                "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
+                "learned_page_selector_profile": selector_profile.profile,
+                "learned_page_selector_scope": args.learned_page_selector_scope,
+                "learned_page_selector_target_candidate": selector_profile.target_candidate,
+                "learned_page_selector_logit_offset": selector_profile.logit_offset,
+                "prepared_chunk_cache_min_page_count": args.prepared_chunk_cache_min_page_count,
                 "torch_dtype": args.torch_dtype,
             }
         )

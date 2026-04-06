@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--quality-mode", choices=["serving", "loss_tail"], default="serving")
     parser.add_argument("--quality-eval-steps", type=int, default=4)
+    parser.add_argument("--evaluation-split", choices=["calibration", "held_out"], default="calibration")
+    parser.add_argument("--evaluation-lane", choices=["systems", "quality", "diagnostic"], default=None)
+    parser.add_argument("--evaluation-prompt-family", default="synthetic_exact_length_filler")
+    parser.add_argument("--evaluation-prompt-suite-name", default="qwen35_exact_length_filler")
+    parser.add_argument("--evaluation-prompt-count", type=int, default=1)
+    parser.add_argument("--evaluation-batch-size", type=int, default=1)
+    parser.add_argument("--evaluation-protocol-version", default="2026-03-31")
+    parser.add_argument("--evaluation-notes", default=None)
     parser.add_argument("--output", default=None, help="Optional JSONL path. Defaults to stdout only.")
     return parser.parse_args()
 
@@ -211,6 +219,14 @@ def _run_single_probe(args: argparse.Namespace, *, context: int, case: str) -> d
     return payload
 
 
+def _evaluation_lane(args: argparse.Namespace) -> str:
+    if args.evaluation_lane is not None:
+        return args.evaluation_lane
+    if args.quality_check and args.quality_mode == "loss_tail":
+        return "quality"
+    return "systems"
+
+
 def main() -> None:
     args = parse_args()
     output_path = Path(args.output) if args.output else None
@@ -220,6 +236,15 @@ def main() -> None:
     for case in args.cases:
         for context in args.contexts:
             record = _run_single_probe(args, context=context, case=case)
+            record["evaluation_split"] = args.evaluation_split
+            record["evaluation_lane"] = _evaluation_lane(args)
+            record["evaluation_prompt_family"] = args.evaluation_prompt_family
+            record["evaluation_prompt_suite_name"] = args.evaluation_prompt_suite_name
+            record["evaluation_prompt_count"] = args.evaluation_prompt_count
+            record["evaluation_batch_size"] = args.evaluation_batch_size
+            record["evaluation_protocol_version"] = args.evaluation_protocol_version
+            if args.evaluation_notes:
+                record["evaluation_notes"] = args.evaluation_notes
             if output_path is not None:
                 _append_record(output_path, record)
             print(json.dumps(record, sort_keys=True), flush=True)
