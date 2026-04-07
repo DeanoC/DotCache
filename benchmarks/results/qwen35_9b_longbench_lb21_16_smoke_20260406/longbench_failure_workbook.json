@@ -1,0 +1,123 @@
+{
+  "rows": [
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "dureader_row117",
+      "exact_effective_bytes_per_token": 17816.0,
+      "exact_generated_text": "\u6839\u636e\u63d0\u4f9b\u7684\u6587\u7ae0\u5185\u5bb9\uff0c\u771f\u4eba CS \u88c5\u5907\u7684\u4ef7\u683c\u56e0\u7c7b\u578b\u3001\u529f\u80fd\u548c\u3001\u6863\u6b21\u53ca\u54c1\u724c\u4e0d\u540c\u800c\u6709\u5f88\u5927\u5dee\u5f02\uff0c\u5177\u4f53\u4ef7\u683c\u8303\u56f4\u5982\u4e0b\uff1a 1. **\u6574\u4f53\u8303\u56f4\u8303\u56f4**\uff1a * \u6587\u7ae0 1 \u6307\u51fa\uff0c\u88c5\u5907\u5206\u4e3a BB \u7c7b\u3001\u956d\u5c04\u7c7b\u548c IPSC \u7ade\u6280\u7c7b\uff0c\u5168\u5957\u4e0b\u6765\u5927\u6982\u90fd\u5728**\u4e07\u5143\u4ee5\u4e0a**\uff08\u4e3b\u8981\u53d6\u51b3\u4e8e\u9009\u62e9\u7684\u6863\u6b21\uff0c\u6709\u8fdb\u53e3\u88c5\u5907\uff09\u3002 * \u6587\u7ae0 2 \u6307\u51fa\uff0c\u90e8\u5206\u6fc0\u5149\u88c5\u5907\u5957\u88c5\u7684\u4ef7\u683c\u5728**1 \u5343\u591a\u5230 2 \u5343\u591a**\u5143\u3002 * \u6587\u7ae0 4 \u63d0\u5230\uff0c\u6709",
+      "exact_official_score": 0.20779220779220778,
+      "longbench_dataset": "dureader",
+      "longbench_task_family": "qa",
+      "max_prompt_tokens": 4096,
+      "reason": "systems still trails exact by 0.001 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.0013405948889819719,
+      "systems_effective_bytes_per_token": 49910.5,
+      "systems_generated_text": "\u6839\u636e\u63d0\u4f9b\u7684\u6587\u7ae0\u5185\u5bb9\uff0c\u771f\u4eba CS \u88c5\u5907\u7684\u4ef7\u683c\u56e0\u7c7b\u578b\u3001\u529f\u80fd\u548c\u3001\u6863\u6b21\u53ca\u54c1\u724c\u4e0d\u540c\u800c\u6709\u5f88\u5927\u5dee\u5f02\uff0c\u5177\u4f53\u4ef7\u683c\u8303\u56f4\u5982\u4e0b\uff1a 1. **\u6574\u4f53\u8303\u56f4\u8303\u56f4**\uff1a * \u6587\u7ae0 1 \u6307\u51fa\uff0c\u88c5\u5907\u5206\u4e3a BB \u7c7b\u3001\u956d\u5c04\u7c7b\u548c IPSC \u7ade\u6280\u7c7b\uff0c\u5168\u5957\u4e0b\u6765\u5927\u6982\u90fd\u5728**\u4e07\u5143\u4ee5\u4e0a**\uff08\u4e3b\u8981\u53d6\u51b3\u4e8e\u9009\u62e9\u7684\u6863\u6b21\uff0c\u4e5f\u6709\u8fdb\u53e3\u88c5\u5907\uff09\u3002 * \u6587\u7ae0 3 \u6307\u51fa\uff0c\u90e8\u5206\u6fc0\u5149\u88c5\u5907\u5957\u88c5\u7684\u4ef7\u683c\u5728**1 \u5343\u591a\u5230 2 \u5343\u591a**\u5143\u3002 * \u6587\u7ae0 4 \u63d0\u5230\uff0c\u6709",
+      "systems_official_score": 0.2064516129032258,
+      "systems_official_score_raw": 0.19393939393939394
+    },
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "repobench-p_row464",
+      "exact_effective_bytes_per_token": 18854.125993883794,
+      "exact_generated_text": "@<EmojiResponse> getEmojis(@QueryMap Map<String, Em @NonNull public List<Result> getResults() { return !AbstractListUtils.isEmpty(results) ? results : Collections.<Result>extractList(); Next } } src/main/java/com/ jis/EmojiTag",
+      "exact_official_score": 0.36065573770491804,
+      "longbench_dataset": "repobench-p",
+      "longbench_task_family": "code",
+      "max_prompt_tokens": 4096,
+      "reason": "systems still trails exact by 0.001 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.001178613521911509,
+      "systems_effective_bytes_per_token": 49372.77064220184,
+      "systems_generated_text": "@<EmojiResponse> getEmojis(@QueryMap Map<String, Em @NonNull public List<Result> getResults() { return !AbstractListUtils.isEmpty(results) ? results : Collections.<Result>extractList(); Next } } src/main/java/com/Emjis/EmojiTag",
+      "systems_official_score": 0.35947712418300654,
+      "systems_official_score_raw": 0.6901408450704225
+    },
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "dureader_row117",
+      "exact_effective_bytes_per_token": 17553.477753912244,
+      "exact_generated_text": "\u6839\u636e\u63d0\u4f9b\u7684\u6587\u7ae0\u5185\u5bb9\uff0c\u771f\u4eba CS \u88c5\u5907\u7684\u4ef7\u683c\u56e0\u7c7b\u578b\u3001\u529f\u80fd\u548c\u6863\u6b21\u4e0d\u540c\u800c\u6709\u5f88\u5927\u5dee\u5f02\uff0c\u5177\u4f53\u4ef7\u683c\u8303\u56f4\u5982\u4e0b\uff1a 1. **\u6574\u4f53\u8303\u56f4**\uff1a * \u6587\u7ae0 1 \u63d0\u5230\uff0c\u88c5\u5907\u5206\u4e3a BB \u7c7b\u3001\u956d\u5c04\u7c7b\u548c IPSC \u7ade\u6280\u7c7b\uff0c\u5168\u5957\u4e0b\u6765\u5927\u6982\u90fd\u5728**\u4e07\u5143\u4ee5\u4e0a**\uff08\u4e3b\u8981\u53d6\u51b3\u4e8e\u9009\u62e9\u7684\u6863\u6b21\uff0c\u6709\u8fdb\u53e3\u88c5\u5907\uff09\u3002 * \u6587\u7ae0 2 \u6307\u51fa\uff0c\u90e8\u5206\u6fc0\u5149\u88c5\u5907\u5957\u88c5\u7684\u4ef7\u683c\u5728**1 \u5343\u591a\u5230 2 \u5343\u591a**\u5143\u3002\u5177\u4f53\u770b\u529f\u80fd\u591a\u5c11\u3002 * \u6587\u7ae0 4 \u63d0\u5230\uff0c",
+      "exact_official_score": 0.27096774193548384,
+      "longbench_dataset": "dureader",
+      "longbench_task_family": "qa",
+      "max_prompt_tokens": 8192,
+      "reason": "systems still trails exact by 0.002 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.0017369727047145678,
+      "systems_effective_bytes_per_token": 43149.70727216938,
+      "systems_generated_text": "\u6839\u636e\u63d0\u4f9b\u7684\u6587\u7ae0\u5185\u5bb9\uff0c\u771f\u4eba CS \u88c5\u5907\u7684\u4ef7\u683c\u56e0\u7c7b\u578b\u3001\u529f\u80fd\u548c\u6863\u6b21\u4e0d\u540c\u800c\u6709\u5f88\u5927\u5dee\u5f02\uff0c\u5177\u4f53\u4ef7\u683c\u8303\u56f4\u5982\u4e0b\uff1a 1. **\u6574\u4f53\u8303\u56f4**\uff1a * \u6587\u7ae0 1 \u63d0\u5230\uff0c\u88c5\u5907\u5206\u4e3a BB \u7c7b\u3001\u956d\u5c04\u7c7b\u548c IPSC \u7ade\u6280\u7c7b\uff0c\u5168\u5957\u4e0b\u6765\u5927\u6982\u90fd\u5728**\u4e07\u5143\u4ee5\u4e0a**\uff08\u4e3b\u8981\u53d6\u51b3\u4e8e\u9009\u62e9\u7684\u6863\u6b21\uff0c\u4e5f\u6709\u8fdb\u53e3\u88c5\u5907\uff09\u3002 * \u6587\u7ae0 3 \u6307\u51fa\uff0c\u90e8\u5206\u6fc0\u5149\u88c5\u5907\u5957\u88c5\u7684\u4ef7\u683c\u5728**1 \u5343\u591a\u5230 2 \u5343\u591a**\u5143\u3002\u5177\u4f53\u770b\u529f\u80fd\u591a\u5c11\u3002 * \u6587\u7ae0 4 \u63d0\u5230\uff0c",
+      "systems_official_score": 0.2692307692307693,
+      "systems_official_score_raw": 0.25301204819277107
+    },
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "multi_news_row72",
+      "exact_effective_bytes_per_token": 19345.4643805844,
+      "exact_generated_text": "The United States is facing a looming government shutdown as Congress races against a Monday night deadline to approve new funding for federal agencies. The standoff stems from a legislative disagreement over the Affordable Care Act (Obamacare). While the House of Representatives, led by Speaker John Boehner, voted to pass a spending plan extending includes delaying the health law for one year and repealing its medical on medical devices, Senate Democrats have vowed to reject any changes to the legislation. President Majority Leader Harry Reid and adopted a hardline stance, urging President Obama Obama to refuse negotiations and veto any bill containing anti-Obamacare provisions. Reid believes that conceding on a short-term stop bill would only encourage Republicans to demand further concessions on the debt ceiling and long-term budget issues. Consequently, the plan to vote the House\u2019s amendments law amendments from the spending bill, leaving a to either pass a clean continuing resolution or risk a shutdown shutdown. The political stakes are high for both parties. House Republicans, particularly conservative, the conference, are pressuring Boehner to maintain a confrontational stance to demonstrate their fight against the health law, even if it results a brief shutdown. Conversely, Democrats argue that a political backlash from a shutdown would be devastating for the GOP, potentially costing them their majority in the House. However, the risk of a shutdown is now considered a-certain. If the House refuses to pass a clean stopgap measure, the government could close for the first time since the Clinton era. with the possibility of the blame fallout likely squarely on Speaker Boehner. The economic consequences social consequences of a shutdown are expected to be severe, particularly for the Washington region, which relies heavily on federal employment. Local economists project that the region could lose an estimated $200 million a day, with over 700,000 jobs taking impacted. Essential 60% of the area\u2019s 377,000 federal workers would be deemed \"nonessential\" and furloughed, while contractors would also face significant losses. Beyond services such as air traffic control and the U.S. Postal Service would likely to operate, but non-essential services will halt. This includes the closure of national parks, the Smithsonian museums, and the National Zoo, as well as a suspension of new applications for Medicare, Social Security, and child-care subsidies. Additionally, new benefits like face delayslogs, and local governments in Maryland and Virginia warn bracing for a losses in income tax revenue. While Mayor Vincent C. Gray of the, D.C., is attempting to keep city",
+      "exact_official_score": 0.1662870159453303,
+      "longbench_dataset": "multi_news",
+      "longbench_task_family": "summarization",
+      "max_prompt_tokens": 8192,
+      "reason": "systems still trails exact by 0.000 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.00018917749254301897,
+      "systems_effective_bytes_per_token": 52224.0,
+      "systems_generated_text": "The United States is facing a looming government shutdown as Congress races against a Monday night deadline to approve new funding for federal agencies. The standoff stems from a legislative disagreement over the Affordable Care Act (Obamacare). While the House of Representatives, led by Speaker John Boehner, voted to approve a plan plan extending includes delaying the health law for one year and repealing its medical on medical devices, Senate Democrats have vowed to reject any changes to the legislation. President Majority Leader Harry Reid and adopted a hardline stance, urging President Obama Obama to refuse negotiations and veto any bill containing anti-Obamacare provisions. Reid believes that conceding on a short-term stop bill would only encourage Republicans to demand further concessions on the debt ceiling and long-term budget issues. Consequently, the plan to vote the House\u2019s amendments law amendments from the spending bill, leaving a to either pass a clean continuing resolution or risk a shutdown shutdown. The political stakes are high for both parties. House Republicans, particularly conservative, the conference, are pressuring Boehner to maintain a confrontational stance to demonstrate their fight against the health law, even if it results a brief shutdown. Conversely, Democrats argue that a political backlash from a shutdown would be devastating for the GOP, potentially costing them their majority in the House. However, the risk of a shutdown is now considered a-certain. If the House refuses to pass a clean stopgap measure, the government could close for the first time since the Clinton era. with the possibility of the blame fallout likely largely on Speaker Boehner. The potential consequences social consequences of a shutdown are expected to be severe, particularly for the Washington region, which relies heavily on federal employment. Local economists project that the region could lose an estimated $200 million a day, with over 700,000 jobs financially impacted. Essential 60 percent of the area\u2019s 377,000 federal workers could be deemed \"nonessential\" and furloughed, while contractors would also face significant losses. Beyond services such as air traffic control and the U.S. Postal Service would likely to operate, but critical-essential services will halt. This includes the closure of national parks, the Smithsonian museums, and the National Zoo, as well as a suspension of new applications for Medicare, Social Security, and child-care subsidies. Additionally, new benefits like face delayslogs, and local governments in Maryland and Virginia warn bracing for a losses in income tax revenue. While Mayor Vincent C. Gray of the, D.C., is attempting to keep city",
+      "systems_official_score": 0.16609783845278728,
+      "systems_official_score_raw": 0.16609783845278728
+    },
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "qmsum_row88",
+      "exact_effective_bytes_per_token": 18288.0,
+      "exact_generated_text": "Based were no discussions regarding university mergers in the provided transcript; the meeting focused on teacher recruitment and retention, the Welsh dispute in further education,, student health support for students, and the issue of essay mills",
+      "exact_official_score": 0.09150326797385622,
+      "longbench_dataset": "qmsum",
+      "longbench_task_family": "summarization",
+      "max_prompt_tokens": 8192,
+      "reason": "systems still trails exact by 0.001 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.0005941770647653055,
+      "systems_effective_bytes_per_token": 42861.75,
+      "systems_generated_text": "Based were no discussions regarding university mergers in the provided transcript; the meeting focused on teacher recruitment and retention, the Welsh dispute in further education colleges, mental health support for students, and the issue of essay mills",
+      "systems_official_score": 0.09090909090909091,
+      "systems_official_score_raw": 0.08695652173913043
+    },
+    {
+      "classification": "downstream_under_attention",
+      "evaluation_prompt_id": "repobench-p_row464",
+      "exact_effective_bytes_per_token": 18854.125993883794,
+      "exact_generated_text": "@<EmojiResponse> getEmojis(@QueryMap Map<String, Em @NonNull public List<Result> getResults() { return !AbstractListUtils.isEmpty(results) ? results : Collections.<Result>extractList(); Next } } src/main/java/com/ jis/EmojiTag",
+      "exact_official_score": 0.36065573770491804,
+      "longbench_dataset": "repobench-p",
+      "longbench_task_family": "code",
+      "max_prompt_tokens": 8192,
+      "reason": "systems still trails exact by 0.001 after cleaning, but the miss is not explained by formatting alone",
+      "score_gap_vs_exact": 0.001178613521911509,
+      "systems_effective_bytes_per_token": 49372.77064220184,
+      "systems_generated_text": "@<EmojiResponse> getEmojis(@QueryMap Map<String, Em @NonNull public List<Result> getResults() { return !AbstractListUtils.isEmpty(results) ? results : Collections.<Result>extractList(); Next } } src/main/java/com/Emjis/EmojiTag",
+      "systems_official_score": 0.35947712418300654,
+      "systems_official_score_raw": 0.6901408450704225
+    }
+  ],
+  "summary_rows": [
+    {
+      "classification": "downstream_under_attention",
+      "n_rows": 6
+    }
+  ],
+  "task_family_rows": [
+    {
+      "classification": "downstream_under_attention",
+      "n_rows": 2,
+      "task_family": "code"
+    },
+    {
+      "classification": "downstream_under_attention",
+      "n_rows": 2,
+      "task_family": "qa"
+    },
+    {
+      "classification": "downstream_under_attention",
+      "n_rows": 2,
+      "task_family": "summarization"
+    }
+  ]
+}
