@@ -1,0 +1,30 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+  "feature_set_id": "runtime_safe",
+  "calibration": {
+    "fraction": 0.25,
+    "seed": 0,
+    "min_target_accuracy": 0.999,
+    "min_safe_prediction_rate": 1.0,
+    "linear_offsets": [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5],
+    "correctness_weight": 1.0,
+    "bytes_weight": 1.0
+  },
+  "strategies": [
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted"
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_calibrated"
+    },
+    {
+      "strategy_id": "linear_softmax_compression_equal_tradeoff",
+      "result_id": "linear_softmax_compression_equal_tradeoff"
+    }
+  ],
+  "serving_smoke": {
+    "enabled": false
+  }
+}

@@ -6,14 +6,25 @@ from pathlib import Path
 import numpy as np
 
 from dotcache.selector_baselines import (
+    CandidateSafeRouterModel,
+    CandidateTargetLinearSelectorModel,
+    CandidateTargetRouterModel,
     RUNTIME_SELECTOR_FEATURE_NAMES,
     LinearSelectorModel,
+    SelectorExample,
     adjust_linear_selector_model_logits,
+    evaluate_candidate_safe_router_model,
+    evaluate_candidate_target_router_model,
+    build_selector_class_error_weights,
+    build_selector_example_weights,
+    calibrate_selector_logit_offset,
+    candidate_feature_names_from_examples,
     discover_selector_split_dirs,
     load_selector_candidate_examples,
     load_linear_selector_model,
     load_selector_examples,
     load_selector_split_examples,
+    normalize_selector_categorical_token,
     render_selector_fixed_split_batch_markdown,
     run_selector_baseline_bakeoff,
     run_selector_fixed_split_batch_bakeoff,
@@ -24,9 +35,15 @@ from dotcache.selector_baselines import (
     run_selector_leave_prompt_variant_out_bakeoff,
     run_selector_leave_layer_out_bakeoff,
     run_selector_multiseed_bakeoff,
+    save_page_selector_artifact,
+    load_page_selector_artifact,
     split_selector_examples,
+    selector_feature_names_from_examples,
     train_candidate_safe_linear_selector,
+    train_candidate_safe_router,
+    train_candidate_target_router,
     train_linear_selector,
+    train_calibrated_runtime_linear_selector,
     train_runtime_linear_selector,
 )
 
@@ -236,6 +253,117 @@ def test_adjust_linear_selector_model_logits_updates_only_target_bias() -> None:
     assert float(adjusted.bias[1]) == 0.5
 
 
+def test_build_selector_example_weights_upweights_compression_friendly_rows(tmp_path) -> None:
+    labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+
+    weights = build_selector_example_weights(
+        examples,
+        safe_bytes_weight=2.0,
+        reference_candidate="M3/affine/4/float16",
+    )
+
+    assert weights.shape == (8,)
+    assert all(float(weight) > 1.0 for weight in weights[:4])
+    assert all(float(weight) == 1.0 for weight in weights[4:])
+
+
+def test_build_selector_class_error_weights_upweights_unsafe_non_target_candidates(tmp_path) -> None:
+    labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+
+    weights = build_selector_class_error_weights(
+        examples,
+        classes=("M0/affine/4", "M3/affine/4/float16"),
+        unsafe_error_weight=3.0,
+    )
+
+    assert weights.shape == (8, 2)
+    assert float(weights[0, 1]) == 1.0
+    assert float(weights[4, 0]) == 4.0
+    assert float(weights[4, 1]) == 1.0
+
+
+def test_calibrate_selector_logit_offset_finds_more_compressive_feasible_offset() -> None:
+    candidate_map = {
+        "M0/affine/4": {"candidate": "M0/affine/4", "safe": True, "total_bytes": 740},
+        "M3/affine/4/float16": {"candidate": "M3/affine/4/float16", "safe": True, "total_bytes": 1448},
+    }
+
+    def make_example(trace_path: str, *, trace_rms: float, target_candidate: str) -> SelectorExample:
+        best_safe_total_bytes = 740 if target_candidate == "M0/affine/4" else 1448
+        safe_candidates = ["M0/affine/4", "M3/affine/4/float16"] if target_candidate == "M0/affine/4" else ["M3/affine/4/float16"]
+        return SelectorExample(
+            trace_path=trace_path,
+            row={
+                "trace_path": trace_path,
+                "source": "unit-test",
+                "stage": "prefill",
+                "prompt_family": "cache",
+                "prompt_variant": "locality",
+                "kind": "K",
+                "layer_id": 3,
+                "layer_fraction": 0.13,
+                "kv_head_id": 0,
+                "kv_head_fraction": 0.0,
+                "token_start": 0,
+                "token_age": 24,
+                "token_count": 2,
+                "head_dim": 256,
+                "query_present": False,
+                "safe_candidate_count": len(safe_candidates),
+                "best_safe_total_bytes": best_safe_total_bytes,
+                "target_candidate": target_candidate,
+                "target_present": True,
+                "trace_rms": trace_rms,
+                "trace_abs_max": 2.0,
+                "trace_channel_range_mean": 0.9,
+                "trace_outlier_fraction": 0.0,
+                "age_per_token": 12.0,
+            },
+            label={"safe_candidates": safe_candidates},
+            candidate_map=dict(candidate_map),
+        )
+
+    examples = [
+        make_example("row0", trace_rms=0.8, target_candidate="M0/affine/4"),
+        make_example("row1", trace_rms=0.4, target_candidate="M0/affine/4"),
+        make_example("row2", trace_rms=0.9, target_candidate="M3/affine/4/float16"),
+    ]
+    feature_index = RUNTIME_SELECTOR_FEATURE_NAMES.index("trace_rms")
+    weight = np.zeros((len(RUNTIME_SELECTOR_FEATURE_NAMES), 2), dtype=np.float32)
+    weight[feature_index, 0] = -1.0
+    weight[feature_index, 1] = 1.0
+    model = LinearSelectorModel(
+        classes=("M0/affine/4", "M3/affine/4/float16"),
+        weight=weight,
+        bias=np.asarray([0.7, -0.7], dtype=np.float32),
+        feature_mean=np.zeros((len(RUNTIME_SELECTOR_FEATURE_NAMES),), dtype=np.float32),
+        feature_std=np.ones((len(RUNTIME_SELECTOR_FEATURE_NAMES),), dtype=np.float32),
+        feature_names=tuple(RUNTIME_SELECTOR_FEATURE_NAMES),
+    )
+
+    calibration = calibrate_selector_logit_offset(
+        model,
+        examples,
+        target_candidate="M3/affine/4/float16",
+        offsets=[0.0, -0.3, -1.0],
+        min_target_accuracy=1.0,
+        min_safe_prediction_rate=1.0,
+    )
+
+    assert calibration["used_feasible_subset"] is True
+    assert calibration["best"]["logit_offset"] == -0.3
+    assert calibration["best"]["target_accuracy"] == 1.0
+    assert calibration["best"]["mean_predicted_total_bytes"] < calibration["evaluations"][0]["mean_predicted_total_bytes"]
+
+
 def test_selector_split_falls_back_when_stratified_groups_are_singletons(tmp_path) -> None:
     labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
     examples = load_selector_examples(
@@ -327,6 +455,17 @@ def test_selector_fixed_split_bakeoff_uses_predeclared_bundle(tmp_path) -> None:
         linear_steps=600,
         linear_learning_rate=0.3,
         linear_l2=1e-4,
+        weighted_selector_config={
+            "class_balance": 0.5,
+            "safe_bytes_weight": 1.0,
+            "reference_candidate": "M3/affine/4/float16",
+            "calibration_fraction": 0.5,
+            "calibration_seed": 0,
+            "calibration_target_candidate": "M3/affine/4/float16",
+            "calibration_offsets": [0.0, -0.3, -1.0],
+            "calibration_min_target_accuracy": 1.0,
+            "calibration_min_safe_prediction_rate": 1.0,
+        },
         split_metadata=payload["split_summary"],
     )
 
@@ -335,6 +474,8 @@ def test_selector_fixed_split_bakeoff_uses_predeclared_bundle(tmp_path) -> None:
     assert result["split"]["test_count"] == 4
     assert result["split"]["split_metadata"]["split_name"] == "unit_fixed"
     assert result["results"]["linear_softmax"]["target_accuracy"] == 1.0
+    assert result["results"]["linear_softmax_compression_weighted"]["target_accuracy"] == 1.0
+    assert result["results"]["linear_softmax_compression_calibrated"]["safe_prediction_rate"] == 1.0
     assert result["results"]["candidate_linear_safe"]["safe_prediction_rate"] == 1.0
 
 
@@ -379,13 +520,27 @@ def test_selector_fixed_split_batch_bakeoff_compares_multiple_frozen_splits(tmp_
         linear_steps=600,
         linear_learning_rate=0.3,
         linear_l2=1e-4,
+        weighted_selector_config={
+            "class_balance": 0.5,
+            "safe_bytes_weight": 1.0,
+            "reference_candidate": "M3/affine/4/float16",
+            "calibration_fraction": 0.5,
+            "calibration_seed": 0,
+            "calibration_target_candidate": "M3/affine/4/float16",
+            "calibration_offsets": [0.0, -0.3, -1.0],
+            "calibration_min_target_accuracy": 1.0,
+            "calibration_min_safe_prediction_rate": 1.0,
+        },
     )
 
     assert payload["split_count"] == 2
     assert [split["split_name"] for split in payload["splits"]] == ["cache_holdout", "reasoning_holdout"]
     assert payload["aggregate_results"]["linear_softmax"]["fold_count"] == 2
+    assert payload["aggregate_results"]["linear_softmax_compression_weighted"]["fold_count"] == 2
+    assert payload["aggregate_results"]["linear_softmax_compression_calibrated"]["fold_count"] == 1
     markdown = render_selector_fixed_split_batch_markdown(payload["splits"])
     assert "split | baseline | test_examples" in markdown
+    assert "mean_predicted_total_bytes" in markdown
     assert "cache_holdout" in markdown
     assert "reasoning_holdout" in markdown
 
@@ -503,6 +658,190 @@ def test_runtime_linear_selector_artifact_round_trips(tmp_path) -> None:
     loaded = load_linear_selector_model(target_path)
 
     assert loaded.classes == model.classes
-    assert loaded.feature_names == tuple(RUNTIME_SELECTOR_FEATURE_NAMES)
-    assert "query_present" not in loaded.feature_names
+    assert tuple(RUNTIME_SELECTOR_FEATURE_NAMES) == loaded.feature_names[: len(RUNTIME_SELECTOR_FEATURE_NAMES)]
+    assert "query_present" in loaded.feature_names
+    assert "page_distance" in loaded.feature_names
+    assert "log_page_distance" in loaded.feature_names
+    assert "page_distance_ge_4" in loaded.feature_names
     assert "safe_candidate_count" not in loaded.feature_names
+    assert "family_cache" in loaded.feature_names
+    assert "family_reasoning" in loaded.feature_names
+    assert "variant_locality" in loaded.feature_names
+    assert "variant_logic" in loaded.feature_names
+
+
+def test_candidate_safe_router_round_trips_and_evaluates(tmp_path) -> None:
+    labels_path, selector_dataset_path, selector_candidate_dataset_path = _write_example_bundle(tmp_path)
+    _ = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+    candidate_examples = load_selector_candidate_examples(
+        selector_candidate_dataset_path=selector_candidate_dataset_path,
+    )
+
+    router = train_candidate_safe_router(candidate_examples, steps=100, learning_rate=0.1, l2=1e-4)
+    target_path = tmp_path / "candidate_safe_router_model.json"
+    save_page_selector_artifact(router, target_path)
+    loaded = load_page_selector_artifact(target_path)
+
+    assert isinstance(loaded, CandidateSafeRouterModel)
+    assert loaded.candidate_tokens == ("M0/affine/4", "M3/affine/4/float16")
+    summary = evaluate_candidate_safe_router_model(loaded, candidate_examples)
+    assert summary.target_accuracy == 1.0
+    assert summary.safe_prediction_rate == 1.0
+
+
+def test_candidate_target_router_round_trips_and_evaluates(tmp_path) -> None:
+    labels_path, selector_dataset_path, selector_candidate_dataset_path = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+    candidate_examples = load_selector_candidate_examples(
+        selector_candidate_dataset_path=selector_candidate_dataset_path,
+    )
+
+    router = train_candidate_target_router(
+        candidate_examples,
+        steps=600,
+        learning_rate=0.3,
+        l2=1e-4,
+        feature_names=candidate_feature_names_from_examples(candidate_examples, feature_set_id="runtime_safe"),
+        prompt_family_thresholds={normalize_selector_categorical_token("reasoning") or "": 0.4},
+    )
+    target_path = tmp_path / "candidate_target_router_model.json"
+    save_page_selector_artifact(router, target_path)
+    loaded = load_page_selector_artifact(target_path)
+
+    assert isinstance(loaded, CandidateTargetRouterModel)
+    assert loaded.candidate_tokens == ("M0/affine/4", "M3/affine/4/float16")
+    assert loaded.prompt_family_thresholds == {"reasoning": 0.4}
+    summary = evaluate_candidate_target_router_model(loaded, candidate_examples)
+    assert summary.target_accuracy == 1.0
+    assert summary.safe_prediction_rate == 1.0
+
+
+def test_candidate_target_router_logit_offset_can_prefer_m0_on_ties(tmp_path) -> None:
+    labels_path, selector_dataset_path, selector_candidate_dataset_path = _write_example_bundle(tmp_path)
+    _ = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+    candidate_examples = load_selector_candidate_examples(
+        selector_candidate_dataset_path=selector_candidate_dataset_path,
+    )
+    feature_names = candidate_feature_names_from_examples(candidate_examples, feature_set_id="runtime_safe")
+    weight = np.zeros((len(feature_names),), dtype=np.float32)
+    weight[feature_names.index("candidate_mode_m3")] = 2.0
+    model = CandidateTargetLinearSelectorModel(
+        weight=weight,
+        bias=0.0,
+        feature_mean=np.zeros((len(feature_names),), dtype=np.float32),
+        feature_std=np.ones((len(feature_names),), dtype=np.float32),
+        feature_names=feature_names,
+    )
+    row = {
+        key: value
+        for key, value in candidate_examples[0].row.items()
+        if not key.startswith("candidate_")
+    }
+    baseline_router = CandidateTargetRouterModel(
+        target_model=model,
+        candidate_tokens=("M0/affine/4", "M3/affine/4/float16"),
+        fallback_candidate="M3/affine/4/float16",
+    )
+    penalized_router = CandidateTargetRouterModel(
+        target_model=model,
+        candidate_tokens=("M0/affine/4", "M3/affine/4/float16"),
+        fallback_candidate="M3/affine/4/float16",
+        candidate_logit_offsets={"M3/affine/4/float16": -3.0},
+    )
+
+    assert baseline_router.predict_row(row) == "M3/affine/4/float16"
+    assert penalized_router.predict_row(row) == "M0/affine/4"
+
+
+def test_selector_feature_set_builders_distinguish_runtime_and_research(tmp_path) -> None:
+    labels_path, selector_dataset_path, selector_candidate_dataset_path = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+    candidate_examples = load_selector_candidate_examples(
+        selector_candidate_dataset_path=selector_candidate_dataset_path,
+    )
+
+    runtime_row_features = selector_feature_names_from_examples(examples, feature_set_id="runtime_safe")
+    research_row_features = selector_feature_names_from_examples(examples, feature_set_id="research_extended")
+    runtime_candidate_features = candidate_feature_names_from_examples(candidate_examples, feature_set_id="runtime_safe")
+    research_candidate_features = candidate_feature_names_from_examples(candidate_examples, feature_set_id="research_extended")
+
+    assert "safe_candidate_count" not in runtime_row_features
+    assert "safe_candidate_count" in research_row_features
+    assert "log_best_safe_total_bytes" not in research_row_features
+    assert "compression_gain_vs_m3" not in research_row_features
+    assert "safe_candidate_count" not in runtime_candidate_features
+    assert "candidate_bytes_over_best_safe" not in runtime_candidate_features
+    assert "safe_candidate_count" in research_candidate_features
+    assert "candidate_bytes_over_best_safe" not in research_candidate_features
+    assert "log_best_safe_total_bytes" not in research_candidate_features
+
+
+def test_train_calibrated_runtime_linear_selector_returns_global_calibration(tmp_path) -> None:
+    labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+
+    model, calibration = train_calibrated_runtime_linear_selector(
+        examples,
+        steps=100,
+        learning_rate=0.1,
+        l2=1e-4,
+        class_balance=0.5,
+        safe_bytes_weight=1.0,
+        unsafe_error_weight=0.5,
+        calibration_fraction=0.5,
+        calibration_offsets=(-0.5, 0.0, 0.5),
+        calibration_target_candidate="M3/affine/4/float16",
+        calibration_min_target_accuracy=0.0,
+        calibration_min_safe_prediction_rate=0.0,
+    )
+
+    assert model is not None
+    assert calibration is not None
+    assert calibration["target_candidate"] == "M3/affine/4/float16"
+    assert float(calibration["best"]["logit_offset"]) in {-0.5, 0.0, 0.5}
+
+
+def test_train_calibrated_runtime_linear_selector_supports_equal_tradeoff_objective(tmp_path) -> None:
+    labels_path, selector_dataset_path, _ = _write_example_bundle(tmp_path)
+    examples = load_selector_examples(
+        labels_path=labels_path,
+        selector_dataset_path=selector_dataset_path,
+    )
+
+    model, calibration = train_calibrated_runtime_linear_selector(
+        examples,
+        steps=100,
+        learning_rate=0.1,
+        l2=1e-4,
+        class_balance=0.5,
+        safe_bytes_weight=1.0,
+        unsafe_error_weight=0.5,
+        calibration_fraction=0.5,
+        calibration_offsets=(-0.5, 0.0, 0.5),
+        calibration_target_candidate="M3/affine/4/float16",
+        calibration_objective="equal_tradeoff",
+        calibration_correctness_weight=1.0,
+        calibration_bytes_weight=1.0,
+    )
+
+    assert model is not None
+    assert calibration is not None
+    assert calibration["calibration_objective"] == "equal_tradeoff"
+    assert float(calibration["correctness_weight"]) == 0.5
+    assert float(calibration["bytes_weight"]) == 0.5
+    assert float(calibration["best"]["logit_offset"]) in {-0.5, 0.0, 0.5}

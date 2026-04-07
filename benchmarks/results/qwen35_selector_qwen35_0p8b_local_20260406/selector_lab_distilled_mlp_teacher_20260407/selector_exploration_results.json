@@ -1,0 +1,407 @@
+{
+  "config": {
+    "calibration": {
+      "binary_thresholds": [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "fraction": 0.25,
+      "linear_offsets": [
+        -1.5,
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
+        1.5
+      ],
+      "min_safe_prediction_rate": 1.0,
+      "min_target_accuracy": 0.999,
+      "seed": 0
+    },
+    "distillation": {
+      "teacher_epochs": 120,
+      "teacher_feature_set_id": "research_extended",
+      "teacher_hidden_dim": 16,
+      "teacher_learning_rate": 0.01,
+      "teacher_seed": 0,
+      "teacher_temperature": 1.0,
+      "teacher_weight": 0.5
+    },
+    "feature_set_id": "runtime_safe",
+    "report_axes": [
+      "min_family_safe_prediction_rate",
+      "min_family_target_accuracy",
+      "mean_predicted_total_bytes",
+      "mean_safe_bytes_regret"
+    ],
+    "serving_smoke": {
+      "command_template": [
+        "bash",
+        "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+        "{output_dir}",
+        "{artifact_path}",
+        "--profiles",
+        "exact",
+        "quality",
+        "--warmup-runs",
+        "0",
+        "--measured-runs",
+        "1",
+        "--max-new-tokens-retrieval",
+        "16",
+        "--max-new-tokens-reasoning",
+        "16",
+        "--max-new-tokens-instruction",
+        "8"
+      ],
+      "enabled": true
+    },
+    "strategies": [
+      {
+        "result_id": "linear_softmax_distilled_mlp_teacher",
+        "strategy_id": "linear_softmax_distilled_mlp_teacher"
+      }
+    ],
+    "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+    "weighted_selector": {
+      "class_balance": 0.5,
+      "l2": 0.001,
+      "learning_rate": 0.2,
+      "reference_candidate": "M3/affine/4/float16",
+      "safe_bytes_weight": 1.0,
+      "steps": 400,
+      "target_candidate": "M3/affine/4/float16",
+      "unsafe_error_weight": 0.5
+    }
+  },
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3424.841796875,
+        "mean_safe_bytes_regret": 85.0802001953125,
+        "mean_safe_prediction_rate": 0.9522727131843567,
+        "mean_target_accuracy": 0.926325798034668,
+        "min_family_safe_prediction_rate": 0.9284090995788574,
+        "min_family_target_accuracy": 0.8894886374473572,
+        "min_variant_safe_prediction_rate": 0.9261363744735718,
+        "min_variant_target_accuracy": 0.875
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/strategies/linear_softmax_distilled_mlp_teacher/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_distilled_mlp_teacher",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3755.4765625,
+          "mean_safe_bytes_regret": 127.62030029296875,
+          "safe_prediction_rate": 0.9284090995788574,
+          "target_accuracy": 0.8894886374473572
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "classes": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "model_type": "linear_selector_model_distilled",
+        "teacher_epochs": 120,
+        "teacher_feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "teacher_feature_set_id": "research_extended",
+        "teacher_hidden_dim": 16,
+        "teacher_learning_rate": 0.01,
+        "teacher_model_type": "candidate_target_mlp",
+        "teacher_seed": 0,
+        "teacher_temperature": 1.0,
+        "teacher_train_safe_prediction_rate": 1.0,
+        "teacher_train_target_accuracy": 1.0,
+        "teacher_weight": 0.5
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3621.737548828125,
+          "mean_safe_bytes_regret": 152.21621704101562,
+          "safe_prediction_rate": 0.925,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.88125
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3889.2158203125,
+          "mean_safe_bytes_regret": 103.0243911743164,
+          "safe_prediction_rate": 0.9318181818181818,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.8977272727272727
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/strategies/linear_softmax_distilled_mlp_teacher/predictions.jsonl",
+      "promotable": true,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": {
+        "command": [
+          "bash",
+          "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+          "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher",
+          "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/strategies/linear_softmax_distilled_mlp_teacher/selector_artifact.json",
+          "--profiles",
+          "exact",
+          "quality",
+          "--warmup-runs",
+          "0",
+          "--measured-runs",
+          "1",
+          "--max-new-tokens-retrieval",
+          "16",
+          "--max-new-tokens-reasoning",
+          "16",
+          "--max-new-tokens-instruction",
+          "8"
+        ],
+        "json_report_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher/task_selector_compare.json",
+        "markdown_report_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher/task_selector_compare.md",
+        "report": {
+          "rows": [
+            {
+              "exact_decode_ms_per_step": 298.9187968742044,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 677.6547552472039,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.21553882956504822,
+              "quality_teacher_forced_perplexity_ratio": 0.9899275345164326,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "instruction_constraints"
+            },
+            {
+              "exact_decode_ms_per_step": 292.464619877137,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 888.6346407525707,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.22330862283706665,
+              "quality_teacher_forced_perplexity_ratio": 0.9874911384995132,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "instruction_constraints"
+            },
+            {
+              "exact_decode_ms_per_step": 278.1524399979389,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 654.7320053750809,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.21308177709579468,
+              "quality_teacher_forced_perplexity_ratio": 0.9985687405174256,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "reasoning_arithmetic"
+            },
+            {
+              "exact_decode_ms_per_step": 320.28485668797657,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 920.6813255614179,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.1869400590658188,
+              "quality_teacher_forced_perplexity_ratio": 0.9957880816012795,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "reasoning_arithmetic"
+            },
+            {
+              "exact_decode_ms_per_step": 277.61338806158165,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 602.0558853142575,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.21691252291202545,
+              "quality_teacher_forced_perplexity_ratio": 0.9966154005791227,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "retrieval_passkey"
+            },
+            {
+              "exact_decode_ms_per_step": 357.0298906261087,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 862.4878098135014,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.20089636743068695,
+              "quality_teacher_forced_perplexity_ratio": 0.9973010939254637,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "retrieval_passkey"
+            }
+          ]
+        },
+        "returncode": 0,
+        "status": "ok",
+        "stderr_tail": "The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d\n\nLoading weights:   0%|          | 0/473 [00:00<?, ?it/s]\nLoading weights:   0%|          | 1/473 [00:02<15:51,  2.02s/it]\nLoading weights: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 473/473 [00:02<00:00, 234.08it/s]\n\nLoading weights:   0%|          | 0/473 [00:00<?, ?it/s]\nLoading weights:   0%|          | 1/473 [00:01<09:16,  1.18s/it]\nLoading weights: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 473/473 [00:01<00:00, 397.47it/s]\n",
+        "stdout_tail": " 0.0, \"v_m1_trial_token_p95_error_p95\": 0.0, \"v_m1_trial_token_p95_error_p95_mean\": 0.0, \"v_m1_trial_token_p95_error_p95_median\": 0.0, \"v_m1_trial_token_p95_error_p95_p95\": 0.0, \"v_m2_pages\": 0, \"v_m2_pages_mean\": 0.0, \"v_m2_pages_median\": 0.0, \"v_m2_pages_p95\": 0.0, \"v_m2_sidecar_pages\": 0, \"v_m2_sidecar_pages_mean\": 0.0, \"v_m2_sidecar_pages_median\": 0.0, \"v_m2_sidecar_pages_p95\": 0.0, \"v_m3_pages\": 395, \"v_m3_pages_mean\": 395.0, \"v_m3_pages_median\": 395.0, \"v_m3_pages_p95\": 395.0, \"v_m4_pages\": 0, \"v_m4_pages_mean\": 0.0, \"v_m4_pages_median\": 0.0, \"v_m4_pages_p95\": 0.0, \"v_requested_m1_pages\": 0, \"v_requested_m1_pages_mean\": 0.0, \"v_requested_m1_pages_median\": 0.0, \"v_requested_m1_pages_p95\": 0.0, \"v_total_static_pages\": 768, \"v_total_static_pages_mean\": 768.0, \"v_total_static_pages_median\": 768.0, \"v_total_static_pages_p95\": 768.0, \"vision_config_present\": true, \"warmup_runs\": 0, \"warmup_runs_mean\": 0.0, \"warmup_runs_median\": 0.0, \"warmup_runs_p95\": 0.0}\n# Qwen Task Selector Compare\n\n| task | prompt_length | exact_success | quality_success | systems_success | exact_decode_ms | quality_decode_ms | systems_decode_ms | systems_vs_quality_speedup | quality_ppl_ratio | systems_ppl_ratio | quality_rmse | systems_rmse |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| instruction_constraints | 512 | 0.000 | 0.000 | 0.000 | 298.919 | 677.655 | 0.000 | - | 0.990 | - | 0.216 | - |\n| instruction_constraints | 1024 | 0.000 | 0.000 | 0.000 | 292.465 | 888.635 | 0.000 | - | 0.987 | - | 0.223 | - |\n| reasoning_arithmetic | 512 | 0.000 | 0.000 | 0.000 | 278.152 | 654.732 | 0.000 | - | 0.999 | - | 0.213 | - |\n| reasoning_arithmetic | 1024 | 0.000 | 0.000 | 0.000 | 320.285 | 920.681 | 0.000 | - | 0.996 | - | 0.187 | - |\n| retrieval_passkey | 512 | 0.000 | 0.000 | 0.000 | 277.613 | 602.056 | 0.000 | - | 0.997 | - | 0.217 | - |\n| retrieval_passkey | 1024 | 0.000 | 0.000 | 0.000 | 357.030 | 862.488 | 0.000 | - | 0.997 | - | 0.201 | - |\n\n## Sample Outputs\n\n| task | prompt_length | profile | success | expected | generated_first_line | generated_text |\n| --- | --- | --- | --- | --- | --- | --- |\n| instruction_constraints | 512 | exact | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 512 | quality | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 1024 | exact | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 1024 | quality | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| reasoning_arithmetic | 512 | exact | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 512 | quality | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 1024 | exact | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 1024 | quality | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| retrieval_passkey | 512 | exact | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 512 | quality | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 1024 | exact | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 1024 | quality | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\nWrote JSONL: benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher/qwen35_0p8b_task_selector_compare.jsonl\nWrote report: benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher/task_selector_compare.md\n"
+      },
+      "status": "ok",
+      "strategy_id": "linear_softmax_distilled_mlp_teacher",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3314.375,
+          "mean_safe_bytes_regret": 210.1492462158203,
+          "safe_prediction_rate": 0.9305555820465088,
+          "target_accuracy": 0.875
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3881.2158203125,
+          "mean_safe_bytes_regret": 103.66033935546875,
+          "safe_prediction_rate": 0.9261363744735718,
+          "target_accuracy": 0.8920454382896423
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    }
+  ]
+}

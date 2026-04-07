@@ -1,0 +1,568 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{siunitx}
+\usepackage{threeparttable}
+\usepackage{tabularx}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\captionsetup{
+    font=small,
+    labelfont=bf,
+    labelsep=period
+}
+\captionsetup[table]{position=top,skip=5pt}
+\captionsetup[figure]{skip=6pt}
+\microtypesetup{protrusion=true,expansion=true,tracking=true}
+\renewcommand{\arraystretch}{1.12}
+\sisetup{
+    group-separator={,},
+    group-minimum-digits=4,
+    detect-all=true,
+    table-number-alignment=center
+}
+
+\title{
+DotCache: Runtime Page-Format Selection for Compressed-Domain KV-Cache Execution
+}
+
+\author{
+Dean Calver \\
+Independent Researcher
+}
+
+\date{April 2026}
+
+% ---------- Safe figure macro ----------
+\newcommand{\safefigure}[4][0.9\linewidth]{%
+\begin{figure}[tb]
+\centering
+\IfFileExists{#2}{%
+  \includegraphics[width=#1]{#2}%
+}{%
+  \setlength{\fboxsep}{10pt}%
+  \fbox{%
+    \colorbox{gray!8}{%
+    \parbox[c][0.24\textheight][c]{0.84\linewidth}{%
+      \centering
+      \textbf{Figure Placeholder}\\[0.6em]
+      \footnotesize Missing asset: \texttt{\detokenize{#2}}\\[0.4em]
+      \footnotesize Rebuild the figure generator or place the PDF at the path above.
+    }%
+    }%
+  }%
+}%
+\caption{#3}
+\label{#4}
+\end{figure}%
+}
+
+\newcommand{\safefigurehere}[4][0.9\linewidth]{%
+\begin{figure}[H]
+\centering
+\IfFileExists{#2}{%
+  \includegraphics[width=#1]{#2}%
+}{%
+  \setlength{\fboxsep}{10pt}%
+  \fbox{%
+    \colorbox{gray!8}{%
+    \parbox[c][0.24\textheight][c]{0.84\linewidth}{%
+      \centering
+      \textbf{Figure Placeholder}\\[0.6em]
+      \footnotesize Missing asset: \texttt{\detokenize{#2}}\\[0.4em]
+      \footnotesize Rebuild the figure generator or place the PDF at the path above.
+    }%
+    }%
+  }%
+}%
+\caption{#3}
+\label{#4}
+\end{figure}%
+}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Keywords:} KV cache, long-context inference, compressed-domain execution, runtime systems, LLM serving
+
+% ============================================================
+\begin{abstract}
+
+Long-context serving systems increasingly rely on KV caches whose cost is dominated by memory movement and decode-time execution rather than storage alone. While prior work has focused on compressing KV representations, most systems still execute attention on widened tensors, leaving decode-time overhead largely unchanged \cite{kvquant,kivi,qserve,innerq,llm_kv_survey}.
+
+DotCache instead executes attention directly on page-formatted KV representations, turning page format into a runtime execution decision rather than a static preprocessing choice. We study learned page-format selection in this setting and show that a small selector can serve as a practical default execution policy on Qwen-family models.
+
+Across a completed Qwen3.5 4B / 9B / 27B matrix spanning compact task slices, a LongBench-derived QA mini-pack, and backend-truth serving runs, the systems-tuned selector preserves task correctness while delivering consistent 2--4$\times$ decode speedups over quality-oriented execution. Selector overhead remains small and stable across model sizes.
+
+The learned execution path is strongly M3-heavy, indicating that the observed gains arise from execution structure rather than aggressive compression. These results demonstrate that runtime page-format selection is sufficient to unlock substantial serving improvements, and that compression ratio remains a secondary, tunable axis for future work.
+
+This result shows that compressed-domain execution is best understood as an execution abstraction rather than a compression regime, and that substantial gains are achievable even when the optimal operating point remains near full fidelity.
+
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+
+Long-context large language model inference is increasingly limited not by arithmetic throughput, but by memory movement and repeated access to the KV cache. As sequence length grows, both the footprint and the reuse cost of keys and values scale linearly, making decode-time attention a bandwidth- and execution-bound problem \cite{pagedattention,flashattention,flashattention2,llm_kv_survey}.
+
+Recent work has shown that aggressive KV compression is feasible, with low-bit representations preserving acceptable model quality across a range of tasks \cite{kvquant,kivi,qjl,polarquant,turboquant,innerq}. However, most existing systems treat compression as a storage optimization: compressed KV is widened back to higher precision before attention is executed. In this regime, decode-time performance remains dominated by dequantization, intermediate tensor materialization, and memory traffic \cite{qserve,innerq}.
+
+DotCache takes a different approach. Instead of treating compressed KV as an intermediate format, it executes attention directly on compressed, page-organized KV representations. This removes widening from the default execution path and shifts the problem from representation fidelity alone to execution structure. In this setting, page format is no longer a static preprocessing choice: it becomes part of the runtime serving algorithm.
+
+This change introduces a new systems problem. When attention operates directly on compressed pages, the runtime must decide which pages should use cheaper representations, which should retain higher fidelity, and how those choices affect both latency and output quality. Poor page-format decisions are no longer hidden by a downstream dequantization stage; they directly shape the execution path of score and mix computation.
+
+We address this with a learned page-format selector that treats precision as a runtime systems policy. The selector operates over a small menu of page formats and exposes two operating points: a quality-oriented profile and a systems-oriented profile. The latter is designed to minimize decode latency while preserving the task-level correctness we currently trust.
+
+Importantly, this paper is not a study of maximal KV compression, but of how runtime control over representation affects execution cost.
+
+\paragraph{Main result.}
+On Qwen-family models, compressed-domain attention with a learned selector is a practical default serving path. Across a completed Qwen3.5 4B / 9B / 27B matrix spanning compact task slices, a LongBench-derived QA mini-pack, and backend-truth serving runs, the systems-tuned selector preserves task correctness while delivering consistent multi-x decode speedups over quality-oriented execution.
+
+The key result is that execution structure alone can unlock substantial serving improvements, even in regimes where compression is minimal.
+
+\paragraph{Promotion call.}
+The results support a concrete serving decision: on Qwen-family models, the systems profile should be the default DotCache execution policy. In contrast, on Llama 3.2 3B the learned selector is already saturated to the high-fidelity regime, and quality and systems profiles are effectively equivalent. This indicates that selector policy is family-sensitive rather than globally fixed.
+
+\paragraph{Mechanism.}
+The learned execution path is strongly M3-heavy across all Qwen models, indicating that performance gains arise from execution structure rather than aggressive compression. Selector overhead remains small (approximately 25$\mu$s per invocation) and does not scale with model size, while the dominant remaining cost lies in backend score and mix execution on the selected pages.
+
+\paragraph{Scope and limits.}
+The current evaluation demonstrates consistent system gains and stable task correctness on compact task slices and a LongBench-derived mini-pack, but does not yet establish a full long-context quality frontier across broader benchmark suites or matched-budget external baselines. LongBench results are currently quality-neutral across configurations, making them a useful systems check but not yet a discriminative selector benchmark.
+
+\paragraph{Contributions.}
+This paper makes four contributions:
+\begin{itemize}[leftmargin=1.5em]
+\item We present DotCache, a compressed-domain KV execution model that eliminates widening from the default attention path.
+\item We introduce a learned page-format selector that turns precision into a runtime systems policy.
+\item We provide a completed Qwen 4B / 9B / 27B matrix demonstrating that the systems profile can serve as a default execution policy without degrading task correctness.
+\item We show that selector overhead is negligible and that the remaining performance bottleneck lies in backend execution rather than in the selection mechanism itself.
+\end{itemize}
+
+\FloatBarrier
+
+% ============================================================
+\section{Related Work}
+
+\subsection{KV Cache Compression and Quantization}
+
+A large body of recent work has explored reducing KV-cache footprint through low-bit quantization and transformed representations. Methods such as KVQuant~\cite{kvquant}, KIVI~\cite{kivi}, QJL~\cite{qjl}, PolarQuant~\cite{polarquant}, TurboQuant~\cite{turboquant}, and InnerQ~\cite{innerq} demonstrate that KV representations can be aggressively compressed while preserving usable model quality.
+
+System-oriented work such as QServe~\cite{qserve} further highlights that quantization must be considered together with runtime behavior, as decode-time dequantization and memory traffic can dominate performance. However, most of these approaches still treat compressed KV as a storage format and reconstruct higher-precision tensors before executing attention.
+
+DotCache differs in that it treats page-formatted KV as an \emph{execution format}. Attention is computed directly on page-structured representations, and page format is selected at runtime rather than fixed ahead of execution.
+
+\subsection{KV Cache Management and Adaptive Policies}
+
+Several recent works explore dynamic KV-cache management beyond static quantization. PQCache~\cite{pqcache} and XQuant~\cite{xquant} investigate alternative trade-offs such as product quantization and rematerialization, while StreamingLLM~\cite{streamingllm} and related approaches use structured windowing and sink-token strategies to reduce effective attention cost.
+
+The closest recent work to ours is ARKV~\cite{arkv}, which introduces an adaptive retain/quantize/evict policy under a global memory budget. ARKV assigns tokens to different states based on layer-wise statistics and online importance scoring, and reconstructs a mixed-precision KV cache that remains compatible with standard attention kernels.  ARKV operates under a global memory budget and reconstructs mixed-precision KV for standard kernels, whereas DotCache alters the execution path itself by changing the representation consumed by the kernel.
+
+In contrast, DotCache operates at a different level of abstraction. Rather than selecting token states under a memory budget, it selects page formats as part of the \emph{execution path}. Page-format choice directly affects the score and mix computation performed during attention, rather than only the stored representation. This distinction becomes particularly important in the current results, where the learned Qwen serving lanes are strongly M3-heavy and the observed performance gains arise primarily from execution structure rather than aggressive compression.
+
+\subsection{Attention Systems and Memory-Efficient Execution}
+
+At a broader level, our work is related to systems efforts that reduce attention cost by restructuring computation and memory access patterns. PagedAttention~\cite{pagedattention} and FlashAttention~\cite{flashattention,flashattention2} show that memory layout and IO-awareness can significantly improve attention efficiency even without changing model semantics.
+
+DotCache extends this line of work into the KV-cache domain by treating page format as a runtime systems decision. Instead of optimizing only data layout or kernel efficiency, it introduces a learned control surface over execution fidelity, allowing the serving system to select the most efficient execution path dynamically.
+
+Unlike prior IO-aware attention kernels such as FlashAttention~\cite{flashattention,flashattention2}, which optimize memory access patterns over a fixed dense representation, DotCache changes the representation consumed by the kernel itself. This introduces a learned control surface over execution fidelity, allowing the system to modify the score and mix computation path rather than only optimizing its implementation.
+
+\subsection{Summary}
+
+Prior work has established that KV compression and dynamic cache management can reduce memory footprint and, in some cases, improve throughput. Our results suggest a complementary perspective: even at high fidelity, treating KV representation as a runtime execution policy can yield substantial decode-time gains. This reframes KV optimization as a two-axis problem, separating execution structure from compression ratio, and motivates further exploration of both axes.
+
+% ============================================================
+\section{DotCache Execution Model}
+
+DotCache executes attention directly on page-formatted KV.
+
+\subsection{Page Formats}
+
+We consider a small format menu:
+\begin{itemize}[leftmargin=1.5em]
+\item M0: affine low-bit execution mode
+\item M3: high-precision escape mode
+\end{itemize}
+
+The current learned Qwen lanes are strongly M3-heavy, so this paper should be read primarily as an execution-policy result rather than as a strong compression-ratio result.
+
+\subsection{Key Observation}
+
+Execution cost depends not just on nominal precision, but on how pages are represented and consumed by the serving path. This makes page format a runtime systems decision rather than merely a storage decision.
+
+Page format directly affects the arithmetic and memory footprint of the score and mix computation, rather than only the stored representation.
+
+\FloatBarrier
+
+% ============================================================
+\section{Learned Page-Format Selection}
+
+The selector chooses page format at runtime.
+
+\subsection{Selector Design}
+
+We train a lightweight classifier over page statistics and expose two operating points:
+\begin{itemize}[leftmargin=1.5em]
+\item \textbf{quality}: conservative, fidelity-biased
+\item \textbf{systems}: latency-biased default serving profile
+\end{itemize}
+
+Concretely, the current promoted selector is a runtime-safe linear multiclass model trained on oracle-labeled replay rows. Each training row corresponds to one page decision and includes only features available at serving time: decode-stage and key/value indicators, relative layer and KV-head position, token start and age, page token count, head dimension, and lightweight trace statistics such as RMS, max magnitude, channel-range mean, outlier fraction, and age-per-token. Oracle supervision is defined by the cheapest safe candidate format for that page under replay-based labeling, and training/evaluation use frozen held-out splits over prompt families, prompt variants, and/or layers. In the current Qwen promotion lane, both operating points share the same base selector artifact and target the same promoted candidate (`M3/affine/4/float16`); the systems profile differs only by applying a positive logit bias toward that candidate, which shifts the runtime policy toward the faster serving point without changing the underlying model class.
+
+The runtime policy also includes a deterministic recent-history path. Before scoring older pages, DotCache preserves a sink window and an exact recent window, then applies query-aware shortlist expansion only over the remaining older history. The learned selector therefore operates inside a larger serving algorithm: anchor and recent pages are kept by rule, older pages are filtered by relevance, and page-format selection governs the compressed-domain execution path that remains. In the promoted Qwen lane, this guard corresponds to a `256`-token sink window, a `1024`-token recent window, and a small query-aware expansion over older pages.
+
+We observe stable selector behavior across model sizes and contexts, with no evidence of profile instability or fallback-triggered degradation in the validated Qwen lanes.
+
+The learned selector operates within a fixed serving scaffold consisting of sink and recent windows and a bounded relevance-based shortlist. All reported comparisons hold this scaffold constant; the selector only determines the page-format execution policy applied within that structure.
+
+\safefigurehere{figures/selector_pipeline.pdf}
+{DotCache page-format selection pipeline. The offline path captures traces, produces oracle labels, and trains a lightweight selector. At runtime, the selector assigns page formats on the write path, and attention executes directly on page-formatted KV without widening into dense tensors first.}
+{fig:selector_pipeline}
+
+\subsection{Key Insight}
+
+The selector does not discover a large codec zoo. Instead, it primarily learns when to promote pages into the higher-fidelity execution mode.
+
+\textbf{Result:} learned execution is strongly M3-heavy across the validated Qwen serving lanes.
+
+\FloatBarrier
+
+% ============================================================
+\section{Experimental Setup}
+
+\subsection{Models}
+
+\begin{itemize}[leftmargin=1.5em]
+\item Qwen3.5 4B
+\item Qwen3.5 9B
+\item Qwen3.5 27B
+\item Llama 3.2 3B
+\end{itemize}
+
+\subsection{Benchmarks}
+
+\begin{itemize}[leftmargin=1.5em]
+\item compact tasks
+\item LongBench QA mini-pack
+\item backend truth runs
+\end{itemize}
+
+All experiments were conducted with batch size 1 on a single NVIDIA RTX PRO 6000 GPU with 96\,GB VRAM, alongside 157\,GB host RAM and 16 vCPUs, using the Hugging Face \texttt{transformers} runtime on CUDA with \texttt{float16} weights and \texttt{float16} execution dtype. Backend-truth measurements refer to direct decode-time serving measurements under fixed prompts and contexts, without task-level variation. Page formats M0 and M3 correspond to affine low-bit page execution and a high-fidelity \texttt{float16} escape format, respectively. Selector overhead is measured per decode-step invocation.
+
+\subsection{Metrics}
+
+\begin{itemize}[leftmargin=1.5em]
+\item task success
+\item QA F1
+\item decode latency
+\item RMSE
+\item selector overhead
+\end{itemize}
+
+\FloatBarrier
+
+% ============================================================
+\section{Results}
+
+\paragraph{Reading guide.}
+We present the results in four passes: the headline Qwen scaling result, compact-task correctness, backend mechanism, and finally the broader scope checks on LongBench and cross-family behavior.
+
+\subsection{Headline Result: Qwen Scaling}
+
+Across Qwen3.5 4B, 9B, and 27B models, the systems selector profile consistently improves decode performance while preserving task-level correctness. This scaling behavior holds across compact task slices, backend-truth serving runs, and the current LongBench QA mini-pack.
+
+Across all evaluated Qwen configurations, the systems profile delivers approximately 2--4$\times$ decode speedup relative to the quality profile, with no systematic degradation in task success. The single observed failure case (Qwen3.5 27B retrieval at 2048 tokens) is shared across exact, quality, and systems configurations, and therefore does not indicate a selector-specific regression.
+
+These results establish that compressed-domain execution with learned selection is not limited to small-model regimes, but scales coherently to native 27B serving lanes.
+
+We emphasize that this paper evaluates execution-path performance under a fixed model and does not yet attempt a full matched-budget comparison against external KV-reduction systems, which we leave for future work.
+
+\safefigurehere{figures/qwen_speedup_heatmap.pdf}
+{Decode speedup of the systems selector profile relative to the quality profile across Qwen3.5 model sizes and contexts. Speedups are consistent across 4B, 9B, and 27B models, demonstrating that compressed-domain execution is not limited to small-model regimes and that the gains grow with both model size and context length.}
+{fig:qwen_speedup}
+
+\subsection{Compact-Task Correctness}
+
+Compact task rows provide the clearest signal for selector correctness. Across all Qwen models, the systems profile preserves exact-match task success while reducing decode latency substantially. Speedups increase with both model size and context length, reaching over 4$\times$ in the 27B setting.
+
+Task success remains stable across all Qwen models, with the single failure case shared across exact, quality, and systems configurations, indicating it is not a selector regression.
+
+\begin{table}[H]
+\centering
+\small
+\begin{threeparttable}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l l r r r l@{}}
+\toprule
+Model & Task & Context & Quality ms & Systems ms & Speedup \\
+\midrule
+Qwen3.5-4B & instruction & 1024 & 193.9 & 71.3 & 2.72$\times$ \\
+Qwen3.5-4B & reasoning   & 2048 & 295.8 & 127.6 & 2.32$\times$ \\
+Qwen3.5-9B & instruction & 1024 & 141.5 & 47.5 & 2.98$\times$ \\
+Qwen3.5-9B & retrieval   & 2048 & 247.2 & 69.3 & 3.57$\times$ \\
+Qwen3.5-27B & instruction & 1024 & 356.5 & 118.9 & 3.00$\times$ \\
+Qwen3.5-27B & reasoning   & 2048 & 585.7 & 148.8 & 3.94$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Representative compact task results across Qwen model scale.\tnote{a}}
+\label{tab:compact_tasks}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item[a] Across the full compact-task matrix, task-success delta between the systems and quality profiles is exactly zero in every reported row. The quality-retention signal is therefore better expressed as a table note than as a standalone figure.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
+\subsection{Backend Truth and Cost Structure}
+
+Backend-truth runs isolate decode performance from higher-level task variability. Across all Qwen models, the learned selector path consistently outperforms both exact and shortlist baselines by approximately 3$\times$.
+
+The learned execution path is strongly M3-heavy across all models, indicating that performance gains arise from execution structure rather than aggressive compression. That is, the selector primarily learns when to promote pages into a higher-fidelity execution mode that yields better end-to-end performance.
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}l r r l@{}}
+\toprule
+Model & Exact ms & Learned ms & Speedup \\
+\midrule
+Qwen3.5-4B  & 232.2 & 71.5  & 3.25$\times$ \\
+Qwen3.5-9B  & 404.7 & 105.7 & 3.83$\times$ \\
+Qwen3.5-27B & 821.4 & 236.0 & 3.48$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Backend-truth decode performance.}
+\label{tab:backend_truth}
+\end{table}
+
+\safefigurehere{figures/backend_breakdown.pdf}
+{Per-step decode cost breakdown for exact, shortlist, and learned (systems) execution. The learned path reduces overall latency while remaining strongly M3-heavy. The dominant remaining cost is backend score and mix computation, not selector overhead or symbol unpacking.}
+{fig:backend_breakdown}
+
+\subsection{Why the Learned Path Still Wins}
+
+Across all Qwen models, the learned execution path is strongly M3-heavy. This indicates that the observed performance gains are not primarily driven by aggressive KV compression, but by executing attention directly over page-structured representations with a learned runtime policy.
+
+This distinction matters. The present results should be interpreted as demonstrating that execution structure alone is sufficient to unlock substantial serving improvements. Compression ratio remains an orthogonal axis that can be explored further, but is not required for the gains observed here.
+
+This suggests that avoiding widening and intermediate tensor materialization provides sufficient savings to offset the higher-fidelity representation cost.
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l r r l l@{}}
+\toprule
+Model & Context & M3 Fraction & Speedup & Interpretation \\
+\midrule
+Qwen3.5-4B  & 1024 & 0.982 & 3.25$\times$ & M3-dominant \\
+Qwen3.5-9B  & 2048 & 0.999 & 3.83$\times$ & near-full fidelity \\
+Qwen3.5-27B & 2048 & 0.995 & 3.48$\times$ & M3-dominant at scale \\
+\bottomrule
+\end{tabular}
+\caption{Compression profile of the learned execution path.}
+\label{tab:compression_profile}
+\end{table}
+
+\subsection{Selector Overhead}
+
+Selector overhead remains approximately 25$\mu$s per invocation and is effectively constant across model sizes from 4B to 27B. This confirms that the selector is not a scaling bottleneck and does not materially contribute to decode-time cost.
+
+In contrast, the dominant remaining cost in the learned execution path is backend score and mix computation on selected pages. This indicates that further optimization effort should focus on execution kernels rather than selection logic.
+
+\subsection{LongBench Sanity Check}
+
+On the current LongBench QA mini-pack, quality remains effectively identical across exact, quality, systems, and streaming configurations. This indicates that compressed-domain execution does not degrade quality under this workload.
+
+However, the current mini-pack is not strongly discriminative for selector behavior, as all configurations produce similar quality scores. It is therefore best interpreted as a comparative systems check rather than a full long-context quality benchmark.  The role of the current LongBench evaluation is therefore to verify that compressed-domain execution does not introduce regressions, rather than to establish a full reasoning-quality frontier.
+
+Relative to a streaming sink-plus-recent baseline, the systems profile achieves lower RMSE while maintaining competitive or superior decode speed in most configurations. This places DotCache on a distinct point of the speed--quality frontier \cite{streamingllm}.
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}l r r r l@{}}
+\toprule
+Model & Context & QA F1 (Exact) & QA F1 (Systems) & Speedup \\
+\midrule
+Qwen3.5-4B  & 4096 & 0.253 & 0.253 & 3.12$\times$ \\
+Qwen3.5-9B  & 4096 & 0.441 & 0.441 & 6.16$\times$ \\
+Qwen3.5-27B & 4096 & 0.358 & 0.358 & 5.24$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{LongBench QA mini-pack results.}
+\label{tab:longbench}
+\end{table}
+
+\subsection{Exploratory Longer-Context Probe}
+
+To partially address context-length concerns, we ran a small exploratory stress test beyond the 4K LongBench mini-pack using a fixed four-prompt Needle-in-a-Haystack-style retrieval pack at 32768 and 49152 tokens. These rows are not a full benchmark and should be read as systems-oriented probes rather than publication-grade long-context task evidence.
+
+The key signal is that the shortlist lane continues to produce large decode-time wins at approximately 48K context while preserving perfect retrieval accuracy on this probe set.
+
+This behavior is consistent with the main thesis of the paper: that execution-structure gains persist as context grows, even when compression remains minimal.
+
+Notably, the magnitude of the speedup increases with context length, suggesting that the benefits of avoiding widening and restructuring decode-time computation grow with sequence length.
+
+This suggests that execution-structure gains persist into the long-context regime even as model-level limitations begin to dominate exact-match performance.
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}r r r r r r@{}}
+\toprule
+Context & Exact ms & Best shortlist ms & Speedup & Retrieval acc. & Exact match \\
+\midrule
+32768 & 2496.1 & 509.5 & 4.90$\times$ & 1.00 & 1.00 \\
+49152 & 3966.8 & 641.1 & 6.19$\times$ & 1.00 & 0.75 \\
+\bottomrule
+\end{tabular}
+\caption{Exploratory longer-context probe on a four-prompt needle-style retrieval pack. ``Best shortlist'' refers to the current layer-23 context-aware shortlist variant.}
+\label{tab:long_context_probe}
+\end{table}
+
+\FloatBarrier
+\subsection{Cross-Family Behavior}
+
+\begin{table}[H]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}l r r l l@{}}
+\toprule
+Model & Exact Success & Systems Success & Speedup & Interpretation \\
+\midrule
+Qwen3.5-9B   & 1.000 & 1.000 & 3.50$\times$ & Promote systems \\
+Llama 3.2-3B & 1.000 & 1.000 & 0.98$\times$ & Profiles equivalent \\
+\bottomrule
+\end{tabular}
+\caption{Cross-family selector behavior.}
+\label{tab:cross_family}
+\end{table}
+
+Selector behavior is family-sensitive. On Qwen models, the systems profile consistently improves performance while preserving correctness and is therefore the preferred default. On Llama 3.2 3B, the selector is already saturated to the high-fidelity regime, and quality and systems profiles are effectively equivalent.
+
+\safefigurehere{figures/selector_mechanism.pdf}
+{Selector behavior across Qwen models shown as two aligned panels: the fraction of pages executed in M3 and the learned-policy decode speedup relative to exact execution. The systems profile remains strongly M3-heavy while still delivering substantial runtime gains, which makes the operating point easier to read without overloading a single axis.}
+{fig:selector_mechanism}
+
+\subsection{Summary}
+
+Across all evaluated Qwen configurations, three consistent observations emerge:
+\begin{itemize}[leftmargin=1.5em]
+\item The systems selector profile delivers substantial decode speedups (2--4$\times$) without degrading task correctness.
+\item Selector overhead is negligible and does not scale with model size.
+\item The learned execution path is strongly M3-heavy, and the remaining bottleneck lies in backend score and mix computation rather than in selection.
+\end{itemize}
+
+Together, these results support a concrete serving decision: for Qwen-family models, compressed-domain execution with a systems-tuned selector is a practical default path.
+
+\FloatBarrier
+
+% ============================================================
+\section{Discussion}
+
+The learned selector primarily acts as a control surface over execution fidelity rather than as a compression optimizer. On Qwen-family models, the systems operating point is strongly M3-heavy, indicating that the selector learns when to promote pages into a higher-fidelity execution path that minimizes overall decode cost. This suggests that the primary optimization target has shifted from representation fidelity to execution structure.
+
+The key empirical observation is that the learned policy converges to a strongly M3-heavy operating point, yet still delivers substantial speedups. This indicates that the primary gain comes from executing attention directly over page-structured KV representations, rather than from reducing precision alone.
+
+Importantly, the selector’s value lies not in model complexity but in its coupling to the execution path. Even a simple linear policy is sufficient because page-format choice directly alters the score and mix computation performed at decode time, making the selector an effective control surface over execution rather than a standalone predictive model.
+
+This reframes KV optimization as a two-axis problem. The first axis is execution structure: how attention is computed over page-organized KV representations. The second is compression ratio: how aggressively KV values are reduced in precision or representation size. The current results show that substantial gains are already achievable along the execution axis alone, even at high fidelity.
+
+This separation suggests a natural path for future work. Once execution structure is optimized, compression can be reintroduced as a tunable parameter, allowing systems to trade off memory footprint and execution cost explicitly rather than conflating the two.
+
+The cross-family results further indicate that optimal selector behavior is model-dependent. Qwen models benefit from a systems-biased selector, while Llama models already converge to a high-fidelity regime without additional bias. This reinforces the view that page-format selection is a runtime policy problem rather than a static design choice.
+
+This perspective also distinguishes DotCache from prior KV-cache work that primarily emphasizes storage compression, rematerialization, or alternative long-context approximations \cite{kvquant,kivi,qjl,polarquant,turboquant,innerq,pqcache,xquant,streamingllm}.
+
+The current evaluation establishes correctness and performance trends at moderate-to-long contexts, but does not yet fully characterize behavior in the extreme long-context regime. Extending evaluation beyond 4k context with more discriminative benchmarks is an important direction for future work.
+
+\subsection{Beyond Attention KV Caches}
+
+While this work focuses on KV-cache attention, the underlying mechanism is not specific to attention alone. DotCache treats page format as a runtime execution policy over structured state, rather than as a fixed storage format.
+
+Many modern architectures, including hybrid attention–recurrent designs such as DeltaNet-style layers, maintain additional state that is read and updated during decode. These state tensors share key properties with KV caches: they are sequence-indexed, repeatedly accessed, and participate directly in decode-time computation.
+
+Preliminary experiments in our internal DeltaNet-side exploration suggest that applying the same page-format selection approach to recurrent and convolutional state can yield similar performance benefits. In these cases, the same pattern emerges: runtime control over representation fidelity can reduce execution cost even when the optimal operating point remains relatively high fidelity.
+
+This suggests that runtime state formatting is a general systems abstraction rather than an attention-specific optimization. Extending learned page-format selection to hybrid architectures and non-attention state is therefore a natural direction for future work.
+
+\FloatBarrier
+
+% ============================================================
+\section{Limitations}
+
+\begin{itemize}[leftmargin=1.5em]
+\item External matched-budget baselines remain thin.
+\item The current LongBench QA evaluation uses a mini-pack rather than a full suite.
+\item Broader context and benchmark coverage are still being expanded.
+\item Backend score and mix remain the dominant systems tax on the learned path.
+\item The current promoted Qwen serving lanes are strongly M3-heavy, so this paper does not yet demonstrate substantial KV footprint reduction in the deployed configuration.
+\end{itemize}
+
+% ============================================================
+\section{Conclusion}
+
+DotCache demonstrates that compressed-domain execution is practical at scale. A small learned selector is sufficient to make this the default serving path on Qwen-family models. The remaining challenge lies in backend execution cost rather than selection, and the current results suggest that execution structure is already a powerful optimization axis even before strong compression ratios are enforced.
+
+\clearpage
+\appendix
+\section{Runtime Selector Features}
+
+Table~\ref{tab:runtime_selector_features} lists the runtime-safe features used by the promoted linear selector. These are the features available at serving time; oracle-training rows may contain additional bookkeeping fields used only for labeling and evaluation.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Feature & Meaning at runtime \\
+\midrule
+`stage\_decode` & Indicator that the row corresponds to a decode-stage page decision rather than a prefill-stage row. \\
+`kind\_key` & Indicator distinguishing key-page decisions from value-page decisions. \\
+`layer\_fraction` & Layer index normalized to model depth, providing coarse vertical position in the network. \\
+`kv\_head\_fraction` & KV-head index normalized to the head count, capturing head-local routing tendencies. \\
+`log\_token\_start` & Log-scaled absolute page start position in the context. \\
+`log\_token\_age` & Log-scaled distance from the current decode frontier to the page. \\
+`token\_count` & Number of tokens covered by the page. \\
+`head\_dim` & Attention head dimension for the owning model family. \\
+`trace\_rms` & Root-mean-square activation magnitude of the page trace. \\
+`log\_trace\_abs\_max` & Log-scaled maximum absolute activation in the trace. \\
+`trace\_channel\_range\_mean` & Mean per-channel dynamic range, used as a compact dispersion summary. \\
+`trace\_outlier\_fraction` & Fraction of trace values flagged as outliers by the oracle pipeline. \\
+`age\_per\_token` & Token age normalized by page size, capturing how old the page is relative to its span. \\
+\bottomrule
+\end{tabularx}
+\caption{Runtime-safe feature set for the promoted linear page-format selector.}
+\label{tab:runtime_selector_features}
+\end{table}
+
+\FloatBarrier
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

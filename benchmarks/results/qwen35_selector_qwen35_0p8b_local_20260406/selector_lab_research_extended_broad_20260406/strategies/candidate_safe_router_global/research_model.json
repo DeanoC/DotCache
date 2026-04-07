@@ -1,0 +1,16 @@
+{
+  "candidate_tokens": [
+    "M0/affine/2",
+    "M0/affine/3",
+    "M0/affine/4",
+    "M1/lut/4",
+    "M2/sketch/4",
+    "M3/affine/4/float16",
+    "M4/project/4",
+    "T3/turbo3/3"
+  ],
+  "decision_threshold": 0.3,
+  "fallback_candidate": "M3/affine/4/float16",
+  "model_type": "candidate_router",
+  "prompt_family_thresholds": {}
+}
