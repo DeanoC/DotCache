@@ -191,12 +191,14 @@ def main() -> int:
             last_marker = (
                 f"{summary['last_dataset']}#{summary['last_row_index']}:{summary['last_case']}"
             )
+        recent_mean_wall_s = "-"
+        if summary["recent_mean_wall_s"] is not None:
+            recent_mean_wall_s = f"{float(summary['recent_mean_wall_s']):.2f}"
         print(
             f"  shard {int(summary['shard_index']):02d}: "
             f"prompts={int(summary['prompt_count'])} "
             f"aggregates={int(summary['completed_aggregates'])}/{int(summary['total_expected_aggregates'])} "
-            f"recent_mean_wall_s="
-            f"{('-' if summary['recent_mean_wall_s'] is None else f'{float(summary['recent_mean_wall_s']):.2f}') } "
+            f"recent_mean_wall_s={recent_mean_wall_s} "
             f"eta={format_duration(summary['eta_seconds'])} "
             f"last={last_marker}"
         )
