@@ -36,7 +36,10 @@ if transformers_available():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 else:  # pragma: no cover - exercised in environments without transformers
     torch = None
-    nn = object  # type: ignore[assignment]
+    class _FallbackNN:
+        class Module:
+            pass
+    nn = _FallbackNN()  # type: ignore[assignment]
     gemma4_mod = None
     AutoModelForCausalLM = None
     AutoTokenizer = None

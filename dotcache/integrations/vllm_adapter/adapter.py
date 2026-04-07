@@ -17,7 +17,10 @@ try:  # pragma: no cover - torch is optional for the base repo
     import torch.nn as nn
 except ImportError:  # pragma: no cover
     torch = None
-    nn = object  # type: ignore[assignment]
+    class _FallbackNN:
+        class Module:
+            pass
+    nn = _FallbackNN()  # type: ignore[assignment]
 
 
 def _require_torch() -> None:

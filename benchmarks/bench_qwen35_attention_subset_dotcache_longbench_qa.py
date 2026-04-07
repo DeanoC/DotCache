@@ -12,11 +12,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import torch
-from transformers import AutoConfig
+try:
+    import torch
+except ImportError:  # pragma: no cover - import-time fallback for metric-only tests.
+    torch = None  # type: ignore[assignment]
 
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.integrations.qwen35 import Qwen35AttentionSubsetDotCacheHarness, transformers_available
+from dotcache.longbench_v1 import get_dataset_spec, list_supported_datasets, score_prediction
 
 from benchmarks.bench_qwen35_attention_subset_dotcache_needle import (
     _apply_missing_serving_defaults,
@@ -32,55 +35,8 @@ from benchmarks.bench_qwen35_attention_subset_dotcache_serving import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LONGBENCH_ZIP_URL = "https://huggingface.co/datasets/zai-org/LongBench/resolve/main/data.zip?download=true"
 
-SUPPORTED_DATASETS = {
-    "hotpotqa": {
-        "prompt": (
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
-            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "The following are given passages.\n{context}\n\n"
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
-            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "Question: {input}\nAnswer:"
-        ),
-        "max_new_tokens": 32,
-    },
-    "2wikimqa": {
-        "prompt": (
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
-            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "The following are given passages.\n{context}\n\n"
-            "Answer the question based on the given passages. Only give me the answer and do not output any other words.\n"
-            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "Question: {input}\nAnswer:"
-        ),
-        "max_new_tokens": 32,
-    },
-    "multifieldqa_en": {
-        "prompt": (
-            "Read the following text and answer briefly.\n\n"
-            "{context}\n\n"
-            "Now, answer the following question based on the above text, only give me the answer and do not output any other words.\n"
-            "Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "Question: {input}\nAnswer:"
-        ),
-        "max_new_tokens": 64,
-    },
-    "qasper": {
-        "prompt": (
-            "You are given a scientific article and a question. Answer the question as concisely as you can, using a single phrase or sentence if possible. "
-            'If the question cannot be answered based on the information in the article, write "unanswerable". If the question is a yes/no question, answer "yes", "no", or "unanswerable". '
-            "Do not provide any explanation. Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n"
-            "Article: {context}\n\n"
-            ' Answer the question based on the above article as concisely as you can, using a single phrase or sentence if possible. If the question cannot be answered based on the information in the article, write "unanswerable". If the question is a yes/no question, answer "yes", "no", or "unanswerable". Do not provide any explanation. Do not output role labels like user or assistant. Do not output reasoning. The first visible token must begin the answer.\n\n'
-            "Question: {input}\n\n"
-            "Answer:"
-        ),
-        "max_new_tokens": 128,
-    },
-}
 
-
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="LongBench QA serving benchmark for the Qwen3.5 full-attention DotCache subset."
     )
@@ -188,12 +144,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--scorer-diagnostic", action="store_true")
     parser.add_argument("--tokens-per-page", type=int, default=16)
-    parser.add_argument("--longbench-dataset", choices=sorted(SUPPORTED_DATASETS), required=True)
+    parser.add_argument("--longbench-dataset", choices=sorted(list_supported_datasets()), required=True)
     parser.add_argument("--longbench-row-index", type=int, required=True)
     parser.add_argument("--longbench-cache-dir", default=str(REPO_ROOT / "benchmarks" / "cache" / "longbench"))
     parser.add_argument("--longbench-zip-url", default=DEFAULT_LONGBENCH_ZIP_URL)
     parser.add_argument("--longbench-max-prompt-tokens", type=int, default=0)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def normalize_answer(text: str) -> str:
@@ -343,7 +299,7 @@ def _truncate_prompt_middle(tokenizer, prompt_text: str, max_prompt_tokens: int)
     return truncated_prompt, original_len, True
 
 
-def _encode_prompt(tokenizer, prompt_text: str, *, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, int]:
+def _encode_prompt(tokenizer, prompt_text: str, *, device: Any) -> tuple[Any, Any, int]:
     encoded = tokenizer(prompt_text, truncation=False, return_tensors="pt")
     input_ids = encoded["input_ids"].to(device)
     attention_mask = encoded["attention_mask"].to(device)
@@ -353,6 +309,10 @@ def _encode_prompt(tokenizer, prompt_text: str, *, device: torch.device) -> tupl
 def _build_base_record(
     args: argparse.Namespace,
     *,
+    dataset: str,
+    row_index: int,
+    dataset_spec: Any,
+    effective_max_new_tokens: int,
     max_position_embeddings: int,
     row: dict[str, Any],
     prompt_length_tokens: int,
@@ -377,8 +337,8 @@ def _build_base_record(
         "dotcache_ready": False,
         "hybrid_family": "qwen3_5",
         "model_max_position_embeddings": int(max_position_embeddings),
-        "longbench_dataset": args.longbench_dataset,
-        "longbench_row_index": int(args.longbench_row_index),
+        "longbench_dataset": dataset,
+        "longbench_row_index": int(row_index),
         "longbench_row_length": int(row["length"]),
         "longbench_row_language": row["language"],
         "longbench_answers": list(row["answers"]),
@@ -388,7 +348,9 @@ def _build_base_record(
         "longbench_prompt_token_length": int(prompt_length_tokens),
         "longbench_prompt_token_length_original": int(prompt_length_tokens_original),
         "longbench_prompt_was_truncated": bool(prompt_was_truncated),
-        "max_new_tokens": int(args.max_new_tokens),
+        "longbench_metric_name": dataset_spec.metric_name,
+        "longbench_task_family": dataset_spec.task_family,
+        "max_new_tokens": int(effective_max_new_tokens),
         "learned_page_selector_path": args.learned_page_selector_path,
         "learned_page_selector_prompt_family": args.learned_page_selector_prompt_family,
         "learned_page_selector_prompt_variant": args.learned_page_selector_prompt_variant,
@@ -403,24 +365,26 @@ def _build_base_record(
     }
 
 
-def main() -> None:
-    args = parse_args()
+def resolve_longbench_model_metadata(model_id: str) -> tuple[int, int]:
     if not transformers_available():
-        raise SystemExit(
+        raise RuntimeError(
             "bench_qwen35_attention_subset_dotcache_longbench_qa.py requires the optional transformers dependencies"
         )
-    _apply_missing_serving_defaults(args)
+    from transformers import AutoConfig
 
-    model_config = AutoConfig.from_pretrained(args.model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
+    model_config = AutoConfig.from_pretrained(model_id, trust_remote_code=False, **resolve_hf_auth_kwargs())
     text_config = getattr(model_config, "text_config", model_config)
     max_position_embeddings = int(getattr(text_config, "max_position_embeddings", 0) or 0)
     head_dim = int(text_config.hidden_size) // int(text_config.num_attention_heads)
+    return max_position_embeddings, head_dim
+
+
+def load_longbench_harness_from_args(
+    args: argparse.Namespace,
+) -> tuple[Qwen35AttentionSubsetDotCacheHarness, int]:
+    _apply_missing_serving_defaults(args)
+    max_position_embeddings, head_dim = resolve_longbench_model_metadata(args.model_id)
     _resolve_args_from_layer_profile(args)
-
-    dataset_config = SUPPORTED_DATASETS[args.longbench_dataset]
-    if args.max_new_tokens == 0:
-        args.max_new_tokens = int(dataset_config["max_new_tokens"])
-
     harness = Qwen35AttentionSubsetDotCacheHarness.from_pretrained(
         args.model_id,
         dotcache_config=_build_dotcache_config(args, head_dim=head_dim),
@@ -429,14 +393,27 @@ def main() -> None:
         torch_dtype=args.torch_dtype,
         weight_quantization=args.weight_quantization,
     )
+    return harness, max_position_embeddings
 
-    zip_path = _ensure_longbench_zip(Path(args.longbench_cache_dir), args.longbench_zip_url)
-    row = _load_longbench_row(zip_path, args.longbench_dataset, args.longbench_row_index)
-    prompt_text = str(dataset_config["prompt"]).format(context=row["context"], input=row["input"])
 
-    effective_max_prompt_tokens = int(args.longbench_max_prompt_tokens)
+def build_longbench_record(
+    args: argparse.Namespace,
+    harness: Qwen35AttentionSubsetDotCacheHarness,
+    *,
+    max_position_embeddings: int,
+    zip_path: Path,
+    dataset: str,
+    row_index: int,
+    max_prompt_tokens: int | None = None,
+) -> dict[str, Any]:
+    dataset_spec = get_dataset_spec(dataset)
+    effective_max_new_tokens = int(args.max_new_tokens) if int(args.max_new_tokens) > 0 else int(dataset_spec.max_new_tokens)
+    row = _load_longbench_row(zip_path, dataset, row_index)
+    prompt_text = str(dataset_spec.prompt_template).format(context=row["context"], input=row["input"])
+
+    effective_max_prompt_tokens = int(args.longbench_max_prompt_tokens if max_prompt_tokens is None else max_prompt_tokens)
     if effective_max_prompt_tokens <= 0 and max_position_embeddings > 0:
-        effective_max_prompt_tokens = max(max_position_embeddings - int(args.max_new_tokens), 1)
+        effective_max_prompt_tokens = max(max_position_embeddings - int(effective_max_new_tokens), 1)
     prompt_text, original_prompt_tokens, prompt_was_truncated = _truncate_prompt_middle(
         harness.tokenizer,
         prompt_text,
@@ -448,19 +425,39 @@ def main() -> None:
         device=harness.adapter.device,
     )
 
-    result = _run_case(
-        harness,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        args=args,
-    )
+    original_max_new_tokens = int(args.max_new_tokens)
+    args.max_new_tokens = int(effective_max_new_tokens)
+    try:
+        result = _run_case(
+            harness,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            args=args,
+        )
+    finally:
+        args.max_new_tokens = int(original_max_new_tokens)
 
     generated_text = _decode_generated_text(harness.tokenizer, list(result.get("dotcache_generated_ids", [])))
-    answer_score = score_longbench_answers(generated_text, list(row["answers"]))
+    raw_generated_text = str(generated_text).strip()
     cleaned_generated_text = clean_longbench_generated_text(generated_text)
-    cleaned_answer_score = score_longbench_answers(cleaned_generated_text, list(row["answers"]))
+    raw_official_score = score_prediction(
+        dataset,
+        raw_generated_text,
+        list(row["answers"]),
+        all_classes=list(row.get("all_classes") or []),
+    )
+    official_score = score_prediction(
+        dataset,
+        cleaned_generated_text,
+        list(row["answers"]),
+        all_classes=list(row.get("all_classes") or []),
+    )
     record = _build_base_record(
         args,
+        dataset=dataset,
+        row_index=row_index,
+        dataset_spec=dataset_spec,
+        effective_max_new_tokens=effective_max_new_tokens,
         max_position_embeddings=max_position_embeddings,
         row=row,
         prompt_length_tokens=prompt_length_tokens,
@@ -468,16 +465,61 @@ def main() -> None:
         prompt_was_truncated=prompt_was_truncated,
     )
     record.update(result)
-    record.update(answer_score)
+    record.update(official_score)
     record.update(
         {
+            "longbench_generated_text": raw_generated_text,
             "longbench_generated_text_cleaned": cleaned_generated_text,
-            "longbench_chat_artifact_cleaned": bool(cleaned_generated_text != str(generated_text).strip()),
-            "longbench_generated_text_scored_cleaned": cleaned_answer_score["longbench_generated_text_scored"],
-            "longbench_answer_exact_match_cleaned": cleaned_answer_score["longbench_answer_exact_match"],
-            "longbench_qa_f1_max_cleaned": cleaned_answer_score["longbench_qa_f1_max"],
-            "longbench_best_matching_answer_cleaned": cleaned_answer_score["longbench_best_matching_answer"],
+            "longbench_chat_artifact_cleaned": bool(cleaned_generated_text != raw_generated_text),
+            "longbench_official_score_raw": raw_official_score["longbench_official_score"],
+            "longbench_prediction_scored_raw": raw_official_score["longbench_prediction_scored"],
+            "longbench_best_matching_answer_raw": raw_official_score["longbench_best_matching_answer_official"],
+            "longbench_official_score_cleaning_delta": (
+                float(official_score["longbench_official_score"]) - float(raw_official_score["longbench_official_score"])
+            ),
+            "longbench_generated_text_scored_cleaned": official_score["longbench_prediction_scored"],
+            "longbench_best_matching_answer_cleaned": official_score["longbench_best_matching_answer_official"],
         }
+    )
+    if dataset_spec.metric_name in {"qa_f1", "qa_f1_zh"}:
+        raw_answer_score = score_longbench_answers(raw_generated_text, list(row["answers"]))
+        cleaned_answer_score = score_longbench_answers(cleaned_generated_text, list(row["answers"]))
+        record.update(
+            {
+                "longbench_answer_exact_match_raw": raw_answer_score["longbench_answer_exact_match"],
+                "longbench_qa_f1_max_raw": raw_answer_score["longbench_qa_f1_max"],
+                "longbench_answer_exact_match_cleaned": cleaned_answer_score["longbench_answer_exact_match"],
+                "longbench_qa_f1_max_cleaned": cleaned_answer_score["longbench_qa_f1_max"],
+            }
+        )
+    else:
+        record.update(
+            {
+                "longbench_answer_exact_match_raw": None,
+                "longbench_qa_f1_max_raw": None,
+                "longbench_answer_exact_match_cleaned": None,
+                "longbench_qa_f1_max_cleaned": None,
+            }
+        )
+    return record
+
+
+def main() -> None:
+    args = parse_args()
+    if not transformers_available():
+        raise SystemExit(
+            "bench_qwen35_attention_subset_dotcache_longbench_qa.py requires the optional transformers dependencies"
+        )
+    harness, max_position_embeddings = load_longbench_harness_from_args(args)
+    zip_path = _ensure_longbench_zip(Path(args.longbench_cache_dir), args.longbench_zip_url)
+    record = build_longbench_record(
+        args,
+        harness,
+        max_position_embeddings=max_position_embeddings,
+        zip_path=zip_path,
+        dataset=str(args.longbench_dataset),
+        row_index=int(args.longbench_row_index),
+        max_prompt_tokens=int(args.longbench_max_prompt_tokens),
     )
     print(json.dumps(record, sort_keys=True), flush=True)
 

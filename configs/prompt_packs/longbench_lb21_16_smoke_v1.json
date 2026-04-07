@@ -1,0 +1,456 @@
+{
+  "datasets": [
+    "2wikimqa",
+    "dureader",
+    "gov_report",
+    "hotpotqa",
+    "lcc",
+    "lsht",
+    "multi_news",
+    "multifieldqa_en",
+    "multifieldqa_zh",
+    "musique",
+    "narrativeqa",
+    "passage_count",
+    "passage_retrieval_en",
+    "passage_retrieval_zh",
+    "qasper",
+    "qmsum",
+    "repobench-p",
+    "samsum",
+    "trec",
+    "triviaqa",
+    "vcsum"
+  ],
+  "length_field": "row.length",
+  "manifest_name": "LB21-16",
+  "manifest_version": "v1",
+  "phase": "smoke",
+  "prompt_specs": [
+    {
+      "dataset": "narrativeqa",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "narrativeqa_row27",
+      "row_index": 27,
+      "row_length": 29630,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "narrativeqa",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "narrativeqa_row156",
+      "row_index": 156,
+      "row_length": 5397,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "qasper",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "qasper_row24",
+      "row_index": 24,
+      "row_length": 4656,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "qasper",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "qasper_row46",
+      "row_index": 46,
+      "row_length": 1678,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "multifieldqa_en",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "multifieldqa_en_row86",
+      "row_index": 86,
+      "row_length": 821,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "multifieldqa_en",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "multifieldqa_en_row117",
+      "row_index": 117,
+      "row_length": 6819,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "multifieldqa_zh",
+      "length_quartile": 3,
+      "metric_name": "qa_f1_zh",
+      "phase": "smoke",
+      "prompt_id": "multifieldqa_zh_row50",
+      "row_index": 50,
+      "row_length": 10370,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "multifieldqa_zh",
+      "length_quartile": 0,
+      "metric_name": "qa_f1_zh",
+      "phase": "smoke",
+      "prompt_id": "multifieldqa_zh_row107",
+      "row_index": 107,
+      "row_length": 2145,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "hotpotqa",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "hotpotqa_row105",
+      "row_index": 105,
+      "row_length": 11463,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "hotpotqa",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "hotpotqa_row129",
+      "row_index": 129,
+      "row_length": 1078,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "2wikimqa",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "2wikimqa_row106",
+      "row_index": 106,
+      "row_length": 1680,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "2wikimqa",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "2wikimqa_row175",
+      "row_index": 175,
+      "row_length": 6136,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "musique",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "musique_row45",
+      "row_index": 45,
+      "row_length": 11739,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "musique",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "musique_row120",
+      "row_index": 120,
+      "row_length": 8517,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "dureader",
+      "length_quartile": 3,
+      "metric_name": "rouge_l_zh",
+      "phase": "smoke",
+      "prompt_id": "dureader_row30",
+      "row_index": 30,
+      "row_length": 20456,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "dureader",
+      "length_quartile": 0,
+      "metric_name": "rouge_l_zh",
+      "phase": "smoke",
+      "prompt_id": "dureader_row117",
+      "row_index": 117,
+      "row_length": 11095,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "gov_report",
+      "length_quartile": 0,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "gov_report_row8",
+      "row_index": 8,
+      "row_length": 3091,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "gov_report",
+      "length_quartile": 3,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "gov_report_row52",
+      "row_index": 52,
+      "row_length": 10615,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "qmsum",
+      "length_quartile": 3,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "qmsum_row88",
+      "row_index": 88,
+      "row_length": 13868,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "qmsum",
+      "length_quartile": 0,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "qmsum_row132",
+      "row_index": 132,
+      "row_length": 5341,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "multi_news",
+      "length_quartile": 3,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "multi_news_row72",
+      "row_index": 72,
+      "row_length": 3547,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "multi_news",
+      "length_quartile": 0,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "multi_news_row117",
+      "row_index": 117,
+      "row_length": 420,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "vcsum",
+      "length_quartile": 3,
+      "metric_name": "rouge_l_zh",
+      "phase": "smoke",
+      "prompt_id": "vcsum_row158",
+      "row_index": 158,
+      "row_length": 22899,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "vcsum",
+      "length_quartile": 0,
+      "metric_name": "rouge_l_zh",
+      "phase": "smoke",
+      "prompt_id": "vcsum_row195",
+      "row_index": 195,
+      "row_length": 2676,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "trec",
+      "length_quartile": 3,
+      "metric_name": "classification",
+      "phase": "smoke",
+      "prompt_id": "trec_row73",
+      "row_index": 73,
+      "row_length": 7711,
+      "task_family": "classification"
+    },
+    {
+      "dataset": "trec",
+      "length_quartile": 0,
+      "metric_name": "classification",
+      "phase": "smoke",
+      "prompt_id": "trec_row112",
+      "row_index": 112,
+      "row_length": 2610,
+      "task_family": "classification"
+    },
+    {
+      "dataset": "triviaqa",
+      "length_quartile": 0,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "triviaqa_row36",
+      "row_index": 36,
+      "row_length": 1145,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "triviaqa",
+      "length_quartile": 3,
+      "metric_name": "qa_f1",
+      "phase": "smoke",
+      "prompt_id": "triviaqa_row198",
+      "row_index": 198,
+      "row_length": 12096,
+      "task_family": "qa"
+    },
+    {
+      "dataset": "samsum",
+      "length_quartile": 3,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "samsum_row18",
+      "row_index": 18,
+      "row_length": 9666,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "samsum",
+      "length_quartile": 0,
+      "metric_name": "rouge_l",
+      "phase": "smoke",
+      "prompt_id": "samsum_row41",
+      "row_index": 41,
+      "row_length": 1220,
+      "task_family": "summarization"
+    },
+    {
+      "dataset": "lsht",
+      "length_quartile": 0,
+      "metric_name": "classification",
+      "phase": "smoke",
+      "prompt_id": "lsht_row121",
+      "row_index": 121,
+      "row_length": 10089,
+      "task_family": "classification"
+    },
+    {
+      "dataset": "lsht",
+      "length_quartile": 3,
+      "metric_name": "classification",
+      "phase": "smoke",
+      "prompt_id": "lsht_row167",
+      "row_index": 167,
+      "row_length": 28891,
+      "task_family": "classification"
+    },
+    {
+      "dataset": "passage_count",
+      "length_quartile": 0,
+      "metric_name": "count",
+      "phase": "smoke",
+      "prompt_id": "passage_count_row78",
+      "row_index": 78,
+      "row_length": 5442,
+      "task_family": "counting"
+    },
+    {
+      "dataset": "passage_count",
+      "length_quartile": 3,
+      "metric_name": "count",
+      "phase": "smoke",
+      "prompt_id": "passage_count_row195",
+      "row_index": 195,
+      "row_length": 14973,
+      "task_family": "counting"
+    },
+    {
+      "dataset": "passage_retrieval_en",
+      "length_quartile": 0,
+      "metric_name": "retrieval",
+      "phase": "smoke",
+      "prompt_id": "passage_retrieval_en_row25",
+      "row_index": 25,
+      "row_length": 8180,
+      "task_family": "retrieval"
+    },
+    {
+      "dataset": "passage_retrieval_en",
+      "length_quartile": 3,
+      "metric_name": "retrieval",
+      "phase": "smoke",
+      "prompt_id": "passage_retrieval_en_row38",
+      "row_index": 38,
+      "row_length": 9934,
+      "task_family": "retrieval"
+    },
+    {
+      "dataset": "passage_retrieval_zh",
+      "length_quartile": 3,
+      "metric_name": "retrieval_zh",
+      "phase": "smoke",
+      "prompt_id": "passage_retrieval_zh_row39",
+      "row_index": 39,
+      "row_length": 7266,
+      "task_family": "retrieval"
+    },
+    {
+      "dataset": "passage_retrieval_zh",
+      "length_quartile": 0,
+      "metric_name": "retrieval_zh",
+      "phase": "smoke",
+      "prompt_id": "passage_retrieval_zh_row48",
+      "row_index": 48,
+      "row_length": 5326,
+      "task_family": "retrieval"
+    },
+    {
+      "dataset": "lcc",
+      "length_quartile": 3,
+      "metric_name": "code_sim",
+      "phase": "smoke",
+      "prompt_id": "lcc_row198",
+      "row_index": 198,
+      "row_length": 1437,
+      "task_family": "code"
+    },
+    {
+      "dataset": "lcc",
+      "length_quartile": 0,
+      "metric_name": "code_sim",
+      "phase": "smoke",
+      "prompt_id": "lcc_row205",
+      "row_index": 205,
+      "row_length": 519,
+      "task_family": "code"
+    },
+    {
+      "dataset": "repobench-p",
+      "length_quartile": 0,
+      "metric_name": "code_sim",
+      "phase": "smoke",
+      "prompt_id": "repobench-p_row464",
+      "row_index": 464,
+      "row_length": 1122,
+      "task_family": "code"
+    },
+    {
+      "dataset": "repobench-p",
+      "length_quartile": 3,
+      "metric_name": "code_sim",
+      "phase": "smoke",
+      "prompt_id": "repobench-p_row482",
+      "row_index": 482,
+      "row_length": 6442,
+      "task_family": "code"
+    }
+  ],
+  "rows_per_dataset": 16,
+  "rows_per_quartile": 4,
+  "seed": 20260406,
+  "selection_method": "length_quartile_seeded",
+  "smoke_rows_per_dataset": 2
+}

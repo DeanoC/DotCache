@@ -2,16 +2,28 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
-import os
-import signal
-import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
 from benchmarks.bench_qwen35_attention_subset_dotcache_serving import _aggregate_record_values
+from benchmarks.bench_qwen35_attention_subset_dotcache_longbench_qa import (
+    DEFAULT_LONGBENCH_ZIP_URL,
+    _ensure_longbench_zip,
+    build_longbench_record,
+    load_longbench_harness_from_args,
+    parse_args as parse_benchmark_args,
+)
+from dotcache.longbench_v1 import build_prompt_specs_from_zip
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional in import-only test environments
+    torch = None  # type: ignore[assignment]
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -40,13 +52,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--comparison-cases",
         nargs="+",
-        choices=["exact", "quality", "systems", "streaming_sink_recent"],
-        default=["exact", "quality", "systems", "streaming_sink_recent"],
+        choices=["exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
+        default=["exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
     )
     parser.add_argument(
         "--prompt-pack",
         default=str(REPO_ROOT / "configs" / "prompt_packs" / "qwen35_cuda_longbench_qa_pack_v1.json"),
     )
+    parser.add_argument(
+        "--prompt-pack-preset",
+        choices=["original_full_suite", "original_stratified_16_per_dataset", "original_stratified_32_per_dataset"],
+        default=None,
+    )
+    parser.add_argument("--prompt-shard-count", type=int, default=1)
+    parser.add_argument("--prompt-shard-index", type=int, default=0)
+    parser.add_argument("--longbench-cache-dir", default=str(REPO_ROOT / "benchmarks" / "cache" / "longbench"))
+    parser.add_argument("--longbench-zip-url", default=DEFAULT_LONGBENCH_ZIP_URL)
     parser.add_argument("--max-prompt-tokens", type=int, nargs="+", default=[4096, 8192])
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measured-runs", type=int, default=5)
@@ -67,20 +88,26 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
 
 def _load_prompt_specs(path: str) -> list[dict[str, Any]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload.get("prompt_specs")
     if not isinstance(payload, list) or not payload:
-        raise SystemExit(f"prompt pack {path} must be a non-empty JSON list")
+        raise SystemExit(f"prompt pack {path} must be a non-empty JSON list or manifest object")
     prompt_specs: list[dict[str, Any]] = []
     for index, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
             raise SystemExit(f"prompt pack item #{index} is not an object")
-        prompt_id = str(item.get("prompt_id") or f"prompt_{index}")
-        dataset = str(item.get("dataset") or "").strip()
+        normalized = dict(item)
+        prompt_id = str(normalized.get("prompt_id") or f"prompt_{index}")
+        dataset = str(normalized.get("dataset") or "").strip()
         if not dataset:
             raise SystemExit(f"prompt pack item {prompt_id!r} must define dataset")
-        row_index = int(item.get("row_index", -1))
+        row_index = int(normalized.get("row_index", -1))
         if row_index < 0:
             raise SystemExit(f"prompt pack item {prompt_id!r} must define a non-negative row_index")
-        prompt_specs.append({"prompt_id": prompt_id, "dataset": dataset, "row_index": row_index})
+        normalized["prompt_id"] = prompt_id
+        normalized["dataset"] = dataset
+        normalized["row_index"] = row_index
+        prompt_specs.append(normalized)
     return prompt_specs
 
 
@@ -134,7 +161,52 @@ def _case_extra_args(case: str, *, selector_artifact: str) -> list[str]:
             "--learned-page-selector-profile",
             "quality",
         ]
+    if case == "quest_like":
+        return [
+            "--execution-recent-window",
+            "1024",
+            "--execution-sink-window",
+            "256",
+            "--execution-relevance-top-k",
+            "4",
+            "--execution-relevance-mode",
+            "envelope",
+            "--learned-page-selector-profile",
+            "quality",
+        ]
     raise ValueError(f"unsupported case: {case}")
+
+
+def _resolve_prompt_specs(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if args.prompt_pack_preset in {
+        "original_full_suite",
+        "original_stratified_16_per_dataset",
+        "original_stratified_32_per_dataset",
+    }:
+        zip_path = _ensure_longbench_zip(Path(args.longbench_cache_dir), str(args.longbench_zip_url))
+        if args.prompt_pack_preset == "original_full_suite":
+            return build_prompt_specs_from_zip(zip_path)
+        if args.prompt_pack_preset == "original_stratified_16_per_dataset":
+            return build_prompt_specs_from_zip(zip_path, stratified_limit_per_dataset=16)
+        return build_prompt_specs_from_zip(zip_path, stratified_limit_per_dataset=32)
+    return _load_prompt_specs(args.prompt_pack)
+
+
+def _apply_prompt_shard(
+    prompt_specs: list[dict[str, Any]],
+    *,
+    shard_count: int,
+    shard_index: int,
+) -> list[dict[str, Any]]:
+    if shard_count <= 0:
+        raise SystemExit(f"prompt shard count must be positive, got {shard_count}")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise SystemExit(
+            f"prompt shard index must be in [0, {shard_count}), got {shard_index}"
+        )
+    if shard_count == 1:
+        return list(prompt_specs)
+    return [spec for index, spec in enumerate(prompt_specs) if index % shard_count == shard_index]
 
 
 def _benchmark_command(
@@ -176,87 +248,85 @@ def _benchmark_command(
     return command
 
 
-def _run_single(
+def _benchmark_namespace(
     args: argparse.Namespace,
     *,
     case: str,
     prompt_spec: dict[str, Any],
     max_prompt_tokens: int,
-) -> dict[str, Any]:
+) -> argparse.Namespace:
     command = _benchmark_command(args, case=case, prompt_spec=prompt_spec, max_prompt_tokens=max_prompt_tokens)
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    return parse_benchmark_args(command[2:])
+
+
+def _empty_torch_cache() -> None:
+    if torch is None or not hasattr(torch, "cuda") or not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+
+
+def _run_single_in_process(
+    base_args: argparse.Namespace,
+    *,
+    benchmark_args: argparse.Namespace,
+    harness: Any,
+    max_position_embeddings: int,
+    zip_path: Path,
+    case: str,
+    prompt_spec: dict[str, Any],
+    max_prompt_tokens: int,
+) -> dict[str, Any]:
+    command = _benchmark_command(base_args, case=case, prompt_spec=prompt_spec, max_prompt_tokens=max_prompt_tokens)
+    benchmark_args.longbench_dataset = str(prompt_spec["dataset"])
+    benchmark_args.longbench_row_index = int(prompt_spec["row_index"])
+    benchmark_args.longbench_max_prompt_tokens = int(max_prompt_tokens)
 
     started_at = time.monotonic()
-    process = subprocess.Popen(
-        command,
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    timed_out = False
     try:
-        stdout_text, stderr_text = process.communicate(timeout=args.timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(process.pid, signal.SIGKILL)
-        stdout_text, stderr_text = process.communicate()
-    elapsed = time.monotonic() - started_at
-
-    payload: dict[str, Any] | None = None
-    for raw_line in stdout_text.splitlines():
-        stripped = raw_line.strip().replace("\x00", "")
-        if not stripped.startswith("{"):
-            continue
-        try:
-            candidate = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(candidate, dict):
-            continue
-        if (
-            candidate.get("prompt_mode") == "longbench_qa"
-            and candidate.get("longbench_dataset") == prompt_spec["dataset"]
-            and int(candidate.get("longbench_row_index", -1)) == int(prompt_spec["row_index"])
-        ):
-            payload = candidate
-
-    if payload is None:
+        payload = build_longbench_record(
+            benchmark_args,
+            harness,
+            max_position_embeddings=max_position_embeddings,
+            zip_path=zip_path,
+            dataset=str(prompt_spec["dataset"]),
+            row_index=int(prompt_spec["row_index"]),
+            max_prompt_tokens=int(max_prompt_tokens),
+        )
+    except Exception as exc:
         payload = {
             "benchmark": "qwen35_attention_subset_dotcache_longbench_qa",
             "benchmark_task": "longbench_qa",
-            "model_id": args.model_id,
-            "backend": args.backend,
-            "device": args.device,
-            "torch_dtype": args.torch_dtype,
+            "model_id": base_args.model_id,
+            "backend": base_args.backend,
+            "device": base_args.device,
+            "torch_dtype": base_args.torch_dtype,
             "prompt_mode": "longbench_qa",
             "longbench_dataset": prompt_spec["dataset"],
             "longbench_row_index": int(prompt_spec["row_index"]),
             "status": "error",
-            "error_type": "TimeoutExpired" if timed_out else "NoLongBenchRow",
-            "error_message": (
-                f"timed out after {args.timeout_seconds}s"
-                if timed_out
-                else f"command exited {process.returncode} without LongBench row"
-            ),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "runner_exception_traceback": traceback.format_exc()[-4000:],
         }
+    finally:
+        gc.collect()
+        _empty_torch_cache()
 
+    elapsed = time.monotonic() - started_at
     payload = dict(payload)
     payload.update(
         {
             "comparison_case": case,
             "evaluation_prompt_id": prompt_spec["prompt_id"],
             "comparison_max_prompt_tokens": int(max_prompt_tokens),
-            "runner_timeout_seconds": int(args.timeout_seconds),
+            "prompt_shard_count": int(base_args.prompt_shard_count),
+            "prompt_shard_index": int(base_args.prompt_shard_index),
+            "runner_timeout_seconds": int(base_args.timeout_seconds),
             "runner_wall_time_s": elapsed,
             "runner_command": command,
+            "runner_execution_mode": "in_process_session",
         }
     )
-    if stderr_text.strip():
-        payload["runner_stderr_tail"] = stderr_text.strip()[-4000:]
     return payload
 
 
@@ -270,17 +340,39 @@ def main() -> None:
                 "selector artifact required for quality/systems but not found: "
                 f"{selector_artifact}"
             )
-    prompt_specs = _load_prompt_specs(args.prompt_pack)
+    prompt_specs = _apply_prompt_shard(
+        _resolve_prompt_specs(args),
+        shard_count=int(args.prompt_shard_count),
+        shard_index=int(args.prompt_shard_index),
+    )
+    if not prompt_specs:
+        raise SystemExit(
+            "resolved prompt shard is empty for "
+            f"shard {args.prompt_shard_index} of {args.prompt_shard_count}"
+        )
+    zip_path = _ensure_longbench_zip(Path(args.longbench_cache_dir), str(args.longbench_zip_url))
     output_path = Path(args.output)
     if output_path.exists():
         output_path.unlink()
 
-    for max_prompt_tokens in args.max_prompt_tokens:
-        for prompt_spec in prompt_specs:
-            for case in args.comparison_cases:
+    session_prompt_spec = prompt_specs[0]
+    for case in args.comparison_cases:
+        benchmark_args = _benchmark_namespace(
+            args,
+            case=case,
+            prompt_spec=session_prompt_spec,
+            max_prompt_tokens=int(args.max_prompt_tokens[0]),
+        )
+        harness, max_position_embeddings = load_longbench_harness_from_args(benchmark_args)
+        for max_prompt_tokens in args.max_prompt_tokens:
+            for prompt_spec in prompt_specs:
                 for warmup_index in range(max(0, int(args.warmup_runs))):
-                    warmup = _run_single(
+                    warmup = _run_single_in_process(
                         args,
+                        benchmark_args=benchmark_args,
+                        harness=harness,
+                        max_position_embeddings=max_position_embeddings,
+                        zip_path=zip_path,
                         case=case,
                         prompt_spec=prompt_spec,
                         max_prompt_tokens=int(max_prompt_tokens),
@@ -305,8 +397,12 @@ def main() -> None:
 
                 measured_records: list[dict[str, Any]] = []
                 for measurement_index in range(max(1, int(args.measured_runs))):
-                    record = _run_single(
+                    record = _run_single_in_process(
                         args,
+                        benchmark_args=benchmark_args,
+                        harness=harness,
+                        max_position_embeddings=max_position_embeddings,
+                        zip_path=zip_path,
                         case=case,
                         prompt_spec=prompt_spec,
                         max_prompt_tokens=int(max_prompt_tokens),
@@ -339,10 +435,15 @@ def main() -> None:
                         "comparison_case": case,
                         "evaluation_prompt_id": prompt_spec["prompt_id"],
                         "comparison_max_prompt_tokens": int(max_prompt_tokens),
+                        "prompt_shard_count": int(args.prompt_shard_count),
+                        "prompt_shard_index": int(args.prompt_shard_index),
                     }
                 )
                 _append_record(output_path, aggregate)
                 print(json.dumps(aggregate, sort_keys=True), flush=True)
+        del harness
+        gc.collect()
+        _empty_torch_cache()
 
 
 if __name__ == "__main__":

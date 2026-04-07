@@ -13,6 +13,7 @@ from dotcache.config import DotCacheConfig
 from dotcache.encode import encode_page
 from dotcache.model_kv_cache import (
     ModelPagedKVCache,
+    _PersistentTailPage,
     _TailPageBuilder,
     _build_prepared_decode_view_layout,
     _grouped_pages_can_batch,
@@ -123,6 +124,25 @@ def test_model_paged_kv_cache_tail_buffer_matches_incremental_reference() -> Non
             )
             expected_outputs.append(decode_step(queries[q_head_id], key_pages, value_pages, backend="cpu_ref")[2])
         np.testing.assert_allclose(outputs, np.stack(expected_outputs, axis=0), atol=1e-5, rtol=1e-5)
+
+
+def test_persistent_tail_page_allocates_mutable_buffers_outside_inference_mode() -> None:
+    torch = pytest.importorskip("torch")
+    config = DotCacheConfig(head_dim=32, group_size=32, bits_k=4, bits_v=4, tokens_per_page=4)
+    tail = _PersistentTailPage(
+        config=config,
+        layer_id=0,
+        kv_head_id=0,
+        kind="K",
+        device_type="cpu",
+    )
+    rows = torch.randn((2, config.head_dim), dtype=torch.float32)
+
+    with torch.inference_mode():
+        tail.append_device_rows(rows, token_start=0)
+
+    materialized = tail.materialize_rows()
+    assert materialized.shape == (2, config.head_dim)
 
 
 def test_tail_page_builder_uses_injected_page_mode_selector() -> None:

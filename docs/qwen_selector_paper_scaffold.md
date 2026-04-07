@@ -25,14 +25,14 @@ DotCache can execute attention directly on compressed KV pages, and a small lear
 This is the strongest current claim we should be comfortable making now:
 
 - On Qwen3.5, the `systems` learned-selector profile is the right default serving path for the current DotCache runtime.
-- That claim now holds across `4B`, `9B`, and native `27B` on compact task checks, LongBench mini-pack rows, and backend-truth serving runs.
+- That claim now holds across `4B`, `9B`, and native `27B` on compact task checks and backend-truth serving runs, with the full LongBench courtroom anchored on `Qwen3.5-9B`.
 - On Llama 3.2 3B, the learned selector is already saturated to `M3`, so `quality` and `systems` are effectively the same operating point.
 - The remaining bottleneck is backend `score + mix` cost on the M3-heavy path, not selector overhead.
 
 What we should not claim yet:
 
 - that DotCache has already beaten every matched-budget external baseline
-- that the current LongBench mini-pack is the full long-context quality story
+- that the old LongBench QA mini-pack is still the paper courtroom
 - that one selector bias is globally optimal across all families
 
 ## Current Trusted Evidence
@@ -57,8 +57,9 @@ Current read:
   - learned selector wins clearly over exact and shortlist at all three Qwen sizes
   - learned lanes stay strongly M3-heavy and selector cost stays near `25 us/inv`
 - LongBench:
-  - the original mini-pack stays useful as a fast regression gate
-  - the stronger current external check is now the Qwen3.5 9B medium pack, where `systems` stays quality-neutral relative to `exact` and `quality`, carries real teacher-forced perplexity ratios, and remains much faster at both `4096` and `8192`
+  - the original QA packs stay useful as fast regression gates only
+  - the main benchmark-closure target is now the full original LongBench suite on `Qwen3.5-9B`
+  - that run must publish matched-quality and matched-memory parity against `streaming_sink_recent` and `quest_like`, plus a failure workbook for every `systems` miss versus `exact`
 
 ### Cross-Family Checkpoint
 
@@ -75,8 +76,9 @@ Current read:
 
 The matrix closed the main Qwen scale question. The remaining open items are now:
 
-- broader LongBench coverage beyond the current 9B medium pack
-- one stronger matched-budget external baseline beyond `streaming_sink_recent`
+- executing the full LongBench suite on `Qwen3.5-9B`
+- publishing matched-quality and matched-memory parity against `streaming_sink_recent` and `quest_like`
+- tightening the failure-workbook read for the remaining `systems` misses
 - selector-to-task linkage packaging for the paper
 - final figure and table polish
 
@@ -84,7 +86,7 @@ The matrix closed the main Qwen scale question. The remaining open items are now
 
 Use this as a starting point, not final copy.
 
-> Long-context serving systems increasingly rely on compressed KV caches, but most prior work treats compression as a storage problem and leaves decode-time execution on dequantized tensors. DotCache instead executes attention directly on compressed KV pages, which turns page-format choice into a runtime systems decision rather than a preprocessing detail. We study learned page-format selection for this setting and show that a small heterogeneous menu can become the default serving path on Qwen-family models. Across a completed `4B / 9B / 27B` Qwen matrix spanning compact task slices, a LongBench-derived QA mini-pack, and native serving/backend-truth runs, the systems-tuned learned selector preserves the task and quality rows we currently trust while substantially reducing decode latency relative to exact and shortlist-style baselines. We further show that selector overhead is small and stable, and that the remaining bottleneck lies in backend score/mix execution on the M3-heavy path rather than in the selector itself. These results suggest that compressed-domain execution is practical when page-format choice is treated as a learned, family-sensitive systems policy rather than a static codec decision.
+> Long-context serving systems increasingly rely on compressed KV caches, but most prior work treats compression as a storage problem and leaves decode-time execution on dequantized tensors. DotCache instead executes attention directly on compressed KV pages, which turns page-format choice into a runtime systems decision rather than a preprocessing detail. We study learned page-format selection for this setting and show that a small heterogeneous menu can become the default serving path on Qwen-family models. Across a completed `4B / 9B / 27B` Qwen matrix spanning compact task slices and native serving/backend-truth runs, plus a full-suite `Qwen3.5-9B` LongBench closure pass with matched-quality and matched-memory external parity, the systems-tuned learned selector preserves the held-out quality rows we trust while substantially reducing decode latency relative to exact and simple streaming-style baselines. We further show that selector overhead is small and stable, and that the remaining bottleneck lies in backend score/mix execution on the M3-heavy path rather than in the selector itself. These results suggest that compressed-domain execution is practical when page-format choice is treated as a learned, family-sensitive systems policy rather than a static codec decision.
 
 ## Draft Introduction Skeleton
 
@@ -166,10 +168,10 @@ Placeholder:
 | family | purpose | status |
 | --- | --- | --- |
 | compact task compare | task-level sanity and promotion gate | ready |
-| LongBench QA mini-pack | small external-style held-out check | ready |
+| LongBench QA packs | cheap regression gates only | ready |
 | backend truth | serving decomposition and speed truth | ready |
 | broader Qwen matrix | scale/context consistency | ready |
-| Qwen 9B LongBench medium pack | broader external-style held-out QA check | ready |
+| Qwen 9B full LongBench suite | main held-out benchmark closure courtroom | in progress |
 
 #### 4.3 Baselines
 
@@ -179,25 +181,22 @@ Current baseline vocabulary:
 - `quality`
 - `systems`
 - `streaming_sink_recent`
-- `shortlist_base`
-
-Possible future external rows:
-
-- Quest-like matched-budget row
-- PQCache-like matched-budget row
+- `quest_like`
 
 #### 4.4 Metrics
 
 Main metrics:
 
-- exact-match task success
-- QA F1
+- official LongBench task score
 - decode ms/step
 - p95 decode ms/step
-- resident / KV memory
+- effective bytes per token
+- worst-task floor
 
 Supporting metrics:
 
+- exact-match task success
+- QA F1 compatibility rows
 - teacher-forced perplexity ratio
 - logit RMSE
 - selector agreement / oracle gap
@@ -212,7 +211,7 @@ This section now has a real Qwen family result to anchor the draft.
 
 Current summary sentence:
 
-> Across Qwen model sizes and contexts, the learned `systems` profile cleanly improves over `quality` on decode while preserving the compact task rows we currently trust and remaining quality-neutral on the current LongBench mini-pack.
+> Across Qwen model sizes and contexts, the learned `systems` profile cleanly improves over `quality` on decode while preserving the compact task rows we currently trust, and the main benchmark closure question is now whether that result survives the full `Qwen3.5-9B` LongBench suite under fair external parity.
 
 #### Table A. Compact Task Matrix
 
@@ -227,20 +226,25 @@ Fill from the new matrix report.
 | `Qwen3.5-27B` | `instruction` | `1024` | `1.000` | `1.000` | `1.000` | `356.52` | `118.88` | `3.00x` | `0.486` | `0.484` |
 | `Qwen3.5-27B` | `retrieval` | `2048` | `0.000` | `0.000` | `0.000` | `560.84` | `145.17` | `3.86x` | `0.330` | `0.328` |
 
-#### Table B. LongBench Matrix
+#### Table B. LongBench Closure Matrix
 
-| model | context cap | case | exact match | QA F1 | decode ms/step | p95 decode | ppl ratio | RMSE |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `Qwen3.5-4B` | `4096` | `exact` | `0.000` | `0.253` | `625.45` | `633.93` | `0.000` | `0.519` |
-| `Qwen3.5-4B` | `4096` | `systems` | `0.000` | `0.253` | `373.60` | `388.38` | `0.000` | `0.491` |
-| `Qwen3.5-9B` | `4096` | `exact` | `0.167` | `0.270` | `614.24` | `625.64` | `1.012` | `0.460` |
-| `Qwen3.5-9B` | `4096` | `quality` | `0.167` | `0.270` | `574.43` | `588.54` | `1.013` | `0.433` |
-| `Qwen3.5-9B` | `4096` | `systems` | `0.167` | `0.270` | `91.62` | `94.27` | `1.012` | `0.431` |
-| `Qwen3.5-9B` | `4096` | `streaming` | `0.167` | `0.270` | `257.92` | `262.83` | `1.307` | `0.810` |
-| `Qwen3.5-9B` | `8192` | `systems` | `0.167` | `0.280` | `145.52` | `147.46` | `1.021` | `0.400` |
-| `Qwen3.5-27B` | `4096` | `systems` | `0.250` | `0.358` | `331.79` | `335.31` | `0.000` | `0.511` |
+| model | context cap | case | official score | decode ms/step | p95 decode | eff. bytes/token | ppl ratio | RMSE | worst-task floor |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Qwen3.5-9B` | `4096` | `exact` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `4096` | `quality` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `4096` | `systems` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `4096` | `streaming_sink_recent` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `4096` | `quest_like` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `8192` | `systems` | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder | placeholder |
 
-#### Table C. Backend Truth Matrix
+#### Table C. LongBench Parity Picks
+
+| model | context cap | match mode | selected external row | official gap | eff. bytes gap | systems vs external speedup |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| `Qwen3.5-9B` | `4096` | `matched_quality` | placeholder | placeholder | placeholder | placeholder |
+| `Qwen3.5-9B` | `4096` | `matched_memory` | placeholder | placeholder | placeholder | placeholder |
+
+#### Table D. Backend Truth Matrix
 
 | model | context | exact decode ms/step | shortlist decode ms/step | learned decode ms/step | learned vs exact | learned vs shortlist | learned M3 frac | selector us/inv |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

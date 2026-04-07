@@ -54,10 +54,12 @@ def test_build_report_renders_task_longbench_and_backend_tables(tmp_path: Path) 
                     {
                         "comparison_case": "systems",
                         "max_prompt_tokens": 4096,
+                        "mean_official_score": 0.44,
                         "mean_exact_match": 0.25,
                         "mean_qa_f1": 0.44,
                         "mean_decode_ms_per_step": 90.0,
                         "p95_decode_ms_per_step": 91.0,
+                        "mean_effective_bytes_per_token": 4.0,
                         "mean_teacher_forced_perplexity_ratio": 1.02,
                         "mean_teacher_forced_logit_rmse": 0.02,
                     }
@@ -122,10 +124,12 @@ def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path
                     {
                         "comparison_case": "systems",
                         "max_prompt_tokens": 4096,
+                        "mean_official_score": 0.44,
                         "mean_exact_match": 0.25,
                         "mean_qa_f1": 0.44,
                         "mean_decode_ms_per_step": 90.0,
                         "p95_decode_ms_per_step": 91.0,
+                        "mean_effective_bytes_per_token": 4.0,
                         "mean_teacher_forced_perplexity_ratio": None,
                         "mean_teacher_forced_logit_rmse": 0.02,
                     }
@@ -137,4 +141,4 @@ def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path
 
     payload, markdown = MODULE.build_report(manifest, output_dir=tmp_path)
     assert len(payload["longbench_rows"]) == 1
-    assert "| Qwen/Qwen3.5-9B | 4096 | systems | 0.250 | 0.440 | 90.000 | 91.000 | - | 0.020 |" in markdown
+    assert "| Qwen/Qwen3.5-9B | 4096 | systems | 0.440 | 0.250 | 0.440 | 90.000 | 91.000 | 4.000 | - | 0.020 |" in markdown
