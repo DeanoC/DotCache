@@ -272,13 +272,32 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.extend([_markdown_table(recommendation_rows), ""])
 
     if comparison is not None:
-        lines.extend(
-            [
-                "The current winning experimental config stays ahead on the full replay corpus, "
+        speedup_ratio = float(comparison["speedup_ratio"])
+        if speedup_ratio > 1.005:
+            comparison_sentence = (
+                "The current winning experimental config leads on the full replay corpus, "
                 f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
                 f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms` for the best baseline, "
-                f"which is a `{_fmt(comparison['speedup_ratio'], digits=3)}x` speedup. "
-                f"The tradeoff is a smaller active budget: `{_fmt(comparison['experimental_avg_tokens_processed'], digits=1)}` "
+                f"which is a `{_fmt(speedup_ratio, digits=3)}x` speedup."
+            )
+        elif speedup_ratio < 0.995:
+            comparison_sentence = (
+                "The current winning experimental config trails the best baseline on the full replay corpus, "
+                f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
+                f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms`, "
+                f"or `{_fmt(speedup_ratio, digits=3)}x` of baseline speed."
+            )
+        else:
+            comparison_sentence = (
+                "The current winning experimental config is effectively at parity with the best baseline on the full replay corpus, "
+                f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
+                f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms`, "
+                f"with a `{_fmt(speedup_ratio, digits=3)}x` speed ratio."
+            )
+        lines.extend(
+            [
+                comparison_sentence
+                + f" The tradeoff is a smaller active budget: `{_fmt(comparison['experimental_avg_tokens_processed'], digits=1)}` "
                 f"average processed tokens for the experimental winner versus "
                 f"`{_fmt(comparison['baseline_avg_tokens_processed'], digits=1)}` for the baseline winner.",
                 "",
