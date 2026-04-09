@@ -19,6 +19,11 @@ dev = [
 mps = [
   "torch>=2.5",
 ]
+metal = [
+  "pyobjc-core>=11.0",
+  "pyobjc-framework-Metal>=11.0",
+  "pyobjc-framework-Foundation>=11.0",
+]
 hf = [
   "transformers>=5.5.0",
   "sentencepiece>=0.2.1",
@@ -41,7 +46,11 @@ testpaths = ["tests"]
 packages = [
   "dotcache",
   "dotcache.backends",
+  "dotcache.backends.metal",
   "dotcache.integrations",
   "dotcache.integrations.vllm_adapter",
   "dotcache.modes",
 ]
+
+[tool.setuptools.package-data]
+"dotcache.backends.metal" = ["*.metal"]

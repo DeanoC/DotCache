@@ -12,6 +12,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Sequence
 
+from ..backends.metal import PersistentHybridRuntimeState, PersistentServingConfig
 from ..config import DotCacheConfig
 from ..decode_reference import decode_page
 from ..encode import encode_page
@@ -55,7 +56,7 @@ else:  # pragma: no cover - exercised in environments without transformers
     qwen35_mod = None
 
 
-Qwen35Mode = Literal["dense", "dotcache_attention_subset"]
+Qwen35Mode = Literal["dense", "dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"]
 Qwen35DeltaNetStateCacheStage = Literal["readout_only_m0", "post_update_m0"]
 Qwen35DeltaNetStateCacheMode = Literal["M0", "M3"]
 Qwen35DeltaNetStateCacheScope = Literal["recurrent_only", "conv_only", "conv_plus_recurrent"]
@@ -2091,6 +2092,15 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 cache_position=cache_position,
                 **kwargs,
             )
+        if self.adapter.mode == "dotcache_attention_subset_persistent_experimental":
+            return self._forward_persistent(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+                **kwargs,
+            )
         return self._forward_dotcache(
             hidden_states,
             position_embeddings=position_embeddings,
@@ -2286,8 +2296,184 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                     gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )
+        )
+        return projected_output, None
+
+    def _forward_persistent(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
+        past_key_values=None,
+        cache_position: torch.LongTensor | None = None,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, None]:
+        if past_key_values is None:
+            raise ValueError("Qwen3.5 persistent attention-subset mode requires the native hybrid past_key_values state")
+        if tuple(hidden_states.shape[:2]) != (1, 1):
+            raise ValueError("Qwen3.5 persistent attention-subset mode only supports batch=1 and query_len=1")
+        runtime_state = self.adapter.require_persistent_hybrid_runtime_state()
+        token_index = self.adapter.current_token_index(cache_position)
+        input_shape = hidden_states.shape[:-1]
+        (query_states, key_states, value_states, gate), qkv_ms = _timed_call(
+            lambda: self._project_qkv(hidden_states, position_embeddings),
+            device=hidden_states.device,
+        )
+        query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32)
+        key_step = key_states[0].detach().to(dtype=torch.float32)
+        value_step = value_states[0].detach().to(dtype=torch.float32)
+        self.adapter.qkv_projection_ms_total += qkv_ms
+        self.adapter._record_layer_timing(self.adapter.qkv_projection_ms_total_by_layer, self.layer_idx, qkv_ms)
+
+        _, append_ms = _timed_call(
+            lambda: runtime_state.append_full_attention_step(
+                self.layer_idx,
+                key_step,
+                value_step,
+                token_index,
+            ),
+            device=hidden_states.device,
+        )
+        self.adapter.persistent_append_runtime_ms_total += append_ms
+        self.adapter._record_layer_timing(self.adapter.persistent_append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
+
+        layer_state = runtime_state.full_attention.layers[self.layer_idx]
+        full_key_states = layer_state.key_cache.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
+        full_value_states = layer_state.value_cache.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
+        attention_interface = qwen35_mod.ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.base_attention.config._attn_implementation,
+            qwen35_mod.eager_attention_forward,
+        )
+        attention_result, decode_ms = _timed_call(
+            lambda: attention_interface(
+                self.base_attention,
+                query_states,
+                full_key_states,
+                full_value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.base_attention.attention_dropout,
+                scaling=self.base_attention.scaling,
+                **kwargs,
+            ),
+            device=hidden_states.device,
+        )
+        attn_output, _attn_weights = attention_result
+        context_states = attn_output.reshape(*input_shape, -1).contiguous()
+        runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
+        runtime_state.full_attention.telemetry.require_layer(self.layer_idx).decode_ms_total += float(decode_ms)
+        self.adapter.persistent_full_attention_decode_ms_total += float(decode_ms)
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_decode_ms_total_by_layer,
+            self.layer_idx,
+            float(decode_ms),
+        )
+        gated_context = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device) * torch.sigmoid(gate)
+        projected_output, output_projection_ms = _timed_call(
+            lambda: self.base_attention.o_proj(gated_context),
+            device=hidden_states.device,
+        )
+        self.adapter.output_projection_ms_total += output_projection_ms
+        self.adapter._record_layer_timing(
+            self.adapter.output_projection_ms_total_by_layer,
+            self.layer_idx,
+            output_projection_ms,
+        )
+
+        _advance_attention_subset_cache_placeholder(past_key_values, self.layer_idx)
+
+        if self.adapter.capture_enabled:
+            self.adapter.record_replay(
+                LlamaReplayRecord(
+                    step_index=self.adapter.capture_step_index,
+                    layer_id=self.layer_idx,
+                    token_index=token_index,
+                    query_states=query_step.detach().cpu().numpy(),
+                    key_states=key_step[:, 0, :].detach().cpu().numpy(),
+                    value_states=value_step[:, 0, :].detach().cpu().numpy(),
+                    context_states=gated_context[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                )
             )
         return projected_output, None
+
+
+class PersistentQwen35LinearAttentionBridge(nn.Module):
+    def __init__(self, base_linear_attn: nn.Module, adapter: "Qwen35AttentionSubsetDotCacheModelAdapter") -> None:
+        super().__init__()
+        self.base_linear_attn = base_linear_attn
+        self.adapter = adapter
+        self.layer_idx = int(base_linear_attn.layer_idx)
+
+    def _forward_base_linear_attn(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        cache_params,
+        cache_position: torch.LongTensor | None,
+        attention_mask: torch.Tensor | None,
+    ):
+        try:
+            return self.base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            )
+        except TypeError as exc:
+            if "cache_position" not in str(exc):
+                raise
+            return self.base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                attention_mask=attention_mask,
+            )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_params=None,
+        cache_position: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ):
+        if self.adapter.mode != "dotcache_attention_subset_persistent_experimental" or cache_params is None:
+            return self._forward_base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            )
+        runtime_state = self.adapter.require_persistent_hybrid_runtime_state()
+        _, sync_in_ms = _timed_call(
+            lambda: runtime_state.sync_linear_layer_into_cache(cache_params, self.layer_idx),
+            device=hidden_states.device,
+        )
+        output, linear_ms = _timed_call(
+            lambda: self._forward_base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            ),
+            device=hidden_states.device,
+        )
+        _, sync_out_ms = _timed_call(
+            lambda: runtime_state.sync_linear_layer_from_cache(cache_params, self.layer_idx),
+            device=hidden_states.device,
+        )
+        total_ms = float(sync_in_ms + linear_ms + sync_out_ms)
+        self.adapter.persistent_linear_attention_ms_total += total_ms
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_linear_attention_ms_total_by_layer,
+            self.layer_idx,
+            total_ms,
+        )
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_linear_update_ms_total_by_layer,
+            self.layer_idx,
+            float(sync_in_ms + sync_out_ms),
+        )
+        return output
 
 
 @dataclass(slots=True)
@@ -2361,6 +2547,7 @@ class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
 @dataclass(slots=True)
 class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapter):
     dotcache_config: DotCacheConfig = field(default_factory=lambda: DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16))
+    persistent_serving_config: PersistentServingConfig = field(default_factory=PersistentServingConfig)
     backend: str = "cpu_ref"
     cache: PreparedPageCache = field(default_factory=PreparedPageCache)
     model_kv_cache: ModelPagedKVCache = field(init=False, repr=False)
@@ -2369,16 +2556,25 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     qkv_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_full_attention_decode_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_linear_attention_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_append_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     profile_backend: bool = field(default=False, init=False, repr=False)
     decode_backend_trace: ExecutionTrace = field(default_factory=ExecutionTrace, init=False, repr=False)
     qkv_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     decode_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     output_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_decode_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_linear_attention_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_linear_update_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     decode_call_count_by_layer: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     native_hybrid_runtime_state: Qwen35NativeHybridRuntimeState | None = field(default=None, init=False, repr=False)
     hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
+    persistent_hybrid_runtime_state: PersistentHybridRuntimeState | None = field(default=None, init=False, repr=False)
     serving_shortlist_heuristic_applied: bool = field(default=False, init=False, repr=False)
+    _linear_wrappers: list[PersistentQwen35LinearAttentionBridge] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35AttentionSubsetModelAdapter.__post_init__(self)
@@ -2387,6 +2583,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         if self.dotcache_config.head_dim != expected_head_dim:
             self.dotcache_config = replace(self.dotcache_config, head_dim=expected_head_dim)
         self._rebuild_model_kv_cache()
+        self._install_linear_wrappers()
 
     def _rebuild_model_kv_cache(self) -> None:
         text_config = _qwen35_text_config(self.model)
@@ -2422,8 +2619,11 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         return bool(applied)
 
     def set_mode(self, mode: str) -> None:
-        if mode not in {"dense", "dotcache_attention_subset"}:
-            raise ValueError("Qwen3.5 attention-subset adapter only supports dense and dotcache_attention_subset modes")
+        if mode not in {"dense", "dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"}:
+            raise ValueError(
+                "Qwen3.5 attention-subset adapter only supports dense, dotcache_attention_subset, "
+                "and dotcache_attention_subset_persistent_experimental modes"
+            )
         self.mode = mode  # type: ignore[assignment]
 
     def clear(self) -> None:
@@ -2436,14 +2636,22 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total = 0.0
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
+        self.persistent_full_attention_decode_ms_total = 0.0
+        self.persistent_linear_attention_ms_total = 0.0
+        self.persistent_append_runtime_ms_total = 0.0
         self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
         self.qkv_projection_ms_total_by_layer = {}
         self.append_runtime_ms_total_by_layer = {}
         self.decode_runtime_ms_total_by_layer = {}
         self.output_projection_ms_total_by_layer = {}
+        self.persistent_full_attention_decode_ms_total_by_layer = {}
+        self.persistent_append_runtime_ms_total_by_layer = {}
+        self.persistent_linear_attention_ms_total_by_layer = {}
+        self.persistent_linear_update_ms_total_by_layer = {}
         self.decode_call_count_by_layer = {}
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
+        self.persistent_hybrid_runtime_state = None
 
     def set_backend_profiling(self, enabled: bool) -> None:
         self.profile_backend = bool(enabled)
@@ -2469,7 +2677,39 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             "dotcache_output_projection_ms_total_by_layer": {
                 str(layer_id): float(total) for layer_id, total in sorted(self.output_projection_ms_total_by_layer.items())
             },
+            "persistent_full_attention_decode_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_decode_ms_total_by_layer.items())
+            },
+            "persistent_append_runtime_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_append_runtime_ms_total_by_layer.items())
+            },
+            "persistent_linear_attention_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_linear_attention_ms_total_by_layer.items())
+            },
+            "persistent_linear_update_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_linear_update_ms_total_by_layer.items())
+            },
         }
+
+    def _install_linear_wrappers(self) -> None:
+        text_model = _qwen35_text_model(self.model)
+        layers = getattr(text_model, "layers", None)
+        if layers is None:
+            return
+        layer_types = _hybrid_layer_types(self.model)
+        for layer_id, layer in enumerate(layers[: len(layer_types)]):
+            if layer_types[layer_id] != "linear_attention" or not hasattr(layer, "linear_attn"):
+                continue
+            base_linear_attn = layer.linear_attn
+            if isinstance(base_linear_attn, PersistentQwen35LinearAttentionBridge):
+                base_linear_attn = base_linear_attn.base_linear_attn
+            wrapper = PersistentQwen35LinearAttentionBridge(base_linear_attn, self)
+            layer.linear_attn = wrapper
+            self._linear_wrappers.append(wrapper)
 
     def token_growing_layer_ids(self) -> list[int]:
         if self.native_hybrid_runtime_state is not None:
@@ -2518,6 +2758,26 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             native_state=self.native_hybrid_runtime_state,
             model_kv_cache=self.model_kv_cache,
         )
+        self.persistent_hybrid_runtime_state = None
+
+    def load_attention_subset_persistent_prefill_cache(self, past_key_values: Any) -> None:
+        source_prefill_partition = self.partition_hybrid_state(past_key_values)
+        attention_layer_ids = source_prefill_partition.token_growing_layer_ids
+        extracted = _extract_attention_subset_prefill_tensors(past_key_values, attention_layer_ids)
+        _replace_attention_subset_cache_with_placeholders(past_key_values, attention_layer_ids)
+        self.native_hybrid_runtime_state = Qwen35NativeHybridRuntimeState.from_post_handoff_cache(
+            past_key_values,
+            self.model,
+        )
+        self.hybrid_dotcache_runtime_state = None
+        self.persistent_hybrid_runtime_state = PersistentHybridRuntimeState.from_post_handoff_cache(
+            native_state=self.native_hybrid_runtime_state,
+            prefill_tensors=extracted,
+            linear_layer_ids=source_prefill_partition.fixed_resident_layer_ids,
+            q_head_to_kv_head=self.q_head_to_kv_head,
+            device=self.device,
+            config=self.persistent_serving_config,
+        )
 
     def refresh_native_hybrid_runtime_state(self, past_key_values: Any) -> None:
         if self.hybrid_dotcache_runtime_state is not None:
@@ -2547,6 +2807,11 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         if self.hybrid_dotcache_runtime_state is None:
             raise ValueError("Qwen3.5 attention-subset DotCache runtime state is not initialized")
         return self.hybrid_dotcache_runtime_state
+
+    def require_persistent_hybrid_runtime_state(self) -> PersistentHybridRuntimeState:
+        if self.persistent_hybrid_runtime_state is None:
+            raise ValueError("Qwen3.5 attention-subset persistent runtime state is not initialized")
+        return self.persistent_hybrid_runtime_state
 
 
 @dataclass(slots=True)
@@ -3131,6 +3396,28 @@ class Qwen35AttentionSubsetDotCacheHarness:
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_dotcache_serving_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_attention_subset_persistent_serving(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_persistent_serving_harness(
             self.model,
             self.adapter,
             prompt=prompt,
@@ -7701,6 +7988,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
     tokenizer=None,
     profile_backend: bool = False,
     multimodal_inputs: Any | None = None,
+    runtime_mode: Literal["dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"] = "dotcache_attention_subset",
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
     adapter.set_backend_profiling(profile_backend)
@@ -7722,10 +8010,17 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         device=device,
     )
     adapter.clear()
-    adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
-    adapter.set_mode("dotcache_attention_subset")
+    if runtime_mode == "dotcache_attention_subset_persistent_experimental":
+        adapter.load_attention_subset_persistent_prefill_cache(dotcache_prefill_outputs.past_key_values)
+    else:
+        adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
+    adapter.set_mode(runtime_mode)
     dotcache_prefill_cuda_memory = _end_cuda_memory_region(device, dotcache_prefill_cuda_memory_baseline)
-    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
+    runtime_state = (
+        adapter.require_persistent_hybrid_runtime_state()
+        if runtime_mode == "dotcache_attention_subset_persistent_experimental"
+        else adapter.require_hybrid_dotcache_runtime_state()
+    )
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -7734,6 +8029,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         "dotcache_prefill_cuda_memory": dotcache_prefill_cuda_memory,
         "runtime_state": runtime_state,
         "serving_shortlist_heuristic_applied": bool(adapter.serving_shortlist_heuristic_applied),
+        "runtime_mode": runtime_mode,
     }
 
 
@@ -7758,6 +8054,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         tokenizer=tokenizer,
         profile_backend=profile_backend,
         multimodal_inputs=multimodal_inputs,
+        runtime_mode="dotcache_attention_subset",
     )
     input_ids = prepared["input_ids"]
     attention_mask = prepared["attention_mask"]
@@ -7896,6 +8193,176 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_persistent_serving_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+        runtime_mode="dotcache_attention_subset_persistent_experimental",
+    )
+    input_ids = prepared["input_ids"]
+    attention_mask = prepared["attention_mask"]
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    device = input_ids.device
+
+    generated_ids: list[int] = []
+    persistent_decode_ms_total = 0.0
+    decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_input_ids = dotcache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for _ in range(decode_steps):
+            generated_ids.append(int(current_input_ids.item()))
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            persistent_decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        decode_cuda_memory = _end_cuda_memory_region(device, decode_cuda_memory_baseline)
+
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "dotcache_prefill_ms": float(dotcache_prefill_ms),
+        "dotcache_generated_ids": generated_ids,
+        "dotcache_decode_ms_per_step": float(persistent_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "persistent_generated_ids": generated_ids,
+        "persistent_decode_ms_per_step": float(persistent_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "dotcache_attention_subset_ready": True,
+        "persistent_hybrid_runtime_ready": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dotcache_attention_subset_persistent_serving",
+        "uses_native_qwen35_class": True,
+        "text_only": True,
+        "attention_subset_layer_ids": adapter.attention_subset_layer_ids(),
+        "attention_subset_capture_layer_count": len(adapter.attention_subset_layer_ids()),
+        "num_attention_heads": int(adapter.model_kv_cache.num_attention_heads),
+        "num_key_value_heads": int(adapter.model_kv_cache.num_key_value_heads),
+        "query_heads_per_kv_head": int(adapter.model_kv_cache.num_attention_heads // max(adapter.model_kv_cache.num_key_value_heads, 1)),
+        "head_dim": int(adapter.dotcache_config.head_dim),
+        "group_size": int(adapter.dotcache_config.group_size),
+        "num_groups": int(adapter.dotcache_config.num_groups),
+        "padded_head_dim": int(adapter.dotcache_config.padded_head_dim),
+        "tokens_per_page": int(adapter.dotcache_config.tokens_per_page),
+        "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+        "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+        "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+        "execution_recent_window_context_overrides": list(
+            adapter.dotcache_config.execution_recent_window_context_overrides
+        ),
+        "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+        "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+        "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+        "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+        "execution_disable_grouped_batching_layers": list(
+            adapter.dotcache_config.execution_disable_grouped_batching_layers
+        ),
+        "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+        "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+        "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
+        "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+        "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+        "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+        "execution_secondary_relevance_min_overlap": float(adapter.dotcache_config.execution_secondary_relevance_min_overlap),
+        "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+        "execution_recent_neighbor_rescue_top_k": int(adapter.dotcache_config.execution_recent_neighbor_rescue_top_k),
+        "execution_recent_neighbor_rescue_anchor_window": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+        ),
+        "execution_recent_neighbor_rescue_min_anchor_pages": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+        ),
+        "execution_recent_neighbor_rescue_layers": list(adapter.dotcache_config.execution_recent_neighbor_rescue_layers),
+        "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+        "execution_exact_promote_min_margin_threshold": float(
+            adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+        ),
+        "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
+        "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
+        "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+        "execution_exact_promote_union_rescue_top_k": int(
+            adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+        ),
+        "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+        "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+        "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+        "execution_freeze_chunk_budget_during_decode": bool(
+            adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+        ),
+        "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+        "execution_builtin_selector_score_all_pages": bool(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages
+        ),
+        "execution_builtin_selector_candidate_only": bool(
+            adapter.dotcache_config.execution_builtin_selector_candidate_only
+        ),
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
+        "persistent_runtime_block_size": int(adapter.persistent_serving_config.block_size),
+        "persistent_runtime_dense_only": bool(adapter.persistent_serving_config.dense_only),
+        "persistent_runtime_enable_full_attention_persistent_compute": bool(
+            adapter.persistent_serving_config.enable_full_attention_persistent_compute
+        ),
+        "persistent_runtime_enable_linear_attention_persistent_compute": bool(
+            adapter.persistent_serving_config.enable_linear_attention_persistent_compute
+        ),
+        "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
+    }
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    result.update(dotcache_prefill_cuda_memory)
+    result.update(decode_cuda_memory)
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     return result
 
 
@@ -9748,6 +10215,7 @@ __all__ = [
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_dotcache_serving_harness",
+    "run_qwen35_attention_subset_persistent_serving_harness",
     "run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness",
     "run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness",
     "run_qwen35_attention_subset_dotcache_serving_quality_harness",
