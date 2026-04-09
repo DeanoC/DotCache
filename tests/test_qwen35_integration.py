@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import json
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -21,6 +22,7 @@ from dotcache.integrations.qwen35 import (
     Qwen35DeltaNetStateModelAdapter,
     build_qwen35_deltanet_state_sample,
     build_qwen35_attention_subset_paged_attention_snapshot,
+    export_qwen35_attention_subset_paged_attention_snapshot_corpus,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
     inspect_qwen35_deltanet_state,
@@ -37,6 +39,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_serving_harness,
     run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
+    run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness,
     run_qwen35_attention_subset_paged_attention_snapshot_capture_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
@@ -1648,6 +1651,90 @@ def test_qwen35_attention_subset_harness_can_export_paged_attention_snapshot(tmp
 
     assert result["paged_attention_snapshot_path"] == str(output_path)
     assert output_path.exists()
+
+
+def test_export_qwen35_attention_subset_paged_attention_snapshot_corpus_writes_manifest(tmp_path) -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.0, 0.0], [0.5, 0.0]]]], dtype=torch.float32),
+            torch.tensor([[[[0.1, 0.2], [0.2, 0.1]]]], dtype=torch.float32),
+        )
+    }
+    per_step_records = [
+        [
+            LlamaReplayRecord(
+                step_index=0,
+                layer_id=3,
+                token_index=2,
+                query_states=np.asarray([[1.0, 0.0], [3.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[2.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[1.0, 1.0]], dtype=np.float32),
+                context_states=np.zeros(4, dtype=np.float32),
+                output_states=np.zeros(2, dtype=np.float32),
+            )
+        ],
+        [
+            LlamaReplayRecord(
+                step_index=1,
+                layer_id=3,
+                token_index=3,
+                query_states=np.asarray([[2.0, 0.0], [4.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[4.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[2.0, 2.0]], dtype=np.float32),
+                context_states=np.zeros(4, dtype=np.float32),
+                output_states=np.zeros(2, dtype=np.float32),
+            )
+        ],
+    ]
+
+    manifest = export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        output_dir=tmp_path,
+        layer_ids=[3],
+        kv_head_ids=[0],
+        step_indices=[0, -1],
+        tokens_per_page=2,
+    )
+
+    manifest_path = tmp_path / "manifest.json"
+
+    assert manifest["snapshot_count"] == 2
+    assert manifest["resolved_step_indices"] == [0, 1]
+    assert manifest_path.exists()
+    payload = json.loads(manifest_path.read_text())
+    assert payload["snapshot_count"] == 2
+
+
+def test_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness_exports_manifest(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset", return_tensors="pt")
+
+    result = run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_dir=tmp_path,
+        layer_ids=[3],
+        kv_head_ids=[0],
+        step_indices=[0, -1],
+        tokens_per_page=2,
+    )
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
+    assert result["runtime_mode"] == "dense_attention_subset_paged_attention_snapshot_corpus_capture"
+    assert result["paged_attention_snapshot_corpus_count"] == 2
+    assert result["paged_attention_snapshot_corpus_resolved_step_indices"] == [0, 1]
+    assert manifest["snapshot_count"] == 2
+    assert manifest_path.exists()
 
 
 def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:

@@ -10,7 +10,7 @@ import sys
 import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 from ..config import DotCacheConfig
 from ..decode_reference import decode_page
@@ -2997,6 +2997,36 @@ class Qwen35AttentionSubsetHarness:
             layer_id=layer_id,
             kv_head_id=kv_head_id,
             step_index=step_index,
+            tokens_per_page=tokens_per_page,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def capture_attention_subset_paged_attention_snapshot_corpus(
+        self,
+        *,
+        output_dir: str | Path,
+        layer_ids: Sequence[int] | None = None,
+        kv_head_ids: Sequence[int] = (0,),
+        step_indices: Sequence[int] = (-1,),
+        tokens_per_page: int = 256,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+            self.model,
+            self.adapter,
+            output_dir=output_dir,
+            layer_ids=layer_ids,
+            kv_head_ids=kv_head_ids,
+            step_indices=step_indices,
             tokens_per_page=tokens_per_page,
             prompt=prompt,
             input_ids=input_ids,
@@ -6933,6 +6963,95 @@ def export_qwen35_attention_subset_paged_attention_snapshot(
     }
 
 
+def export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_dir: str | Path,
+    layer_ids: Sequence[int] | None = None,
+    kv_head_ids: Sequence[int] = (0,),
+    step_indices: Sequence[int] = (-1,),
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+) -> dict[str, Any]:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_layer_ids = sorted(int(layer_id) for layer_id in (layer_ids or sorted(prefill_tensors.keys())))
+    if not resolved_layer_ids:
+        raise ValueError("layer_ids must be non-empty")
+    if not step_indices:
+        raise ValueError("step_indices must be non-empty")
+
+    manifest_records: list[dict[str, Any]] = []
+    counts_by_layer: dict[str, int] = {}
+    counts_by_kv_head: dict[str, int] = {}
+    counts_by_step: dict[str, int] = {}
+
+    for layer_id in resolved_layer_ids:
+        if int(layer_id) not in prefill_tensors:
+            raise ValueError(f"requested attention layer {layer_id} is missing prefill tensors")
+        layer_keys, _layer_values = prefill_tensors[int(layer_id)]
+        key_array = _tensor_to_float32_numpy(layer_keys)
+        kv_head_count = int(key_array.shape[1])
+        resolved_kv_head_ids = sorted(int(kv_head_id) for kv_head_id in kv_head_ids)
+        for kv_head_id in resolved_kv_head_ids:
+            if kv_head_id < 0 or kv_head_id >= kv_head_count:
+                raise ValueError(f"requested kv_head_id={kv_head_id} is out of range for layer {layer_id}")
+            resolved_step_records: dict[int, dict[str, Any]] = {}
+            for requested_step_index in step_indices:
+                target = (
+                    target_dir
+                    / f"layer{int(layer_id):02d}_kv{int(kv_head_id):02d}_step{int(requested_step_index):+03d}.npz"
+                )
+                exported = export_qwen35_attention_subset_paged_attention_snapshot(
+                    prefill_tensors,
+                    per_step_records,
+                    q_head_to_kv_head=q_head_to_kv_head,
+                    output_path=target,
+                    layer_id=int(layer_id),
+                    kv_head_id=int(kv_head_id),
+                    step_index=int(requested_step_index),
+                    tokens_per_page=tokens_per_page,
+                    source=source,
+                )
+                resolved_step_index = int(exported["paged_attention_snapshot_step_index"])
+                if resolved_step_index in resolved_step_records:
+                    target.unlink(missing_ok=True)
+                    continue
+                exported["paged_attention_snapshot_requested_step_index"] = int(requested_step_index)
+                resolved_step_records[resolved_step_index] = exported
+            for resolved_step_index in sorted(resolved_step_records):
+                exported = resolved_step_records[resolved_step_index]
+                manifest_records.append(exported)
+                layer_key = str(int(layer_id))
+                kv_key = str(int(kv_head_id))
+                step_key = str(int(exported["paged_attention_snapshot_step_index"]))
+                counts_by_layer[layer_key] = counts_by_layer.get(layer_key, 0) + 1
+                counts_by_kv_head[kv_key] = counts_by_kv_head.get(kv_key, 0) + 1
+                counts_by_step[step_key] = counts_by_step.get(step_key, 0) + 1
+
+    manifest = {
+        "output_dir": str(target_dir),
+        "snapshot_count": len(manifest_records),
+        "snapshot_records": manifest_records,
+        "layer_ids": resolved_layer_ids,
+        "kv_head_ids": sorted(int(kv_head_id) for kv_head_id in kv_head_ids),
+        "requested_step_indices": [int(step_index) for step_index in step_indices],
+        "resolved_step_indices": sorted(
+            {int(record["paged_attention_snapshot_step_index"]) for record in manifest_records}
+        ),
+        "counts_by_layer": dict(sorted(counts_by_layer.items())),
+        "counts_by_kv_head": dict(sorted(counts_by_kv_head.items())),
+        "counts_by_step_index": dict(sorted(counts_by_step.items())),
+        "tokens_per_page": int(tokens_per_page),
+        "source": str(source),
+    }
+    (target_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
 def export_attention_subset_page_traces(
     per_step_records: list[list[LlamaReplayRecord]],
     *,
@@ -7110,6 +7229,78 @@ def run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
         )
     )
     result["runtime_mode"] = "dense_attention_subset_paged_attention_snapshot_capture"
+    return result
+
+
+def run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    output_dir: str | Path,
+    layer_ids: Sequence[int] | None = None,
+    kv_head_ids: Sequence[int] = (0,),
+    step_indices: Sequence[int] = (-1,),
+    tokens_per_page: int = 256,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    if int(decode_steps) <= 0:
+        raise ValueError("paged-attention snapshot corpus capture requires decode_steps > 0")
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    manifest = export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+        dense_capture["prefill_tensors"],
+        dense_capture["capture_records"],
+        q_head_to_kv_head=adapter.q_head_to_kv_head,
+        output_dir=output_dir,
+        layer_ids=layer_ids,
+        kv_head_ids=kv_head_ids,
+        step_indices=step_indices,
+        tokens_per_page=tokens_per_page,
+    )
+    result.update(
+        {
+            "paged_attention_snapshot_corpus_dir": str(output_dir),
+            "paged_attention_snapshot_corpus_manifest_path": str(Path(output_dir) / "manifest.json"),
+            "paged_attention_snapshot_corpus_count": int(manifest["snapshot_count"]),
+            "paged_attention_snapshot_corpus_layer_ids": manifest["layer_ids"],
+            "paged_attention_snapshot_corpus_kv_head_ids": manifest["kv_head_ids"],
+            "paged_attention_snapshot_corpus_requested_step_indices": manifest["requested_step_indices"],
+            "paged_attention_snapshot_corpus_resolved_step_indices": manifest["resolved_step_indices"],
+            "paged_attention_snapshot_corpus_counts_by_layer": manifest["counts_by_layer"],
+            "paged_attention_snapshot_corpus_counts_by_kv_head": manifest["counts_by_kv_head"],
+            "paged_attention_snapshot_corpus_counts_by_step_index": manifest["counts_by_step_index"],
+            "paged_attention_snapshot_tokens_per_page": int(tokens_per_page),
+        }
+    )
+    result["runtime_mode"] = "dense_attention_subset_paged_attention_snapshot_corpus_capture"
     return result
 
 
@@ -9552,6 +9743,7 @@ __all__ = [
     "load_qwen35_text_only_from_pretrained",
     "build_qwen35_attention_subset_paged_attention_snapshot",
     "export_qwen35_attention_subset_paged_attention_snapshot",
+    "export_qwen35_attention_subset_paged_attention_snapshot_corpus",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
@@ -9561,6 +9753,7 @@ __all__ = [
     "run_qwen35_attention_subset_dotcache_serving_quality_harness",
     "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",
+    "run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness",
     "run_qwen35_attention_subset_paged_attention_snapshot_capture_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",
