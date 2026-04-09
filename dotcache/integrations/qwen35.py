@@ -7529,6 +7529,38 @@ def _resolve_history_aware_persistent_serving_config(
     *,
     history_snapshot_count: int,
 ) -> PersistentServingConfig:
+    if int(history_snapshot_count) == 0 and any(
+        value is not None
+        for value in (
+            config.full_attention_optional_bootstrap_far_anchor_quota,
+            config.full_attention_optional_bootstrap_far_quota,
+            config.full_attention_optional_bootstrap_mid_quota,
+            config.full_attention_optional_bootstrap_near_quota,
+        )
+    ):
+        config = replace(
+            config,
+            full_attention_optional_far_anchor_quota=(
+                int(config.full_attention_optional_bootstrap_far_anchor_quota)
+                if config.full_attention_optional_bootstrap_far_anchor_quota is not None
+                else int(config.full_attention_optional_far_anchor_quota)
+            ),
+            full_attention_optional_far_quota=(
+                int(config.full_attention_optional_bootstrap_far_quota)
+                if config.full_attention_optional_bootstrap_far_quota is not None
+                else int(config.full_attention_optional_far_quota)
+            ),
+            full_attention_optional_mid_quota=(
+                int(config.full_attention_optional_bootstrap_mid_quota)
+                if config.full_attention_optional_bootstrap_mid_quota is not None
+                else int(config.full_attention_optional_mid_quota)
+            ),
+            full_attention_optional_near_quota=(
+                int(config.full_attention_optional_bootstrap_near_quota)
+                if config.full_attention_optional_bootstrap_near_quota is not None
+                else int(config.full_attention_optional_near_quota)
+            ),
+        )
     requires_history = bool(config.full_attention_optional_diversity_requires_history)
     min_history_count = max(int(config.full_attention_optional_diversity_min_history_count), 0)
     max_history_count = (
@@ -7637,6 +7669,35 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "persistent_runtime_optional_far_quota": int(effective_config.full_attention_optional_far_quota),
         "persistent_runtime_optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
         "persistent_runtime_optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+        "persistent_runtime_optional_far_anchor_quota": int(
+            effective_config.full_attention_optional_far_anchor_quota
+        ),
+        "persistent_runtime_optional_far_anchor_priority_margin": float(
+            effective_config.full_attention_optional_far_anchor_priority_margin
+        ),
+        "persistent_runtime_optional_far_anchor_upper_bound_margin": float(
+            effective_config.full_attention_optional_far_anchor_upper_bound_margin
+        ),
+        "persistent_runtime_optional_bootstrap_far_anchor_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_far_anchor_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_far_anchor_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_far_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_far_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_far_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_mid_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_mid_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_mid_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_near_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_near_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_near_quota)
+        ),
         "persistent_runtime_optional_diversity_weight": float(
             effective_config.full_attention_optional_diversity_weight
         ),
@@ -7779,6 +7840,33 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
             "optional_far_quota": int(effective_config.full_attention_optional_far_quota),
             "optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
             "optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+            "optional_far_anchor_quota": int(effective_config.full_attention_optional_far_anchor_quota),
+            "optional_far_anchor_priority_margin": float(
+                effective_config.full_attention_optional_far_anchor_priority_margin
+            ),
+            "optional_far_anchor_upper_bound_margin": float(
+                effective_config.full_attention_optional_far_anchor_upper_bound_margin
+            ),
+            "optional_bootstrap_far_anchor_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_far_anchor_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_far_anchor_quota)
+            ),
+            "optional_bootstrap_far_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_far_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_far_quota)
+            ),
+            "optional_bootstrap_mid_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_mid_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_mid_quota)
+            ),
+            "optional_bootstrap_near_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_near_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_near_quota)
+            ),
             "optional_diversity_weight": float(effective_config.full_attention_optional_diversity_weight),
             "optional_diversity_radius": int(effective_config.full_attention_optional_diversity_radius),
             "optional_diversity_requires_history": bool(effective_config.full_attention_optional_diversity_requires_history),

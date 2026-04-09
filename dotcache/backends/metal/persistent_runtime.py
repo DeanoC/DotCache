@@ -379,6 +379,9 @@ def _select_optional_block_ids(
     top_k: int,
     use_upper_bounds_first: bool,
     upper_bound_quota: int,
+    far_anchor_quota: int,
+    far_anchor_priority_margin: float,
+    far_anchor_upper_bound_margin: float,
     far_quota: int,
     mid_quota: int,
     near_quota: int,
@@ -400,69 +403,119 @@ def _select_optional_block_ids(
         upper_bounds=upper_bounds,
         use_upper_bounds_first=False,
     )
+    selected: list[int] = []
+    selected_set: set[int] = set()
     if bool(use_upper_bounds_first):
-        return _select_diverse_block_ids(
+        selected.extend(
+            _select_diverse_block_ids(
+                ranked_candidate_ids=ranked_by_upper,
+                primary_scores=upper_bounds,
+                secondary_scores=priority_scores,
+                count=max(int(top_k) - len(selected), 0),
+                seed_block_ids=seed_block_ids + selected,
+                diversity_weight=float(diversity_weight),
+                diversity_radius=int(diversity_radius),
+            )
+        )
+    else:
+        reserved = max(0, min(int(upper_bound_quota), max(int(top_k) - len(selected), 0), len(ranked_by_upper)))
+        upper_selected = _select_diverse_block_ids(
             ranked_candidate_ids=ranked_by_upper,
             primary_scores=upper_bounds,
             secondary_scores=priority_scores,
-            count=int(top_k),
-            seed_block_ids=seed_block_ids,
-            diversity_weight=float(diversity_weight),
-            diversity_radius=int(diversity_radius),
-        )
-
-    reserved = max(0, min(int(upper_bound_quota), int(top_k), len(ranked_by_upper)))
-    selected: list[int] = _select_diverse_block_ids(
-        ranked_candidate_ids=ranked_by_upper,
-        primary_scores=upper_bounds,
-        secondary_scores=priority_scores,
-        count=reserved,
-        seed_block_ids=seed_block_ids,
-        diversity_weight=float(diversity_weight),
-        diversity_radius=int(diversity_radius),
-    )
-    selected_set = set(selected)
-    region_quotas = {
-        0: max(0, int(far_quota)),
-        1: max(0, int(mid_quota)),
-        2: max(0, int(near_quota)),
-    }
-    for region_id in (0, 1, 2):
-        quota = min(region_quotas[region_id], max(int(top_k) - len(selected), 0))
-        if quota <= 0:
-            continue
-        region_ranked = [
-            int(block_id)
-            for block_id in ranked_by_priority
-            if int(block_id) not in selected_set and int(region_ids[int(block_id)]) == int(region_id)
-        ]
-        region_selected = _select_diverse_block_ids(
-            ranked_candidate_ids=region_ranked,
-            primary_scores=priority_scores,
-            secondary_scores=upper_bounds,
-            count=quota,
+            count=reserved,
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
             diversity_radius=int(diversity_radius),
         )
-        for block_id in region_selected:
-            selected.append(block_id)
-            selected_set.add(block_id)
-        if len(selected) >= int(top_k):
-            return selected[: int(top_k)]
-    spill_ranked = [int(block_id) for block_id in ranked_by_priority if int(block_id) not in selected_set]
-    spill_selected = _select_diverse_block_ids(
-        ranked_candidate_ids=spill_ranked,
-        primary_scores=priority_scores,
-        secondary_scores=upper_bounds,
-        count=max(int(top_k) - len(selected), 0),
-        seed_block_ids=seed_block_ids + selected,
-        diversity_weight=float(diversity_weight),
-        diversity_radius=int(diversity_radius),
-    )
-    for block_id in spill_selected:
-        selected.append(int(block_id))
-        selected_set.add(int(block_id))
+        selected.extend(int(block_id) for block_id in upper_selected)
+        selected_set.update(int(block_id) for block_id in upper_selected)
+        region_quotas = {
+            0: max(0, int(far_quota)),
+            1: max(0, int(mid_quota)),
+            2: max(0, int(near_quota)),
+        }
+        for region_id in (0, 1, 2):
+            quota = min(region_quotas[region_id], max(int(top_k) - len(selected), 0))
+            if quota <= 0:
+                continue
+            region_ranked = [
+                int(block_id)
+                for block_id in ranked_by_priority
+                if int(block_id) not in selected_set and int(region_ids[int(block_id)]) == int(region_id)
+            ]
+            region_selected = _select_diverse_block_ids(
+                ranked_candidate_ids=region_ranked,
+                primary_scores=priority_scores,
+                secondary_scores=upper_bounds,
+                count=quota,
+                seed_block_ids=seed_block_ids + selected,
+                diversity_weight=float(diversity_weight),
+                diversity_radius=int(diversity_radius),
+            )
+            for block_id in region_selected:
+                selected.append(block_id)
+                selected_set.add(block_id)
+            if len(selected) >= int(top_k):
+                break
+        spill_ranked = [int(block_id) for block_id in ranked_by_priority if int(block_id) not in selected_set]
+        spill_selected = _select_diverse_block_ids(
+            ranked_candidate_ids=spill_ranked,
+            primary_scores=priority_scores,
+            secondary_scores=upper_bounds,
+            count=max(int(top_k) - len(selected), 0),
+            seed_block_ids=seed_block_ids + selected,
+            diversity_weight=float(diversity_weight),
+            diversity_radius=int(diversity_radius),
+        )
+        for block_id in spill_selected:
+            selected.append(int(block_id))
+            selected_set.add(int(block_id))
+    selected = selected[: int(top_k)]
+    if int(far_anchor_quota) <= 0 or not selected:
+        return selected
+    far_candidates = [
+        int(block_id)
+        for block_id in ranked_by_priority
+        if int(block_id) not in set(selected) and int(region_ids[int(block_id)]) == 0
+    ]
+    if not far_candidates:
+        return selected
+    max_replacements = min(int(far_anchor_quota), len(far_candidates), len(selected))
+    replacements = 0
+    selected_set = set(int(block_id) for block_id in selected)
+    for candidate_id in far_candidates:
+        if replacements >= max_replacements:
+            break
+        preferred_weak_ids = [
+            int(block_id)
+            for block_id in selected
+            if int(region_ids[int(block_id)]) != 0
+        ]
+        weak_pool = preferred_weak_ids if preferred_weak_ids else [int(block_id) for block_id in selected]
+        weakest_selected_id = min(
+            weak_pool,
+            key=lambda block_id: (
+                float(priority_scores[int(block_id)].item()),
+                float(upper_bounds[int(block_id)].item()),
+            ),
+        )
+        priority_gain = float(priority_scores[int(candidate_id)].item()) - float(
+            priority_scores[int(weakest_selected_id)].item()
+        )
+        upper_gain = float(upper_bounds[int(candidate_id)].item()) - float(
+            upper_bounds[int(weakest_selected_id)].item()
+        )
+        if (
+            priority_gain < float(far_anchor_priority_margin)
+            and upper_gain < float(far_anchor_upper_bound_margin)
+        ):
+            continue
+        replace_index = selected.index(int(weakest_selected_id))
+        selected[replace_index] = int(candidate_id)
+        selected_set.remove(int(weakest_selected_id))
+        selected_set.add(int(candidate_id))
+        replacements += 1
     return selected
 
 
@@ -701,6 +754,11 @@ class PersistentFullAttentionState:
                 top_k=int(self.config.full_attention_optional_top_k),
                 use_upper_bounds_first=bool(self.config.full_attention_optional_use_upper_bounds_first),
                 upper_bound_quota=int(self.config.full_attention_optional_upper_bound_quota),
+                far_anchor_quota=int(self.config.full_attention_optional_far_anchor_quota),
+                far_anchor_priority_margin=float(self.config.full_attention_optional_far_anchor_priority_margin),
+                far_anchor_upper_bound_margin=float(
+                    self.config.full_attention_optional_far_anchor_upper_bound_margin
+                ),
                 far_quota=int(self.config.full_attention_optional_far_quota),
                 mid_quota=int(self.config.full_attention_optional_mid_quota),
                 near_quota=int(self.config.full_attention_optional_near_quota),

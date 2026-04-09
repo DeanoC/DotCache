@@ -21,9 +21,16 @@ class PersistentServingConfig:
     full_attention_optional_top_k: int = 0
     full_attention_optional_use_upper_bounds_first: bool = True
     full_attention_optional_upper_bound_quota: int = 0
+    full_attention_optional_far_anchor_quota: int = 0
+    full_attention_optional_far_anchor_priority_margin: float = 0.0
+    full_attention_optional_far_anchor_upper_bound_margin: float = 0.0
     full_attention_optional_far_quota: int = 0
     full_attention_optional_mid_quota: int = 0
     full_attention_optional_near_quota: int = 0
+    full_attention_optional_bootstrap_far_anchor_quota: int | None = None
+    full_attention_optional_bootstrap_far_quota: int | None = None
+    full_attention_optional_bootstrap_mid_quota: int | None = None
+    full_attention_optional_bootstrap_near_quota: int | None = None
     full_attention_optional_diversity_weight: float = 0.0
     full_attention_optional_diversity_radius: int = 0
     full_attention_optional_diversity_requires_history: bool = False

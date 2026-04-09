@@ -29,9 +29,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optional-top-k", type=int, default=0)
     parser.add_argument("--disable-upper-bound-ranking", action="store_true")
     parser.add_argument("--upper-bound-quota", type=int, default=0)
+    parser.add_argument("--far-anchor-quota", type=int, default=0)
+    parser.add_argument("--far-anchor-priority-margin", type=float, default=0.0)
+    parser.add_argument("--far-anchor-upper-bound-margin", type=float, default=0.0)
     parser.add_argument("--far-quota", type=int, default=0)
     parser.add_argument("--mid-quota", type=int, default=0)
     parser.add_argument("--near-quota", type=int, default=0)
+    parser.add_argument("--bootstrap-far-anchor-quota", type=int, default=None)
+    parser.add_argument("--bootstrap-far-quota", type=int, default=None)
+    parser.add_argument("--bootstrap-mid-quota", type=int, default=None)
+    parser.add_argument("--bootstrap-near-quota", type=int, default=None)
     parser.add_argument("--diversity-weight", type=float, default=0.0)
     parser.add_argument("--diversity-radius", type=int, default=0)
     parser.add_argument("--diversity-requires-history", action="store_true")
@@ -188,9 +195,24 @@ def main() -> None:
         full_attention_optional_top_k=int(args.optional_top_k),
         full_attention_optional_use_upper_bounds_first=not bool(args.disable_upper_bound_ranking),
         full_attention_optional_upper_bound_quota=int(args.upper_bound_quota),
+        full_attention_optional_far_anchor_quota=int(args.far_anchor_quota),
+        full_attention_optional_far_anchor_priority_margin=float(args.far_anchor_priority_margin),
+        full_attention_optional_far_anchor_upper_bound_margin=float(args.far_anchor_upper_bound_margin),
         full_attention_optional_far_quota=int(args.far_quota),
         full_attention_optional_mid_quota=int(args.mid_quota),
         full_attention_optional_near_quota=int(args.near_quota),
+        full_attention_optional_bootstrap_far_anchor_quota=(
+            None if args.bootstrap_far_anchor_quota is None else int(args.bootstrap_far_anchor_quota)
+        ),
+        full_attention_optional_bootstrap_far_quota=(
+            None if args.bootstrap_far_quota is None else int(args.bootstrap_far_quota)
+        ),
+        full_attention_optional_bootstrap_mid_quota=(
+            None if args.bootstrap_mid_quota is None else int(args.bootstrap_mid_quota)
+        ),
+        full_attention_optional_bootstrap_near_quota=(
+            None if args.bootstrap_near_quota is None else int(args.bootstrap_near_quota)
+        ),
         full_attention_optional_diversity_weight=float(args.diversity_weight),
         full_attention_optional_diversity_radius=int(args.diversity_radius),
         full_attention_optional_diversity_requires_history=bool(args.diversity_requires_history),
@@ -246,9 +268,36 @@ def main() -> None:
             "optional_top_k": int(config.full_attention_optional_top_k),
             "optional_use_upper_bounds_first": bool(config.full_attention_optional_use_upper_bounds_first),
             "optional_upper_bound_quota": int(config.full_attention_optional_upper_bound_quota),
+            "optional_far_anchor_quota": int(config.full_attention_optional_far_anchor_quota),
+            "optional_far_anchor_priority_margin": float(
+                config.full_attention_optional_far_anchor_priority_margin
+            ),
+            "optional_far_anchor_upper_bound_margin": float(
+                config.full_attention_optional_far_anchor_upper_bound_margin
+            ),
             "optional_far_quota": int(config.full_attention_optional_far_quota),
             "optional_mid_quota": int(config.full_attention_optional_mid_quota),
             "optional_near_quota": int(config.full_attention_optional_near_quota),
+            "optional_bootstrap_far_anchor_quota": (
+                None
+                if config.full_attention_optional_bootstrap_far_anchor_quota is None
+                else int(config.full_attention_optional_bootstrap_far_anchor_quota)
+            ),
+            "optional_bootstrap_far_quota": (
+                None
+                if config.full_attention_optional_bootstrap_far_quota is None
+                else int(config.full_attention_optional_bootstrap_far_quota)
+            ),
+            "optional_bootstrap_mid_quota": (
+                None
+                if config.full_attention_optional_bootstrap_mid_quota is None
+                else int(config.full_attention_optional_bootstrap_mid_quota)
+            ),
+            "optional_bootstrap_near_quota": (
+                None
+                if config.full_attention_optional_bootstrap_near_quota is None
+                else int(config.full_attention_optional_bootstrap_near_quota)
+            ),
             "optional_diversity_weight": float(config.full_attention_optional_diversity_weight),
             "optional_diversity_radius": int(config.full_attention_optional_diversity_radius),
             "optional_diversity_requires_history": bool(config.full_attention_optional_diversity_requires_history),
