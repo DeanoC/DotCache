@@ -1,0 +1,59 @@
+{
+  "version": "2026-04-08",
+  "policies": [
+    {
+      "family": "llama",
+      "min_prompt_tokens": 0,
+      "max_prompt_tokens": 32,
+      "resident_page_budget": 2,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all llama trl-internal-testing/tiny-random-LlamaForCausalLM token-buckets=32,128,512 bucket=0-32 recommended=pages-2_bytes-none_cooldown-8"
+    },
+    {
+      "family": "llama",
+      "min_prompt_tokens": 33,
+      "max_prompt_tokens": 128,
+      "resident_page_budget": null,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all llama trl-internal-testing/tiny-random-LlamaForCausalLM token-buckets=32,128,512 bucket=33-128 recommended=pages-none_bytes-none_cooldown-8"
+    },
+    {
+      "family": "llama",
+      "min_prompt_tokens": 129,
+      "max_prompt_tokens": 512,
+      "resident_page_budget": null,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all llama trl-internal-testing/tiny-random-LlamaForCausalLM token-buckets=32,128,512 bucket=129-512 recommended=pages-none_bytes-none_cooldown-8"
+    },
+    {
+      "family": "qwen2",
+      "min_prompt_tokens": 0,
+      "max_prompt_tokens": 32,
+      "resident_page_budget": 2,
+      "resident_byte_budget": 528,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all qwen2 trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 token-buckets=32,128,512 bucket=0-32 recommended=pages-2_bytes-528_cooldown-8"
+    },
+    {
+      "family": "qwen2",
+      "min_prompt_tokens": 33,
+      "max_prompt_tokens": 128,
+      "resident_page_budget": 2,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all qwen2 trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 token-buckets=32,128,512 bucket=33-128 recommended=pages-2_bytes-none_cooldown-8"
+    },
+    {
+      "family": "qwen2",
+      "min_prompt_tokens": 129,
+      "max_prompt_tokens": 512,
+      "resident_page_budget": null,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "hf_prompt_bucket_tune all qwen2 trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 token-buckets=32,128,512 bucket=129-512 recommended=pages-none_bytes-none_cooldown-8"
+    }
+  ]
+}
