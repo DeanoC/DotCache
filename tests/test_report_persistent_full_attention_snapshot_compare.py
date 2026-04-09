@@ -6,7 +6,21 @@ from pathlib import Path
 from scripts.report_persistent_full_attention_snapshot_compare import _build_report, _build_markdown
 
 
-def _write_payload(path: Path, *, enable_priority: bool, recent: int, topk: int, selected_tokens: float, max_abs: float) -> None:
+def _write_payload(
+    path: Path,
+    *,
+    enable_priority: bool,
+    recent: int,
+    topk: int,
+    selected_tokens: float,
+    max_abs: float,
+    history_mode: str = "none",
+    diversity_weight: float = 0.0,
+    diversity_radius: int = 0,
+    diversity_requires_history: bool = False,
+    diversity_min_history_count: int = 0,
+    diversity_max_history_count: int | None = None,
+) -> None:
     payload = {
         "config": {
             "block_size": 16,
@@ -15,6 +29,12 @@ def _write_payload(path: Path, *, enable_priority: bool, recent: int, topk: int,
             "recent_block_count": recent,
             "exploration_blocks_per_region": 1,
             "optional_top_k": topk,
+            "history_mode": history_mode,
+            "optional_diversity_weight": diversity_weight,
+            "optional_diversity_radius": diversity_radius,
+            "optional_diversity_requires_history": diversity_requires_history,
+            "optional_diversity_min_history_count": diversity_min_history_count,
+            "optional_diversity_max_history_count": diversity_max_history_count,
         },
         "summary": {
             "snapshot_count": 2,
@@ -73,3 +93,25 @@ def test_build_markdown_includes_config_table_and_worst_slices(tmp_path: Path) -
     assert "## Config Sweep" in markdown
     assert "priority_recent64_topk128_sink1_explore1" in markdown
     assert "readme/layer19_kv00_step+00.npz" in markdown
+
+
+def test_build_report_label_includes_history_and_diversity_schedule(tmp_path: Path) -> None:
+    payload = tmp_path / "scheduled.json"
+    _write_payload(
+        payload,
+        enable_priority=True,
+        recent=64,
+        topk=128,
+        selected_tokens=240.0,
+        max_abs=0.1,
+        history_mode="ema",
+        diversity_weight=0.5,
+        diversity_radius=4,
+        diversity_requires_history=True,
+        diversity_min_history_count=1,
+        diversity_max_history_count=2,
+    )
+
+    report = _build_report([payload])
+
+    assert report["cases"][0]["label"] == "priority_recent64_topk128_sink1_explore1_histema_div0.5_r4_histgate_h1to2"

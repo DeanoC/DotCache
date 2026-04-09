@@ -39,13 +39,30 @@ def _markdown_table(rows: list[list[str]]) -> str:
 def _config_label(config: dict[str, Any]) -> str:
     if not bool(config.get("enable_priority", False)):
         return "full_coverage"
-    return (
+    label = (
         "priority"
         f"_recent{int(config.get('recent_block_count', 0))}"
         f"_topk{int(config.get('optional_top_k', 0))}"
         f"_sink{int(config.get('sink_block_count', 0))}"
         f"_explore{int(config.get('exploration_blocks_per_region', 0))}"
     )
+    history_mode = str(config.get("history_mode", "none"))
+    if history_mode != "none":
+        label += f"_hist{history_mode}"
+    diversity_weight = float(config.get("optional_diversity_weight", 0.0))
+    diversity_radius = int(config.get("optional_diversity_radius", 0))
+    if diversity_weight > 0.0 and diversity_radius > 0:
+        label += f"_div{diversity_weight:g}_r{diversity_radius}"
+        if bool(config.get("optional_diversity_requires_history", False)):
+            label += "_histgate"
+        min_history = int(config.get("optional_diversity_min_history_count", 0))
+        max_history = config.get("optional_diversity_max_history_count")
+        if min_history > 0 or max_history is not None:
+            if max_history is None:
+                label += f"_h{min_history}plus"
+            else:
+                label += f"_h{min_history}to{int(max_history)}"
+    return label
 
 
 def _relative_snapshot_path(path: str) -> str:
@@ -95,7 +112,18 @@ def _build_report(compare_inputs: list[Path]) -> dict[str, Any]:
     rows.sort(key=lambda row: (row["label"] != "full_coverage", float(row["summary"]["max_abs_error"])))
 
     priority_rows = [row for row in rows if row["label"] != "full_coverage"]
-    best_priority = min(priority_rows, key=lambda row: float(row["summary"]["max_abs_error"])) if priority_rows else None
+    best_priority = (
+        min(
+            priority_rows,
+            key=lambda row: (
+                float(row["summary"]["max_abs_error"]),
+                float(row["summary"].get("avg_max_abs_error", float("inf"))),
+                float(row["summary"]["avg_selected_token_count"]),
+            ),
+        )
+        if priority_rows
+        else None
+    )
     best_compression = min(priority_rows, key=lambda row: float(row["summary"]["avg_selected_token_count"])) if priority_rows else None
 
     return {

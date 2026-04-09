@@ -7527,9 +7527,23 @@ def _build_persistent_full_attention_snapshot_runtime(
 def _resolve_history_aware_persistent_serving_config(
     config: PersistentServingConfig,
     *,
-    has_history: bool,
+    history_snapshot_count: int,
 ) -> PersistentServingConfig:
-    if has_history or not bool(config.full_attention_optional_diversity_requires_history):
+    requires_history = bool(config.full_attention_optional_diversity_requires_history)
+    min_history_count = max(int(config.full_attention_optional_diversity_min_history_count), 0)
+    max_history_count = (
+        None
+        if config.full_attention_optional_diversity_max_history_count is None
+        else max(int(config.full_attention_optional_diversity_max_history_count), 0)
+    )
+    should_disable = False
+    if requires_history and int(history_snapshot_count) <= 0:
+        should_disable = True
+    if int(history_snapshot_count) < min_history_count:
+        should_disable = True
+    if max_history_count is not None and int(history_snapshot_count) > max_history_count:
+        should_disable = True
+    if not should_disable:
         return config
     return replace(
         config,
@@ -7559,9 +7573,10 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         load_paged_attention_snapshot(item) if isinstance(item, (str, Path)) else item
         for item in (history_snapshots_or_paths or [])
     ]
+    history_snapshot_count = int(len(history_snapshots))
     effective_config = _resolve_history_aware_persistent_serving_config(
         resolved_config,
-        has_history=bool(history_snapshots),
+        history_snapshot_count=history_snapshot_count,
     )
     history_prev_attention = _aggregate_history_prev_attention(
         target_snapshot=snapshot,
@@ -7631,6 +7646,14 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "persistent_runtime_optional_diversity_requires_history": bool(
             effective_config.full_attention_optional_diversity_requires_history
         ),
+        "persistent_runtime_optional_diversity_min_history_count": int(
+            effective_config.full_attention_optional_diversity_min_history_count
+        ),
+        "persistent_runtime_optional_diversity_max_history_count": (
+            None
+            if effective_config.full_attention_optional_diversity_max_history_count is None
+            else int(effective_config.full_attention_optional_diversity_max_history_count)
+        ),
         "persistent_runtime_priority_prev_attention_weight": float(
             effective_config.full_attention_priority_prev_attention_weight
         ),
@@ -7653,7 +7676,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "persistent_runtime_exploration_blocks_per_region": int(effective_config.full_attention_exploration_blocks_per_region),
         "history_mode": str(history_mode),
         "history_decay": float(history_decay),
-        "history_snapshot_count": int(len(history_snapshots)),
+        "history_snapshot_count": history_snapshot_count,
         "history_prev_attention_nonzero_count": (
             int(np.count_nonzero(history_prev_attention)) if history_prev_attention is not None else 0
         ),
@@ -7683,7 +7706,7 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
     resolved_config = persistent_serving_config or PersistentServingConfig()
     effective_config = _resolve_history_aware_persistent_serving_config(
         resolved_config,
-        has_history=False,
+        history_snapshot_count=0,
     )
     runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
         _build_persistent_full_attention_snapshot_runtime(
@@ -7759,6 +7782,14 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
             "optional_diversity_weight": float(effective_config.full_attention_optional_diversity_weight),
             "optional_diversity_radius": int(effective_config.full_attention_optional_diversity_radius),
             "optional_diversity_requires_history": bool(effective_config.full_attention_optional_diversity_requires_history),
+            "optional_diversity_min_history_count": int(
+                effective_config.full_attention_optional_diversity_min_history_count
+            ),
+            "optional_diversity_max_history_count": (
+                None
+                if effective_config.full_attention_optional_diversity_max_history_count is None
+                else int(effective_config.full_attention_optional_diversity_max_history_count)
+            ),
         },
         "prior_config": {
             "transform": str(prev_attention_transform),

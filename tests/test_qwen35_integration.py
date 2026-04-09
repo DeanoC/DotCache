@@ -1805,11 +1805,15 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
             full_attention_optional_diversity_weight=0.5,
             full_attention_optional_diversity_radius=4,
             full_attention_optional_diversity_requires_history=True,
+            full_attention_optional_diversity_min_history_count=1,
+            full_attention_optional_diversity_max_history_count=2,
         ),
     )
     assert history_gated["history_snapshot_count"] == 0
     assert history_gated["persistent_runtime_optional_diversity_weight"] == 0.0
     assert history_gated["persistent_runtime_optional_diversity_radius"] == 0
+    assert history_gated["persistent_runtime_optional_diversity_min_history_count"] == 1
+    assert history_gated["persistent_runtime_optional_diversity_max_history_count"] == 2
 
     debug_payload = debug_qwen35_persistent_full_attention_snapshot_selection(
         capture["paged_attention_snapshot_path"],
