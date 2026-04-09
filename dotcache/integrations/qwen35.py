@@ -7365,10 +7365,45 @@ def _seed_full_attention_prev_attention_ema_from_snapshot(
     *,
     layer_id: int,
     snapshot: Any,
-) -> None:
+    prev_attention_values: np.ndarray | None = None,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+) -> np.ndarray:
+    def _shape_prev_attention(values: np.ndarray) -> np.ndarray:
+        shaped = np.clip(np.asarray(values, dtype=np.float32), 0.0, None)
+        if prev_attention_transform == "sqrt":
+            shaped = np.sqrt(shaped, dtype=np.float32)
+        elif prev_attention_transform == "log1p":
+            shaped = np.log1p(shaped).astype(np.float32, copy=False)
+        elif prev_attention_transform != "identity":
+            raise ValueError(f"unsupported prev attention transform: {prev_attention_transform}")
+        blend = float(max(prev_attention_neighbor_blend, 0.0))
+        for _ in range(max(int(prev_attention_smoothing_passes), 0)):
+            if shaped.size <= 1 or blend <= 0.0:
+                break
+            mixed = shaped * max(0.0, 1.0 - blend)
+            mixed[1:-1] += 0.5 * blend * (shaped[:-2] + shaped[2:])
+            mixed[0] += blend * shaped[1]
+            mixed[-1] += blend * shaped[-2]
+            shaped = mixed.astype(np.float32, copy=False)
+        if float(prev_attention_floor) > 0.0:
+            shaped = np.maximum(shaped, float(prev_attention_floor), dtype=np.float32)
+        total = float(np.sum(shaped, dtype=np.float64))
+        if total > 0.0:
+            shaped = (shaped / total).astype(np.float32, copy=False)
+        return shaped
+
     layer_state = state.layers[int(layer_id)]
     if int(snapshot.num_pages) == 0:
-        return
+        return np.zeros((0,), dtype=np.float32)
+    raw_prev_attn = (
+        np.asarray(snapshot.prev_attn, dtype=np.float32)
+        if prev_attention_values is None
+        else np.asarray(prev_attention_values, dtype=np.float32)
+    )
+    shaped_prev_attn = _shape_prev_attention(raw_prev_attn)
     page_ids_by_token = np.zeros((int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),), dtype=np.int64)
     for page_id in range(int(snapshot.num_pages)):
         token_start = int(snapshot.page_token_starts[page_id])
@@ -7386,20 +7421,81 @@ def _seed_full_attention_prev_attention_ema_from_snapshot(
         for page_id in np.unique(token_page_ids):
             overlap = int(np.count_nonzero(token_page_ids == int(page_id)))
             page_token_count = max(int(snapshot.page_token_counts[int(page_id)]), 1)
-            block_mass += float(snapshot.prev_attn[int(page_id)]) * (float(overlap) / float(page_token_count))
+            block_mass += float(shaped_prev_attn[int(page_id)]) * (float(overlap) / float(page_token_count))
         layer_state.block_prev_attention_ema[block_id] = float(block_mass)
+    return shaped_prev_attn
 
 
-def run_qwen35_persistent_full_attention_snapshot_comparison(
-    snapshot_or_path: Any,
+def _remap_snapshot_prev_attention_to_target_pages(
     *,
-    persistent_serving_config: PersistentServingConfig | None = None,
-    query_scale: float | None = None,
-) -> dict[str, Any]:
-    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+    source_snapshot: Any,
+    source_prev_attention: np.ndarray,
+    target_snapshot: Any,
+) -> np.ndarray:
+    if int(target_snapshot.num_pages) == 0:
+        return np.zeros((0,), dtype=np.float32)
+    remapped = np.zeros((int(target_snapshot.num_pages),), dtype=np.float32)
+    source_starts = np.asarray(source_snapshot.page_token_starts, dtype=np.int64)
+    source_counts = np.asarray(source_snapshot.page_token_counts, dtype=np.int64)
+    target_starts = np.asarray(target_snapshot.page_token_starts, dtype=np.int64)
+    target_counts = np.asarray(target_snapshot.page_token_counts, dtype=np.int64)
+    for target_page_id in range(int(target_snapshot.num_pages)):
+        target_start = int(target_starts[target_page_id])
+        target_end = target_start + int(target_counts[target_page_id])
+        page_mass = 0.0
+        for source_page_id in range(int(source_snapshot.num_pages)):
+            source_start = int(source_starts[source_page_id])
+            source_end = source_start + int(source_counts[source_page_id])
+            overlap = max(0, min(target_end, source_end) - max(target_start, source_start))
+            if overlap <= 0:
+                continue
+            source_page_count = max(int(source_counts[source_page_id]), 1)
+            page_mass += float(source_prev_attention[source_page_id]) * (float(overlap) / float(source_page_count))
+        remapped[target_page_id] = float(page_mass)
+    return remapped
 
-    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
-    resolved_config = persistent_serving_config or PersistentServingConfig()
+
+def _aggregate_history_prev_attention(
+    *,
+    target_snapshot: Any,
+    history_snapshots: Sequence[Any],
+    history_mode: str,
+    history_decay: float,
+) -> np.ndarray | None:
+    if not history_snapshots or history_mode == "none":
+        return None
+    remapped = [
+        _remap_snapshot_prev_attention_to_target_pages(
+            source_snapshot=history_snapshot,
+            source_prev_attention=np.asarray(history_snapshot.prev_attn, dtype=np.float32),
+            target_snapshot=target_snapshot,
+        )
+        for history_snapshot in history_snapshots
+    ]
+    if not remapped:
+        return None
+    if history_mode == "mean":
+        return np.mean(np.stack(remapped, axis=0), axis=0, dtype=np.float32)
+    if history_mode == "ema":
+        alpha = min(max(float(history_decay), 0.0), 1.0)
+        aggregate = np.zeros_like(remapped[0], dtype=np.float32)
+        for values in remapped:
+            aggregate = alpha * aggregate + (1.0 - alpha) * values.astype(np.float32, copy=False)
+        return aggregate
+    raise ValueError(f"unsupported history_mode: {history_mode}")
+
+
+def _build_persistent_full_attention_snapshot_runtime(
+    snapshot: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig,
+    query_scale: float | None,
+    prev_attention_values: np.ndarray | None,
+    prev_attention_transform: str,
+    prev_attention_neighbor_blend: float,
+    prev_attention_smoothing_passes: int,
+    prev_attention_floor: float,
+) -> tuple[PersistentFullAttentionState, torch.Tensor, np.ndarray, np.ndarray, float, np.ndarray]:
     key_history, value_history = _flatten_paged_attention_snapshot_history(snapshot)
     prefill_tensors = {
         0: (
@@ -7411,11 +7507,62 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         prefill_tensors=prefill_tensors,
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
-        config=resolved_config,
+        config=persistent_serving_config,
     )
-    _seed_full_attention_prev_attention_ema_from_snapshot(runtime, layer_id=0, snapshot=snapshot)
+    shaped_prev_attn = _seed_full_attention_prev_attention_ema_from_snapshot(
+        runtime,
+        layer_id=0,
+        snapshot=snapshot,
+        prev_attention_values=prev_attention_values,
+        prev_attention_transform=prev_attention_transform,
+        prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+        prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+        prev_attention_floor=prev_attention_floor,
+    )
     query_tensor = torch.as_tensor(np.asarray(snapshot.query, dtype=np.float32)[None, :], dtype=torch.float32)
     resolved_query_scale = float(query_scale) if query_scale is not None else float(1.0 / math.sqrt(int(snapshot.head_dim)))
+    return runtime, query_tensor, key_history, value_history, resolved_query_scale, shaped_prev_attn
+
+
+def run_qwen35_persistent_full_attention_snapshot_comparison(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    query_scale: float | None = None,
+    history_snapshots_or_paths: Sequence[Any] | None = None,
+    history_mode: str = "none",
+    history_decay: float = 0.5,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    history_snapshots = [
+        load_paged_attention_snapshot(item) if isinstance(item, (str, Path)) else item
+        for item in (history_snapshots_or_paths or [])
+    ]
+    history_prev_attention = _aggregate_history_prev_attention(
+        target_snapshot=snapshot,
+        history_snapshots=history_snapshots,
+        history_mode=str(history_mode),
+        history_decay=float(history_decay),
+    )
+    runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
+        _build_persistent_full_attention_snapshot_runtime(
+            snapshot,
+            persistent_serving_config=resolved_config,
+            query_scale=query_scale,
+            prev_attention_values=history_prev_attention,
+            prev_attention_transform=prev_attention_transform,
+            prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+            prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+            prev_attention_floor=prev_attention_floor,
+        )
+    )
     selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
     selected_block_ids = selection["selected_block_ids"]
     selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
@@ -7439,6 +7586,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "query_scale": float(resolved_query_scale),
         "selected_block_ids": [int(block_id) for block_id in selected_block_ids],
         "mandatory_block_ids": [int(block_id) for block_id in selection["mandatory_block_ids"]],
+        "soft_recent_block_ids": [int(block_id) for block_id in selection.get("soft_recent_block_ids", [])],
         "exploration_block_ids": [int(block_id) for block_id in selection["exploration_block_ids"]],
         "optional_block_ids": [int(block_id) for block_id in selection["optional_block_ids"]],
         "selected_block_count": int(len(selected_block_ids)),
@@ -7449,9 +7597,149 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "max_rel_error": float(rel_error.max().item()),
         "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
         "persistent_runtime_optional_top_k": int(resolved_config.full_attention_optional_top_k),
+        "persistent_runtime_optional_use_upper_bounds_first": bool(
+            resolved_config.full_attention_optional_use_upper_bounds_first
+        ),
+        "persistent_runtime_optional_upper_bound_quota": int(resolved_config.full_attention_optional_upper_bound_quota),
+        "persistent_runtime_optional_far_quota": int(resolved_config.full_attention_optional_far_quota),
+        "persistent_runtime_optional_mid_quota": int(resolved_config.full_attention_optional_mid_quota),
+        "persistent_runtime_optional_near_quota": int(resolved_config.full_attention_optional_near_quota),
+        "persistent_runtime_priority_prev_attention_weight": float(
+            resolved_config.full_attention_priority_prev_attention_weight
+        ),
+        "persistent_runtime_priority_recency_weight": float(
+            resolved_config.full_attention_priority_recency_weight
+        ),
+        "persistent_runtime_priority_recency_decay_blocks": float(
+            resolved_config.full_attention_priority_recency_decay_blocks
+        ),
+        "persistent_runtime_priority_value_norm_weight": float(
+            resolved_config.full_attention_priority_value_norm_weight
+        ),
         "persistent_runtime_sink_block_count": int(resolved_config.full_attention_sink_block_count),
         "persistent_runtime_recent_block_count": int(resolved_config.full_attention_recent_block_count),
+        "persistent_runtime_mandatory_recent_block_count": (
+            None
+            if resolved_config.full_attention_mandatory_recent_block_count is None
+            else int(resolved_config.full_attention_mandatory_recent_block_count)
+        ),
         "persistent_runtime_exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
+        "history_mode": str(history_mode),
+        "history_decay": float(history_decay),
+        "history_snapshot_count": int(len(history_snapshots)),
+        "history_prev_attention_nonzero_count": (
+            int(np.count_nonzero(history_prev_attention)) if history_prev_attention is not None else 0
+        ),
+        "prev_attention_transform": str(prev_attention_transform),
+        "prev_attention_neighbor_blend": float(prev_attention_neighbor_blend),
+        "prev_attention_smoothing_passes": int(prev_attention_smoothing_passes),
+        "prev_attention_floor": float(prev_attention_floor),
+        "shaped_prev_attention_max": float(np.max(shaped_prev_attn)) if shaped_prev_attn.size > 0 else 0.0,
+        "shaped_prev_attention_nonzero_count": int(np.count_nonzero(shaped_prev_attn)),
+    }
+
+
+def debug_qwen35_persistent_full_attention_snapshot_selection(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    query_scale: float | None = None,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+    max_rows: int = 16,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
+        _build_persistent_full_attention_snapshot_runtime(
+            snapshot,
+            persistent_serving_config=resolved_config,
+            query_scale=query_scale,
+            prev_attention_values=None,
+            prev_attention_transform=prev_attention_transform,
+            prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+            prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+            prev_attention_floor=prev_attention_floor,
+        )
+    )
+    selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    score_result = runtime.score_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    layer_state = runtime.layers[0]
+    selected_set = set(int(block_id) for block_id in selection["selected_block_ids"])
+    mandatory_set = set(int(block_id) for block_id in selection["mandatory_block_ids"])
+    soft_recent_set = set(int(block_id) for block_id in selection.get("soft_recent_block_ids", []))
+    exploration_set = set(int(block_id) for block_id in selection["exploration_block_ids"])
+    optional_set = set(int(block_id) for block_id in selection["optional_block_ids"])
+    block_rows = []
+    for block_id in range(int(len(layer_state.block_token_starts))):
+        block_rows.append(
+            {
+                "block_id": int(block_id),
+                "token_start": int(layer_state.block_token_starts[block_id]),
+                "token_count": int(layer_state.block_token_counts[block_id]),
+                "region_id": int(layer_state.block_region_ids[block_id]),
+                "selected": int(block_id) in selected_set,
+                "mandatory": int(block_id) in mandatory_set,
+                "soft_recent": int(block_id) in soft_recent_set,
+                "exploration": int(block_id) in exploration_set,
+                "optional": int(block_id) in optional_set,
+                "priority_score": float(score_result["priority_scores"][block_id].item()),
+                "upper_bound": float(score_result["upper_bounds"][block_id].item()),
+                "prev_attention_ema": float(layer_state.block_prev_attention_ema[block_id].item()),
+            }
+        )
+    omitted_rows = [row for row in block_rows if not row["selected"]]
+    kept_rows = [row for row in block_rows if row["selected"]]
+    top_omitted = sorted(omitted_rows, key=lambda row: row["priority_score"], reverse=True)[: int(max_rows)]
+    top_upper_omitted = sorted(omitted_rows, key=lambda row: row["upper_bound"], reverse=True)[: int(max_rows)]
+    lowest_kept = sorted(kept_rows, key=lambda row: row["priority_score"])[: int(max_rows)]
+    top_pages = np.argsort(shaped_prev_attn)[::-1][: max(int(max_rows), 1)]
+    return {
+        "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
+        "snapshot_path": str(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else None,
+        "total_tokens": int(key_history.shape[0]),
+        "full_block_count": int(len(layer_state.block_token_starts)),
+        "selected_block_count": int(len(selection["selected_block_ids"])),
+        "selected_token_count": int(
+            sum(int(layer_state.block_token_counts[int(block_id)]) for block_id in selection["selected_block_ids"])
+        ),
+        "query_scale": float(resolved_query_scale),
+        "config": {
+            "block_size": int(resolved_config.block_size),
+            "enable_priority": bool(resolved_config.enable_priority),
+            "sink_block_count": int(resolved_config.full_attention_sink_block_count),
+            "recent_block_count": int(resolved_config.full_attention_recent_block_count),
+            "mandatory_recent_block_count": (
+                None
+                if resolved_config.full_attention_mandatory_recent_block_count is None
+                else int(resolved_config.full_attention_mandatory_recent_block_count)
+            ),
+            "exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
+            "optional_top_k": int(resolved_config.full_attention_optional_top_k),
+            "optional_use_upper_bounds_first": bool(resolved_config.full_attention_optional_use_upper_bounds_first),
+            "optional_upper_bound_quota": int(resolved_config.full_attention_optional_upper_bound_quota),
+        },
+        "prior_config": {
+            "transform": str(prev_attention_transform),
+            "neighbor_blend": float(prev_attention_neighbor_blend),
+            "smoothing_passes": int(prev_attention_smoothing_passes),
+            "floor": float(prev_attention_floor),
+        },
+        "top_shaped_prev_attention_pages": [
+            {
+                "page_id": int(page_id),
+                "raw_prev_attention": float(snapshot.prev_attn[int(page_id)]),
+                "shaped_prev_attention": float(shaped_prev_attn[int(page_id)]),
+            }
+            for page_id in top_pages
+        ],
+        "top_omitted_by_priority": top_omitted,
+        "top_omitted_by_upper_bound": top_upper_omitted,
+        "lowest_kept_by_priority": lowest_kept,
     }
 
 
@@ -10328,6 +10616,7 @@ __all__ = [
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
     "build_qwen35_attention_subset_paged_attention_snapshot",
+    "debug_qwen35_persistent_full_attention_snapshot_selection",
     "export_qwen35_attention_subset_paged_attention_snapshot",
     "export_qwen35_attention_subset_paged_attention_snapshot_corpus",
     "run_qwen35_persistent_full_attention_snapshot_comparison",

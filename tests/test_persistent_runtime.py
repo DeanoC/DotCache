@@ -74,7 +74,7 @@ def test_persistent_full_attention_state_appends_and_decodes_exactly() -> None:
     assert int(state.layers[3].key_cache.shape[1]) == 3
     assert state.layers[3].block_token_starts.tolist() == [0, 2]
     assert state.layers[3].block_token_counts.tolist() == [2, 1]
-    assert state.layers[3].block_region_ids.tolist() == [0, 1]
+    assert state.layers[3].block_region_ids.tolist() == [0, 2]
     assert tuple(state.layers[3].block_k_center.shape) == (2, 1, 2)
     assert tuple(state.layers[3].block_k_radius.shape) == (2, 1)
     assert tuple(state.layers[3].block_v_norm_max.shape) == (2, 1)
@@ -128,7 +128,7 @@ def test_persistent_full_attention_state_builds_and_refreshes_block_metadata() -
 
     assert layer.block_token_starts.tolist() == [0, 2]
     assert layer.block_token_counts.tolist() == [2, 2]
-    assert layer.block_region_ids.tolist() == [0, 1]
+    assert layer.block_region_ids.tolist() == [0, 2]
     assert torch.allclose(layer.block_k_center[0, 0], torch.tensor([2.0, 0.0], dtype=torch.float32))
     assert torch.allclose(layer.block_k_center[1, 0], torch.tensor([0.0, 3.0], dtype=torch.float32))
     assert torch.allclose(layer.block_k_radius[:, 0], torch.tensor([1.0, 1.0], dtype=torch.float32))
@@ -150,7 +150,7 @@ def test_persistent_full_attention_state_builds_and_refreshes_block_metadata() -
     layer = state.layers[5]
     assert layer.block_token_starts.tolist() == [0, 2, 4]
     assert layer.block_token_counts.tolist() == [2, 2, 1]
-    assert layer.block_region_ids.tolist() == [0, 2, 1]
+    assert layer.block_region_ids.tolist() == [0, 1, 2]
     assert torch.allclose(layer.block_k_center[2, 0], torch.tensor([6.0, 0.0], dtype=torch.float32))
     assert torch.allclose(layer.block_k_radius[2, 0], torch.tensor(0.0, dtype=torch.float32))
     assert torch.allclose(layer.block_v_norm_max[2, 0], torch.tensor(10.0, dtype=torch.float32))
@@ -195,6 +195,7 @@ def test_persistent_full_attention_state_scores_and_selects_blocks() -> None:
     )
 
     assert selection["mandatory_block_ids"] == [0, 5]
+    assert selection["soft_recent_block_ids"] == []
     assert len(selection["exploration_block_ids"]) == 2
     assert any(block_id in selection["exploration_block_ids"] for block_id in [1, 2])
     assert any(block_id in selection["exploration_block_ids"] for block_id in [3, 4])
@@ -216,6 +217,214 @@ def test_persistent_full_attention_state_scores_and_selects_blocks() -> None:
         attn_weights=fake_weights,
     )
     assert float(state.layers[7].block_prev_attention_ema.sum().item()) > 0.0
+
+
+def test_persistent_full_attention_state_allows_soft_recent_blocks_to_compete() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=4,
+        full_attention_mandatory_recent_block_count=2,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=3,
+    )
+    prefill_tensors = {
+        9: (
+            torch.tensor(
+                [[[[5.0, 0.0], [4.8, 0.0], [4.6, 0.0], [4.4, 0.0], [0.2, 0.0], [0.2, 0.0], [0.2, 0.0], [0.2, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+
+    selection = state.select_blocks(
+        9,
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        query_scale=1.0,
+    )
+
+    assert selection["mandatory_block_ids"] == [0, 6, 7]
+    assert selection["soft_recent_block_ids"] == [4, 5]
+    assert 1 in selection["selected_block_ids"]
+    assert 2 in selection["selected_block_ids"]
+    assert 3 in selection["selected_block_ids"]
+    assert 4 not in selection["mandatory_block_ids"]
+    assert 5 not in selection["mandatory_block_ids"]
+
+
+def test_persistent_full_attention_state_optional_admission_can_prefer_upper_bounds() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=1,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=1,
+        full_attention_optional_use_upper_bounds_first=True,
+    )
+    prefill_tensors = {
+        10: (
+            torch.tensor(
+                [[[[2.0, 0.0], [0.1, 0.0], [3.0, 0.0], [0.0, 0.2]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    layer = state.layers[10]
+    layer.block_prev_attention_ema[1] = 0.5
+    selection = state.select_blocks(
+        10,
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        query_scale=1.0,
+    )
+
+    assert selection["mandatory_block_ids"] == [0, 3]
+    assert selection["optional_block_ids"] == [2]
+    assert 1 not in selection["optional_block_ids"]
+
+
+def test_persistent_full_attention_state_optional_quota_preserves_upper_bound_candidate() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=1,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=2,
+        full_attention_optional_use_upper_bounds_first=False,
+        full_attention_optional_upper_bound_quota=1,
+    )
+    prefill_tensors = {
+        11: (
+            torch.tensor(
+                [[[[2.0, 0.0], [0.1, 0.0], [3.0, 0.0], [0.0, 0.2], [1.9, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    layer = state.layers[11]
+    layer.block_prev_attention_ema[1] = 0.5
+    layer.block_prev_attention_ema[4] = 0.25
+    selection = state.select_blocks(
+        11,
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        query_scale=1.0,
+    )
+
+    assert selection["mandatory_block_ids"] == [0, 4]
+    assert 2 in selection["optional_block_ids"]
+    assert len(selection["optional_block_ids"]) == 2
+
+
+def test_persistent_full_attention_state_optional_region_quotas_keep_mid_blocks() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=1,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=3,
+        full_attention_optional_use_upper_bounds_first=False,
+        full_attention_optional_far_quota=1,
+        full_attention_optional_mid_quota=1,
+        full_attention_optional_near_quota=1,
+    )
+    prefill_tensors = {
+        12: (
+            torch.tensor(
+                [[[[5.0, 0.0], [4.9, 0.0], [4.8, 0.0], [4.7, 0.0], [4.6, 0.0], [0.2, 0.0], [0.1, 0.0], [0.1, 0.0], [0.1, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    selection = state.select_blocks(
+        12,
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        query_scale=1.0,
+    )
+
+    chosen_regions = {int(state.layers[12].block_region_ids[block_id]) for block_id in selection["optional_block_ids"]}
+    assert chosen_regions == {0, 1, 2}
+
+
+def test_persistent_full_attention_state_priority_value_norm_weight_can_change_ranking() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=1,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=1,
+        full_attention_priority_recency_weight=0.0,
+        full_attention_priority_value_norm_weight=0.5,
+    )
+    prefill_tensors = {
+        13: (
+            torch.tensor(
+                [[[[2.0, 0.0], [1.9, 0.0], [1.8, 0.0], [0.1, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [10.0, 0.0], [2.0, 0.0], [1.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    selection = state.select_blocks(
+        13,
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        query_scale=1.0,
+    )
+
+    assert selection["mandatory_block_ids"] == [0, 3]
+    assert selection["optional_block_ids"] == [1]
 
 
 def test_persistent_linear_attention_state_syncs_cache_roundtrip() -> None:

@@ -16,8 +16,18 @@ class PersistentServingConfig:
     fp32_accumulation: bool = True
     full_attention_sink_block_count: int = 1
     full_attention_recent_block_count: int = 1
+    full_attention_mandatory_recent_block_count: int | None = None
     full_attention_exploration_blocks_per_region: int = 1
     full_attention_optional_top_k: int = 0
+    full_attention_optional_use_upper_bounds_first: bool = True
+    full_attention_optional_upper_bound_quota: int = 0
+    full_attention_optional_far_quota: int = 0
+    full_attention_optional_mid_quota: int = 0
+    full_attention_optional_near_quota: int = 0
+    full_attention_priority_prev_attention_weight: float = 1.0
+    full_attention_priority_recency_weight: float = 0.05
+    full_attention_priority_recency_decay_blocks: float = 32.0
+    full_attention_priority_value_norm_weight: float = 0.05
 
 
 @dataclass(slots=True)

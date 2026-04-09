@@ -42,6 +42,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
     run_qwen35_attention_subset_persistent_serving_harness,
+    debug_qwen35_persistent_full_attention_snapshot_selection,
     run_qwen35_persistent_full_attention_snapshot_comparison,
     run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness,
     run_qwen35_attention_subset_paged_attention_snapshot_capture_harness,
@@ -1789,6 +1790,24 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     assert prioritized["selected_token_count"] <= prioritized["full_token_count"]
     assert prioritized["selected_block_count"] <= prioritized["full_block_count"]
     assert prioritized["max_abs_error"] >= 0.0
+    assert prioritized["prev_attention_transform"] == "sqrt"
+    assert prioritized["shaped_prev_attention_nonzero_count"] > 0
+
+    debug_payload = debug_qwen35_persistent_full_attention_snapshot_selection(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        max_rows=4,
+    )
+    assert debug_payload["selected_block_count"] <= debug_payload["full_block_count"]
+    assert len(debug_payload["top_omitted_by_priority"]) <= 4
+    assert len(debug_payload["top_shaped_prev_attention_pages"]) > 0
 
 
 def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:

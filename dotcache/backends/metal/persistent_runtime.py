@@ -154,10 +154,15 @@ def _build_block_region_ids(*, num_blocks: int) -> np.ndarray:
     if num_blocks <= 0:
         return np.zeros((0,), dtype=np.int32)
     if num_blocks == 1:
-        return np.asarray([0], dtype=np.int32)
-    region_ids = np.full((num_blocks,), 2, dtype=np.int32)
-    region_ids[0] = 0
-    region_ids[-1] = 1
+        return np.asarray([1], dtype=np.int32)
+    if num_blocks == 2:
+        return np.asarray([0, 2], dtype=np.int32)
+    region_ids = np.empty((num_blocks,), dtype=np.int32)
+    boundaries = np.linspace(0, num_blocks, num=4, dtype=np.int64)
+    region_ids[boundaries[0] : boundaries[1]] = 0
+    region_ids[boundaries[1] : boundaries[2]] = 1
+    region_ids[boundaries[2] : boundaries[3]] = 2
+    region_ids[-1] = 2
     return region_ids
 
 
@@ -212,6 +217,7 @@ def _recompute_full_attention_block_metadata(
 def _resolve_block_score_inputs(
     *,
     state: PersistentFullAttentionLayerState,
+    config: PersistentServingConfig,
     query: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
@@ -223,27 +229,53 @@ def _resolve_block_score_inputs(
     num_blocks = int(len(state.block_token_starts))
     priority_scores = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
     upper_bounds = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
-    recency_positions = torch.linspace(0.0, 1.0, steps=max(num_blocks, 1), dtype=torch.float32, device=query_tensor.device)
+    block_indices = torch.arange(max(num_blocks, 1), dtype=torch.float32, device=query_tensor.device)
+    tail_distance = torch.flip(block_indices, dims=[0])
+    recency_decay = max(float(config.full_attention_priority_recency_decay_blocks), 1.0)
+    local_recency = torch.exp(-tail_distance / recency_decay)
+    prev_weight = float(config.full_attention_priority_prev_attention_weight)
+    recency_weight = float(config.full_attention_priority_recency_weight)
+    value_weight = float(config.full_attention_priority_value_norm_weight)
     for q_head_idx in range(int(query_tensor.shape[0])):
         kv_head_idx = int(q_to_kv[q_head_idx])
         center = state.block_k_center[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
         radius = state.block_k_radius[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+        value_norm = state.block_v_norm_max[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
         comp_error = state.block_k_comp_error[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
         center_sim = torch.matmul(center, query_tensor[q_head_idx]) * float(query_scale)
         upper = center_sim + query_norm[q_head_idx] * radius * abs(float(query_scale)) + comp_error
-        priority = center_sim + state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
-        priority = priority + recency_positions * 0.05
+        normalized_value_norm = value_norm / value_norm.max().clamp_min(1e-6)
+        priority = center_sim
+        priority = priority + prev_weight * state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
+        priority = priority + recency_weight * local_recency
+        priority = priority + value_weight * normalized_value_norm
         priority_scores = torch.maximum(priority_scores, priority)
         upper_bounds = torch.maximum(upper_bounds, upper)
     return priority_scores, upper_bounds
 
 
-def _mandatory_block_ids(*, num_blocks: int, sink_blocks: int, recent_blocks: int) -> list[int]:
+def _resolve_recent_policy(
+    *,
+    num_blocks: int,
+    recent_blocks: int,
+    mandatory_recent_blocks: int | None,
+) -> tuple[list[int], list[int]]:
+    bounded_recent = min(max(int(recent_blocks), 0), int(num_blocks))
+    if mandatory_recent_blocks is None:
+        bounded_mandatory = bounded_recent
+    else:
+        bounded_mandatory = min(max(int(mandatory_recent_blocks), 0), bounded_recent)
+    recent_ids = [int(num_blocks - bounded_recent + offset) for offset in range(bounded_recent)]
+    mandatory_ids = [int(num_blocks - bounded_mandatory + offset) for offset in range(bounded_mandatory)]
+    return recent_ids, mandatory_ids
+
+
+def _mandatory_block_ids(*, num_blocks: int, sink_blocks: int, mandatory_recent_blocks: list[int]) -> list[int]:
     mandatory: set[int] = set()
     for block_id in range(min(max(sink_blocks, 0), num_blocks)):
         mandatory.add(int(block_id))
-    for offset in range(min(max(recent_blocks, 0), num_blocks)):
-        mandatory.add(int(num_blocks - 1 - offset))
+    for block_id in mandatory_recent_blocks:
+        mandatory.add(int(block_id))
     return sorted(mandatory)
 
 
@@ -269,6 +301,94 @@ def _exploration_block_ids(
         )
         selected.extend(int(block_id) for block_id in ranked[:per_region])
     return sorted(set(selected))
+
+
+def _rank_optional_block_ids(
+    *,
+    candidate_block_ids: list[int],
+    priority_scores: Any,
+    upper_bounds: Any,
+    use_upper_bounds_first: bool,
+) -> list[int]:
+    if not candidate_block_ids:
+        return []
+    if bool(use_upper_bounds_first):
+        return sorted(
+            candidate_block_ids,
+            key=lambda block_id: (
+                float(upper_bounds[int(block_id)].item()),
+                float(priority_scores[int(block_id)].item()),
+            ),
+            reverse=True,
+        )
+    return sorted(
+        candidate_block_ids,
+        key=lambda block_id: float(priority_scores[int(block_id)].item()),
+        reverse=True,
+    )
+
+
+def _select_optional_block_ids(
+    *,
+    candidate_block_ids: list[int],
+    region_ids: Any,
+    priority_scores: Any,
+    upper_bounds: Any,
+    top_k: int,
+    use_upper_bounds_first: bool,
+    upper_bound_quota: int,
+    far_quota: int,
+    mid_quota: int,
+    near_quota: int,
+) -> list[int]:
+    if top_k <= 0 or not candidate_block_ids:
+        return []
+    ranked_by_upper = _rank_optional_block_ids(
+        candidate_block_ids=candidate_block_ids,
+        priority_scores=priority_scores,
+        upper_bounds=upper_bounds,
+        use_upper_bounds_first=True,
+    )
+    ranked_by_priority = _rank_optional_block_ids(
+        candidate_block_ids=candidate_block_ids,
+        priority_scores=priority_scores,
+        upper_bounds=upper_bounds,
+        use_upper_bounds_first=False,
+    )
+    if bool(use_upper_bounds_first):
+        return [int(block_id) for block_id in ranked_by_upper[:top_k]]
+
+    reserved = max(0, min(int(upper_bound_quota), int(top_k), len(ranked_by_upper)))
+    selected: list[int] = [int(block_id) for block_id in ranked_by_upper[:reserved]]
+    selected_set = set(selected)
+    region_quotas = {
+        0: max(0, int(far_quota)),
+        1: max(0, int(mid_quota)),
+        2: max(0, int(near_quota)),
+    }
+    for region_id in (0, 1, 2):
+        quota = min(region_quotas[region_id], max(int(top_k) - len(selected), 0))
+        if quota <= 0:
+            continue
+        region_ranked = [
+            int(block_id)
+            for block_id in ranked_by_priority
+            if int(block_id) not in selected_set and int(region_ids[int(block_id)]) == int(region_id)
+        ]
+        for block_id in region_ranked[:quota]:
+            selected.append(block_id)
+            selected_set.add(block_id)
+        if len(selected) >= int(top_k):
+            return selected[: int(top_k)]
+    for block_id in ranked_by_priority:
+        block_id = int(block_id)
+        if block_id in selected_set:
+            continue
+        selected.append(block_id)
+        selected_set.add(block_id)
+        if len(selected) >= int(top_k):
+            break
+    return selected
 
 
 def _gather_selected_block_tensors(
@@ -454,6 +574,7 @@ class PersistentFullAttentionState:
         state = self.layers[int(layer_id)]
         priority_scores, upper_bounds = _resolve_block_score_inputs(
             state=state,
+            config=self.config,
             query=query,
             q_head_to_kv_head=self.q_head_to_kv_head,
             query_scale=float(query_scale),
@@ -469,27 +590,46 @@ class PersistentFullAttentionState:
         score_result = self.score_blocks(layer_id, query, query_scale=query_scale)
         priority_scores = score_result["priority_scores"]
         upper_bounds = score_result["upper_bounds"]
+        recent_ids, mandatory_recent_ids = _resolve_recent_policy(
+            num_blocks=num_blocks,
+            recent_blocks=int(self.config.full_attention_recent_block_count),
+            mandatory_recent_blocks=self.config.full_attention_mandatory_recent_block_count,
+        )
         mandatory_ids = _mandatory_block_ids(
             num_blocks=num_blocks,
             sink_blocks=int(self.config.full_attention_sink_block_count),
-            recent_blocks=int(self.config.full_attention_recent_block_count),
+            mandatory_recent_blocks=mandatory_recent_ids,
         )
-        remaining_ids = [block_id for block_id in range(num_blocks) if block_id not in set(mandatory_ids)]
+        selected_ids: set[int] = set(mandatory_ids)
+        soft_recent_ids = [block_id for block_id in recent_ids if block_id not in selected_ids]
+        remaining_ids = [block_id for block_id in range(num_blocks) if block_id not in selected_ids]
         exploration_ids = _exploration_block_ids(
             candidate_block_ids=remaining_ids,
             priority_scores=priority_scores,
             per_region=int(self.config.full_attention_exploration_blocks_per_region),
         )
-        selected_ids: set[int] = set(mandatory_ids) | set(exploration_ids)
+        selected_ids.update(exploration_ids)
         optional_ids: list[int] = []
         if bool(self.config.enable_priority) and int(self.config.full_attention_optional_top_k) > 0:
-            optional_candidates = [block_id for block_id in remaining_ids if block_id not in selected_ids]
-            ranked_optional = sorted(
-                optional_candidates,
-                key=lambda block_id: float(priority_scores[int(block_id)].item()),
-                reverse=True,
+            soft_recent_set = set(soft_recent_ids)
+            optional_candidates = [block_id for block_id in soft_recent_ids if block_id not in selected_ids]
+            optional_candidates.extend(
+                block_id
+                for block_id in remaining_ids
+                if block_id not in selected_ids and block_id not in soft_recent_set
             )
-            optional_ids = [int(block_id) for block_id in ranked_optional[: int(self.config.full_attention_optional_top_k)]]
+            optional_ids = _select_optional_block_ids(
+                candidate_block_ids=optional_candidates,
+                region_ids=state.block_region_ids,
+                priority_scores=priority_scores,
+                upper_bounds=upper_bounds,
+                top_k=int(self.config.full_attention_optional_top_k),
+                use_upper_bounds_first=bool(self.config.full_attention_optional_use_upper_bounds_first),
+                upper_bound_quota=int(self.config.full_attention_optional_upper_bound_quota),
+                far_quota=int(self.config.full_attention_optional_far_quota),
+                mid_quota=int(self.config.full_attention_optional_mid_quota),
+                near_quota=int(self.config.full_attention_optional_near_quota),
+            )
             selected_ids.update(optional_ids)
         else:
             optional_ids = [block_id for block_id in remaining_ids if block_id not in selected_ids]
@@ -498,6 +638,7 @@ class PersistentFullAttentionState:
         return {
             "selected_block_ids": selected_block_ids,
             "mandatory_block_ids": mandatory_ids,
+            "soft_recent_block_ids": soft_recent_ids,
             "exploration_block_ids": exploration_ids,
             "optional_block_ids": optional_ids,
             "priority_scores": priority_scores,
@@ -555,6 +696,11 @@ class PersistentFullAttentionState:
             "persistent_host_to_device_bytes_after_prefill": int(self.telemetry.host_to_device_bytes_after_prefill),
             "persistent_full_attention_step_ms_total": float(self.telemetry.full_attention_step_ms_total),
             "persistent_append_update_ms_total": float(self.telemetry.append_update_ms_total),
+            "persistent_runtime_mandatory_recent_block_count": (
+                None
+                if self.config.full_attention_mandatory_recent_block_count is None
+                else int(self.config.full_attention_mandatory_recent_block_count)
+            ),
             "persistent_full_attention_append_counts_by_layer": {
                 str(layer_id): int(state.append_count) for layer_id, state in sorted(self.layers.items())
             },

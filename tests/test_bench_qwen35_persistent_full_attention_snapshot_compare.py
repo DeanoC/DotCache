@@ -6,10 +6,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from benchmarks.bench_qwen35_persistent_full_attention_snapshot_compare import _build_summary, _resolve_snapshot_paths
+from benchmarks.bench_qwen35_persistent_full_attention_snapshot_compare import (
+    _build_sequence_metrics,
+    _build_summary,
+    _resolve_snapshot_records,
+)
 
 
-def test_resolve_snapshot_paths_collects_manifest_and_explicit_paths(tmp_path) -> None:
+def test_resolve_snapshot_records_collects_manifest_and_explicit_paths(tmp_path) -> None:
     first = tmp_path / "first.npz"
     second = tmp_path / "second.npz"
     first.write_bytes(b"")
@@ -27,13 +31,13 @@ def test_resolve_snapshot_paths_collects_manifest_and_explicit_paths(tmp_path) -
         encoding="utf-8",
     )
 
-    resolved = _resolve_snapshot_paths(
+    resolved = _resolve_snapshot_records(
         snapshot_paths=[str(first)],
         snapshot_glob=None,
         manifest_path=str(manifest),
     )
 
-    assert resolved == [first.resolve(), second.resolve()]
+    assert [Path(record["snapshot_path"]) for record in resolved] == [first.resolve(), second.resolve()]
 
 
 def test_build_summary_aggregates_snapshot_compare_records() -> None:
@@ -64,3 +68,55 @@ def test_build_summary_aggregates_snapshot_compare_records() -> None:
     assert summary["avg_selected_block_count"] == 3.0
     assert summary["avg_selected_token_count"] == 48.0
     assert summary["avg_selected_fraction"] == 0.375
+
+
+def test_build_sequence_metrics_groups_by_case_layer_head_and_step() -> None:
+    sequence_summary = _build_sequence_metrics(
+        [
+            {
+                "case_tag": "readme",
+                "layer_id": 3,
+                "kv_head_id": 0,
+                "step_index": 0,
+                "max_abs_error": 0.2,
+                "selected_token_count": 64,
+                "full_token_count": 128,
+                "history_snapshot_count": 0,
+            },
+            {
+                "case_tag": "readme",
+                "layer_id": 3,
+                "kv_head_id": 0,
+                "step_index": 1,
+                "max_abs_error": 0.1,
+                "selected_token_count": 64,
+                "full_token_count": 128,
+                "history_snapshot_count": 1,
+            },
+            {
+                "case_tag": "paper",
+                "layer_id": 3,
+                "kv_head_id": 0,
+                "step_index": 0,
+                "max_abs_error": 0.3,
+                "selected_token_count": 32,
+                "full_token_count": 128,
+                "history_snapshot_count": 0,
+            },
+            {
+                "case_tag": "paper",
+                "layer_id": 3,
+                "kv_head_id": 0,
+                "step_index": 1,
+                "max_abs_error": 0.15,
+                "selected_token_count": 32,
+                "full_token_count": 128,
+                "history_snapshot_count": 1,
+            },
+        ]
+    )
+
+    assert sequence_summary["sequence_count"] == 2
+    assert sequence_summary["terminal"]["max_abs_error"] == 0.15
+    assert sequence_summary["by_step_index"]["0"]["count"] == 2
+    assert sequence_summary["by_step_index"]["1"]["avg_history_snapshot_count"] == 1.0
