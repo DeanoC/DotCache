@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        sync_stage_profile: bool,
     }
 
     #[derive(Debug)]
@@ -123,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_full_attention_millis: f64,
         stage_mlp_millis: f64,
         stage_total_millis: f64,
+        stage_profile_sync_enabled: bool,
         cold_prefix_prefill_millis: f64,
         prefix_capture_millis: f64,
         seed_suffix_prefill_millis: f64,
@@ -143,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<WorkloadArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N]".to_string()
+            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let shared_prompt = args
@@ -175,10 +177,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            sync_stage_profile: false,
         };
 
         while let Some(flag) = args.next() {
             match flag.as_str() {
+                "--sync-stage-profile" => {
+                    parsed.sync_stage_profile = true;
+                }
                 "--stress" => {
                     parsed.stress_mode = true;
                 }
@@ -347,6 +353,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         Ok(parsed)
+    }
+
+    fn stage_profile_sync_enabled(explicit_flag: bool) -> bool {
+        if explicit_flag {
+            unsafe {
+                std::env::set_var("CANDLE_QWEN35_PROFILE_SYNC", "1");
+            }
+            return true;
+        }
+        matches!(
+            std::env::var("CANDLE_QWEN35_PROFILE_SYNC").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
     }
 
     fn argmax(values: &[f32]) -> Option<usize> {
@@ -677,6 +696,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args =
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    let sync_stage_profile = stage_profile_sync_enabled(args.sync_stage_profile);
 
     if args.runtime_mode == RuntimeMode::TorchControl {
         if args.family != ModelFamily::Qwen35 {
@@ -847,6 +867,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stage_full_attention_millis,
             stage_mlp_millis,
             stage_total_millis,
+            stage_profile_sync_enabled: sync_stage_profile,
             cold_prefix_prefill_millis,
             prefix_capture_millis: 0.0,
             seed_suffix_prefill_millis,
@@ -1305,6 +1326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_full_attention_millis: stage_metrics.full_attention_millis,
         stage_mlp_millis: stage_metrics.mlp_millis,
         stage_total_millis: stage_metrics.total_millis(),
+        stage_profile_sync_enabled: sync_stage_profile,
         cold_prefix_prefill_millis: millis(cold_prefix_prefill_elapsed),
         prefix_capture_millis: millis(prefix_capture_elapsed),
         seed_suffix_prefill_millis: millis(seed_suffix_prefill_elapsed),
