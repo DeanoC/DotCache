@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 
 import torch
 from transformers import AutoConfig
@@ -17,6 +18,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", choices=["torch_mps", "torch_cuda", "cpu_ref", "auto"], default="auto")
     parser.add_argument("--torch-dtype", default="float16")
     parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument("--profile-stages", action="store_true")
+    parser.add_argument("--prompt-text", default=None)
+    parser.add_argument("--prompt-token-target", type=int, default=None)
     parser.add_argument("--repeat-counts", type=int, nargs="*", default=[1, 32, 64])
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
@@ -52,16 +57,57 @@ def _build_exact_length_inputs(
     return input_ids, attention_mask
 
 
+def _build_prompt_text_inputs(
+    harness: Qwen35TextHarness,
+    *,
+    prompt_text: str,
+    prompt_token_target: int | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if harness.tokenizer is None:
+        raise ValueError("tokenizer is unavailable for prompt-text construction")
+    tokenizer = harness.tokenizer
+    token_ids = tokenizer(prompt_text, add_special_tokens=True)["input_ids"]
+    if not token_ids:
+        raise ValueError("prompt_text tokenized to an empty sequence")
+    if prompt_token_target is not None:
+        if prompt_token_target <= 0:
+            raise ValueError("prompt_token_target must be positive")
+        if len(token_ids) > prompt_token_target:
+            token_ids = token_ids[:prompt_token_target]
+        elif len(token_ids) < prompt_token_target:
+            filler_ids = tokenizer(f" {prompt_text}", add_special_tokens=False)["input_ids"]
+            if not filler_ids:
+                raise ValueError("prompt_text filler tokenized to an empty sequence")
+            while len(token_ids) < prompt_token_target:
+                token_ids.extend(int(token_id) for token_id in filler_ids)
+            token_ids = token_ids[:prompt_token_target]
+
+    device = harness.adapter.device
+    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+    return input_ids, attention_mask
+
+
 def _run_case(
     harness: Qwen35TextHarness,
     *,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     max_new_tokens: int,
+    warmup_runs: int,
     base_record: dict[str, object],
     continue_on_error: bool,
 ) -> None:
     try:
+        warmup_ms = 0.0
+        for _ in range(max(warmup_runs, 0)):
+            start = time.perf_counter()
+            harness.generate_greedy(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+            )
+            warmup_ms += (time.perf_counter() - start) * 1000.0
         record = harness.generate_greedy(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -84,6 +130,8 @@ def _run_case(
         return
 
     record.update(base_record)
+    record["warmup_runs"] = int(warmup_runs)
+    record["warmup_ms"] = float(warmup_ms)
     print(json.dumps(record, sort_keys=True), flush=True)
 
 
@@ -100,60 +148,97 @@ def main() -> None:
         args.model_id,
         device=args.device,
         torch_dtype=args.torch_dtype,
+        profile_dense_stages=args.profile_stages,
     )
 
-    for repeat_count in args.repeat_counts:
-        prompt = " ".join([args.prompt_unit] * repeat_count)
-        input_ids, attention_mask = harness.tokenize_prompt(prompt)
+    if args.prompt_text is not None:
+        input_ids, attention_mask = _build_prompt_text_inputs(
+            harness,
+            prompt_text=args.prompt_text,
+            prompt_token_target=args.prompt_token_target,
+        )
         _run_case(
             harness,
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=args.max_new_tokens,
+            warmup_runs=args.warmup_runs,
             base_record={
                 "benchmark": "qwen35_text",
                 "model_id": args.model_id,
                 "backend": args.backend,
                 "device": args.device,
                 "torch_dtype": args.torch_dtype,
-                "prompt_mode": "repeat_count",
-                "repeat_count": repeat_count,
+                "prompt_mode": "prompt_text",
+                "prompt_text": args.prompt_text,
+                "prompt_token_target": args.prompt_token_target,
                 "prompt_unit": args.prompt_unit,
                 "model_max_position_embeddings": max_position_embeddings,
                 "text_only": True,
                 "dotcache_ready": False,
                 "hybrid_family": "qwen3_5",
+                "profile_stages": bool(args.profile_stages),
             },
             continue_on_error=args.continue_on_error,
         )
 
-    for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
-        input_ids, attention_mask = _build_exact_length_inputs(
-            harness,
-            prompt_unit=args.prompt_unit,
-            prompt_length=prompt_length,
-        )
-        _run_case(
-            harness,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=args.max_new_tokens,
-            base_record={
-                "benchmark": "qwen35_text",
-                "model_id": args.model_id,
-                "backend": args.backend,
-                "device": args.device,
-                "torch_dtype": args.torch_dtype,
-                "prompt_mode": "exact_length",
-                "prompt_length": prompt_length,
-                "prompt_unit": args.prompt_unit,
-                "model_max_position_embeddings": max_position_embeddings,
-                "text_only": True,
-                "dotcache_ready": False,
-                "hybrid_family": "qwen3_5",
-            },
-            continue_on_error=args.continue_on_error,
-        )
+    if args.prompt_text is None:
+        for repeat_count in (count for count in args.repeat_counts if count > 0):
+            prompt = " ".join([args.prompt_unit] * repeat_count)
+            input_ids, attention_mask = harness.tokenize_prompt(prompt)
+            _run_case(
+                harness,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=args.max_new_tokens,
+                warmup_runs=args.warmup_runs,
+                base_record={
+                    "benchmark": "qwen35_text",
+                    "model_id": args.model_id,
+                    "backend": args.backend,
+                    "device": args.device,
+                    "torch_dtype": args.torch_dtype,
+                    "prompt_mode": "repeat_count",
+                    "repeat_count": repeat_count,
+                    "prompt_unit": args.prompt_unit,
+                    "model_max_position_embeddings": max_position_embeddings,
+                    "text_only": True,
+                    "dotcache_ready": False,
+                    "hybrid_family": "qwen3_5",
+                    "profile_stages": bool(args.profile_stages),
+                },
+                continue_on_error=args.continue_on_error,
+            )
+
+        for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
+            input_ids, attention_mask = _build_exact_length_inputs(
+                harness,
+                prompt_unit=args.prompt_unit,
+                prompt_length=prompt_length,
+            )
+            _run_case(
+                harness,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=args.max_new_tokens,
+                warmup_runs=args.warmup_runs,
+                base_record={
+                    "benchmark": "qwen35_text",
+                    "model_id": args.model_id,
+                    "backend": args.backend,
+                    "device": args.device,
+                    "torch_dtype": args.torch_dtype,
+                    "prompt_mode": "exact_length",
+                    "prompt_length": prompt_length,
+                    "prompt_unit": args.prompt_unit,
+                    "model_max_position_embeddings": max_position_embeddings,
+                    "text_only": True,
+                    "dotcache_ready": False,
+                    "hybrid_family": "qwen3_5",
+                    "profile_stages": bool(args.profile_stages),
+                },
+                continue_on_error=args.continue_on_error,
+            )
 
 
 if __name__ == "__main__":
