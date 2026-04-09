@@ -1,4 +1,4 @@
-# Qwen3.5 MPS Paged Attention Snapshot Sweep (Robust Rewrite)
+# Qwen3.5 MPS Paged Attention Snapshot Sweep
 
 ## Coverage
 
@@ -11,12 +11,14 @@
 
 ## Recommendation
 
-| Engine | Config | Avg step ms | Avg tokens | Avg pages | Pass rate | Max abs err | Max rel err |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| mps_experimental | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.847 | 225.0 | 7.8 | 100.0% | 0.000014 | 0.000269 |
-| torch_mps_baseline | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.511 | 225.0 | 7.8 | 100.0% | 0.000014 | 0.000269 |
+Backend and controller are separate axes in this report. `Baseline Backend` means the baseline MPS execution path under the listed controller policy, not the pre-branch system.
 
-The current winning experimental config trails the best baseline on the full replay corpus, running at `15.847 ms` versus `15.511 ms`, or `0.979x` of baseline speed. The tradeoff is a smaller active budget: `225.0` average processed tokens for the experimental winner versus `225.0` for the baseline winner.
+| Backend / Controller | Config | Avg step ms | Avg tokens | Avg pages | Pass rate | Max abs err | Max rel err |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Experimental Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.847 | 225.0 | 7.8 | 100.0% | 0.000014 | 0.000269 |
+| Baseline Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.511 | 225.0 | 7.8 | 100.0% | 0.000014 | 0.000269 |
+
+The current winning experimental path (Experimental Backend / Robust Full Pass) trails Baseline Backend / Robust Full Pass on the full replay corpus, running at `15.847 ms` versus `15.511 ms`, or `0.979x` of baseline speed. The tradeoff is a smaller active budget: `225.0` average processed tokens for the experimental winner versus `225.0` for the baseline winner.
 
 ## Matched Config Speedups
 
@@ -33,16 +35,16 @@ The current winning experimental config trails the best baseline on the full rep
 
 ## Prompt Breakdown
 
-| Prompt | Engine | Config | Avg step ms | Avg tokens | Avg pages | Max abs err |
+| Prompt | Backend / Controller | Config | Avg step ms | Avg tokens | Avg pages | Max abs err |
 | --- | --- | --- | --- | --- | --- | --- |
-| 512 | mps_experimental | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.258 | 225.0 | 7.4 | 0.000001 |
-| 512 | torch_mps_baseline | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.418 | 225.0 | 7.4 | 0.000001 |
-| 1024 | mps_experimental | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 14.880 | 225.0 | 8.0 | 0.000000 |
-| 1024 | torch_mps_baseline | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 16.535 | 225.0 | 8.0 | 0.000000 |
-| 2048 | mps_experimental | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 16.640 | 225.0 | 7.8 | 0.000014 |
-| 2048 | torch_mps_baseline | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.561 | 225.0 | 7.8 | 0.000014 |
-| 4096 | mps_experimental | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.045 | 225.0 | 8.0 | 0.000010 |
-| 4096 | torch_mps_baseline | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.327 | 225.0 | 8.0 | 0.000010 |
+| 512 | Experimental Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.258 | 225.0 | 7.4 | 0.000001 |
+| 512 | Baseline Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.418 | 225.0 | 7.4 | 0.000001 |
+| 1024 | Experimental Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 14.880 | 225.0 | 8.0 | 0.000000 |
+| 1024 | Baseline Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 16.535 | 225.0 | 8.0 | 0.000000 |
+| 2048 | Experimental Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 16.640 | 225.0 | 7.8 | 0.000014 |
+| 2048 | Baseline Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.561 | 225.0 | 7.8 | 0.000014 |
+| 4096 | Experimental Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.045 | 225.0 | 8.0 | 0.000010 |
+| 4096 | Baseline Backend / Robust Full Pass | topk=4|recent=64|sink=64|chunk=8|early_exit=0|eps=0.0001 | 15.327 | 225.0 | 8.0 | 0.000010 |
 
 ## Experimental Slice Spread
 

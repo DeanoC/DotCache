@@ -49,6 +49,47 @@ def _parse_snapshot_name(snapshot_name: str) -> dict[str, int]:
     }
 
 
+def _backend_label(engine: str) -> str:
+    labels = {
+        "cpu_ref": "CPU Reference",
+        "torch_mps_baseline": "Baseline Backend",
+        "mps_experimental": "Experimental Backend",
+    }
+    return labels.get(engine, engine)
+
+
+def _controller_metadata(record: dict[str, Any]) -> dict[str, str]:
+    controller_mode = record.get("controller_mode")
+    controller_label = record.get("controller_label")
+    if controller_mode is not None and controller_label is not None:
+        return {
+            "controller_mode": str(controller_mode),
+            "controller_label": str(controller_label),
+        }
+    if bool(record.get("approximate_mode")) or "|approx=1|" in str(record.get("config_key", "")):
+        return {
+            "controller_mode": "approx_budget",
+            "controller_label": "Approx Budget",
+        }
+    if bool(record.get("early_exit")) or "|early_exit=1|" in str(record.get("config_key", "")):
+        return {
+            "controller_mode": "certified_early_exit",
+            "controller_label": "Certified Early Exit",
+        }
+    return {
+        "controller_mode": "robust_full_pass",
+        "controller_label": "Robust Full Pass",
+    }
+
+
+def _display_label(record: dict[str, Any]) -> str:
+    if "display_label" in record:
+        return str(record["display_label"])
+    backend_label = str(record.get("backend_label", _backend_label(str(record.get("engine", "unknown")))))
+    controller = _controller_metadata(record)
+    return f"{backend_label} / {controller['controller_label']}"
+
+
 def _coverage_summary(candidate_records: list[dict[str, Any]]) -> dict[str, Any]:
     snapshots: dict[str, dict[str, Any]] = {}
     for record in candidate_records:
@@ -84,7 +125,16 @@ def _coverage_summary(candidate_records: list[dict[str, Any]]) -> dict[str, Any]
 
 
 def _recommendations_by_engine(recommendation_records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {str(record["engine"]): dict(record) for record in recommendation_records}
+    recommendations: dict[str, dict[str, Any]] = {}
+    for record in recommendation_records:
+        enriched = dict(record)
+        enriched["backend_label"] = str(enriched.get("backend_label", _backend_label(str(enriched["engine"]))))
+        controller = _controller_metadata(enriched)
+        enriched["controller_mode"] = controller["controller_mode"]
+        enriched["controller_label"] = controller["controller_label"]
+        enriched["display_label"] = _display_label(enriched)
+        recommendations[str(record["engine"])] = enriched
+    return recommendations
 
 
 def _matched_speedups(aggregate_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -133,6 +183,7 @@ def _prompt_breakdown(
             {
                 "prompt_length": int(prompt_length),
                 "engine": engine,
+                "display_label": _display_label(recommendation_by_engine[engine]),
                 "config_key": str(recommendation_by_engine[engine]["config_key"]),
                 "snapshot_count": len(records),
                 "avg_total_step_time_ms": float(mean(float(record["total_step_time_ms"]) for record in records)),
@@ -190,6 +241,8 @@ def _build_report(payload: dict[str, Any], *, title: str, input_path: str) -> di
     recommendation_comparison = None
     if experimental is not None and baseline is not None:
         recommendation_comparison = {
+            "experimental_display_label": str(experimental["display_label"]),
+            "baseline_display_label": str(baseline["display_label"]),
             "experimental_config_key": str(experimental["config_key"]),
             "baseline_config_key": str(baseline["config_key"]),
             "experimental_avg_total_step_time_ms": float(experimental["avg_total_step_time_ms"]),
@@ -241,10 +294,12 @@ def _render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Recommendation",
         "",
+        "Backend and controller are separate axes in this report. `Baseline Backend` means the baseline MPS execution path under the listed controller policy, not the pre-branch system.",
+        "",
     ]
 
     recommendation_rows = [[
-        "Engine",
+        "Backend / Controller",
         "Config",
         "Avg step ms",
         "Avg tokens",
@@ -259,7 +314,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
             continue
         recommendation_rows.append(
             [
-                engine,
+                str(record["display_label"]),
                 str(record["config_key"]),
                 _fmt(record["avg_total_step_time_ms"]),
                 _fmt(record["avg_tokens_processed"], digits=1),
@@ -275,21 +330,21 @@ def _render_markdown(report: dict[str, Any]) -> str:
         speedup_ratio = float(comparison["speedup_ratio"])
         if speedup_ratio > 1.005:
             comparison_sentence = (
-                "The current winning experimental config leads on the full replay corpus, "
+                f"The current winning experimental path ({comparison['experimental_display_label']}) leads on the full replay corpus, "
                 f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
-                f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms` for the best baseline, "
+                f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms` for {comparison['baseline_display_label']}, "
                 f"which is a `{_fmt(speedup_ratio, digits=3)}x` speedup."
             )
         elif speedup_ratio < 0.995:
             comparison_sentence = (
-                "The current winning experimental config trails the best baseline on the full replay corpus, "
+                f"The current winning experimental path ({comparison['experimental_display_label']}) trails {comparison['baseline_display_label']} on the full replay corpus, "
                 f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
                 f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms`, "
                 f"or `{_fmt(speedup_ratio, digits=3)}x` of baseline speed."
             )
         else:
             comparison_sentence = (
-                "The current winning experimental config is effectively at parity with the best baseline on the full replay corpus, "
+                f"The current winning experimental path ({comparison['experimental_display_label']}) is effectively at parity with {comparison['baseline_display_label']} on the full replay corpus, "
                 f"running at `{_fmt(comparison['experimental_avg_total_step_time_ms'])} ms` versus "
                 f"`{_fmt(comparison['baseline_avg_total_step_time_ms'])} ms`, "
                 f"with a `{_fmt(speedup_ratio, digits=3)}x` speed ratio."
@@ -329,7 +384,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.extend(["## Prompt Breakdown", ""])
     prompt_rows = [[
         "Prompt",
-        "Engine",
+        "Backend / Controller",
         "Config",
         "Avg step ms",
         "Avg tokens",
@@ -340,7 +395,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
         prompt_rows.append(
             [
                 str(int(row["prompt_length"])),
-                str(row["engine"]),
+                str(row["display_label"]),
                 str(row["config_key"]),
                 _fmt(row["avg_total_step_time_ms"]),
                 _fmt(row["avg_tokens_processed"], digits=1),

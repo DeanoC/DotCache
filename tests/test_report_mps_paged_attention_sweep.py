@@ -150,10 +150,13 @@ def test_build_report_summarizes_coverage_and_recommendations() -> None:
     assert report["coverage"]["prompt_lengths"] == [512, 2048]
     assert report["coverage"]["layer_ids"] == [3, 11]
     assert report["coverage"]["kv_head_ids"] == [0, 1]
+    assert report["recommendations"]["mps_experimental"]["display_label"] == "Experimental Backend / Robust Full Pass"
+    assert report["recommendations"]["torch_mps_baseline"]["display_label"] == "Baseline Backend / Robust Full Pass"
     assert report["recommendation_comparison"]["speedup_ratio"] > 1.0
     assert report["matched_speedups"][0]["config_key"] == "topk=4|recent=128|sink=64|chunk=8|early_exit=0|eps=0.0001"
 
     markdown = _render_markdown(report)
     assert "## Coverage" in markdown
-    assert "mps_experimental" in markdown
+    assert "Backend and controller are separate axes" in markdown
+    assert "Experimental Backend / Robust Full Pass" in markdown
     assert "topk=4|recent=128|sink=64|chunk=8|early_exit=0|eps=0.0001" in markdown

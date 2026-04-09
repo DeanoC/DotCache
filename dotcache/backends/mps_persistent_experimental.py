@@ -119,10 +119,17 @@ class PagedAttentionControllerConfig:
     early_exit_eps: float = 1e-4
     mass_eps: float = 1e-4
     value_eps: float = 1e-4
+    approximate_mode: bool = False
+    approximate_max_optional_blocks: int = 0
     min_blocks: int = 0
     check_interval: int = 1
     exploration_blocks_per_region: int = 1
     bound_eps: float = 1e-4
+    heuristic_min_optional_blocks: int = 3
+    heuristic_block_mass_eps: float = 0.03
+    heuristic_recent_avg_mass_eps: float = 0.03
+    heuristic_remaining_mass_eps: float = 0.10
+    heuristic_remaining_margin: float = 1.0
     score_weights: PageScoreWeights = field(default_factory=PageScoreWeights)
 
     def effective_mass_eps(self) -> float:
@@ -776,13 +783,14 @@ def _compute_block_bounds_and_priorities_reference(
     config: PagedAttentionControllerConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     q = _to_numpy(query)
-    q_norm = float(np.linalg.norm(q))
     scale = 1.0 / math.sqrt(float(resident.head_dim))
-    similarity = resident.block_k_center.detach().cpu().numpy() @ q
-    upper_bounds = (
-        similarity * scale
-        + q_norm * (resident.block_k_radius_cpu + resident.block_k_comp_error_cpu) * scale
-    ).astype(np.float32, copy=False)
+    upper_bounds = np.empty(resident.num_blocks, dtype=np.float32)
+    for block_id in range(resident.num_blocks):
+        page_id = int(resident.block_page_ids_cpu[block_id])
+        token_offset = int(resident.block_token_offsets_cpu[block_id])
+        token_count = int(resident.block_token_counts_cpu[block_id])
+        k_block = _to_numpy(resident.k_pages[page_id, token_offset : token_offset + token_count, :])
+        upper_bounds[block_id] = float(np.max(k_block @ q) * scale)
     recency_bonus = np.exp(-float(config.score_weights.distance_decay) * resident.block_distance_cpu).astype(np.float32, copy=False)
     exploration_bonus = np.asarray(
         [_exploration_prior(int(region)) for region in resident.block_regions_cpu.tolist()],
@@ -810,13 +818,14 @@ def _compute_block_bounds_and_priorities_mps(
 ) -> tuple[np.ndarray, np.ndarray]:
     torch = _load_torch()
     query_tensor = _to_device_tensor(query, device=resident.device, dtype=torch.float32)
-    q_norm = torch.linalg.vector_norm(query_tensor)
     scale = 1.0 / math.sqrt(float(resident.head_dim))
     with torch.no_grad():
-        upper_bounds = (
-            torch.matmul(resident.block_k_center, query_tensor) * scale
-            + q_norm * (resident.block_k_radius + resident.block_k_comp_error) * scale
-        )
+        for block_id in range(resident.num_blocks):
+            page_id = int(resident.block_page_ids_cpu[block_id])
+            token_offset = int(resident.block_token_offsets_cpu[block_id])
+            token_count = int(resident.block_token_counts_cpu[block_id])
+            k_block = resident.k_pages[page_id, token_offset : token_offset + token_count, :].to(dtype=torch.float32)
+            resident.block_upper_buffer[block_id] = torch.max(torch.matmul(k_block, query_tensor) * scale)
         recency_bonus = torch.exp(-float(config.score_weights.distance_decay) * resident.block_distance)
         exploration_bonus = torch.where(
             resident.block_regions == REGION_MID,
@@ -832,7 +841,6 @@ def _compute_block_bounds_and_priorities_mps(
             torch.tensor(1.0, dtype=torch.float32, device=resident.device),
             torch.tensor(0.0, dtype=torch.float32, device=resident.device),
         )
-        resident.block_upper_buffer.copy_(upper_bounds)
         resident.block_priority_buffer.copy_(
             float(config.score_weights.similarity) * resident.block_upper_buffer
             + float(config.score_weights.prev_attention) * resident.block_prev_attention_ema
@@ -922,9 +930,12 @@ def _select_blocks_from_bounds(
     ]
     optional_block_ids.sort(key=lambda block_id: (-float(block_priorities[block_id]), int(block_id)))
     if config.top_k > 0:
-        initial_optional_block_ids = optional_block_ids[: min(int(config.top_k), len(optional_block_ids))]
+        initial_optional_budget = min(int(config.top_k), len(optional_block_ids))
     else:
-        initial_optional_block_ids = list(optional_block_ids)
+        initial_optional_budget = len(optional_block_ids)
+    if config.approximate_mode and int(config.approximate_max_optional_blocks) > 0:
+        initial_optional_budget = min(initial_optional_budget, int(config.approximate_max_optional_blocks))
+    initial_optional_block_ids = optional_block_ids[: max(initial_optional_budget, 0)]
     selected_block_ids = sorted(
         set(mandatory_block_ids).union(exploration_block_ids).union(initial_optional_block_ids),
         key=lambda block_id: int(resident.block_token_starts_cpu[block_id]),
@@ -1058,6 +1069,7 @@ def decode_selected_pages_mps(
         raise ValueError("page_chunk_size must be positive")
     selected_block_ids = _block_ids_for_page_ids(resident, selected_page_ids)
     query_tensor = _to_device_tensor(query, device=resident.device, dtype=torch.float32)
+    attention_scale = 1.0 / math.sqrt(float(resident.head_dim))
     acc = resident.acc_buffer.zero_()
     logits_parts: list[np.ndarray] = []
     processed_block_ids: list[int] = []
@@ -1156,6 +1168,7 @@ def run_paged_attention_step(
 
     attention_start = time.perf_counter()
     query_tensor = _to_device_tensor(query, device=resident.device, dtype=torch.float32)
+    attention_scale = 1.0 / math.sqrt(float(resident.head_dim))
     acc = resident.acc_buffer.zero_()
     processed_block_ids: list[int] = []
     processed_page_ids: list[int] = []
@@ -1175,6 +1188,8 @@ def run_paged_attention_step(
     exploration_queue = list(selection.exploration_block_ids)
     optional_sorted = list(selection.optional_block_ids)
     frontier_size = len(optional_sorted) if int(config.top_k) <= 0 else min(int(config.top_k), len(optional_sorted))
+    if config.approximate_mode and int(config.approximate_max_optional_blocks) > 0:
+        frontier_size = min(frontier_size, int(config.approximate_max_optional_blocks))
     frontier_index = 0
     optional_heap: list[tuple[float, int]] = []
     for block_id in optional_sorted[:frontier_size]:
@@ -1182,21 +1197,23 @@ def run_paged_attention_step(
     frontier_index = frontier_size
     max_optional_without_fallback = frontier_size
 
-    all_unprocessed: set[int] = set(range(resident.num_blocks))
+    all_unprocessed: set[int] = set(selection.selected_block_ids)
     remaining_mass = None
     remaining_value = None
     previous_beta = None
     beta_non_decreasing_checks = 0
+    optional_mass_shares: list[float] = []
 
-    def process_block(block_id: int) -> None:
+    def process_block(block_id: int) -> float:
         nonlocal m, l, tokens_processed, processed_blocks, remaining_mass, remaining_value, instability_flag
         page_id = int(resident.block_page_ids_cpu[block_id])
         token_offset = int(resident.block_token_offsets_cpu[block_id])
         token_count = int(resident.block_token_counts_cpu[block_id])
         k_block = resident.k_pages[page_id, token_offset : token_offset + token_count, :].to(dtype=torch.float32)
         v_block = resident.v_pages[page_id, token_offset : token_offset + token_count, :]
-        logits = torch.matmul(k_block, query_tensor)
+        logits = torch.matmul(k_block, query_tensor) * attention_scale
         chunk_max = torch.max(logits)
+        block_mass_share = 1.0
         if m is None or l is None:
             exp_scores = torch.exp(logits - chunk_max)
             m = chunk_max
@@ -1217,6 +1234,7 @@ def run_paged_attention_step(
             l = l * alpha + torch.sum(exp_scores)
             acc.mul_(alpha).add_(torch.sum(exp_scores[:, None] * v_block.to(dtype=torch.float32), dim=0))
             m = m_new
+            block_mass_share = float(torch.sum(exp_scores).detach().cpu().item()) / max(float(l.detach().cpu().item()), 1e-12)
             new_m = float(m.detach().cpu().item())
             if remaining_mass is not None and remaining_value is not None:
                 if new_m > old_m:
@@ -1228,7 +1246,8 @@ def run_paged_attention_step(
                 remaining_value = max(0.0, remaining_value - term * float(resident.block_v_norm_max_cpu[block_id]))
             all_unprocessed.discard(block_id)
 
-        if float(torch.max(logits).detach().cpu().item()) > float(block_upper_bounds[block_id]) + float(config.bound_eps):
+        block_max = float(torch.max(logits).detach().cpu().item())
+        if block_max > float(block_upper_bounds[block_id]) + float(config.bound_eps):
             instability_flag = True
         processed_blocks += 1
         tokens_processed += int(logits.numel())
@@ -1236,6 +1255,7 @@ def run_paged_attention_step(
         if page_id not in processed_page_set:
             processed_page_set.add(page_id)
             processed_page_ids.append(page_id)
+        return block_mass_share
 
     while mandatory_queue:
         process_block(mandatory_queue.pop(0))
@@ -1247,48 +1267,60 @@ def run_paged_attention_step(
     effective_min_blocks = int(config.min_blocks) if int(config.min_blocks) > 0 else len(selection.mandatory_block_ids) + 2
     optional_processed = 0
 
-    while optional_heap or frontier_index < len(optional_sorted):
+    allow_optional_widen = int(config.top_k) <= 0 and not config.approximate_mode
+
+    while optional_heap or (allow_optional_widen and frontier_index < len(optional_sorted)):
+        if config.approximate_mode and optional_processed >= max_optional_without_fallback:
+            break
         if not optional_heap:
-            widen = len(optional_sorted) if not config.early_exit or int(config.top_k) <= 0 else min(int(config.top_k), len(optional_sorted) - frontier_index)
+            if not allow_optional_widen:
+                break
+            widen = len(optional_sorted)
             for block_id in optional_sorted[frontier_index : frontier_index + widen]:
                 heapq.heappush(optional_heap, (-float(block_priorities[block_id]), int(block_id)))
             frontier_index += widen
             if not optional_heap:
                 break
         _priority, block_id = heapq.heappop(optional_heap)
-        process_block(block_id)
+        block_mass_share = process_block(block_id)
         optional_processed += 1
+        optional_mass_shares.append(block_mass_share)
 
-        if not config.early_exit and int(config.top_k) > 0 and optional_processed >= max_optional_without_fallback:
+        if config.early_exit:
+            if processed_blocks % max(int(config.check_interval), 1) == 0 and remaining_mass is not None and remaining_value is not None and l is not None:
+                denom = float(l.detach().cpu().item()) + float(remaining_mass)
+                if denom > 0.0:
+                    beta_upper = float(remaining_mass / denom)
+                    delta_upper = float(remaining_value / denom)
+                    if previous_beta is not None and beta_upper >= previous_beta - 1e-12:
+                        beta_non_decreasing_checks += 1
+                    else:
+                        beta_non_decreasing_checks = 0
+                    previous_beta = beta_upper
+                    if beta_non_decreasing_checks >= 2:
+                        instability_flag = True
+                    remaining_margin = math.inf
+                    if all_unprocessed:
+                        remaining_ids = np.asarray(sorted(all_unprocessed), dtype=np.int64)
+                        remaining_margin = float(m.detach().cpu().item()) - float(np.max(block_upper_bounds[remaining_ids]))
+                    recent_mass_avg = float(sum(optional_mass_shares[-2:]) / len(optional_mass_shares[-2:]))
+                    if (
+                        mandatory_done
+                        and optional_processed >= int(config.heuristic_min_optional_blocks)
+                        and processed_blocks >= effective_min_blocks
+                        and block_mass_share <= float(config.heuristic_block_mass_eps)
+                        and recent_mass_avg <= float(config.heuristic_recent_avg_mass_eps)
+                        and beta_upper <= float(config.heuristic_remaining_mass_eps)
+                        and remaining_margin >= float(config.heuristic_remaining_margin)
+                        and not instability_flag
+                    ):
+                        early_exit_triggered = True
+                        break
+
+        if config.approximate_mode and optional_processed >= max_optional_without_fallback:
             break
 
-        if not config.early_exit:
-            continue
-
-        if processed_blocks % max(int(config.check_interval), 1) != 0:
-            continue
-        if remaining_mass is None or remaining_value is None or l is None:
-            continue
-        denom = float(l.detach().cpu().item()) + float(remaining_mass)
-        if denom <= 0.0:
-            continue
-        beta_upper = float(remaining_mass / denom)
-        delta_upper = float(remaining_value / denom)
-        if previous_beta is not None and beta_upper >= previous_beta - 1e-12:
-            beta_non_decreasing_checks += 1
-        else:
-            beta_non_decreasing_checks = 0
-        previous_beta = beta_upper
-        if beta_non_decreasing_checks >= 2:
-            instability_flag = True
-        if (
-            mandatory_done
-            and processed_blocks >= effective_min_blocks
-            and beta_upper < config.effective_mass_eps()
-            and delta_upper < config.effective_value_eps()
-            and not instability_flag
-        ):
-            early_exit_triggered = True
+        if not config.early_exit and int(config.top_k) > 0 and optional_processed >= max_optional_without_fallback:
             break
 
     if m is None or l is None:
@@ -1365,7 +1397,8 @@ def run_reference_step(
         selected_block_ids=selection.selected_block_ids,
     )
     query_np = _to_numpy(snapshot.query)
-    logits = flat_k @ query_np
+    attention_scale = 1.0 / math.sqrt(float(resident.head_dim))
+    logits = (flat_k @ query_np) * attention_scale
     shifted = logits - np.max(logits)
     weights = np.exp(shifted).astype(np.float32, copy=False)
     weights = weights / np.sum(weights)

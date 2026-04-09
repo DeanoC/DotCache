@@ -35,15 +35,18 @@ def test_config_records_builds_unique_grid() -> None:
         recent_windows=[256],
         sink_windows=[128],
         page_chunk_sizes=[2],
+        approximate_modes=["off", "on"],
+        approximate_max_optional_blocks=[0, 1],
         early_exit_modes=["off", "on"],
         early_exit_epsilons=[1e-4, 1e-3],
     )
 
     configs = _config_records(args)
 
-    assert len(configs) == 3
-    assert any(config.early_exit is False for config in configs)
-    assert sum(1 for config in configs if config.early_exit) == 2
+    assert len(configs) == 9
+    assert any(config.early_exit is False and not config.approximate_mode for config in configs)
+    assert any(config.early_exit is False and config.approximate_mode for config in configs)
+    assert sum(1 for config in configs if config.early_exit) == 6
 
 
 def test_aggregate_and_recommend_records_choose_fast_full_pass() -> None:
@@ -118,5 +121,7 @@ def test_aggregate_and_recommend_records_choose_fast_full_pass() -> None:
     recommendations = _recommend_records(aggregates)
 
     assert len(aggregates) == 2
+    assert aggregates[0]["backend_label"] == "Experimental Backend"
+    assert aggregates[0]["controller_label"] == "Robust Full Pass"
     assert recommendations[0]["config_key"] == "fast"
     assert recommendations[0]["recommendation_reason"] == "fastest_full_pass"

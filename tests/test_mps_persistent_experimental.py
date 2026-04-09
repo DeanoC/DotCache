@@ -214,6 +214,152 @@ def test_controller_keeps_sink_and_recent_pages_and_reports_stable_counts() -> N
     assert np.isfinite(result.output).all()
 
 
+def test_approximate_mode_caps_optional_blocks_on_cpu() -> None:
+    snapshot = _build_manual_snapshot()
+    resident = prepare_resident_layer_pages(
+        page_k_mean=snapshot["page_k_mean"],
+        prev_attn=snapshot["prev_attn"],
+        distance=snapshot["distance"],
+        k_pages=snapshot["k_pages"],
+        v_pages=snapshot["v_pages"],
+        page_token_counts=snapshot["page_token_counts"],
+        page_token_starts=snapshot["page_token_starts"],
+        device="cpu",
+        block_size=4,
+    )
+    baseline_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=2,
+        page_chunk_size=1,
+        block_size=4,
+        early_exit=False,
+    )
+    approximate_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=2,
+        page_chunk_size=1,
+        block_size=4,
+        early_exit=False,
+        approximate_mode=True,
+        approximate_max_optional_blocks=1,
+    )
+
+    baseline = run_paged_attention_step(snapshot["query"], resident, config=baseline_config, engine="mps_experimental")
+    approximate = run_paged_attention_step(snapshot["query"], resident, config=approximate_config, engine="mps_experimental")
+
+    assert approximate.processed_block_count < baseline.processed_block_count
+    assert approximate.tokens_processed < baseline.tokens_processed
+    assert approximate.selected_block_count < baseline.selected_block_count
+    assert np.isfinite(approximate.output).all()
+
+
+def test_approximate_mode_can_trigger_early_exit_before_budget_is_exhausted() -> None:
+    snapshot = _build_manual_snapshot()
+    resident = prepare_resident_layer_pages(
+        page_k_mean=snapshot["page_k_mean"],
+        prev_attn=snapshot["prev_attn"],
+        distance=snapshot["distance"],
+        k_pages=snapshot["k_pages"],
+        v_pages=snapshot["v_pages"],
+        page_token_counts=snapshot["page_token_counts"],
+        page_token_starts=snapshot["page_token_starts"],
+        device="cpu",
+        block_size=2,
+    )
+    approximate_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=4,
+        page_chunk_size=1,
+        block_size=2,
+        early_exit=False,
+        approximate_mode=True,
+        approximate_max_optional_blocks=4,
+    )
+    approximate_early_exit_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=4,
+        page_chunk_size=1,
+        block_size=2,
+        early_exit=True,
+        early_exit_eps=10.0,
+        mass_eps=10.0,
+        value_eps=10.0,
+        bound_eps=1e6,
+        approximate_mode=True,
+        approximate_max_optional_blocks=4,
+        heuristic_min_optional_blocks=1,
+        heuristic_block_mass_eps=1.0,
+        heuristic_recent_avg_mass_eps=1.0,
+        heuristic_remaining_mass_eps=1.0,
+        heuristic_remaining_margin=-1e6,
+    )
+
+    baseline = run_paged_attention_step(snapshot["query"], resident, config=approximate_config, engine="mps_experimental")
+    early_exit = run_paged_attention_step(
+        snapshot["query"],
+        resident,
+        config=approximate_early_exit_config,
+        engine="mps_experimental",
+    )
+
+    assert early_exit.early_exit_triggered is True
+    assert early_exit.processed_block_count < baseline.processed_block_count
+    assert early_exit.tokens_processed < baseline.tokens_processed
+    assert np.isfinite(early_exit.output).all()
+
+
+def test_non_approx_early_exit_stays_within_topk_budget() -> None:
+    snapshot = _build_manual_snapshot()
+    resident = prepare_resident_layer_pages(
+        page_k_mean=snapshot["page_k_mean"],
+        prev_attn=snapshot["prev_attn"],
+        distance=snapshot["distance"],
+        k_pages=snapshot["k_pages"],
+        v_pages=snapshot["v_pages"],
+        page_token_counts=snapshot["page_token_counts"],
+        page_token_starts=snapshot["page_token_starts"],
+        device="cpu",
+        block_size=2,
+    )
+    baseline_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=4,
+        page_chunk_size=1,
+        block_size=2,
+        early_exit=False,
+    )
+    early_exit_config = PagedAttentionControllerConfig(
+        sink_window_tokens=4,
+        recent_window_tokens=2,
+        top_k=4,
+        page_chunk_size=1,
+        block_size=2,
+        early_exit=True,
+        early_exit_eps=10.0,
+        mass_eps=10.0,
+        value_eps=10.0,
+        bound_eps=1e6,
+        heuristic_min_optional_blocks=1,
+        heuristic_block_mass_eps=1.0,
+        heuristic_recent_avg_mass_eps=1.0,
+        heuristic_remaining_mass_eps=1.0,
+        heuristic_remaining_margin=-1e6,
+    )
+
+    baseline = run_paged_attention_step(snapshot["query"], resident, config=baseline_config, engine="mps_experimental")
+    early_exit = run_paged_attention_step(snapshot["query"], resident, config=early_exit_config, engine="mps_experimental")
+
+    assert early_exit.early_exit_triggered is True
+    assert early_exit.processed_block_count <= baseline.processed_block_count
+    assert early_exit.tokens_processed <= baseline.tokens_processed
+    assert np.isfinite(early_exit.output).all()
+
+
 @requires_mps
 def test_score_pages_mps_smoke_matches_reference() -> None:
     snapshot = build_synthetic_snapshot(num_pages=4, tokens_per_page=8, head_dim=16, seed=21, partial_last_page_tokens=5)

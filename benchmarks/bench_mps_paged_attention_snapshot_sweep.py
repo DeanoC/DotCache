@@ -21,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent-windows", nargs="+", type=int, default=[256, 512, 1024])
     parser.add_argument("--sink-windows", nargs="+", type=int, default=[128, 256])
     parser.add_argument("--page-chunk-sizes", nargs="+", type=int, default=[2, 4, 8])
+    parser.add_argument("--approximate-modes", nargs="+", choices=["off", "on"], default=["off"])
+    parser.add_argument("--approximate-max-optional-blocks", nargs="+", type=int, default=[0])
     parser.add_argument("--early-exit-modes", nargs="+", choices=["off", "on"], default=["off"])
     parser.add_argument("--early-exit-epsilons", nargs="+", type=float, default=[1e-4])
     parser.add_argument("--device", default="mps")
@@ -56,55 +58,106 @@ def _resolve_snapshot_paths(snapshot_paths: list[str], snapshot_globs: list[str]
 
 def _config_records(args: argparse.Namespace) -> list[PagedAttentionControllerConfig]:
     configs: list[PagedAttentionControllerConfig] = []
-    seen: set[tuple[int, int, int, int, bool, float]] = set()
+    seen: set[tuple[int, int, int, int, bool, int, bool, float]] = set()
     for top_k in args.top_ks:
         for recent_window in args.recent_windows:
             for sink_window in args.sink_windows:
                 for page_chunk_size in args.page_chunk_sizes:
-                    for early_exit_mode in args.early_exit_modes:
-                        if early_exit_mode == "off":
-                            key = (int(top_k), int(recent_window), int(sink_window), int(page_chunk_size), False, 0.0)
-                            if key in seen:
+                    for approximate_mode in args.approximate_modes:
+                        for approximate_max_optional_blocks in args.approximate_max_optional_blocks:
+                            if approximate_mode == "off" and int(approximate_max_optional_blocks) != 0:
                                 continue
-                            seen.add(key)
-                            configs.append(
-                                PagedAttentionControllerConfig(
-                                    top_k=int(top_k),
-                                    recent_window_tokens=int(recent_window),
-                                    sink_window_tokens=int(sink_window),
-                                    page_chunk_size=int(page_chunk_size),
-                                    early_exit=False,
-                                    early_exit_eps=1e-4,
-                                )
-                            )
-                            continue
-                        for early_exit_eps in args.early_exit_epsilons:
-                            key = (
-                                int(top_k),
-                                int(recent_window),
-                                int(sink_window),
-                                int(page_chunk_size),
-                                True,
-                                float(early_exit_eps),
-                            )
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            configs.append(
-                                PagedAttentionControllerConfig(
-                                    top_k=int(top_k),
-                                    recent_window_tokens=int(recent_window),
-                                    sink_window_tokens=int(sink_window),
-                                    page_chunk_size=int(page_chunk_size),
-                                    early_exit=True,
-                                    early_exit_eps=float(early_exit_eps),
-                                )
-                            )
+                            for early_exit_mode in args.early_exit_modes:
+                                if early_exit_mode == "off":
+                                    key = (
+                                        int(top_k),
+                                        int(recent_window),
+                                        int(sink_window),
+                                        int(page_chunk_size),
+                                        approximate_mode == "on",
+                                        int(approximate_max_optional_blocks),
+                                        False,
+                                        0.0,
+                                    )
+                                    if key in seen:
+                                        continue
+                                    seen.add(key)
+                                    configs.append(
+                                        PagedAttentionControllerConfig(
+                                            top_k=int(top_k),
+                                            recent_window_tokens=int(recent_window),
+                                            sink_window_tokens=int(sink_window),
+                                            page_chunk_size=int(page_chunk_size),
+                                            approximate_mode=approximate_mode == "on",
+                                            approximate_max_optional_blocks=int(approximate_max_optional_blocks),
+                                            early_exit=False,
+                                            early_exit_eps=1e-4,
+                                            mass_eps=1e-4,
+                                            value_eps=1e-4,
+                                        )
+                                    )
+                                    continue
+                                for early_exit_eps in args.early_exit_epsilons:
+                                    key = (
+                                        int(top_k),
+                                        int(recent_window),
+                                        int(sink_window),
+                                        int(page_chunk_size),
+                                        approximate_mode == "on",
+                                        int(approximate_max_optional_blocks),
+                                        True,
+                                        float(early_exit_eps),
+                                    )
+                                    if key in seen:
+                                        continue
+                                    seen.add(key)
+                                    configs.append(
+                                        PagedAttentionControllerConfig(
+                                            top_k=int(top_k),
+                                            recent_window_tokens=int(recent_window),
+                                            sink_window_tokens=int(sink_window),
+                                            page_chunk_size=int(page_chunk_size),
+                                            approximate_mode=approximate_mode == "on",
+                                            approximate_max_optional_blocks=int(approximate_max_optional_blocks),
+                                            early_exit=True,
+                                            early_exit_eps=float(early_exit_eps),
+                                            mass_eps=float(early_exit_eps),
+                                            value_eps=float(early_exit_eps),
+                                        )
+                                    )
     return configs
+
+
+def _backend_label(engine: str) -> str:
+    labels = {
+        "cpu_ref": "CPU Reference",
+        "torch_mps_baseline": "Baseline Backend",
+        "mps_experimental": "Experimental Backend",
+    }
+    return labels.get(engine, engine)
+
+
+def _controller_metadata(config: PagedAttentionControllerConfig) -> dict[str, str]:
+    if bool(config.approximate_mode):
+        return {
+            "controller_mode": "approx_budget",
+            "controller_label": "Approx Budget",
+        }
+    if bool(config.early_exit):
+        return {
+            "controller_mode": "certified_early_exit",
+            "controller_label": "Certified Early Exit",
+        }
+    return {
+        "controller_mode": "robust_full_pass",
+        "controller_label": "Robust Full Pass",
+    }
 
 
 def _candidate_record(snapshot_path: Path, engine: str, config: PagedAttentionControllerConfig, result: dict[str, object]) -> dict[str, object]:
     record = dict(result)
+    controller = _controller_metadata(config)
+    backend_label = _backend_label(engine)
     record.update(
         {
             "record_type": "candidate",
@@ -115,10 +168,16 @@ def _candidate_record(snapshot_path: Path, engine: str, config: PagedAttentionCo
                 f"|recent={int(config.recent_window_tokens)}"
                 f"|sink={int(config.sink_window_tokens)}"
                 f"|chunk={int(config.page_chunk_size)}"
+                f"|approx={int(config.approximate_mode)}"
+                f"|approx_opt={int(config.approximate_max_optional_blocks)}"
                 f"|early_exit={int(config.early_exit)}"
                 f"|eps={float(config.early_exit_eps):.6g}"
             ),
             "engine": engine,
+            "backend_label": backend_label,
+            "controller_mode": controller["controller_mode"],
+            "controller_label": controller["controller_label"],
+            "display_label": f"{backend_label} / {controller['controller_label']}",
         }
     )
     return record
@@ -137,6 +196,7 @@ def _aggregate_records(
 
     aggregate_records: list[dict[str, object]] = []
     for (engine, config_key), records in sorted(grouped.items()):
+        first = records[0]
         pass_count = sum(
             1
             for record in records
@@ -149,6 +209,10 @@ def _aggregate_records(
                 "record_type": "aggregate",
                 "engine": engine,
                 "config_key": config_key,
+                "backend_label": str(first.get("backend_label", _backend_label(engine))),
+                "controller_mode": str(first.get("controller_mode", "robust_full_pass")),
+                "controller_label": str(first.get("controller_label", "Robust Full Pass")),
+                "display_label": str(first.get("display_label", f"{_backend_label(engine)} / Robust Full Pass")),
                 "snapshot_count": count,
                 "pass_count": pass_count,
                 "pass_rate": float(pass_count / max(count, 1)),

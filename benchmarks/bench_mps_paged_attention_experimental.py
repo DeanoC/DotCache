@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-chunk-size", type=int, default=4)
     parser.add_argument("--early-exit", action="store_true")
     parser.add_argument("--early-exit-eps", type=float, default=1e-4)
+    parser.add_argument("--approximate-mode", action="store_true")
+    parser.add_argument("--approximate-max-optional-blocks", type=int, default=0)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measured-runs", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
@@ -121,6 +123,8 @@ def run_paged_attention_benchmark(
         "page_chunk_size": int(config.page_chunk_size),
         "early_exit": bool(config.early_exit),
         "early_exit_eps": float(config.early_exit_eps),
+        "approximate_mode": bool(config.approximate_mode),
+        "approximate_max_optional_blocks": int(config.approximate_max_optional_blocks),
         "warmup_runs": int(warmup_runs),
         "measured_runs": int(measured_runs),
         "score_time_ms": _average([result.score_time_ms for result in measured]),
@@ -150,6 +154,10 @@ def main() -> None:
         page_chunk_size=args.page_chunk_size,
         early_exit=args.early_exit,
         early_exit_eps=args.early_exit_eps,
+        mass_eps=args.early_exit_eps,
+        value_eps=args.early_exit_eps,
+        approximate_mode=args.approximate_mode,
+        approximate_max_optional_blocks=args.approximate_max_optional_blocks,
     )
     record = run_paged_attention_benchmark(
         snapshot,
