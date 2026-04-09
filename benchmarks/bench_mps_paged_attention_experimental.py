@@ -67,25 +67,23 @@ def _average(values: list[float]) -> float:
     return float(sum(values) / len(values))
 
 
-def main() -> None:
-    args = parse_args()
-    snapshot = _load_snapshot(args)
-    config = PagedAttentionControllerConfig(
-        sink_window_tokens=args.sink_window,
-        recent_window_tokens=args.recent_window,
-        top_k=args.top_k,
-        page_chunk_size=args.page_chunk_size,
-        early_exit=args.early_exit,
-        early_exit_eps=args.early_exit_eps,
-    )
-
+def run_paged_attention_benchmark(
+    snapshot,
+    *,
+    config: PagedAttentionControllerConfig,
+    engine: str,
+    device: str = "mps",
+    dtype: str = "float32",
+    warmup_runs: int = 1,
+    measured_runs: int = 5,
+) -> dict[str, object]:
     reference = run_reference_step(snapshot, config=config)
 
-    if args.engine == "cpu_ref":
-        measured = [run_reference_step(snapshot, config=config) for _ in range(max(args.measured_runs, 1))]
+    if engine == "cpu_ref":
+        measured = [run_reference_step(snapshot, config=config) for _ in range(max(measured_runs, 1))]
         host_to_device_bytes_after_warmup = 0
         resident_host_to_device_bytes = 0
-        device = "cpu"
+        resolved_device = "cpu"
     else:
         resident = prepare_resident_layer_pages(
             page_k_mean=snapshot.page_k_mean,
@@ -95,39 +93,36 @@ def main() -> None:
             v_pages=snapshot.v_pages,
             page_token_counts=snapshot.page_token_counts,
             page_token_starts=snapshot.page_token_starts,
-            device=args.device,
-            dtype=args.dtype,
+            device=device,
+            dtype=dtype,
         )
-        for _ in range(max(args.warmup_runs, 0)):
-            run_paged_attention_step(snapshot.query, resident, config=config, engine=args.engine)
+        for _ in range(max(warmup_runs, 0)):
+            run_paged_attention_step(snapshot.query, resident, config=config, engine=engine)
         measured = [
-            run_paged_attention_step(snapshot.query, resident, config=config, engine=args.engine)
-            for _ in range(max(args.measured_runs, 1))
+            run_paged_attention_step(snapshot.query, resident, config=config, engine=engine)
+            for _ in range(max(measured_runs, 1))
         ]
         host_to_device_bytes_after_warmup = 0
         resident_host_to_device_bytes = resident.host_to_device_bytes
-        device = resident.device.type
+        resolved_device = resident.device.type
 
     errors = [result_error_stats(result.output, reference.output) for result in measured]
-    record = {
-        "engine": args.engine,
-        "input_mode": args.input_mode,
-        "input_snapshot": args.input_snapshot,
-        "saved_snapshot": str(Path(args.save_snapshot).resolve()) if args.save_snapshot is not None else None,
-        "device": device,
-        "dtype": args.dtype,
+    return {
+        "engine": engine,
+        "device": resolved_device,
+        "dtype": dtype,
         "head_dim": snapshot.head_dim,
         "num_pages": snapshot.num_pages,
         "tokens_per_page": snapshot.tokens_per_page,
         "total_tokens": int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),
-        "top_k": args.top_k,
-        "recent_window_tokens": args.recent_window,
-        "sink_window_tokens": args.sink_window,
-        "page_chunk_size": args.page_chunk_size,
-        "early_exit": bool(args.early_exit),
-        "early_exit_eps": float(args.early_exit_eps),
-        "warmup_runs": int(args.warmup_runs),
-        "measured_runs": int(args.measured_runs),
+        "top_k": int(config.top_k),
+        "recent_window_tokens": int(config.recent_window_tokens),
+        "sink_window_tokens": int(config.sink_window_tokens),
+        "page_chunk_size": int(config.page_chunk_size),
+        "early_exit": bool(config.early_exit),
+        "early_exit_eps": float(config.early_exit_eps),
+        "warmup_runs": int(warmup_runs),
+        "measured_runs": int(measured_runs),
         "score_time_ms": _average([result.score_time_ms for result in measured]),
         "selection_time_ms": _average([result.selection_time_ms for result in measured]),
         "attention_time_ms": _average([result.attention_time_ms for result in measured]),
@@ -143,6 +138,35 @@ def main() -> None:
         "reference_selected_page_count": int(reference.selected_page_count),
         "reference_processed_page_count": int(reference.processed_page_count),
     }
+
+
+def main() -> None:
+    args = parse_args()
+    snapshot = _load_snapshot(args)
+    config = PagedAttentionControllerConfig(
+        sink_window_tokens=args.sink_window,
+        recent_window_tokens=args.recent_window,
+        top_k=args.top_k,
+        page_chunk_size=args.page_chunk_size,
+        early_exit=args.early_exit,
+        early_exit_eps=args.early_exit_eps,
+    )
+    record = run_paged_attention_benchmark(
+        snapshot,
+        config=config,
+        engine=args.engine,
+        device=args.device,
+        dtype=args.dtype,
+        warmup_runs=args.warmup_runs,
+        measured_runs=args.measured_runs,
+    )
+    record.update(
+        {
+            "input_mode": args.input_mode,
+            "input_snapshot": args.input_snapshot,
+            "saved_snapshot": str(Path(args.save_snapshot).resolve()) if args.save_snapshot is not None else None,
+        }
+    )
     print(json.dumps(record, sort_keys=True))
 
 
