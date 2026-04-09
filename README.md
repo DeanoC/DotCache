@@ -638,6 +638,21 @@ For selective recurrent-state probes on top of the default `8b` lane, the StateC
 .venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --layer-bit-overrides 12:4 22:4 --state-stage post_update_m0 --renorm-interval 0 --continue-on-error
 ```
 
+For a StateCache-first Qwen3.5 regression pass that avoids the paused DotCache attention path, use:
+
+```bash
+.venv/bin/python benchmarks/bench_qwen35_statecache_regression_suite.py \
+  --model-id Qwen/Qwen3.5-0.8B \
+  --backend torch_cuda \
+  --device cuda \
+  --cases 64:8 128:16 256:16 \
+  --statecache-scopes recurrent_only conv_only conv_plus_recurrent \
+  --localization-scopes recurrent_only conv_plus_recurrent \
+  --bits 8 \
+  --state-stage post_update_m0 \
+  --renorm-interval 0
+```
+
 That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
 
 ### ROCm 890M Snapshot
