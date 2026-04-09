@@ -2444,34 +2444,20 @@ class PersistentQwen35LinearAttentionBridge(nn.Module):
                 attention_mask=attention_mask,
             )
         runtime_state = self.adapter.require_persistent_hybrid_runtime_state()
-        _, sync_in_ms = _timed_call(
-            lambda: runtime_state.sync_linear_layer_into_cache(cache_params, self.layer_idx),
-            device=hidden_states.device,
-        )
         output, linear_ms = _timed_call(
-            lambda: self._forward_base_linear_attn(
+            lambda: runtime_state.decode_linear_attention_layer(
+                self.layer_idx,
+                layer_module=self.base_linear_attn,
                 hidden_states=hidden_states,
-                cache_params=cache_params,
-                cache_position=cache_position,
                 attention_mask=attention_mask,
             ),
             device=hidden_states.device,
         )
-        _, sync_out_ms = _timed_call(
-            lambda: runtime_state.sync_linear_layer_from_cache(cache_params, self.layer_idx),
-            device=hidden_states.device,
-        )
-        total_ms = float(sync_in_ms + linear_ms + sync_out_ms)
-        self.adapter.persistent_linear_attention_ms_total += total_ms
+        self.adapter.persistent_linear_attention_ms_total += float(linear_ms)
         self.adapter._record_layer_timing(
             self.adapter.persistent_linear_attention_ms_total_by_layer,
             self.layer_idx,
-            total_ms,
-        )
-        self.adapter._record_layer_timing(
-            self.adapter.persistent_linear_update_ms_total_by_layer,
-            self.layer_idx,
-            float(sync_in_ms + sync_out_ms),
+            float(linear_ms),
         )
         return output
 

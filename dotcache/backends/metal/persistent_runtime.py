@@ -25,6 +25,13 @@ def _load_torch():
     return torch
 
 
+def _load_torch_functional():
+    torch = _load_torch()
+    import torch.nn.functional as F
+
+    return torch, F
+
+
 def _torch_dtype_bytes(dtype: Any) -> int:
     torch = _load_torch()
     probe = torch.empty((), dtype=dtype)
@@ -289,14 +296,135 @@ class PersistentLinearAttentionState:
         conv_states = getattr(cache, "conv_states", None)
         recurrent_states = getattr(cache, "recurrent_states", None)
         for layer_id in layer_ids:
-            conv_state = _clone_tensor_like(_sequence_value_or_none(conv_states, int(layer_id)), device=device)
-            recurrent_state = _clone_tensor_like(_sequence_value_or_none(recurrent_states, int(layer_id)), device=device)
+            layer_cache = _sequence_value_or_none(getattr(cache, "layers", None), int(layer_id))
+            conv_state_value = _sequence_value_or_none(conv_states, int(layer_id))
+            if conv_state_value is None and layer_cache is not None:
+                conv_state_value = getattr(layer_cache, "conv_states", None)
+            recurrent_state_value = _sequence_value_or_none(recurrent_states, int(layer_id))
+            if recurrent_state_value is None and layer_cache is not None:
+                recurrent_state_value = getattr(layer_cache, "recurrent_states", None)
+            conv_state = _clone_tensor_like(conv_state_value, device=device)
+            recurrent_state = _clone_tensor_like(recurrent_state_value, device=device)
             layers[int(layer_id)] = PersistentLinearAttentionLayerState(
                 layer_id=int(layer_id),
                 conv_state=conv_state,
                 recurrent_state=recurrent_state,
+                has_previous_state=bool(getattr(layer_cache, "has_previous_state", False)),
             )
         return cls(device=device, layers=layers, telemetry=telemetry)
+
+    def decode_layer(
+        self,
+        layer_id: int,
+        *,
+        layer_module: Any,
+        hidden_states: Any,
+        attention_mask: Any | None,
+    ):
+        torch, F = _load_torch_functional()
+        state = self.layers[int(layer_id)]
+        start = time.perf_counter()
+
+        if attention_mask is not None and attention_mask.ndim == 2 and attention_mask.shape[1] == hidden_states.shape[1]:
+            masked_hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
+        else:
+            masked_hidden_states = hidden_states
+
+        batch_size, seq_len, _ = masked_hidden_states.shape
+        mixed_qkv = layer_module.in_proj_qkv(masked_hidden_states).transpose(1, 2)
+        z = layer_module.in_proj_z(masked_hidden_states).reshape(batch_size, seq_len, -1, layer_module.head_v_dim)
+        b = layer_module.in_proj_b(masked_hidden_states)
+        a = layer_module.in_proj_a(masked_hidden_states)
+
+        use_precomputed_states = (
+            bool(state.has_previous_state)
+            and seq_len == 1
+            and state.conv_state is not None
+            and state.recurrent_state is not None
+        )
+
+        if use_precomputed_states:
+            conv_state = state.conv_state.to(device=masked_hidden_states.device)
+            recurrent_state = state.recurrent_state.to(device=masked_hidden_states.device)
+            mixed_qkv = layer_module.causal_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                layer_module.conv1d.weight.squeeze(1),
+                layer_module.conv1d.bias,
+                layer_module.activation,
+            )
+            state.conv_state = _clone_tensor_like(conv_state, device=self.device)
+        else:
+            conv_state = F.pad(mixed_qkv, (layer_module.conv_kernel_size - mixed_qkv.shape[-1], 0))
+            state.conv_state = _clone_tensor_like(conv_state, device=self.device)
+            if layer_module.causal_conv1d_fn is not None:
+                mixed_qkv = layer_module.causal_conv1d_fn(
+                    x=mixed_qkv,
+                    weight=layer_module.conv1d.weight.squeeze(1),
+                    bias=layer_module.conv1d.bias,
+                    activation=layer_module.activation,
+                    seq_idx=None,
+                )
+            else:
+                mixed_qkv = F.silu(layer_module.conv1d(mixed_qkv)[:, :, :seq_len])
+            recurrent_state = state.recurrent_state.to(device=masked_hidden_states.device) if state.recurrent_state is not None else None
+
+        mixed_qkv = mixed_qkv.transpose(1, 2)
+        query, key, value = torch.split(
+            mixed_qkv,
+            [layer_module.key_dim, layer_module.key_dim, layer_module.value_dim],
+            dim=-1,
+        )
+        query = query.reshape(batch_size, seq_len, -1, layer_module.head_k_dim)
+        key = key.reshape(batch_size, seq_len, -1, layer_module.head_k_dim)
+        value = value.reshape(batch_size, seq_len, -1, layer_module.head_v_dim)
+
+        beta = b.sigmoid()
+        g = -layer_module.A_log.float().exp() * F.softplus(a.float() + layer_module.dt_bias)
+        if layer_module.num_v_heads // layer_module.num_k_heads > 1:
+            query = query.repeat_interleave(layer_module.num_v_heads // layer_module.num_k_heads, dim=2)
+            key = key.repeat_interleave(layer_module.num_v_heads // layer_module.num_k_heads, dim=2)
+
+        if use_precomputed_states:
+            core_attn_out, last_recurrent_state = layer_module.recurrent_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=recurrent_state,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
+            )
+        else:
+            core_attn_out, last_recurrent_state = layer_module.chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=None,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
+            )
+
+        if last_recurrent_state is not None:
+            state.recurrent_state = _clone_tensor_like(last_recurrent_state, device=self.device)
+        state.has_previous_state = True
+        state.direct_compute_count += 1
+
+        core_attn_out = core_attn_out.reshape(-1, layer_module.head_v_dim)
+        z = z.reshape(-1, layer_module.head_v_dim)
+        core_attn_out = layer_module.norm(core_attn_out, z)
+        core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
+        output = layer_module.out_proj(core_attn_out)
+
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.telemetry.linear_attention_step_ms_total += elapsed_ms
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        layer_telemetry.linear_ms_total += elapsed_ms
+        layer_telemetry.mutation_count += 1
+        return output
 
     def sync_layer_into_cache(self, cache_params: Any, layer_id: int) -> None:
         state = self.layers[int(layer_id)]
@@ -340,6 +468,9 @@ class PersistentLinearAttentionState:
             },
             "persistent_linear_state_sync_from_cache_count_by_layer": {
                 str(layer_id): int(state.sync_from_cache_count) for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_linear_direct_compute_count_by_layer": {
+                str(layer_id): int(state.direct_compute_count) for layer_id, state in sorted(self.layers.items())
             },
             "persistent_linear_mutation_counts_by_layer": {
                 str(layer_id): int(self.telemetry.require_layer(layer_id).mutation_count)
@@ -407,6 +538,21 @@ class PersistentHybridRuntimeState:
 
     def sync_linear_layer_from_cache(self, cache_params: Any, layer_id: int) -> None:
         self.linear_attention.sync_layer_from_cache(cache_params, layer_id)
+
+    def decode_linear_attention_layer(
+        self,
+        layer_id: int,
+        *,
+        layer_module: Any,
+        hidden_states: Any,
+        attention_mask: Any | None,
+    ):
+        return self.linear_attention.decode_layer(
+            layer_id,
+            layer_module=layer_module,
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+        )
 
     def summary(self) -> dict[str, Any]:
         result = self.native_state.summary()

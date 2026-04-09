@@ -56,5 +56,7 @@ class PersistentLinearAttentionLayerState:
     layer_id: int
     conv_state: Any | None
     recurrent_state: Any | None
+    has_previous_state: bool = False
     sync_into_cache_count: int = 0
     sync_from_cache_count: int = 0
+    direct_compute_count: int = 0

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import copy
 import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+transformers = pytest.importorskip("transformers")
+
+from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
 from dotcache.backends.metal import (
     PersistentFullAttentionState,
@@ -17,6 +21,27 @@ class _FakeLayerStructuredCache:
     def __init__(self, *, conv_states=None, recurrent_states=None):
         self.conv_states = list(conv_states or [])
         self.recurrent_states = list(recurrent_states or [])
+
+
+def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
+    config = Qwen3_5Config(
+        text_config={
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 4,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "vocab_size": 128,
+            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+        },
+        vision_config={
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "depth": 1,
+            "num_heads": 4,
+        },
+    )
+    return Qwen3_5ForConditionalGeneration(config).eval()
 
 
 def test_persistent_full_attention_state_appends_and_decodes_exactly() -> None:
@@ -78,3 +103,59 @@ def test_persistent_linear_attention_state_syncs_cache_roundtrip() -> None:
     linear_state.sync_layer_from_cache(cache, 0)
     assert torch.allclose(linear_state.layers[0].conv_state, torch.tensor([[5.0, 6.0]], dtype=torch.float32))
     assert torch.allclose(linear_state.layers[0].recurrent_state, torch.tensor([[7.0, 8.0]], dtype=torch.float32))
+
+
+def test_persistent_linear_attention_decode_matches_native_qwen_decode_step() -> None:
+    torch.manual_seed(0)
+    model = _tiny_qwen35_model()
+    text_model = model.model.language_model
+    linear_layer = text_model.layers[0].linear_attn
+
+    input_ids = torch.tensor([[1, 9, 12, 7]], dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+    with torch.no_grad():
+        prefill_outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=True,
+        )
+
+    native_cache = copy.deepcopy(prefill_outputs.past_key_values)
+    persistent_cache = copy.deepcopy(prefill_outputs.past_key_values)
+    telemetry = PersistentStepTelemetry()
+    linear_state = PersistentLinearAttentionState.from_native_cache(
+        cache=persistent_cache,
+        layer_ids=[0],
+        device=torch.device("cpu"),
+        telemetry=telemetry,
+    )
+
+    hidden_states = torch.randn((1, 1, model.config.text_config.hidden_size), dtype=torch.float32)
+    with torch.no_grad():
+        native_output = linear_layer(
+            hidden_states=hidden_states,
+            cache_params=native_cache,
+            attention_mask=None,
+        )
+        persistent_output = linear_state.decode_layer(
+            0,
+            layer_module=linear_layer,
+            hidden_states=hidden_states,
+            attention_mask=None,
+        )
+
+    assert torch.allclose(persistent_output, native_output, atol=1e-5, rtol=1e-5)
+    assert linear_state.layers[0].has_previous_state is True
+    assert linear_state.layers[0].direct_compute_count == 1
+    assert torch.allclose(
+        linear_state.layers[0].conv_state,
+        native_cache.layers[0].conv_states.to(dtype=linear_state.layers[0].conv_state.dtype),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    assert torch.allclose(
+        linear_state.layers[0].recurrent_state,
+        native_cache.layers[0].recurrent_states.to(dtype=linear_state.layers[0].recurrent_state.dtype),
+        atol=1e-5,
+        rtol=1e-5,
+    )

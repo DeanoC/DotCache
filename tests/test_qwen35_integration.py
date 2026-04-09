@@ -1903,8 +1903,9 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert result["persistent_full_attention_resident_bytes"] > 0
     assert result["persistent_linear_resident_bytes"] >= 0
     assert result["persistent_full_attention_append_counts_by_layer"]["3"] == 2
-    assert result["persistent_linear_state_sync_into_cache_count_by_layer"]["0"] >= 2
-    assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] >= 2
+    assert result["persistent_linear_state_sync_into_cache_count_by_layer"]["0"] == 0
+    assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] == 0
+    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] >= 2
     assert result["persistent_generated_ids"] == dense_result["dense_generated_ids"][:2]
     assert adapter.persistent_hybrid_runtime_state is not None
     assert "execution_secondary_relevance_layers" in result
