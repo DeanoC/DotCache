@@ -12,6 +12,7 @@ from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
 from dotcache.config import DotCacheConfig
 from dotcache.backends.mps_persistent_experimental import load_paged_attention_snapshot
+from dotcache.backends.metal import PersistentServingConfig
 from dotcache.integrations.llama import LlamaReplayRecord
 from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,
@@ -41,6 +42,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
     run_qwen35_attention_subset_persistent_serving_harness,
+    run_qwen35_persistent_full_attention_snapshot_comparison,
     run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness,
     run_qwen35_attention_subset_paged_attention_snapshot_capture_harness,
     run_qwen35_hybrid_combined_localization_harness,
@@ -1737,6 +1739,56 @@ def test_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness
     assert result["paged_attention_snapshot_corpus_resolved_step_indices"] == [0, 1]
     assert manifest["snapshot_count"] == 2
     assert manifest_path.exists()
+
+
+def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent comparison", return_tensors="pt")
+    capture = run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_path=tmp_path / "layer3_snapshot.npz",
+        layer_id=3,
+        kv_head_id=0,
+        step_index=0,
+        tokens_per_page=2,
+    )
+
+    conservative = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=False,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=0,
+        ),
+    )
+    assert conservative["selected_token_count"] == conservative["full_token_count"]
+    assert conservative["max_abs_error"] == pytest.approx(0.0, abs=1e-7)
+
+    prioritized = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+    )
+    assert prioritized["persistent_runtime_enable_priority"] is True
+    assert prioritized["selected_token_count"] <= prioritized["full_token_count"]
+    assert prioritized["selected_block_count"] <= prioritized["full_block_count"]
+    assert prioritized["max_abs_error"] >= 0.0
 
 
 def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:

@@ -150,6 +150,178 @@ def _build_block_layout(*, token_count: int, block_size: int) -> tuple[np.ndarra
     )
 
 
+def _build_block_region_ids(*, num_blocks: int) -> np.ndarray:
+    if num_blocks <= 0:
+        return np.zeros((0,), dtype=np.int32)
+    if num_blocks == 1:
+        return np.asarray([0], dtype=np.int32)
+    region_ids = np.full((num_blocks,), 2, dtype=np.int32)
+    region_ids[0] = 0
+    region_ids[-1] = 1
+    return region_ids
+
+
+def _allocate_full_attention_block_metadata(
+    *,
+    key_cache: Any,
+    value_cache: Any,
+    num_blocks: int,
+    device: Any,
+):
+    torch = _load_torch()
+    kv_heads = int(key_cache.shape[0])
+    head_dim = int(key_cache.shape[-1])
+    block_k_center = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
+    block_k_radius = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_v_norm_max = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_prev_attention_ema = torch.zeros((num_blocks,), dtype=torch.float32, device=device)
+    block_k_comp_error = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    return block_k_center, block_k_radius, block_v_norm_max, block_prev_attention_ema, block_k_comp_error
+
+
+def _recompute_full_attention_block_metadata(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_indices: list[int] | np.ndarray,
+) -> None:
+    torch = _load_torch()
+    if len(block_indices) == 0:
+        return
+    for block_idx in [int(i) for i in block_indices]:
+        token_start = int(state.block_token_starts[block_idx])
+        token_count = int(state.block_token_counts[block_idx])
+        if token_count <= 0:
+            state.metadata_valid[block_idx] = 0.0
+            state.block_k_center[block_idx].zero_()
+            state.block_k_radius[block_idx].zero_()
+            state.block_v_norm_max[block_idx].zero_()
+            state.block_k_comp_error[block_idx].zero_()
+            continue
+        key_slice = state.key_cache[:, token_start : token_start + token_count, :].to(dtype=torch.float32)
+        value_slice = state.value_cache[:, token_start : token_start + token_count, :].to(dtype=torch.float32)
+        center = key_slice.mean(dim=1)
+        distances = torch.linalg.vector_norm(key_slice - center[:, None, :], dim=-1)
+        value_norms = torch.linalg.vector_norm(value_slice, dim=-1)
+        state.block_k_center[block_idx].copy_(center)
+        state.block_k_radius[block_idx].copy_(distances.max(dim=1).values)
+        state.block_v_norm_max[block_idx].copy_(value_norms.max(dim=1).values)
+        state.block_k_comp_error[block_idx].zero_()
+        state.metadata_valid[block_idx] = 1.0
+
+
+def _resolve_block_score_inputs(
+    *,
+    state: PersistentFullAttentionLayerState,
+    query: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+):
+    torch = _load_torch()
+    query_tensor = query.to(dtype=torch.float32)
+    query_norm = torch.linalg.vector_norm(query_tensor, dim=-1)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    num_blocks = int(len(state.block_token_starts))
+    priority_scores = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    upper_bounds = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    recency_positions = torch.linspace(0.0, 1.0, steps=max(num_blocks, 1), dtype=torch.float32, device=query_tensor.device)
+    for q_head_idx in range(int(query_tensor.shape[0])):
+        kv_head_idx = int(q_to_kv[q_head_idx])
+        center = state.block_k_center[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+        radius = state.block_k_radius[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+        comp_error = state.block_k_comp_error[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+        center_sim = torch.matmul(center, query_tensor[q_head_idx]) * float(query_scale)
+        upper = center_sim + query_norm[q_head_idx] * radius * abs(float(query_scale)) + comp_error
+        priority = center_sim + state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
+        priority = priority + recency_positions * 0.05
+        priority_scores = torch.maximum(priority_scores, priority)
+        upper_bounds = torch.maximum(upper_bounds, upper)
+    return priority_scores, upper_bounds
+
+
+def _mandatory_block_ids(*, num_blocks: int, sink_blocks: int, recent_blocks: int) -> list[int]:
+    mandatory: set[int] = set()
+    for block_id in range(min(max(sink_blocks, 0), num_blocks)):
+        mandatory.add(int(block_id))
+    for offset in range(min(max(recent_blocks, 0), num_blocks)):
+        mandatory.add(int(num_blocks - 1 - offset))
+    return sorted(mandatory)
+
+
+def _exploration_block_ids(
+    *,
+    candidate_block_ids: list[int],
+    priority_scores: Any,
+    per_region: int,
+) -> list[int]:
+    if per_region <= 0 or not candidate_block_ids:
+        return []
+    midpoint = max(1, len(candidate_block_ids) // 2)
+    far_region = candidate_block_ids[:midpoint]
+    mid_region = candidate_block_ids[midpoint:]
+    selected: list[int] = []
+    for region_ids in (far_region, mid_region):
+        if not region_ids:
+            continue
+        ranked = sorted(
+            region_ids,
+            key=lambda block_id: float(priority_scores[int(block_id)].item()),
+            reverse=True,
+        )
+        selected.extend(int(block_id) for block_id in ranked[:per_region])
+    return sorted(set(selected))
+
+
+def _gather_selected_block_tensors(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+):
+    torch = _load_torch()
+    if not block_ids:
+        raise ValueError("selected block ids must not be empty")
+    key_slices = []
+    value_slices = []
+    token_counts: list[int] = []
+    for block_id in block_ids:
+        token_start = int(state.block_token_starts[block_id])
+        token_count = int(state.block_token_counts[block_id])
+        token_counts.append(token_count)
+        key_slices.append(state.key_cache[:, token_start : token_start + token_count, :])
+        value_slices.append(state.value_cache[:, token_start : token_start + token_count, :])
+    gathered_keys = torch.cat(key_slices, dim=1)
+    gathered_values = torch.cat(value_slices, dim=1)
+    return gathered_keys, gathered_values, token_counts
+
+
+def _update_block_prev_attention_ema(
+    *,
+    state: PersistentFullAttentionLayerState,
+    selected_block_ids: list[int],
+    selected_block_token_counts: list[int],
+    attn_weights: Any,
+    decay: float = 0.9,
+) -> None:
+    torch = _load_torch()
+    if attn_weights is None:
+        return
+    state.block_prev_attention_ema.mul_(float(decay))
+    weights = attn_weights.to(dtype=torch.float32)
+    if weights.ndim == 4:
+        collapsed = weights.mean(dim=(0, 2))
+    elif weights.ndim == 3:
+        collapsed = weights.mean(dim=0)
+    else:
+        collapsed = weights.reshape(-1)
+    offset = 0
+    for block_id, token_count in zip(selected_block_ids, selected_block_token_counts):
+        block_mass = collapsed[offset : offset + int(token_count)].sum()
+        state.block_prev_attention_ema[int(block_id)] += (1.0 - float(decay)) * block_mass.to(
+            dtype=state.block_prev_attention_ema.dtype,
+            device=state.block_prev_attention_ema.device,
+        )
+        offset += int(token_count)
+
+
 @dataclass(slots=True)
 class PersistentFullAttentionState:
     device: Any
@@ -188,13 +360,32 @@ class PersistentFullAttentionState:
                 token_count=token_count,
                 block_size=int(config.block_size),
             )
+            num_blocks = int(len(block_token_starts))
+            block_k_center, block_k_radius, block_v_norm_max, block_prev_attention_ema, block_k_comp_error = (
+                _allocate_full_attention_block_metadata(
+                    key_cache=kv_keys,
+                    value_cache=kv_values,
+                    num_blocks=num_blocks,
+                    device=resolved_device,
+                )
+            )
             layers[int(layer_id)] = PersistentFullAttentionLayerState(
                 layer_id=int(layer_id),
                 key_cache=kv_keys,
                 value_cache=kv_values,
                 block_token_starts=block_token_starts,
                 block_token_counts=block_token_counts,
+                block_k_center=block_k_center,
+                block_k_radius=block_k_radius,
+                block_v_norm_max=block_v_norm_max,
+                block_prev_attention_ema=block_prev_attention_ema,
+                block_region_ids=_build_block_region_ids(num_blocks=num_blocks),
+                block_k_comp_error=block_k_comp_error,
                 metadata_valid=metadata_valid,
+            )
+            _recompute_full_attention_block_metadata(
+                state=layers[int(layer_id)],
+                block_indices=np.arange(num_blocks, dtype=np.int64),
             )
         return cls(
             device=resolved_device,
@@ -221,9 +412,36 @@ class PersistentFullAttentionState:
         state.value_cache = torch.cat([state.value_cache, value_tensor], dim=1)
         state.append_count += 1
         token_count = int(state.key_cache.shape[1])
-        state.block_token_starts, state.block_token_counts, state.metadata_valid = _build_block_layout(
+        block_token_starts, block_token_counts, metadata_valid = _build_block_layout(
             token_count=token_count,
             block_size=int(self.config.block_size),
+        )
+        previous_num_blocks = int(len(state.block_token_starts))
+        new_num_blocks = int(len(block_token_starts))
+        state.block_token_starts = block_token_starts
+        state.block_token_counts = block_token_counts
+        state.metadata_valid = metadata_valid
+        if new_num_blocks != previous_num_blocks:
+            (
+                state.block_k_center,
+                state.block_k_radius,
+                state.block_v_norm_max,
+                state.block_prev_attention_ema,
+                state.block_k_comp_error,
+            ) = _allocate_full_attention_block_metadata(
+                key_cache=state.key_cache,
+                value_cache=state.value_cache,
+                num_blocks=new_num_blocks,
+                device=self.device,
+            )
+            state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
+            recompute_block_indices = np.arange(new_num_blocks, dtype=np.int64)
+        else:
+            state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
+            recompute_block_indices = np.asarray([new_num_blocks - 1], dtype=np.int64)
+        _recompute_full_attention_block_metadata(
+            state=state,
+            block_indices=recompute_block_indices,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self.telemetry.append_update_ms_total += elapsed_ms
@@ -231,6 +449,80 @@ class PersistentFullAttentionState:
         layer_telemetry.append_ms_total += elapsed_ms
         layer_telemetry.mutation_count += 1
         del token_index
+
+    def score_blocks(self, layer_id: int, query: Any, *, query_scale: float) -> dict[str, Any]:
+        state = self.layers[int(layer_id)]
+        priority_scores, upper_bounds = _resolve_block_score_inputs(
+            state=state,
+            query=query,
+            q_head_to_kv_head=self.q_head_to_kv_head,
+            query_scale=float(query_scale),
+        )
+        return {
+            "priority_scores": priority_scores,
+            "upper_bounds": upper_bounds,
+        }
+
+    def select_blocks(self, layer_id: int, query: Any, *, query_scale: float) -> dict[str, Any]:
+        state = self.layers[int(layer_id)]
+        num_blocks = int(len(state.block_token_starts))
+        score_result = self.score_blocks(layer_id, query, query_scale=query_scale)
+        priority_scores = score_result["priority_scores"]
+        upper_bounds = score_result["upper_bounds"]
+        mandatory_ids = _mandatory_block_ids(
+            num_blocks=num_blocks,
+            sink_blocks=int(self.config.full_attention_sink_block_count),
+            recent_blocks=int(self.config.full_attention_recent_block_count),
+        )
+        remaining_ids = [block_id for block_id in range(num_blocks) if block_id not in set(mandatory_ids)]
+        exploration_ids = _exploration_block_ids(
+            candidate_block_ids=remaining_ids,
+            priority_scores=priority_scores,
+            per_region=int(self.config.full_attention_exploration_blocks_per_region),
+        )
+        selected_ids: set[int] = set(mandatory_ids) | set(exploration_ids)
+        optional_ids: list[int] = []
+        if bool(self.config.enable_priority) and int(self.config.full_attention_optional_top_k) > 0:
+            optional_candidates = [block_id for block_id in remaining_ids if block_id not in selected_ids]
+            ranked_optional = sorted(
+                optional_candidates,
+                key=lambda block_id: float(priority_scores[int(block_id)].item()),
+                reverse=True,
+            )
+            optional_ids = [int(block_id) for block_id in ranked_optional[: int(self.config.full_attention_optional_top_k)]]
+            selected_ids.update(optional_ids)
+        else:
+            optional_ids = [block_id for block_id in remaining_ids if block_id not in selected_ids]
+            selected_ids.update(optional_ids)
+        selected_block_ids = sorted(selected_ids)
+        return {
+            "selected_block_ids": selected_block_ids,
+            "mandatory_block_ids": mandatory_ids,
+            "exploration_block_ids": exploration_ids,
+            "optional_block_ids": optional_ids,
+            "priority_scores": priority_scores,
+            "upper_bounds": upper_bounds,
+        }
+
+    def gather_selected_blocks(self, layer_id: int, block_ids: list[int]):
+        state = self.layers[int(layer_id)]
+        return _gather_selected_block_tensors(state=state, block_ids=block_ids)
+
+    def update_block_attention_ema(
+        self,
+        layer_id: int,
+        *,
+        selected_block_ids: list[int],
+        selected_block_token_counts: list[int],
+        attn_weights: Any,
+    ) -> None:
+        state = self.layers[int(layer_id)]
+        _update_block_prev_attention_ema(
+            state=state,
+            selected_block_ids=selected_block_ids,
+            selected_block_token_counts=selected_block_token_counts,
+            attn_weights=attn_weights,
+        )
 
     def decode_layer(self, layer_id: int, query: Any, *, query_scale: float):
         state = self.layers[int(layer_id)]
@@ -265,6 +557,12 @@ class PersistentFullAttentionState:
             "persistent_append_update_ms_total": float(self.telemetry.append_update_ms_total),
             "persistent_full_attention_append_counts_by_layer": {
                 str(layer_id): int(state.append_count) for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_block_count_by_layer": {
+                str(layer_id): int(len(state.block_token_starts)) for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_metadata_valid_blocks_by_layer": {
+                str(layer_id): int(np.count_nonzero(state.metadata_valid)) for layer_id, state in sorted(self.layers.items())
             },
             "persistent_full_attention_decode_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).decode_ms_total)
@@ -533,6 +831,30 @@ class PersistentHybridRuntimeState:
     def append_full_attention_step(self, layer_id: int, key_step: Any, value_step: Any, token_index: int) -> None:
         self.full_attention.append_step(layer_id, key_step, value_step, token_index)
 
+    def score_full_attention_blocks(self, layer_id: int, query: Any, *, query_scale: float) -> dict[str, Any]:
+        return self.full_attention.score_blocks(layer_id, query, query_scale=query_scale)
+
+    def select_full_attention_blocks(self, layer_id: int, query: Any, *, query_scale: float) -> dict[str, Any]:
+        return self.full_attention.select_blocks(layer_id, query, query_scale=query_scale)
+
+    def gather_full_attention_selected_blocks(self, layer_id: int, block_ids: list[int]):
+        return self.full_attention.gather_selected_blocks(layer_id, block_ids)
+
+    def update_full_attention_block_attention_ema(
+        self,
+        layer_id: int,
+        *,
+        selected_block_ids: list[int],
+        selected_block_token_counts: list[int],
+        attn_weights: Any,
+    ) -> None:
+        self.full_attention.update_block_attention_ema(
+            layer_id,
+            selected_block_ids=selected_block_ids,
+            selected_block_token_counts=selected_block_token_counts,
+            attn_weights=attn_weights,
+        )
+
     def sync_linear_layer_into_cache(self, cache_params: Any, layer_id: int) -> None:
         self.linear_attention.sync_layer_into_cache(cache_params, layer_id)
 
@@ -569,6 +891,9 @@ class PersistentHybridRuntimeState:
                 "persistent_runtime_enable_linear_attention_persistent_compute": bool(
                     self.config.enable_linear_attention_persistent_compute
                 ),
+                "persistent_runtime_enable_priority": bool(self.config.enable_priority),
+                "persistent_runtime_enable_early_exit": bool(self.config.enable_early_exit),
+                "persistent_runtime_enable_compression": bool(self.config.enable_compression),
             }
         )
         result.update(self.full_attention.summary())

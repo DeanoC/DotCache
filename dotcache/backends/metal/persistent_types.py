@@ -14,6 +14,10 @@ class PersistentServingConfig:
     enable_early_exit: bool = False
     enable_compression: bool = False
     fp32_accumulation: bool = True
+    full_attention_sink_block_count: int = 1
+    full_attention_recent_block_count: int = 1
+    full_attention_exploration_blocks_per_region: int = 1
+    full_attention_optional_top_k: int = 0
 
 
 @dataclass(slots=True)
@@ -47,6 +51,12 @@ class PersistentFullAttentionLayerState:
     value_cache: Any
     block_token_starts: Any
     block_token_counts: Any
+    block_k_center: Any
+    block_k_radius: Any
+    block_v_norm_max: Any
+    block_prev_attention_ema: Any
+    block_region_ids: Any
+    block_k_comp_error: Any
     metadata_valid: Any
     append_count: int = 0
 

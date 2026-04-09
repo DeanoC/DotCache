@@ -12,7 +12,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Sequence
 
-from ..backends.metal import PersistentHybridRuntimeState, PersistentServingConfig
+from ..backends.metal import PersistentFullAttentionState, PersistentHybridRuntimeState, PersistentServingConfig
 from ..config import DotCacheConfig
 from ..decode_reference import decode_page
 from ..encode import encode_page
@@ -2337,9 +2337,21 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         self.adapter.persistent_append_runtime_ms_total += append_ms
         self.adapter._record_layer_timing(self.adapter.persistent_append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
 
-        layer_state = runtime_state.full_attention.layers[self.layer_idx]
-        full_key_states = layer_state.key_cache.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
-        full_value_states = layer_state.value_cache.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
+        selection = runtime_state.select_full_attention_blocks(
+            self.layer_idx,
+            query_step,
+            query_scale=float(self.base_attention.scaling),
+        )
+        selected_block_ids = selection["selected_block_ids"]
+        selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
+            self.layer_idx,
+            selected_block_ids,
+        )
+        selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
+        full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
+        full_key_states = selected_key_states.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
+        full_value_states = selected_value_states.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
+        selected_attention_mask = attention_mask if selected_token_count == full_token_count else None
         attention_interface = qwen35_mod.ALL_ATTENTION_FUNCTIONS.get_interface(
             self.base_attention.config._attn_implementation,
             qwen35_mod.eager_attention_forward,
@@ -2350,7 +2362,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 query_states,
                 full_key_states,
                 full_value_states,
-                attention_mask,
+                selected_attention_mask,
                 dropout=0.0 if not self.training else self.base_attention.attention_dropout,
                 scaling=self.base_attention.scaling,
                 **kwargs,
@@ -2358,6 +2370,12 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             device=hidden_states.device,
         )
         attn_output, _attn_weights = attention_result
+        runtime_state.update_full_attention_block_attention_ema(
+            self.layer_idx,
+            selected_block_ids=selected_block_ids,
+            selected_block_token_counts=selected_block_token_counts,
+            attn_weights=_attn_weights,
+        )
         context_states = attn_output.reshape(*input_shape, -1).contiguous()
         runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
         runtime_state.full_attention.telemetry.require_layer(self.layer_idx).decode_ms_total += float(decode_ms)
@@ -3402,6 +3420,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         decode_steps: int = 4,
         profile_backend: bool = False,
         multimodal_inputs: Any | None = None,
+        persistent_serving_config: PersistentServingConfig | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_persistent_serving_harness(
             self.model,
@@ -3413,6 +3432,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             decode_steps=decode_steps,
             profile_backend=profile_backend,
             multimodal_inputs=multimodal_inputs,
+            persistent_serving_config=persistent_serving_config,
         )
 
     def run_attention_subset_dotcache_serving_quality(
@@ -7325,6 +7345,116 @@ def export_qwen35_attention_subset_paged_attention_snapshot_corpus(
     return manifest
 
 
+def _flatten_paged_attention_snapshot_history(snapshot: Any) -> tuple[np.ndarray, np.ndarray]:
+    total_tokens = int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]) if int(snapshot.num_pages) > 0 else 0
+    key_history = np.zeros((total_tokens, int(snapshot.head_dim)), dtype=np.float32)
+    value_history = np.zeros_like(key_history)
+    for page_id in range(int(snapshot.num_pages)):
+        token_start = int(snapshot.page_token_starts[page_id])
+        token_count = int(snapshot.page_token_counts[page_id])
+        if token_count <= 0:
+            continue
+        token_end = token_start + token_count
+        key_history[token_start:token_end] = np.asarray(snapshot.k_pages[page_id, :token_count], dtype=np.float32)
+        value_history[token_start:token_end] = np.asarray(snapshot.v_pages[page_id, :token_count], dtype=np.float32)
+    return key_history, value_history
+
+
+def _seed_full_attention_prev_attention_ema_from_snapshot(
+    state: PersistentFullAttentionState,
+    *,
+    layer_id: int,
+    snapshot: Any,
+) -> None:
+    layer_state = state.layers[int(layer_id)]
+    if int(snapshot.num_pages) == 0:
+        return
+    page_ids_by_token = np.zeros((int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),), dtype=np.int64)
+    for page_id in range(int(snapshot.num_pages)):
+        token_start = int(snapshot.page_token_starts[page_id])
+        token_count = int(snapshot.page_token_counts[page_id])
+        page_ids_by_token[token_start : token_start + token_count] = int(page_id)
+    layer_state.block_prev_attention_ema.zero_()
+    for block_id in range(int(len(layer_state.block_token_starts))):
+        token_start = int(layer_state.block_token_starts[block_id])
+        token_count = int(layer_state.block_token_counts[block_id])
+        if token_count <= 0:
+            continue
+        token_end = token_start + token_count
+        token_page_ids = page_ids_by_token[token_start:token_end]
+        block_mass = 0.0
+        for page_id in np.unique(token_page_ids):
+            overlap = int(np.count_nonzero(token_page_ids == int(page_id)))
+            page_token_count = max(int(snapshot.page_token_counts[int(page_id)]), 1)
+            block_mass += float(snapshot.prev_attn[int(page_id)]) * (float(overlap) / float(page_token_count))
+        layer_state.block_prev_attention_ema[block_id] = float(block_mass)
+
+
+def run_qwen35_persistent_full_attention_snapshot_comparison(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    query_scale: float | None = None,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    key_history, value_history = _flatten_paged_attention_snapshot_history(snapshot)
+    prefill_tensors = {
+        0: (
+            key_history[None, None, :, :],
+            value_history[None, None, :, :],
+        )
+    }
+    runtime = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=resolved_config,
+    )
+    _seed_full_attention_prev_attention_ema_from_snapshot(runtime, layer_id=0, snapshot=snapshot)
+    query_tensor = torch.as_tensor(np.asarray(snapshot.query, dtype=np.float32)[None, :], dtype=torch.float32)
+    resolved_query_scale = float(query_scale) if query_scale is not None else float(1.0 / math.sqrt(int(snapshot.head_dim)))
+    selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    selected_block_ids = selection["selected_block_ids"]
+    selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
+    full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
+    selected_output = runtime.executor.decode_exact(
+        query=query_tensor,
+        key_cache=selected_keys,
+        value_cache=selected_values,
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        query_scale=resolved_query_scale,
+        block_size=int(resolved_config.block_size),
+    )
+    abs_error = (selected_output - full_output).abs()
+    rel_error = abs_error / full_output.abs().clamp_min(1e-8)
+    return {
+        "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
+        "head_dim": int(snapshot.head_dim),
+        "num_pages": int(snapshot.num_pages),
+        "tokens_per_page": int(snapshot.tokens_per_page),
+        "total_tokens": int(key_history.shape[0]),
+        "query_scale": float(resolved_query_scale),
+        "selected_block_ids": [int(block_id) for block_id in selected_block_ids],
+        "mandatory_block_ids": [int(block_id) for block_id in selection["mandatory_block_ids"]],
+        "exploration_block_ids": [int(block_id) for block_id in selection["exploration_block_ids"]],
+        "optional_block_ids": [int(block_id) for block_id in selection["optional_block_ids"]],
+        "selected_block_count": int(len(selected_block_ids)),
+        "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
+        "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+        "full_token_count": int(key_history.shape[0]),
+        "max_abs_error": float(abs_error.max().item()),
+        "max_rel_error": float(rel_error.max().item()),
+        "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
+        "persistent_runtime_optional_top_k": int(resolved_config.full_attention_optional_top_k),
+        "persistent_runtime_sink_block_count": int(resolved_config.full_attention_sink_block_count),
+        "persistent_runtime_recent_block_count": int(resolved_config.full_attention_recent_block_count),
+        "persistent_runtime_exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
+    }
+
+
 def export_attention_subset_page_traces(
     per_step_records: list[list[LlamaReplayRecord]],
     *,
@@ -8193,7 +8323,10 @@ def run_qwen35_attention_subset_persistent_serving_harness(
     decode_steps: int = 4,
     profile_backend: bool = False,
     multimodal_inputs: Any | None = None,
+    persistent_serving_config: PersistentServingConfig | None = None,
 ) -> dict[str, Any]:
+    if persistent_serving_config is not None:
+        adapter.persistent_serving_config = persistent_serving_config
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
         model,
         adapter,
@@ -10197,6 +10330,7 @@ __all__ = [
     "build_qwen35_attention_subset_paged_attention_snapshot",
     "export_qwen35_attention_subset_paged_attention_snapshot",
     "export_qwen35_attention_subset_paged_attention_snapshot_corpus",
+    "run_qwen35_persistent_full_attention_snapshot_comparison",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
