@@ -71,3 +71,23 @@ def test_statecache_loss_summary_exposes_key_bytes() -> None:
     assert summary["statecache_recurrent_state_bytes"] == 120
     assert summary["recurrent_mode_overrides"] == {"0": "M3"}
     assert summary["conv_mode_overrides"] == {"1": "M3"}
+
+
+def test_localization_error_keeps_loss_summary() -> None:
+    mode_summary = {
+        "status": "ok",
+        "loss": {"scope": "conv_plus_recurrent", "teacher_forced_loss": 0.1},
+    }
+
+    updated = suite._record_statecache_localization_error(
+        mode_summary=mode_summary,
+        case_id="128:16",
+        scope="conv_plus_recurrent",
+        exc=RuntimeError("localization blew up"),
+    )
+
+    assert updated["loss"] == mode_summary["loss"]
+    assert updated["localization"]["status"] == "error"
+    assert updated["localization"]["stage"] == "localization"
+    assert updated["localization"]["scope"] == "conv_plus_recurrent"
+    assert updated["localization"]["case_id"] == "128:16"

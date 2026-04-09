@@ -176,7 +176,7 @@ def _run_dense_case(
     )
 
 
-def _run_statecache_case(
+def _run_statecache_loss_case(
     harness: Qwen35DeltaNetStateHarness,
     *,
     prompt_unit: str,
@@ -192,8 +192,7 @@ def _run_statecache_case(
     renorm_interval: int,
     recurrent_mode_overrides: dict[int, str],
     conv_mode_overrides: dict[int, str],
-    with_localization: bool,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
+) -> dict[str, Any]:
     sequence_length = int(prefix_length + eval_steps)
     input_ids, attention_mask = _build_exact_length_inputs(
         tokenizer=harness.tokenizer,
@@ -217,28 +216,52 @@ def _run_statecache_case(
         recurrent_mode_overrides=recurrent_mode_overrides,
         conv_mode_overrides=conv_mode_overrides,
     )
-    localization_result = None
-    if with_localization:
-        localization_result = run_qwen35_deltanet_statecache_localization_harness(
-            harness.model,
-            harness.adapter,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            tokenizer=harness.tokenizer,
-            prefix_length=prefix_length,
-            eval_steps=eval_steps,
-            group_size=group_size,
-            bits=bits,
-            layer_bits_overrides=layer_bits_overrides,
-            statecache_scope=statecache_scope,
-            conv_bits=conv_bits,
-            conv_layer_bits_overrides=conv_layer_bits_overrides,
-            state_stage=state_stage,
-            renorm_interval=renorm_interval,
-            recurrent_mode_overrides=recurrent_mode_overrides,
-            conv_mode_overrides=conv_mode_overrides,
-        )
-    return loss_result, localization_result
+    return loss_result
+
+
+def _run_statecache_localization_case(
+    harness: Qwen35DeltaNetStateHarness,
+    *,
+    prompt_unit: str,
+    prefix_length: int,
+    eval_steps: int,
+    group_size: int,
+    bits: int,
+    layer_bits_overrides: dict[int, int],
+    statecache_scope: str,
+    conv_bits: int | None,
+    conv_layer_bits_overrides: dict[int, int],
+    state_stage: str,
+    renorm_interval: int,
+    recurrent_mode_overrides: dict[int, str],
+    conv_mode_overrides: dict[int, str],
+) -> dict[str, Any]:
+    sequence_length = int(prefix_length + eval_steps)
+    input_ids, attention_mask = _build_exact_length_inputs(
+        tokenizer=harness.tokenizer,
+        device=harness.adapter.device,
+        prompt_unit=prompt_unit,
+        sequence_length=sequence_length,
+    )
+    return run_qwen35_deltanet_statecache_localization_harness(
+        harness.model,
+        harness.adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=harness.tokenizer,
+        prefix_length=prefix_length,
+        eval_steps=eval_steps,
+        group_size=group_size,
+        bits=bits,
+        layer_bits_overrides=layer_bits_overrides,
+        statecache_scope=statecache_scope,
+        conv_bits=conv_bits,
+        conv_layer_bits_overrides=conv_layer_bits_overrides,
+        state_stage=state_stage,
+        renorm_interval=renorm_interval,
+        recurrent_mode_overrides=recurrent_mode_overrides,
+        conv_mode_overrides=conv_mode_overrides,
+    )
 
 
 def _record_error(
@@ -256,6 +279,18 @@ def _record_error(
         "error_type": type(exc).__name__,
         "error_message": str(exc),
     }
+
+
+def _record_statecache_localization_error(
+    *,
+    mode_summary: dict[str, Any],
+    case_id: str,
+    scope: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    updated = dict(mode_summary)
+    updated["localization"] = _record_error(case_id=case_id, scope=scope, stage="localization", exc=exc)
+    return updated
 
 
 def main() -> None:
@@ -322,7 +357,7 @@ def main() -> None:
         }
         for scope in args.statecache_scopes:
             try:
-                loss_result, localization_result = _run_statecache_case(
+                loss_result = _run_statecache_loss_case(
                     statecache_harness,
                     prompt_unit=args.prompt_unit,
                     prefix_length=prefix_length,
@@ -337,7 +372,6 @@ def main() -> None:
                     renorm_interval=args.renorm_interval,
                     recurrent_mode_overrides=recurrent_mode_overrides,
                     conv_mode_overrides=conv_mode_overrides,
-                    with_localization=scope in localization_scopes,
                 )
             except Exception as exc:  # pragma: no cover - benchmark failure path
                 if not args.continue_on_error:
@@ -348,7 +382,34 @@ def main() -> None:
                 "status": "ok",
                 "loss": _statecache_loss_summary(loss_result),
             }
-            if localization_result is not None:
+            if scope in localization_scopes:
+                try:
+                    localization_result = _run_statecache_localization_case(
+                        statecache_harness,
+                        prompt_unit=args.prompt_unit,
+                        prefix_length=prefix_length,
+                        eval_steps=eval_steps,
+                        group_size=args.group_size,
+                        bits=args.bits,
+                        layer_bits_overrides=layer_bits_overrides,
+                        statecache_scope=scope,
+                        conv_bits=args.conv_bits,
+                        conv_layer_bits_overrides=conv_layer_bits_overrides,
+                        state_stage=args.state_stage,
+                        renorm_interval=args.renorm_interval,
+                        recurrent_mode_overrides=recurrent_mode_overrides,
+                        conv_mode_overrides=conv_mode_overrides,
+                    )
+                except Exception as exc:  # pragma: no cover - benchmark failure path
+                    if not args.continue_on_error:
+                        raise
+                    record["statecache"][scope] = _record_statecache_localization_error(
+                        mode_summary=mode_summary,
+                        case_id=case_id,
+                        scope=scope,
+                        exc=exc,
+                    )
+                    continue
                 mode_summary["localization"] = _statecache_localization_summary(localization_result)
             record["statecache"][scope] = mode_summary
         records.append(record)
