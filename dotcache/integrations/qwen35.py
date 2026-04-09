@@ -2976,6 +2976,36 @@ class Qwen35AttentionSubsetHarness:
             multimodal_inputs=multimodal_inputs,
         )
 
+    def capture_attention_subset_paged_attention_snapshot(
+        self,
+        *,
+        output_path: str | Path,
+        layer_id: int,
+        kv_head_id: int = 0,
+        step_index: int = -1,
+        tokens_per_page: int = 256,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+            self.model,
+            self.adapter,
+            output_path=output_path,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            step_index=step_index,
+            tokens_per_page=tokens_per_page,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
     def run_prefill_ablation(
         self,
         dotcache_config: DotCacheConfig,
@@ -6695,6 +6725,214 @@ def build_attention_subset_prefill_page_trace_records(
     )
 
 
+def _resolve_attention_subset_capture_step_index(
+    layer_records: list[LlamaReplayRecord],
+    *,
+    step_index: int,
+) -> tuple[int, LlamaReplayRecord]:
+    if not layer_records:
+        raise ValueError("no attention-subset replay records are available for the requested layer")
+    record_count = len(layer_records)
+    resolved_index = int(step_index)
+    if resolved_index < 0:
+        resolved_index = record_count + resolved_index
+    if resolved_index < 0 or resolved_index >= record_count:
+        raise ValueError(
+            f"requested step_index={step_index} is out of range for {record_count} captured decode steps"
+        )
+    return resolved_index, layer_records[resolved_index]
+
+
+def _build_paged_attention_snapshot_from_history(
+    *,
+    query: np.ndarray,
+    key_history: np.ndarray,
+    value_history: np.ndarray,
+    current_token_index: int,
+    tokens_per_page: int,
+    source: str,
+):
+    from ..backends.mps_persistent_experimental import PagedAttentionSnapshot
+
+    query_np = np.asarray(query, dtype=np.float32)
+    key_history_np = np.asarray(key_history, dtype=np.float32)
+    value_history_np = np.asarray(value_history, dtype=np.float32)
+    if query_np.ndim != 1:
+        raise ValueError("query must have shape [head_dim]")
+    if key_history_np.ndim != 2 or value_history_np.ndim != 2:
+        raise ValueError("key_history and value_history must have shape [seq_len, head_dim]")
+    if key_history_np.shape != value_history_np.shape:
+        raise ValueError("key_history and value_history must have identical shapes")
+    if key_history_np.shape[1] != query_np.shape[0]:
+        raise ValueError("query head_dim must match key/value history head_dim")
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+    seq_len = int(key_history_np.shape[0])
+    if seq_len <= 0:
+        raise ValueError("key/value history must contain at least one token")
+
+    page_starts = list(range(0, seq_len, int(tokens_per_page)))
+    page_count = len(page_starts)
+    k_pages = np.zeros((page_count, int(tokens_per_page), int(query_np.shape[0])), dtype=np.float32)
+    v_pages = np.zeros_like(k_pages)
+    page_token_counts = np.zeros(page_count, dtype=np.int64)
+    page_token_starts = np.asarray(page_starts, dtype=np.int64)
+    page_k_mean = np.zeros((page_count, int(query_np.shape[0])), dtype=np.float32)
+
+    logits = (key_history_np @ query_np).astype(np.float32, copy=False)
+    shifted = logits - np.max(logits)
+    weights = np.exp(shifted).astype(np.float32, copy=False)
+    weights = weights / np.sum(weights)
+    prev_attn = np.zeros(page_count, dtype=np.float32)
+    distance = np.zeros(page_count, dtype=np.float32)
+
+    for page_id, token_start in enumerate(page_starts):
+        token_end = min(token_start + int(tokens_per_page), seq_len)
+        token_count = token_end - token_start
+        page_token_counts[page_id] = int(token_count)
+        k_pages[page_id, :token_count, :] = key_history_np[token_start:token_end]
+        v_pages[page_id, :token_count, :] = value_history_np[token_start:token_end]
+        page_k_mean[page_id] = key_history_np[token_start:token_end].mean(axis=0, dtype=np.float32)
+        prev_attn[page_id] = float(np.sum(weights[token_start:token_end], dtype=np.float32))
+        distance[page_id] = float(max(int(current_token_index) - int(token_end) + 1, 0))
+
+    return PagedAttentionSnapshot(
+        source=source,
+        query=query_np,
+        page_k_mean=page_k_mean,
+        prev_attn=prev_attn,
+        distance=distance,
+        k_pages=k_pages,
+        v_pages=v_pages,
+        page_token_counts=page_token_counts,
+        page_token_starts=page_token_starts,
+    )
+
+
+def build_qwen35_attention_subset_paged_attention_snapshot(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+):
+    if int(layer_id) not in prefill_tensors:
+        raise ValueError(f"requested attention layer {layer_id} is missing prefill tensors")
+    layer_keys, layer_values = prefill_tensors[int(layer_id)]
+    key_array = _tensor_to_float32_numpy(layer_keys)
+    value_array = _tensor_to_float32_numpy(layer_values)
+    if key_array.ndim != 4 or value_array.ndim != 4 or key_array.shape[0] != 1 or value_array.shape[0] != 1:
+        raise ValueError("prefill tensors must have shape [1, kv_heads, seq_len, head_dim]")
+    if key_array.shape != value_array.shape:
+        raise ValueError("prefill key/value tensors must have identical shapes")
+    kv_head_count = int(key_array.shape[1])
+    resolved_kv_head_id = int(kv_head_id)
+    if resolved_kv_head_id < 0 or resolved_kv_head_id >= kv_head_count:
+        raise ValueError(f"requested kv_head_id={kv_head_id} is out of range for {kv_head_count} KV heads")
+
+    layer_records = [
+        record
+        for step_records in per_step_records
+        for record in step_records
+        if int(record.layer_id) == int(layer_id)
+    ]
+    layer_records.sort(key=lambda record: int(record.step_index))
+    resolved_step_index, selected_record = _resolve_attention_subset_capture_step_index(
+        layer_records,
+        step_index=step_index,
+    )
+    if any(int(record.key_states.shape[0]) != kv_head_count for record in layer_records):
+        raise ValueError("captured decode records do not match the prefill KV head count")
+
+    kv_queries = _aggregate_query_states_by_kv_head(
+        selected_record.query_states,
+        q_head_to_kv_head,
+        num_key_value_heads=kv_head_count,
+    )
+    query = np.asarray(kv_queries[resolved_kv_head_id], dtype=np.float32)
+
+    decode_prefix = layer_records[: resolved_step_index + 1]
+    decode_key_history = np.stack(
+        [np.asarray(record.key_states[resolved_kv_head_id], dtype=np.float32) for record in decode_prefix],
+        axis=0,
+    )
+    decode_value_history = np.stack(
+        [np.asarray(record.value_states[resolved_kv_head_id], dtype=np.float32) for record in decode_prefix],
+        axis=0,
+    )
+    key_history = np.concatenate(
+        [np.asarray(key_array[0, resolved_kv_head_id], dtype=np.float32), decode_key_history],
+        axis=0,
+    )
+    value_history = np.concatenate(
+        [np.asarray(value_array[0, resolved_kv_head_id], dtype=np.float32), decode_value_history],
+        axis=0,
+    )
+    return _build_paged_attention_snapshot_from_history(
+        query=query,
+        key_history=key_history,
+        value_history=value_history,
+        current_token_index=int(selected_record.token_index),
+        tokens_per_page=tokens_per_page,
+        source=source,
+    )
+
+
+def export_qwen35_attention_subset_paged_attention_snapshot(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_path: str | Path,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import save_paged_attention_snapshot
+
+    target = Path(output_path)
+    snapshot = build_qwen35_attention_subset_paged_attention_snapshot(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=q_head_to_kv_head,
+        layer_id=layer_id,
+        kv_head_id=kv_head_id,
+        step_index=step_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+    )
+    save_paged_attention_snapshot(target, snapshot)
+
+    layer_records = [
+        record
+        for step_records in per_step_records
+        for record in step_records
+        if int(record.layer_id) == int(layer_id)
+    ]
+    layer_records.sort(key=lambda record: int(record.step_index))
+    resolved_step_index, selected_record = _resolve_attention_subset_capture_step_index(
+        layer_records,
+        step_index=step_index,
+    )
+    return {
+        "paged_attention_snapshot_path": str(target),
+        "paged_attention_snapshot_layer_id": int(layer_id),
+        "paged_attention_snapshot_kv_head_id": int(kv_head_id),
+        "paged_attention_snapshot_step_index": int(resolved_step_index),
+        "paged_attention_snapshot_token_index": int(selected_record.token_index),
+        "paged_attention_snapshot_tokens_per_page": int(tokens_per_page),
+        "paged_attention_snapshot_num_pages": int(snapshot.num_pages),
+        "paged_attention_snapshot_total_tokens": int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),
+        "paged_attention_snapshot_source": str(source),
+    }
+
+
 def export_attention_subset_page_traces(
     per_step_records: list[list[LlamaReplayRecord]],
     *,
@@ -6813,6 +7051,65 @@ def run_qwen35_attention_subset_page_trace_capture_harness(
         )
     )
     result["runtime_mode"] = "dense_attention_subset_page_trace_capture"
+    return result
+
+
+def run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    output_path: str | Path,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    if int(decode_steps) <= 0:
+        raise ValueError("paged-attention snapshot capture requires decode_steps > 0")
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        export_qwen35_attention_subset_paged_attention_snapshot(
+            dense_capture["prefill_tensors"],
+            dense_capture["capture_records"],
+            q_head_to_kv_head=adapter.q_head_to_kv_head,
+            output_path=output_path,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            step_index=step_index,
+            tokens_per_page=tokens_per_page,
+        )
+    )
+    result["runtime_mode"] = "dense_attention_subset_paged_attention_snapshot_capture"
     return result
 
 
@@ -9253,6 +9550,8 @@ __all__ = [
     "inspect_qwen35_deltanet_state",
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
+    "build_qwen35_attention_subset_paged_attention_snapshot",
+    "export_qwen35_attention_subset_paged_attention_snapshot",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
@@ -9262,6 +9561,7 @@ __all__ = [
     "run_qwen35_attention_subset_dotcache_serving_quality_harness",
     "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",
+    "run_qwen35_attention_subset_paged_attention_snapshot_capture_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",
     "run_qwen35_deltanet_statecache_localization_harness",

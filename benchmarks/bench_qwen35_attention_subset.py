@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import torch
 from transformers import AutoConfig
@@ -21,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-prompt-lengths", type=int, nargs="+", default=[])
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--prompt-unit", default="Cache locality matters for fast decoding.")
+    parser.add_argument("--export-paged-attention-snapshot-dir", default=None)
+    parser.add_argument("--export-paged-attention-layer-id", type=int, default=0)
+    parser.add_argument("--export-paged-attention-kv-head-id", type=int, default=0)
+    parser.add_argument("--export-paged-attention-step-index", type=int, default=-1)
+    parser.add_argument("--export-paged-attention-tokens-per-page", type=int, default=256)
     return parser.parse_args()
 
 
@@ -61,13 +67,41 @@ def _run_case(
     max_new_tokens: int,
     base_record: dict[str, object],
     continue_on_error: bool,
+    paged_attention_snapshot_dir: str | None,
+    paged_attention_layer_id: int,
+    paged_attention_kv_head_id: int,
+    paged_attention_step_index: int,
+    paged_attention_tokens_per_page: int,
 ) -> None:
     try:
-        record = harness.run_attention_subset_replay(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            decode_steps=max_new_tokens,
-        )
+        if paged_attention_snapshot_dir:
+            prompt_length = int(input_ids.shape[1])
+            prompt_tag = (
+                f"repeat{int(base_record['repeat_count'])}"
+                if "repeat_count" in base_record
+                else f"prompt{prompt_length}"
+            )
+            output_path = (
+                Path(paged_attention_snapshot_dir)
+                / f"qwen35_attention_subset_{prompt_tag}_layer{int(paged_attention_layer_id):02d}"
+                f"_kv{int(paged_attention_kv_head_id):02d}_step{int(paged_attention_step_index):02d}.npz"
+            )
+            record = harness.capture_attention_subset_paged_attention_snapshot(
+                output_path=output_path,
+                layer_id=paged_attention_layer_id,
+                kv_head_id=paged_attention_kv_head_id,
+                step_index=paged_attention_step_index,
+                tokens_per_page=paged_attention_tokens_per_page,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+            )
+        else:
+            record = harness.run_attention_subset_replay(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=max_new_tokens,
+            )
     except Exception as exc:  # pragma: no cover - benchmark failure path
         if not continue_on_error:
             raise
@@ -126,6 +160,11 @@ def main() -> None:
                 "hybrid_family": "qwen3_5",
             },
             continue_on_error=args.continue_on_error,
+            paged_attention_snapshot_dir=args.export_paged_attention_snapshot_dir,
+            paged_attention_layer_id=args.export_paged_attention_layer_id,
+            paged_attention_kv_head_id=args.export_paged_attention_kv_head_id,
+            paged_attention_step_index=args.export_paged_attention_step_index,
+            paged_attention_tokens_per_page=args.export_paged_attention_tokens_per_page,
         )
 
     for prompt_length in sorted(set(length for length in args.target_prompt_lengths if length > 0)):
@@ -154,6 +193,11 @@ def main() -> None:
                 "hybrid_family": "qwen3_5",
             },
             continue_on_error=args.continue_on_error,
+            paged_attention_snapshot_dir=args.export_paged_attention_snapshot_dir,
+            paged_attention_layer_id=args.export_paged_attention_layer_id,
+            paged_attention_kv_head_id=args.export_paged_attention_kv_head_id,
+            paged_attention_step_index=args.export_paged_attention_step_index,
+            paged_attention_tokens_per_page=args.export_paged_attention_tokens_per_page,
         )
 
 

@@ -9,6 +9,8 @@ transformers = pytest.importorskip("transformers")
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
 from dotcache.config import DotCacheConfig
+from dotcache.backends.mps_persistent_experimental import load_paged_attention_snapshot
+from dotcache.integrations.llama import LlamaReplayRecord
 from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,
     Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -18,6 +20,7 @@ from dotcache.integrations.qwen35 import (
     Qwen35DeltaNetStateHarness,
     Qwen35DeltaNetStateModelAdapter,
     build_qwen35_deltanet_state_sample,
+    build_qwen35_attention_subset_paged_attention_snapshot,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
     inspect_qwen35_deltanet_state,
@@ -34,6 +37,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_serving_harness,
     run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
+    run_qwen35_attention_subset_paged_attention_snapshot_capture_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
@@ -1535,6 +1539,115 @@ def test_qwen35_attention_subset_harness_tokenizes_and_runs() -> None:
         decode_steps=1,
     )
     assert result["attention_subset_capture_layer_count"] == 1
+
+
+def test_build_qwen35_attention_subset_paged_attention_snapshot_from_records() -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]]]], dtype=torch.float32),
+            torch.tensor([[[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]]]], dtype=torch.float32),
+        )
+    }
+    per_step_records = [
+        [
+            LlamaReplayRecord(
+                step_index=0,
+                layer_id=3,
+                token_index=2,
+                query_states=np.asarray([[1.0, 0.0, 0.0, 0.0], [3.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[2.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[1.0, 1.0, 1.0, 1.0]], dtype=np.float32),
+                context_states=np.zeros(8, dtype=np.float32),
+                output_states=np.zeros(4, dtype=np.float32),
+            )
+        ],
+        [
+            LlamaReplayRecord(
+                step_index=1,
+                layer_id=3,
+                token_index=3,
+                query_states=np.asarray([[2.0, 0.0, 0.0, 0.0], [4.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[4.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[2.0, 2.0, 2.0, 2.0]], dtype=np.float32),
+                context_states=np.zeros(8, dtype=np.float32),
+                output_states=np.zeros(4, dtype=np.float32),
+            )
+        ],
+    ]
+
+    snapshot = build_qwen35_attention_subset_paged_attention_snapshot(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        layer_id=3,
+        kv_head_id=0,
+        step_index=-1,
+        tokens_per_page=2,
+    )
+
+    assert snapshot.query.shape == (4,)
+    assert float(snapshot.query[0]) == 3.0
+    assert snapshot.num_pages == 2
+    assert int(snapshot.page_token_counts.sum()) == 4
+    assert np.isclose(float(np.sum(snapshot.prev_attn)), 1.0)
+    assert np.all(snapshot.distance >= 0.0)
+
+
+def test_qwen35_attention_subset_paged_attention_snapshot_capture_harness_exports_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset", return_tensors="pt")
+    output_path = tmp_path / "attention_subset_snapshot.npz"
+
+    result = run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_path=output_path,
+        layer_id=3,
+        kv_head_id=0,
+        tokens_per_page=2,
+    )
+
+    snapshot = load_paged_attention_snapshot(output_path)
+
+    assert result["runtime_mode"] == "dense_attention_subset_paged_attention_snapshot_capture"
+    assert result["paged_attention_snapshot_layer_id"] == 3
+    assert result["paged_attention_snapshot_kv_head_id"] == 0
+    assert result["paged_attention_snapshot_num_pages"] == snapshot.num_pages
+    assert output_path.exists()
+    assert snapshot.query.ndim == 1
+    assert snapshot.query.shape[0] == snapshot.k_pages.shape[2]
+    assert int(snapshot.page_token_counts.sum()) == int(encoded["input_ids"].shape[1]) + 2
+
+
+def test_qwen35_attention_subset_harness_can_export_paged_attention_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetModelAdapter(model=model),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello")
+    output_path = tmp_path / "harness_snapshot.npz"
+
+    result = harness.capture_attention_subset_paged_attention_snapshot(
+        output_path=output_path,
+        layer_id=3,
+        kv_head_id=0,
+        tokens_per_page=2,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+
+    assert result["paged_attention_snapshot_path"] == str(output_path)
+    assert output_path.exists()
 
 
 def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:
