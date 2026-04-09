@@ -32,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--far-quota", type=int, default=0)
     parser.add_argument("--mid-quota", type=int, default=0)
     parser.add_argument("--near-quota", type=int, default=0)
+    parser.add_argument("--diversity-weight", type=float, default=0.0)
+    parser.add_argument("--diversity-radius", type=int, default=0)
+    parser.add_argument("--diversity-requires-history", action="store_true")
     parser.add_argument("--priority-prev-weight", type=float, default=1.0)
     parser.add_argument("--priority-recency-weight", type=float, default=0.05)
     parser.add_argument("--priority-recency-decay-blocks", type=float, default=32.0)
@@ -186,6 +189,9 @@ def main() -> None:
         full_attention_optional_far_quota=int(args.far_quota),
         full_attention_optional_mid_quota=int(args.mid_quota),
         full_attention_optional_near_quota=int(args.near_quota),
+        full_attention_optional_diversity_weight=float(args.diversity_weight),
+        full_attention_optional_diversity_radius=int(args.diversity_radius),
+        full_attention_optional_diversity_requires_history=bool(args.diversity_requires_history),
         full_attention_priority_prev_attention_weight=float(args.priority_prev_weight),
         full_attention_priority_recency_weight=float(args.priority_recency_weight),
         full_attention_priority_recency_decay_blocks=float(args.priority_recency_decay_blocks),
@@ -237,6 +243,9 @@ def main() -> None:
             "optional_far_quota": int(config.full_attention_optional_far_quota),
             "optional_mid_quota": int(config.full_attention_optional_mid_quota),
             "optional_near_quota": int(config.full_attention_optional_near_quota),
+            "optional_diversity_weight": float(config.full_attention_optional_diversity_weight),
+            "optional_diversity_radius": int(config.full_attention_optional_diversity_radius),
+            "optional_diversity_requires_history": bool(config.full_attention_optional_diversity_requires_history),
             "priority_prev_weight": float(config.full_attention_priority_prev_attention_weight),
             "priority_recency_weight": float(config.full_attention_priority_recency_weight),
             "priority_recency_decay_blocks": float(config.full_attention_priority_recency_decay_blocks),

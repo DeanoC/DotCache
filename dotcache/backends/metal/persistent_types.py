@@ -24,6 +24,9 @@ class PersistentServingConfig:
     full_attention_optional_far_quota: int = 0
     full_attention_optional_mid_quota: int = 0
     full_attention_optional_near_quota: int = 0
+    full_attention_optional_diversity_weight: float = 0.0
+    full_attention_optional_diversity_radius: int = 0
+    full_attention_optional_diversity_requires_history: bool = False
     full_attention_priority_prev_attention_weight: float = 1.0
     full_attention_priority_recency_weight: float = 0.05
     full_attention_priority_recency_decay_blocks: float = 32.0

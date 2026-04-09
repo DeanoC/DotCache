@@ -1793,6 +1793,24 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     assert prioritized["prev_attention_transform"] == "sqrt"
     assert prioritized["shaped_prev_attention_nonzero_count"] > 0
 
+    history_gated = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+            full_attention_optional_diversity_weight=0.5,
+            full_attention_optional_diversity_radius=4,
+            full_attention_optional_diversity_requires_history=True,
+        ),
+    )
+    assert history_gated["history_snapshot_count"] == 0
+    assert history_gated["persistent_runtime_optional_diversity_weight"] == 0.0
+    assert history_gated["persistent_runtime_optional_diversity_radius"] == 0
+
     debug_payload = debug_qwen35_persistent_full_attention_snapshot_selection(
         capture["paged_attention_snapshot_path"],
         persistent_serving_config=PersistentServingConfig(

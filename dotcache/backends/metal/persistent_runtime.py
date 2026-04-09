@@ -328,6 +328,48 @@ def _rank_optional_block_ids(
     )
 
 
+def _select_diverse_block_ids(
+    *,
+    ranked_candidate_ids: list[int],
+    primary_scores: Any,
+    secondary_scores: Any,
+    count: int,
+    seed_block_ids: list[int],
+    diversity_weight: float,
+    diversity_radius: int,
+) -> list[int]:
+    if count <= 0 or not ranked_candidate_ids:
+        return []
+    if float(diversity_weight) <= 0.0 or int(diversity_radius) <= 0:
+        return [int(block_id) for block_id in ranked_candidate_ids[:count]]
+    selected: list[int] = []
+    selected_anchor_ids = [int(block_id) for block_id in seed_block_ids]
+    remaining = [int(block_id) for block_id in ranked_candidate_ids]
+    radius = max(int(diversity_radius), 1)
+
+    def _distance_penalty(block_id: int, anchor_ids: list[int]) -> float:
+        if not anchor_ids:
+            return 0.0
+        min_distance = min(abs(int(block_id) - int(anchor_id)) for anchor_id in anchor_ids)
+        if min_distance >= radius:
+            return 0.0
+        return float(radius - min_distance) / float(radius)
+
+    while remaining and len(selected) < int(count):
+        best_block_id = max(
+            remaining,
+            key=lambda block_id: (
+                float(primary_scores[int(block_id)].item())
+                - float(diversity_weight) * _distance_penalty(int(block_id), selected_anchor_ids + selected),
+                float(primary_scores[int(block_id)].item()),
+                float(secondary_scores[int(block_id)].item()),
+            ),
+        )
+        selected.append(int(best_block_id))
+        remaining.remove(int(best_block_id))
+    return selected
+
+
 def _select_optional_block_ids(
     *,
     candidate_block_ids: list[int],
@@ -340,6 +382,9 @@ def _select_optional_block_ids(
     far_quota: int,
     mid_quota: int,
     near_quota: int,
+    seed_block_ids: list[int],
+    diversity_weight: float,
+    diversity_radius: int,
 ) -> list[int]:
     if top_k <= 0 or not candidate_block_ids:
         return []
@@ -356,10 +401,26 @@ def _select_optional_block_ids(
         use_upper_bounds_first=False,
     )
     if bool(use_upper_bounds_first):
-        return [int(block_id) for block_id in ranked_by_upper[:top_k]]
+        return _select_diverse_block_ids(
+            ranked_candidate_ids=ranked_by_upper,
+            primary_scores=upper_bounds,
+            secondary_scores=priority_scores,
+            count=int(top_k),
+            seed_block_ids=seed_block_ids,
+            diversity_weight=float(diversity_weight),
+            diversity_radius=int(diversity_radius),
+        )
 
     reserved = max(0, min(int(upper_bound_quota), int(top_k), len(ranked_by_upper)))
-    selected: list[int] = [int(block_id) for block_id in ranked_by_upper[:reserved]]
+    selected: list[int] = _select_diverse_block_ids(
+        ranked_candidate_ids=ranked_by_upper,
+        primary_scores=upper_bounds,
+        secondary_scores=priority_scores,
+        count=reserved,
+        seed_block_ids=seed_block_ids,
+        diversity_weight=float(diversity_weight),
+        diversity_radius=int(diversity_radius),
+    )
     selected_set = set(selected)
     region_quotas = {
         0: max(0, int(far_quota)),
@@ -375,19 +436,33 @@ def _select_optional_block_ids(
             for block_id in ranked_by_priority
             if int(block_id) not in selected_set and int(region_ids[int(block_id)]) == int(region_id)
         ]
-        for block_id in region_ranked[:quota]:
+        region_selected = _select_diverse_block_ids(
+            ranked_candidate_ids=region_ranked,
+            primary_scores=priority_scores,
+            secondary_scores=upper_bounds,
+            count=quota,
+            seed_block_ids=seed_block_ids + selected,
+            diversity_weight=float(diversity_weight),
+            diversity_radius=int(diversity_radius),
+        )
+        for block_id in region_selected:
             selected.append(block_id)
             selected_set.add(block_id)
         if len(selected) >= int(top_k):
             return selected[: int(top_k)]
-    for block_id in ranked_by_priority:
-        block_id = int(block_id)
-        if block_id in selected_set:
-            continue
-        selected.append(block_id)
-        selected_set.add(block_id)
-        if len(selected) >= int(top_k):
-            break
+    spill_ranked = [int(block_id) for block_id in ranked_by_priority if int(block_id) not in selected_set]
+    spill_selected = _select_diverse_block_ids(
+        ranked_candidate_ids=spill_ranked,
+        primary_scores=priority_scores,
+        secondary_scores=upper_bounds,
+        count=max(int(top_k) - len(selected), 0),
+        seed_block_ids=seed_block_ids + selected,
+        diversity_weight=float(diversity_weight),
+        diversity_radius=int(diversity_radius),
+    )
+    for block_id in spill_selected:
+        selected.append(int(block_id))
+        selected_set.add(int(block_id))
     return selected
 
 
@@ -629,6 +704,9 @@ class PersistentFullAttentionState:
                 far_quota=int(self.config.full_attention_optional_far_quota),
                 mid_quota=int(self.config.full_attention_optional_mid_quota),
                 near_quota=int(self.config.full_attention_optional_near_quota),
+                seed_block_ids=sorted(selected_ids),
+                diversity_weight=float(self.config.full_attention_optional_diversity_weight),
+                diversity_radius=int(self.config.full_attention_optional_diversity_radius),
             )
             selected_ids.update(optional_ids)
         else:

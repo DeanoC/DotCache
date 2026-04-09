@@ -7524,6 +7524,20 @@ def _build_persistent_full_attention_snapshot_runtime(
     return runtime, query_tensor, key_history, value_history, resolved_query_scale, shaped_prev_attn
 
 
+def _resolve_history_aware_persistent_serving_config(
+    config: PersistentServingConfig,
+    *,
+    has_history: bool,
+) -> PersistentServingConfig:
+    if has_history or not bool(config.full_attention_optional_diversity_requires_history):
+        return config
+    return replace(
+        config,
+        full_attention_optional_diversity_weight=0.0,
+        full_attention_optional_diversity_radius=0,
+    )
+
+
 def run_qwen35_persistent_full_attention_snapshot_comparison(
     snapshot_or_path: Any,
     *,
@@ -7545,6 +7559,10 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         load_paged_attention_snapshot(item) if isinstance(item, (str, Path)) else item
         for item in (history_snapshots_or_paths or [])
     ]
+    effective_config = _resolve_history_aware_persistent_serving_config(
+        resolved_config,
+        has_history=bool(history_snapshots),
+    )
     history_prev_attention = _aggregate_history_prev_attention(
         target_snapshot=snapshot,
         history_snapshots=history_snapshots,
@@ -7554,7 +7572,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
         _build_persistent_full_attention_snapshot_runtime(
             snapshot,
-            persistent_serving_config=resolved_config,
+            persistent_serving_config=effective_config,
             query_scale=query_scale,
             prev_attention_values=history_prev_attention,
             prev_attention_transform=prev_attention_transform,
@@ -7596,34 +7614,43 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "max_abs_error": float(abs_error.max().item()),
         "max_rel_error": float(rel_error.max().item()),
         "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
-        "persistent_runtime_optional_top_k": int(resolved_config.full_attention_optional_top_k),
+        "persistent_runtime_optional_top_k": int(effective_config.full_attention_optional_top_k),
         "persistent_runtime_optional_use_upper_bounds_first": bool(
-            resolved_config.full_attention_optional_use_upper_bounds_first
+            effective_config.full_attention_optional_use_upper_bounds_first
         ),
-        "persistent_runtime_optional_upper_bound_quota": int(resolved_config.full_attention_optional_upper_bound_quota),
-        "persistent_runtime_optional_far_quota": int(resolved_config.full_attention_optional_far_quota),
-        "persistent_runtime_optional_mid_quota": int(resolved_config.full_attention_optional_mid_quota),
-        "persistent_runtime_optional_near_quota": int(resolved_config.full_attention_optional_near_quota),
+        "persistent_runtime_optional_upper_bound_quota": int(effective_config.full_attention_optional_upper_bound_quota),
+        "persistent_runtime_optional_far_quota": int(effective_config.full_attention_optional_far_quota),
+        "persistent_runtime_optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
+        "persistent_runtime_optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+        "persistent_runtime_optional_diversity_weight": float(
+            effective_config.full_attention_optional_diversity_weight
+        ),
+        "persistent_runtime_optional_diversity_radius": int(
+            effective_config.full_attention_optional_diversity_radius
+        ),
+        "persistent_runtime_optional_diversity_requires_history": bool(
+            effective_config.full_attention_optional_diversity_requires_history
+        ),
         "persistent_runtime_priority_prev_attention_weight": float(
-            resolved_config.full_attention_priority_prev_attention_weight
+            effective_config.full_attention_priority_prev_attention_weight
         ),
         "persistent_runtime_priority_recency_weight": float(
-            resolved_config.full_attention_priority_recency_weight
+            effective_config.full_attention_priority_recency_weight
         ),
         "persistent_runtime_priority_recency_decay_blocks": float(
-            resolved_config.full_attention_priority_recency_decay_blocks
+            effective_config.full_attention_priority_recency_decay_blocks
         ),
         "persistent_runtime_priority_value_norm_weight": float(
-            resolved_config.full_attention_priority_value_norm_weight
+            effective_config.full_attention_priority_value_norm_weight
         ),
-        "persistent_runtime_sink_block_count": int(resolved_config.full_attention_sink_block_count),
-        "persistent_runtime_recent_block_count": int(resolved_config.full_attention_recent_block_count),
+        "persistent_runtime_sink_block_count": int(effective_config.full_attention_sink_block_count),
+        "persistent_runtime_recent_block_count": int(effective_config.full_attention_recent_block_count),
         "persistent_runtime_mandatory_recent_block_count": (
             None
-            if resolved_config.full_attention_mandatory_recent_block_count is None
-            else int(resolved_config.full_attention_mandatory_recent_block_count)
+            if effective_config.full_attention_mandatory_recent_block_count is None
+            else int(effective_config.full_attention_mandatory_recent_block_count)
         ),
-        "persistent_runtime_exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
+        "persistent_runtime_exploration_blocks_per_region": int(effective_config.full_attention_exploration_blocks_per_region),
         "history_mode": str(history_mode),
         "history_decay": float(history_decay),
         "history_snapshot_count": int(len(history_snapshots)),
@@ -7654,10 +7681,14 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
 
     snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
     resolved_config = persistent_serving_config or PersistentServingConfig()
+    effective_config = _resolve_history_aware_persistent_serving_config(
+        resolved_config,
+        has_history=False,
+    )
     runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
         _build_persistent_full_attention_snapshot_runtime(
             snapshot,
-            persistent_serving_config=resolved_config,
+            persistent_serving_config=effective_config,
             query_scale=query_scale,
             prev_attention_values=None,
             prev_attention_transform=prev_attention_transform,
@@ -7720,8 +7751,14 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
             ),
             "exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
             "optional_top_k": int(resolved_config.full_attention_optional_top_k),
-            "optional_use_upper_bounds_first": bool(resolved_config.full_attention_optional_use_upper_bounds_first),
-            "optional_upper_bound_quota": int(resolved_config.full_attention_optional_upper_bound_quota),
+            "optional_use_upper_bounds_first": bool(effective_config.full_attention_optional_use_upper_bounds_first),
+            "optional_upper_bound_quota": int(effective_config.full_attention_optional_upper_bound_quota),
+            "optional_far_quota": int(effective_config.full_attention_optional_far_quota),
+            "optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
+            "optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+            "optional_diversity_weight": float(effective_config.full_attention_optional_diversity_weight),
+            "optional_diversity_radius": int(effective_config.full_attention_optional_diversity_radius),
+            "optional_diversity_requires_history": bool(effective_config.full_attention_optional_diversity_requires_history),
         },
         "prior_config": {
             "transform": str(prev_attention_transform),
