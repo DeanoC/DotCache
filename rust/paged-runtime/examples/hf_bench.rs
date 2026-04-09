@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        sync_stage_profile: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -79,6 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_full_attention_millis: f64,
         stage_mlp_millis: f64,
         stage_total_millis: f64,
+        stage_profile_sync_enabled: bool,
         prefill_millis: f64,
         decode_millis: f64,
         total_millis: f64,
@@ -92,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<BenchArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N]".to_string()
+            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let prompt = args.next().ok_or_else(|| "missing prompt".to_string())?;
@@ -116,29 +118,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            sync_stage_profile: false,
         };
 
         while let Some(flag) = args.next() {
-            let value = args
-                .next()
-                .ok_or_else(|| format!("missing value for {flag}"))?;
             match flag.as_str() {
+                "--sync-stage-profile" => {
+                    parsed.sync_stage_profile = true;
+                }
                 "--warmup-runs" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.warmup_runs = value
                         .parse::<usize>()
                         .map_err(|err| format!("invalid --warmup-runs: {err}"))?;
                 }
                 "--max-new-tokens" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.max_new_tokens = value
                         .parse::<usize>()
                         .map_err(|err| format!("invalid --max-new-tokens: {err}"))?;
                 }
                 "--tokens-per-page" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.tokens_per_page = value
                         .parse::<usize>()
                         .map_err(|err| format!("invalid --tokens-per-page: {err}"))?;
                 }
                 "--prompt-token-target" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.prompt_token_target = Some(
                         value
                             .parse::<usize>()
@@ -146,9 +161,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 "--device" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.device = value.parse::<CandleDeviceSelector>()?;
                 }
                 "--dtype" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.dtype = match value.as_str() {
                         "f16" | "float16" => DType::F16,
                         "bf16" => DType::BF16,
@@ -161,14 +182,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                 }
                 "--runtime-mode" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.runtime_mode = value
                         .parse::<RuntimeMode>()
                         .map_err(|err| format!("{err}"))?;
                 }
                 "--attention-path" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.attention_path = Some(value.parse::<AttentionPathMode>()?);
                 }
                 "--resident-page-budget" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.resident_page_budget = Some(
                         value
                             .parse::<usize>()
@@ -176,6 +206,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 "--resident-byte-budget" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.resident_byte_budget = Some(
                         value
                             .parse::<usize>()
@@ -183,6 +216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 "--restore-cooldown" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
                     parsed.restore_cooldown_window = Some(
                         value
                             .parse::<u64>()
@@ -230,6 +266,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             totals.add_assign(request.stage_metrics());
         }
         totals
+    }
+
+    fn stage_profile_sync_enabled(explicit_flag: bool) -> bool {
+        if explicit_flag {
+            unsafe {
+                std::env::set_var("CANDLE_QWEN35_PROFILE_SYNC", "1");
+            }
+            return true;
+        }
+        matches!(
+            std::env::var("CANDLE_QWEN35_PROFILE_SYNC").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
     }
 
     fn json_string(record: &Value, key: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -360,6 +409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args =
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    let sync_stage_profile = stage_profile_sync_enabled(args.sync_stage_profile);
 
     if args.runtime_mode == RuntimeMode::TorchControl {
         if args.family != ModelFamily::Qwen35 {
@@ -458,6 +508,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stage_full_attention_millis: stage_metrics.full_attention_millis,
             stage_mlp_millis: stage_metrics.mlp_millis,
             stage_total_millis: stage_metrics.total_millis(),
+            stage_profile_sync_enabled: sync_stage_profile,
             prefill_millis,
             decode_millis,
             total_millis,
@@ -616,6 +667,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_full_attention_millis: stage_metrics.full_attention_millis,
         stage_mlp_millis: stage_metrics.mlp_millis,
         stage_total_millis: stage_metrics.total_millis(),
+        stage_profile_sync_enabled: sync_stage_profile,
         prefill_millis: millis(run.prefill_elapsed),
         decode_millis: millis(run.decode_elapsed),
         total_millis: millis(run.total_elapsed),
