@@ -1,0 +1,849 @@
+{
+  "best_priority_candidate": {
+    "config": {
+      "block_size": 16,
+      "enable_priority": true,
+      "exploration_blocks_per_region": 1,
+      "optional_top_k": 128,
+      "recent_block_count": 64,
+      "sink_block_count": 1
+    },
+    "label": "priority_recent64_topk128_sink1_explore1",
+    "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent64_topk128_all108.json",
+    "summary": {
+      "avg_full_block_count": 257.0,
+      "avg_full_token_count": 4098.333333333333,
+      "avg_selected_block_count": 195.0,
+      "avg_selected_fraction": 0.7579503639216209,
+      "avg_selected_token_count": 3106.3333333333335,
+      "max_abs_error": 0.10000491142272949,
+      "max_rel_error": 2203.978759765625,
+      "snapshot_count": 108
+    },
+    "threshold_counts": {
+      "abs_le_0.01": 59,
+      "abs_le_0.1": 107,
+      "abs_le_0.5": 108,
+      "abs_le_1": 108
+    },
+    "worst_records": [
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.10000491142272949,
+        "max_rel_error": 1288.747802734375,
+        "selected_token_count": 3105,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.06998848915100098,
+        "max_rel_error": 4.129527568817139,
+        "selected_token_count": 3105,
+        "snapshot_path": "readme/layer19_kv00_step+00.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.05885124206542969,
+        "max_rel_error": 11.551511764526367,
+        "selected_token_count": 3105,
+        "snapshot_path": "world_interface_agent_loop_paper/layer19_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.05830097198486328,
+        "max_rel_error": 13.801344871520996,
+        "selected_token_count": 3105,
+        "snapshot_path": "readme/layer19_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 0.05747556686401367,
+        "max_rel_error": 6.9017252922058105,
+        "selected_token_count": 3106,
+        "snapshot_path": "readme/layer19_kv01_step+01.npz"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": false,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 0,
+        "recent_block_count": 1,
+        "sink_block_count": 1
+      },
+      "label": "full_coverage",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_full_coverage_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 257.0,
+        "avg_selected_fraction": 1.0,
+        "avg_selected_token_count": 4098.333333333333,
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 108,
+        "abs_le_0.1": 108,
+        "abs_le_0.5": 108,
+        "abs_le_1": 108
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "selected_token_count": 4097,
+          "snapshot_path": "performance_journal/layer03_kv00_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "selected_token_count": 4098,
+          "snapshot_path": "performance_journal/layer03_kv00_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "selected_token_count": 4100,
+          "snapshot_path": "performance_journal/layer03_kv00_step-01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "selected_token_count": 4097,
+          "snapshot_path": "performance_journal/layer03_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "selected_token_count": 4098,
+          "snapshot_path": "performance_journal/layer03_kv01_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 128,
+        "recent_block_count": 64,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent64_topk128_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent64_topk128_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 195.0,
+        "avg_selected_fraction": 0.7579503639216209,
+        "avg_selected_token_count": 3106.3333333333335,
+        "max_abs_error": 0.10000491142272949,
+        "max_rel_error": 2203.978759765625,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 59,
+        "abs_le_0.1": 107,
+        "abs_le_0.5": 108,
+        "abs_le_1": 108
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.10000491142272949,
+          "max_rel_error": 1288.747802734375,
+          "selected_token_count": 3105,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.06998848915100098,
+          "max_rel_error": 4.129527568817139,
+          "selected_token_count": 3105,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.05885124206542969,
+          "max_rel_error": 11.551511764526367,
+          "selected_token_count": 3105,
+          "snapshot_path": "world_interface_agent_loop_paper/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.05830097198486328,
+          "max_rel_error": 13.801344871520996,
+          "selected_token_count": 3105,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.05747556686401367,
+          "max_rel_error": 6.9017252922058105,
+          "selected_token_count": 3106,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 64,
+        "recent_block_count": 32,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent32_topk64_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent32_topk64_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 99.0,
+        "avg_selected_fraction": 0.3831638306389677,
+        "avg_selected_token_count": 1570.3333333333333,
+        "max_abs_error": 0.6058938503265381,
+        "max_rel_error": 6669.32177734375,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 6,
+        "abs_le_0.1": 85,
+        "abs_le_0.5": 107,
+        "abs_le_1": 108
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.6058938503265381,
+          "max_rel_error": 4211.86474609375,
+          "selected_token_count": 1569,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.37015438079833984,
+          "max_rel_error": 4.541821002960205,
+          "selected_token_count": 1569,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.35764050483703613,
+          "max_rel_error": 22.31898307800293,
+          "selected_token_count": 1569,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.35125207901000977,
+          "max_rel_error": 16.303762435913086,
+          "selected_token_count": 1570,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.25355565547943115,
+          "max_rel_error": 530.9231567382812,
+          "selected_token_count": 1570,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 32,
+        "recent_block_count": 16,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent16_topk32_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent16_topk32_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 51.0,
+        "avg_selected_fraction": 0.19577056399764134,
+        "avg_selected_token_count": 802.3333333333334,
+        "max_abs_error": 1.6919372081756592,
+        "max_rel_error": 29563.0390625,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 1,
+        "abs_le_0.1": 27,
+        "abs_le_0.5": 101,
+        "abs_le_1": 107
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 1.6919372081756592,
+          "max_rel_error": 7216.4189453125,
+          "selected_token_count": 801,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.8249912261962891,
+          "max_rel_error": 38.433902740478516,
+          "selected_token_count": 802,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.7303476333618164,
+          "max_rel_error": 17.97529411315918,
+          "selected_token_count": 801,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.7152043581008911,
+          "max_rel_error": 989.63037109375,
+          "selected_token_count": 802,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.6997368335723877,
+          "max_rel_error": 57.39653396606445,
+          "selected_token_count": 801,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 16,
+        "recent_block_count": 8,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent8_topk16_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent8_topk16_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 27.0,
+        "avg_selected_fraction": 0.10207393067697844,
+        "avg_selected_token_count": 418.3333333333333,
+        "max_abs_error": 3.1296966075897217,
+        "max_rel_error": 60104.75,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 14,
+        "abs_le_0.5": 81,
+        "abs_le_1": 101
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 3.1296966075897217,
+          "max_rel_error": 13310.0927734375,
+          "selected_token_count": 417,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.4420557022094727,
+          "max_rel_error": 2159.73193359375,
+          "selected_token_count": 418,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.3505206108093262,
+          "max_rel_error": 100.27507781982422,
+          "selected_token_count": 418,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.128918170928955,
+          "max_rel_error": 44.47780227661133,
+          "selected_token_count": 418,
+          "snapshot_path": "readme/layer19_kv00_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 1.1135830879211426,
+          "max_rel_error": 51.67310333251953,
+          "selected_token_count": 420,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 8,
+        "recent_block_count": 8,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent8_topk8_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent8_topk8_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 19.0,
+        "avg_selected_fraction": 0.0708417195700909,
+        "avg_selected_token_count": 290.3333333333333,
+        "max_abs_error": 4.366366386413574,
+        "max_rel_error": 67035.125,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 9,
+        "abs_le_0.5": 69,
+        "abs_le_1": 92
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 4.366366386413574,
+          "max_rel_error": 33128.5234375,
+          "selected_token_count": 289,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.9876973628997803,
+          "max_rel_error": 1863.7640380859375,
+          "selected_token_count": 290,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 1.7827767133712769,
+          "max_rel_error": 11564.087890625,
+          "selected_token_count": 289,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.6865925788879395,
+          "max_rel_error": 268.5705871582031,
+          "selected_token_count": 290,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.4697537422180176,
+          "max_rel_error": 47.76533126831055,
+          "selected_token_count": 290,
+          "snapshot_path": "readme/layer19_kv00_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 8,
+        "recent_block_count": 4,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent4_topk8_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_recent4_topk8_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 15.0,
+        "avg_selected_fraction": 0.055225614016647016,
+        "avg_selected_token_count": 226.33333333333334,
+        "max_abs_error": 4.669460296630859,
+        "max_rel_error": 64043.50390625,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 8,
+        "abs_le_0.5": 66,
+        "abs_le_1": 90
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 4.669460296630859,
+          "max_rel_error": 35245.671875,
+          "selected_token_count": 225,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 2.5729594230651855,
+          "max_rel_error": 1394.117919921875,
+          "selected_token_count": 226,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 1.909964680671692,
+          "max_rel_error": 7589.7216796875,
+          "selected_token_count": 225,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 1.723351001739502,
+          "max_rel_error": 265.8337097167969,
+          "selected_token_count": 226,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 1.6646355390548706,
+          "max_rel_error": 34.91035842895508,
+          "selected_token_count": 228,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 8,
+        "recent_block_count": 1,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent1_topk8_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_topk8_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 12.0,
+        "avg_selected_fraction": 0.043513534851564124,
+        "avg_selected_token_count": 178.33333333333334,
+        "max_abs_error": 5.5548095703125,
+        "max_rel_error": 80511.5625,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 5,
+        "abs_le_0.5": 55,
+        "abs_le_1": 87
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 5.5548095703125,
+          "max_rel_error": 80511.5625,
+          "selected_token_count": 177,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 3.439664840698242,
+          "max_rel_error": 28166.818359375,
+          "selected_token_count": 177,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 2.9698357582092285,
+          "max_rel_error": 1302.029052734375,
+          "selected_token_count": 178,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 2.3821873664855957,
+          "max_rel_error": 56.534908294677734,
+          "selected_token_count": 180,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 2.0574371814727783,
+          "max_rel_error": 16.364606857299805,
+          "selected_token_count": 178,
+          "snapshot_path": "world_interface_agent_loop_paper/layer11_kv00_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 4,
+        "recent_block_count": 1,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent1_topk4_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_topk4_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 8.0,
+        "avg_selected_fraction": 0.027897429298120262,
+        "avg_selected_token_count": 114.33333333333333,
+        "max_abs_error": 6.532501220703125,
+        "max_rel_error": 88260.0625,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 2,
+        "abs_le_0.5": 44,
+        "abs_le_1": 76
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 6.532501220703125,
+          "max_rel_error": 88260.0625,
+          "selected_token_count": 113,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 4.12716817855835,
+          "max_rel_error": 1728.9725341796875,
+          "selected_token_count": 114,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 4.110051155090332,
+          "max_rel_error": 105.65455627441406,
+          "selected_token_count": 116,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 4.067401885986328,
+          "max_rel_error": 46385.9296875,
+          "selected_token_count": 113,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 2.8986656665802,
+          "max_rel_error": 23.935596466064453,
+          "selected_token_count": 114,
+          "snapshot_path": "world_interface_agent_loop_paper/layer11_kv00_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 2,
+        "recent_block_count": 1,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent1_topk2_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_topk2_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 6.0,
+        "avg_selected_fraction": 0.02008937652139833,
+        "avg_selected_token_count": 82.33333333333333,
+        "max_abs_error": 7.557941436767578,
+        "max_rel_error": 93376.1328125,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 0,
+        "abs_le_0.5": 34,
+        "abs_le_1": 70
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 7.557941436767578,
+          "max_rel_error": 93376.1328125,
+          "selected_token_count": 81,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 5.628579139709473,
+          "max_rel_error": 1754.5426025390625,
+          "selected_token_count": 82,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 5.432839393615723,
+          "max_rel_error": 114.57970428466797,
+          "selected_token_count": 84,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 4.214877605438232,
+          "max_rel_error": 51652.796875,
+          "selected_token_count": 81,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 3.68817400932312,
+          "max_rel_error": 32.23276138305664,
+          "selected_token_count": 82,
+          "snapshot_path": "world_interface_agent_loop_paper/layer11_kv00_step+01.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "optional_top_k": 1,
+        "recent_block_count": 1,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent1_topk1_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_topk1_all108.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4098.333333333333,
+        "avg_selected_block_count": 5.0,
+        "avg_selected_fraction": 0.016185350133037353,
+        "avg_selected_token_count": 66.33333333333333,
+        "max_abs_error": 8.21579360961914,
+        "max_rel_error": 90783.734375,
+        "snapshot_count": 108
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 0,
+        "abs_le_0.1": 0,
+        "abs_le_0.5": 24,
+        "abs_le_1": 63
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 8.21579360961914,
+          "max_rel_error": 90783.734375,
+          "selected_token_count": 65,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 7.9004364013671875,
+          "max_rel_error": 1979.8743896484375,
+          "selected_token_count": 66,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 6.2444748878479,
+          "max_rel_error": 142.9747314453125,
+          "selected_token_count": 68,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+        },
+        {
+          "full_token_count": 4100,
+          "max_abs_error": 4.566555500030518,
+          "max_rel_error": 163.8152313232422,
+          "selected_token_count": 68,
+          "snapshot_path": "world_interface_agent_loop_paper/layer11_kv00_step-01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 4.343193054199219,
+          "max_rel_error": 52494.23828125,
+          "selected_token_count": 65,
+          "snapshot_path": "readme/layer07_kv01_step+00.npz"
+        }
+      ]
+    }
+  ],
+  "most_aggressive_candidate": {
+    "config": {
+      "block_size": 16,
+      "enable_priority": true,
+      "exploration_blocks_per_region": 1,
+      "optional_top_k": 1,
+      "recent_block_count": 1,
+      "sink_block_count": 1
+    },
+    "label": "priority_recent1_topk1_sink1_explore1",
+    "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic/qwen35_persistent_full_attention_replay_priority_topk1_all108.json",
+    "summary": {
+      "avg_full_block_count": 257.0,
+      "avg_full_token_count": 4098.333333333333,
+      "avg_selected_block_count": 5.0,
+      "avg_selected_fraction": 0.016185350133037353,
+      "avg_selected_token_count": 66.33333333333333,
+      "max_abs_error": 8.21579360961914,
+      "max_rel_error": 90783.734375,
+      "snapshot_count": 108
+    },
+    "threshold_counts": {
+      "abs_le_0.01": 0,
+      "abs_le_0.1": 0,
+      "abs_le_0.5": 24,
+      "abs_le_1": 63
+    },
+    "worst_records": [
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 8.21579360961914,
+        "max_rel_error": 90783.734375,
+        "selected_token_count": 65,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 7.9004364013671875,
+        "max_rel_error": 1979.8743896484375,
+        "selected_token_count": 66,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+      },
+      {
+        "full_token_count": 4100,
+        "max_abs_error": 6.2444748878479,
+        "max_rel_error": 142.9747314453125,
+        "selected_token_count": 68,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step-01.npz"
+      },
+      {
+        "full_token_count": 4100,
+        "max_abs_error": 4.566555500030518,
+        "max_rel_error": 163.8152313232422,
+        "selected_token_count": 68,
+        "snapshot_path": "world_interface_agent_loop_paper/layer11_kv00_step-01.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 4.343193054199219,
+        "max_rel_error": 52494.23828125,
+        "selected_token_count": 65,
+        "snapshot_path": "readme/layer07_kv01_step+00.npz"
+      }
+    ]
+  }
+}
