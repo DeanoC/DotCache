@@ -10,6 +10,12 @@ struct DensePageData {
     values: Vec<f16>,
 }
 
+impl DensePageData {
+    fn dense_storage_f32(&self) -> Vec<f32> {
+        self.values.iter().map(|value| value.to_f32()).collect()
+    }
+}
+
 fn lower_bound(values: &[f32], target: f32) -> usize {
     values.partition_point(|value| *value < target)
 }
@@ -473,6 +479,26 @@ impl M3PageData {
                         .iter()
                         .map(|value| *value as f32 * scale),
                 );
+            }
+        }
+    }
+
+    fn dense_storage_f32(&self, token_count: usize, head_dim: usize) -> Vec<f32> {
+        let total = token_count * head_dim;
+        match &self.payload {
+            M3Payload::F16(values) => values.iter().map(|value| value.to_f32()).collect(),
+            M3Payload::I8 { values, scales } => {
+                let mut out = vec![0.0f32; total];
+                for token_index in 0..token_count {
+                    let scale = scales[token_index].to_f32();
+                    let start = token_index * head_dim;
+                    let end = start + head_dim;
+                    for (out_value, value) in out[start..end].iter_mut().zip(values[start..end].iter())
+                    {
+                        *out_value = *value as f32 * scale;
+                    }
+                }
+                out
             }
         }
     }
@@ -1435,11 +1461,17 @@ impl PageSide {
     }
 
     fn dense_storage_f32(&self, token_count: usize, head_dim: usize) -> Vec<f32> {
-        let mut out = Vec::with_capacity(token_count * head_dim);
-        for token_index in 0..token_count {
-            out.extend(self.row_f32(token_index, head_dim));
+        match &self.storage {
+            PageSideStorage::LiveDense(data) | PageSideStorage::Exact(data) => data.dense_storage_f32(),
+            PageSideStorage::M3(data) => data.dense_storage_f32(token_count, head_dim),
+            _ => {
+                let mut out = Vec::with_capacity(token_count * head_dim);
+                for token_index in 0..token_count {
+                    out.extend(self.row_f32(token_index, head_dim));
+                }
+                out
+            }
         }
-        out
     }
 
     fn score_rows(
