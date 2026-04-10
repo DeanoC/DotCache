@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
+
 from benchmarks.bench_qwen35_paged_dense_matrix import (
     DEFAULT_ATTENTION_PATH,
     DEFAULT_RUNTIME_DENSE,
     DEFAULT_RUNTIME_PAGED,
     WorkloadShape,
+    _can_resume_existing_run,
+    _error_suggests_dtype_fallback,
+    _run_config_signature,
+    RunSpec,
     build_matrix,
     build_report,
     command_for_run,
@@ -117,3 +123,46 @@ def test_build_report_computes_dense_deltas_and_best_paged_variants() -> None:
     assert paged_rows["paged-32"]["total_millis_ratio_vs_dense"] == 0.9
     assert paged_rows["paged-32"]["delta_total_tokens_per_second_vs_dense"] == 2.0
     assert paged_rows["paged-32"]["total_tokens_per_second_ratio_vs_dense"] == 1.1
+
+
+def test_dtype_fallback_only_triggers_for_real_dtype_support_failures() -> None:
+    assert not _error_suggests_dtype_fallback(
+        "",
+        "Running `target/debug/examples/hf_bench --dtype bf16` failed with CUDA out of memory",
+    )
+    assert _error_suggests_dtype_fallback(
+        "",
+        "RuntimeError: not implemented for 'BFloat16'",
+    )
+    assert _error_suggests_dtype_fallback(
+        "",
+        "device does not support bf16 kernels",
+    )
+
+
+def test_resume_requires_matching_saved_run_configuration(tmp_path) -> None:
+    spec = RunSpec(
+        model_id="Qwen/Qwen3.5-9B",
+        kind="bench",
+        prompt_token_count=8192,
+        runtime_mode=DEFAULT_RUNTIME_DENSE,
+        attention_path=None,
+        resident_page_budget=None,
+        dtype="bf16",
+        device="cuda:0",
+        warmup_runs=0,
+        max_new_tokens=4,
+        prompt_text="Cache locality matters for fast decoding.",
+        workload_shape=None,
+    )
+    config_path = tmp_path / "run_config.json"
+    signature = _run_config_signature(spec, cargo_features="candle-cuda")
+    config_path.write_text(json.dumps(signature), encoding="utf-8")
+
+    assert _can_resume_existing_run(config_path, signature)
+
+    changed_signature = _run_config_signature(
+        RunSpec(**{**spec.__dict__, "max_new_tokens": 8}),
+        cargo_features="candle-cuda",
+    )
+    assert not _can_resume_existing_run(config_path, changed_signature)

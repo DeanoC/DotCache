@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -352,15 +353,27 @@ def _detect_gpu_snapshot() -> dict[str, Any] | None:
 
 def _error_suggests_dtype_fallback(stdout: str, stderr: str) -> bool:
     combined = f"{stdout}\n{stderr}".lower()
-    fallback_markers = (
-        "bf16",
-        "bfloat16",
-        "unsupported dtype",
-        "unsupported scalar type",
+    precise_markers = (
+        "unsupported bfloat16",
+        "unsupported bf16",
         "does not support bfloat16",
+        "does not support bf16",
+        "bfloat16 is not supported",
+        "bf16 is not supported",
         "not implemented for 'bfloat16'",
+        'not implemented for "bfloat16"',
+        "not implemented for 'bf16'",
+        'not implemented for "bf16"',
+        "unsupported scalar type bfloat16",
+        "unsupported scalar type bf16",
     )
-    return any(marker in combined for marker in fallback_markers)
+    if any(marker in combined for marker in precise_markers):
+        return True
+    regexes = (
+        r"(unsupported|not supported|not implemented)[^\n]{0,40}(bfloat16|bf16)",
+        r"(bfloat16|bf16)[^\n]{0,40}(unsupported|not supported|not implemented)",
+    )
+    return any(re.search(pattern, combined) is not None for pattern in regexes)
 
 
 def _error_looks_host_unsupported(stdout: str, stderr: str) -> bool:
@@ -395,6 +408,35 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _run_config_signature(spec: RunSpec, *, cargo_features: str) -> dict[str, Any]:
+    prompt_hash = hashlib.sha256(spec.prompt_text.encode("utf-8")).hexdigest()
+    return {
+        "model_id": spec.model_id,
+        "kind": spec.kind,
+        "prompt_token_count": spec.prompt_token_count,
+        "runtime_mode": spec.runtime_mode,
+        "attention_path": spec.attention_path,
+        "resident_page_budget": spec.resident_page_budget,
+        "dtype": spec.dtype,
+        "device": spec.device,
+        "warmup_runs": spec.warmup_runs,
+        "max_new_tokens": spec.max_new_tokens,
+        "prompt_text_sha256": prompt_hash,
+        "workload_shape": asdict(spec.workload_shape) if spec.workload_shape is not None else None,
+        "cargo_features": cargo_features,
+    }
+
+
+def _can_resume_existing_run(config_path: Path, expected_signature: dict[str, Any]) -> bool:
+    if not config_path.exists():
+        return False
+    try:
+        stored_signature = _load_json(config_path)
+    except (json.JSONDecodeError, OSError):
+        return False
+    return stored_signature == expected_signature
+
+
 def execute_run(
     spec: RunSpec,
     *,
@@ -407,9 +449,11 @@ def execute_run(
     run_dir.mkdir(parents=True, exist_ok=True)
     out_prefix = run_dir / "run"
     summary_path, trace_path = _summary_paths(out_prefix)
+    config_path = run_dir / "run_config.json"
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
     command = command_for_run(spec, out_prefix=out_prefix, cargo_features=cargo_features)
+    expected_signature = _run_config_signature(spec, cargo_features=cargo_features)
     record: dict[str, Any] = {
         "run_id": spec.run_slug(),
         "model_id": spec.model_id,
@@ -428,6 +472,7 @@ def execute_run(
         "stderr_path": str(stderr_path),
         "summary_path": str(summary_path),
         "trace_jsonl_path": str(trace_path),
+        "run_config_path": str(config_path),
         "started_at": _utc_now(),
     }
 
@@ -438,7 +483,7 @@ def execute_run(
         record["completed_at"] = _utc_now()
         return record
 
-    if resume and summary_path.exists():
+    if resume and summary_path.exists() and _can_resume_existing_run(config_path, expected_signature):
         print(f"[resume] {record['run_id']}", flush=True)
         summary = _load_json(summary_path)
         record["status"] = "reused_existing"
@@ -448,6 +493,7 @@ def execute_run(
         return record
 
     print(f"[run] {record['run_id']}", flush=True)
+    _write_json(config_path, expected_signature)
     with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr_handle:

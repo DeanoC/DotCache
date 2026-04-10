@@ -1,0 +1,15 @@
+{
+  "attention_path": null,
+  "cargo_features": "candle-cuda",
+  "device": "cuda:0",
+  "dtype": "bf16",
+  "kind": "bench",
+  "max_new_tokens": 4,
+  "model_id": "Qwen/Qwen3.5-9B",
+  "prompt_text_sha256": "a6a545bf0b8813779771caa91287699a39875de2931959fd39ff73493c80e3ce",
+  "prompt_token_count": 8192,
+  "resident_page_budget": null,
+  "runtime_mode": "dense_control",
+  "warmup_runs": 0,
+  "workload_shape": null
+}
