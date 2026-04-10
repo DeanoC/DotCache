@@ -116,10 +116,16 @@ def build_report(manifest: dict[str, Any], *, output_dir: Path) -> tuple[dict[st
         "model",
         "task",
         "context",
+        "dense_success",
         "exact_success",
+        "exact_matches_dense",
         "quality_success",
+        "quality_matches_dense",
         "systems_success",
+        "systems_matches_dense",
+        "dense_decode_ms",
         "quality_decode_ms",
+        "quality_vs_dense_speedup",
         "systems_decode_ms",
         "systems_vs_quality_speedup",
         "quality_rmse",
@@ -131,10 +137,16 @@ def build_report(manifest: dict[str, Any], *, output_dir: Path) -> tuple[dict[st
                 model_names[row["model_key"]],
                 str(row["task_name"]),
                 str(int(row["prompt_length"])),
+                _fmt(row.get("dense_success")),
                 _fmt(row.get("exact_success")),
+                _fmt(row.get("exact_matches_dense_output")),
                 _fmt(row.get("quality_success")),
+                _fmt(row.get("quality_matches_dense_output")),
                 _fmt(row.get("systems_success")),
+                _fmt(row.get("systems_matches_dense_output")),
+                _fmt(row.get("dense_decode_ms_per_step")),
                 _fmt(row.get("quality_decode_ms_per_step")),
+                _fmt(row.get("quality_vs_dense_speedup")),
                 _fmt(row.get("systems_decode_ms_per_step")),
                 _fmt(row.get("systems_vs_quality_speedup")),
                 _fmt(row.get("quality_teacher_forced_logit_rmse")),
@@ -147,6 +159,7 @@ def build_report(manifest: dict[str, Any], *, output_dir: Path) -> tuple[dict[st
         "context_cap",
         "case",
         "official_score",
+        "mean_matches_dense_output",
         "exact_match",
         "qa_f1",
         "decode_ms",
@@ -162,6 +175,7 @@ def build_report(manifest: dict[str, Any], *, output_dir: Path) -> tuple[dict[st
                 str(int(row["max_prompt_tokens"])),
                 str(row["comparison_case"]),
                 _fmt(row.get("mean_official_score", row.get("mean_qa_f1"))),
+                _fmt(row.get("mean_matches_dense_output")),
                 _fmt(row.get("mean_exact_match")),
                 _fmt(row.get("mean_qa_f1")),
                 _fmt(row.get("mean_decode_ms_per_step")),
@@ -240,9 +254,9 @@ def build_report(manifest: dict[str, Any], *, output_dir: Path) -> tuple[dict[st
 def main() -> int:
     args = parse_args()
     manifest = _load_json(Path(args.manifest))
-    payload, markdown = build_report(manifest, output_dir=Path(args.output_dir).resolve())
-    Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")
+    payload, markdown = build_report(manifest, output_dir=Path(args.output_dir))
     Path(args.json_output).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path(args.markdown_output).write_text(markdown + "\n", encoding="utf-8")
     print(markdown)
     return 0
 

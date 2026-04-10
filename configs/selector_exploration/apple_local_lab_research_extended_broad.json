@@ -1,0 +1,44 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+  "feature_set_id": "research_extended",
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {"strategy_id": "static_rule", "result_id": "static_rule"},
+    {"strategy_id": "linear_softmax", "result_id": "linear_softmax"},
+    {"strategy_id": "linear_softmax_compression_weighted", "result_id": "linear_softmax_compression_weighted"},
+    {"strategy_id": "candidate_safe_router", "result_id": "candidate_safe_router_global", "calibration_mode": "global"},
+    {"strategy_id": "candidate_safe_router", "result_id": "candidate_safe_router_by_family", "calibration_mode": "per_prompt_family"},
+    {"strategy_id": "candidate_target_linear", "result_id": "candidate_target_linear_global", "calibration_mode": "global"},
+    {"strategy_id": "candidate_target_linear", "result_id": "candidate_target_linear_by_family", "calibration_mode": "per_prompt_family"},
+    {"strategy_id": "candidate_target_mlp", "result_id": "candidate_target_mlp_global", "calibration_mode": "global"},
+    {"strategy_id": "candidate_target_mlp", "result_id": "candidate_target_mlp_by_family", "calibration_mode": "per_prompt_family"},
+    {"strategy_id": "candidate_target_gbdt", "result_id": "candidate_target_gbdt_global", "calibration_mode": "global"},
+    {"strategy_id": "candidate_target_gbdt", "result_id": "candidate_target_gbdt_by_family", "calibration_mode": "per_prompt_family"}
+  ],
+  "weighted_selector": {
+    "steps": 400,
+    "learning_rate": 0.2,
+    "l2": 0.001,
+    "class_balance": 0.5,
+    "safe_bytes_weight": 1.0,
+    "unsafe_error_weight": 0.5,
+    "reference_candidate": "M3/affine/4/float16",
+    "target_candidate": "M3/affine/4/float16"
+  },
+  "calibration": {
+    "fraction": 0.25,
+    "seed": 0,
+    "min_target_accuracy": 0.999,
+    "min_safe_prediction_rate": 1.0,
+    "linear_offsets": [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5],
+    "binary_thresholds": [0.3, 0.4, 0.5, 0.6, 0.7]
+  },
+  "serving_smoke": {
+    "enabled": false
+  }
+}

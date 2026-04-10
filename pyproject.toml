@@ -29,6 +29,9 @@ longbench = [
   "fuzzywuzzy>=0.18.0",
   "rouge>=1.0.1",
 ]
+research = [
+  "scikit-learn>=1.5",
+]
 vllm = [
   "torch>=2.5",
   "vllm>=0.18,<0.19",

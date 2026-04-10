@@ -16,8 +16,17 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
         {
             "task_name": "retrieval_passkey",
             "prompt_length_requested": 1024,
+            "selector_profile": "dense",
+            "task_metric_value": 1.0,
+            "task_generated_text_cleaned": "RIVER-58142",
+            "task_decode_ms_per_step": 120.0,
+        },
+        {
+            "task_name": "retrieval_passkey",
+            "prompt_length_requested": 1024,
             "selector_profile": "exact",
             "task_metric_value": 1.0,
+            "task_generated_text_cleaned": "RIVER-58142",
             "decode_ms_per_step": 120.0,
             "teacher_forced_perplexity_ratio": 1.0,
             "teacher_forced_logit_max_abs_error": 0.9,
@@ -27,6 +36,7 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
             "prompt_length_requested": 1024,
             "selector_profile": "quality",
             "task_metric_value": 1.0,
+            "task_generated_text_cleaned": "RIVER-5814X",
             "decode_ms_per_step": 80.0,
             "teacher_forced_perplexity_ratio": 1.1,
             "teacher_forced_logit_max_abs_error": 0.4,
@@ -42,8 +52,13 @@ def test_build_report_summarizes_speedup_and_errors() -> None:
         },
     ]
     payload, markdown = MODULE.build_report(rows, trial_rows=[])
+    assert payload["rows"][0]["dense_matches_dense_output"] == 1.0
+    assert payload["rows"][0]["exact_matches_dense_output"] == 1.0
+    assert payload["rows"][0]["quality_matches_dense_output"] == 0.0
+    assert payload["rows"][0]["quality_vs_dense_speedup"] == 1.5
     assert payload["rows"][0]["systems_vs_quality_speedup"] == 2.0
     assert payload["rows"][0]["systems_teacher_forced_perplexity_ratio"] == 1.05
     assert payload["rows"][0]["systems_teacher_forced_logit_max_abs_error"] == 0.3
     assert "Llama 3.2 3B Task Selector Compare" in markdown
+    assert "quality_matches_dense_output" in markdown
     assert "1.050" in markdown

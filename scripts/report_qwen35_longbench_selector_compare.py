@@ -10,7 +10,7 @@ from statistics import mean
 from typing import Any
 
 
-BASE_EXPECTED_CASES = ("exact", "systems", "streaming_sink_recent")
+BASE_EXPECTED_CASES = ("dense", "exact", "systems", "streaming_sink_recent")
 OPTIONAL_CASES = ("quality", "quest_like")
 EXTERNAL_CASES = ("streaming_sink_recent", "quest_like")
 
@@ -81,6 +81,13 @@ def _prompt_key(row: dict[str, Any]) -> tuple[int, str, str]:
     )
 
 
+def _dense_prompt_key(row: dict[str, Any]) -> tuple[int, str]:
+    return (
+        int(row["comparison_max_prompt_tokens"]),
+        str(row["evaluation_prompt_id"]),
+    )
+
+
 def _dataset_group_key(row: dict[str, Any]) -> tuple[int, str, str]:
     return (
         int(row["comparison_max_prompt_tokens"]),
@@ -96,6 +103,62 @@ def _expected_cases(rows: list[dict[str, Any]]) -> tuple[str, ...]:
         if case in observed:
             cases.append(case)
     return tuple(cases)
+
+
+def _comparison_generated_text_cleaned(row: dict[str, Any]) -> str:
+    if row.get("comparison_generated_text_cleaned") is not None:
+        return str(row.get("comparison_generated_text_cleaned") or "")
+    return str(row.get("longbench_generated_text_cleaned", "") or "")
+
+
+def _comparison_exact_match(row: dict[str, Any]) -> bool:
+    if row.get("comparison_answer_exact_match_cleaned") is not None:
+        return bool(row.get("comparison_answer_exact_match_cleaned"))
+    return bool(row.get("longbench_answer_exact_match_cleaned"))
+
+
+def _comparison_qa_f1(row: dict[str, Any]) -> float:
+    if row.get("comparison_qa_f1_max_cleaned") is not None:
+        return float(row.get("comparison_qa_f1_max_cleaned", 0.0) or 0.0)
+    return float(row.get("longbench_qa_f1_max_cleaned", 0.0) or 0.0)
+
+
+def _comparison_decode_ms(row: dict[str, Any]) -> float:
+    if row.get("comparison_decode_ms_per_step") is not None:
+        return float(row.get("comparison_decode_ms_per_step", 0.0) or 0.0)
+    return float(row.get("dotcache_decode_ms_per_step", 0.0) or 0.0)
+
+
+def _comparison_decode_ms_p95(row: dict[str, Any]) -> float:
+    if row.get("comparison_decode_ms_per_step_p95") is not None:
+        return float(row.get("comparison_decode_ms_per_step_p95", 0.0) or 0.0)
+    return float(row.get("dotcache_decode_ms_per_step_p95", row.get("dotcache_decode_ms_per_step", 0.0)) or 0.0)
+
+
+def _comparison_ppl_ratio(row: dict[str, Any]) -> object:
+    if row.get("comparison_teacher_forced_perplexity_ratio") is not None:
+        return row.get("comparison_teacher_forced_perplexity_ratio")
+    return row.get("teacher_forced_perplexity_ratio")
+
+
+def _comparison_rmse(row: dict[str, Any]) -> object:
+    if row.get("comparison_teacher_forced_logit_rmse") is not None:
+        return row.get("comparison_teacher_forced_logit_rmse")
+    return row.get("teacher_forced_logit_rmse")
+
+
+def _comparison_official_score(row: dict[str, Any]) -> object:
+    if row.get("comparison_official_score") is not None:
+        return row.get("comparison_official_score")
+    if str(row.get("comparison_case") or "") == "dense":
+        return None
+    return row.get("longbench_official_score")
+
+
+def _matches_dense_output(row: dict[str, Any], dense_row: dict[str, Any]) -> object:
+    if not row or not dense_row:
+        return None
+    return float(_comparison_generated_text_cleaned(row).strip() == _comparison_generated_text_cleaned(dense_row).strip())
 
 
 def _validate_expected_cases(rows: list[dict[str, Any]]) -> None:
@@ -143,6 +206,11 @@ def _sample_output_table(rows: list[dict[str, Any]]) -> str:
             str(row["comparison_case"]),
         ),
     )
+    dense_by_prompt = {
+        _dense_prompt_key(row): row
+        for row in ordered
+        if str(row.get("comparison_case", "")) == "dense"
+    }
     table = [[
         "max_prompt_tokens",
         "prompt",
@@ -150,6 +218,9 @@ def _sample_output_table(rows: list[dict[str, Any]]) -> str:
         "task_family",
         "case",
         "official_score",
+        "matches_dense_output",
+        "exact_match",
+        "qa_f1",
         "generated",
     ]]
     for row in ordered:
@@ -160,8 +231,11 @@ def _sample_output_table(rows: list[dict[str, Any]]) -> str:
                 str(row.get("longbench_dataset", "")),
                 str(row.get("longbench_task_family", "")),
                 str(row.get("comparison_case", "")),
-                _fmt_float(row.get("longbench_official_score")),
-                str(row.get("longbench_generated_text_cleaned", row.get("longbench_prediction_scored", ""))).replace("\n", "\\n"),
+                _fmt_float(_comparison_official_score(row)),
+                _fmt_float(_matches_dense_output(row, dense_by_prompt.get(_dense_prompt_key(row), {}))),
+                _fmt_float(1.0 if _comparison_exact_match(row) else 0.0),
+                _fmt_float(_comparison_qa_f1(row)),
+                _comparison_generated_text_cleaned(row).replace("\n", "\\n"),
             ]
         )
     return _markdown_table(table)
@@ -169,24 +243,22 @@ def _sample_output_table(rows: list[dict[str, Any]]) -> str:
 
 def _build_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    dense_by_prompt = {
+        _dense_prompt_key(row): row
+        for row in rows
+        if str(row.get("comparison_case", "")) == "dense"
+    }
     for row in rows:
         grouped[_group_key(row)].append(row)
 
     summary_rows: list[dict[str, Any]] = []
     for (max_prompt_tokens, case), case_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
-        exact_match = [
-            (1.0 if row.get("longbench_answer_exact_match_cleaned") else 0.0)
-            for row in case_rows
-            if row.get("longbench_answer_exact_match_cleaned") is not None
-        ]
-        qa_f1 = [
-            float(row["longbench_qa_f1_max_cleaned"])
-            for row in case_rows
-            if row.get("longbench_qa_f1_max_cleaned") is not None
-        ]
-        decode = [float(row.get("dotcache_decode_ms_per_step", 0.0) or 0.0) for row in case_rows]
-        decode_p95 = [
-            float(row.get("dotcache_decode_ms_per_step_p95", row.get("dotcache_decode_ms_per_step", 0.0)) or 0.0)
+        exact_match = [1.0 if _comparison_exact_match(row) else 0.0 for row in case_rows]
+        qa_f1 = [_comparison_qa_f1(row) for row in case_rows]
+        decode = [_comparison_decode_ms(row) for row in case_rows]
+        decode_p95 = [_comparison_decode_ms_p95(row) for row in case_rows]
+        matches_dense = [
+            _matches_dense_output(row, dense_by_prompt.get(_dense_prompt_key(row), {}))
             for row in case_rows
         ]
         summary_rows.append(
@@ -194,21 +266,22 @@ def _build_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "max_prompt_tokens": int(max_prompt_tokens),
                 "comparison_case": case,
                 "n_rows": len(case_rows),
+                "mean_official_score": _mean_optional([_comparison_official_score(row) for row in case_rows]),
+                "mean_matches_dense_output": _mean_optional(matches_dense),
                 "mean_exact_match": _mean_optional(exact_match),
                 "mean_qa_f1": _mean_optional(qa_f1),
-                "mean_official_score": _mean_optional([row.get("longbench_official_score") for row in case_rows]),
                 "mean_decode_ms_per_step": float(mean(decode)),
                 "p95_decode_ms_per_step": float(mean(decode_p95)),
                 "mean_effective_bytes_per_token": _mean_optional(
                     [_effective_bytes_per_token(row) for row in case_rows]
                 ),
                 "mean_teacher_forced_perplexity_ratio": _mean_optional(
-                    [row.get("teacher_forced_perplexity_ratio") for row in case_rows]
+                    [_comparison_ppl_ratio(row) for row in case_rows]
                 ),
                 "mean_teacher_forced_logit_rmse": _mean_optional(
-                    [row.get("teacher_forced_logit_rmse") for row in case_rows]
+                    [_comparison_rmse(row) for row in case_rows]
                 ),
-                "worst_dataset_official_score": _mean_optional([row.get("longbench_official_score") for row in case_rows]),
+                "worst_dataset_official_score": _mean_optional([_comparison_official_score(row) for row in case_rows]),
             }
         )
     return summary_rows
@@ -216,6 +289,11 @@ def _build_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_family_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[int, str, str], list[dict[str, Any]]] = defaultdict(list)
+    dense_by_prompt = {
+        _dense_prompt_key(row): row
+        for row in rows
+        if str(row.get("comparison_case", "")) == "dense"
+    }
     for row in rows:
         grouped[_family_group_key(row)].append(row)
 
@@ -227,9 +305,12 @@ def _build_family_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "comparison_case": case,
                 "task_family": task_family,
                 "n_rows": len(family_rows),
-                "mean_official_score": _mean_optional([row.get("longbench_official_score") for row in family_rows]),
+                "mean_official_score": _mean_optional([_comparison_official_score(row) for row in family_rows]),
+                "mean_matches_dense_output": _mean_optional(
+                    [_matches_dense_output(row, dense_by_prompt.get(_dense_prompt_key(row), {})) for row in family_rows]
+                ),
                 "mean_decode_ms_per_step": _mean_optional(
-                    [row.get("dotcache_decode_ms_per_step") for row in family_rows]
+                    [_comparison_decode_ms(row) for row in family_rows]
                 ),
             }
         )
@@ -242,7 +323,7 @@ def _apply_worst_dataset_scores(summary_rows: list[dict[str, Any]], rows: list[d
         grouped[_dataset_group_key(row)].append(row)
     dataset_mins: dict[tuple[int, str], float] = {}
     for (max_prompt_tokens, case, _dataset), dataset_rows in grouped.items():
-        score = _mean_optional([row.get("longbench_official_score") for row in dataset_rows])
+        score = _mean_optional([_comparison_official_score(row) for row in dataset_rows])
         if score is None:
             continue
         key = (max_prompt_tokens, case)
@@ -256,15 +337,26 @@ def _apply_worst_dataset_scores(summary_rows: list[dict[str, Any]], rows: list[d
 def _build_tradeoff_rows(summary_rows: list[dict[str, Any]]) -> list[list[str]]:
     table = [[
         "max_prompt_tokens",
+        "exact_vs_dense_speedup",
+        "quality_vs_dense_speedup",
+        "systems_vs_dense_speedup",
+        "streaming_vs_dense_speedup",
+        "quest_vs_dense_speedup",
         "quality_vs_exact_speedup",
         "systems_vs_exact_speedup",
-        "systems_vs_quality_speedup",
         "streaming_vs_exact_speedup",
         "quest_vs_exact_speedup",
+        "systems_vs_quality_speedup",
+        "exact_matches_dense_output",
+        "quality_matches_dense_output",
+        "systems_matches_dense_output",
+        "streaming_matches_dense_output",
+        "quest_matches_dense_output",
         "quality_minus_systems_official_score",
     ]]
     summary_by_key = {(row["max_prompt_tokens"], row["comparison_case"]): row for row in summary_rows}
     for max_prompt_tokens in sorted({row["max_prompt_tokens"] for row in summary_rows}):
+        dense = summary_by_key.get((max_prompt_tokens, "dense"))
         exact = summary_by_key.get((max_prompt_tokens, "exact"))
         quality = summary_by_key.get((max_prompt_tokens, "quality"))
         systems = summary_by_key.get((max_prompt_tokens, "systems"))
@@ -274,6 +366,31 @@ def _build_tradeoff_rows(summary_rows: list[dict[str, Any]]) -> list[list[str]]:
             [
                 str(max_prompt_tokens),
                 _fmt_float(
+                    (dense["mean_decode_ms_per_step"] / exact["mean_decode_ms_per_step"])
+                    if dense and exact and exact["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(
+                    (dense["mean_decode_ms_per_step"] / quality["mean_decode_ms_per_step"])
+                    if dense and quality and quality["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(
+                    (dense["mean_decode_ms_per_step"] / systems["mean_decode_ms_per_step"])
+                    if dense and systems and systems["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(
+                    (dense["mean_decode_ms_per_step"] / streaming["mean_decode_ms_per_step"])
+                    if dense and streaming and streaming["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(
+                    (dense["mean_decode_ms_per_step"] / quest["mean_decode_ms_per_step"])
+                    if dense and quest and quest["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(
                     (exact["mean_decode_ms_per_step"] / quality["mean_decode_ms_per_step"])
                     if exact and quality and quality["mean_decode_ms_per_step"] > 0.0
                     else None
@@ -281,11 +398,6 @@ def _build_tradeoff_rows(summary_rows: list[dict[str, Any]]) -> list[list[str]]:
                 _fmt_float(
                     (exact["mean_decode_ms_per_step"] / systems["mean_decode_ms_per_step"])
                     if exact and systems and systems["mean_decode_ms_per_step"] > 0.0
-                    else None
-                ),
-                _fmt_float(
-                    (quality["mean_decode_ms_per_step"] / systems["mean_decode_ms_per_step"])
-                    if quality and systems and systems["mean_decode_ms_per_step"] > 0.0
                     else None
                 ),
                 _fmt_float(
@@ -298,6 +410,16 @@ def _build_tradeoff_rows(summary_rows: list[dict[str, Any]]) -> list[list[str]]:
                     if exact and quest and quest["mean_decode_ms_per_step"] > 0.0
                     else None
                 ),
+                _fmt_float(
+                    (quality["mean_decode_ms_per_step"] / systems["mean_decode_ms_per_step"])
+                    if quality and systems and systems["mean_decode_ms_per_step"] > 0.0
+                    else None
+                ),
+                _fmt_float(exact["mean_matches_dense_output"] if exact else None),
+                _fmt_float(quality["mean_matches_dense_output"] if quality else None),
+                _fmt_float(systems["mean_matches_dense_output"] if systems else None),
+                _fmt_float(streaming["mean_matches_dense_output"] if streaming else None),
+                _fmt_float(quest["mean_matches_dense_output"] if quest else None),
                 _fmt_float(
                     (quality["mean_official_score"] - systems["mean_official_score"])
                     if quality and systems and quality.get("mean_official_score") is not None and systems.get("mean_official_score") is not None
@@ -430,7 +552,7 @@ def _build_confidence_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     contexts = sorted({int(row["comparison_max_prompt_tokens"]) for row in rows})
     observed_cases = sorted({str(row["comparison_case"]) for row in rows})
-    comparison_targets = [case for case in observed_cases if case != "systems"]
+    comparison_targets = [case for case in observed_cases if case not in {"dense", "systems"}]
     output: list[dict[str, Any]] = []
     for max_prompt_tokens in contexts:
         for comparison_case in comparison_targets:
@@ -453,8 +575,8 @@ def _build_confidence_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     comparison_row = paired_rows.get((max_prompt_tokens, prompt_id, dataset, comparison_case))
                     if systems_row is None or comparison_row is None:
                         continue
-                    systems_score = systems_row.get("longbench_official_score")
-                    comparison_score = comparison_row.get("longbench_official_score")
+                    systems_score = _comparison_official_score(systems_row)
+                    comparison_score = _comparison_official_score(comparison_row)
                     if systems_score is None or comparison_score is None:
                         continue
                     prompt_deltas.append(float(systems_score) - float(comparison_score))
@@ -506,6 +628,7 @@ def build_report(
         "case",
         "n_rows",
         "mean_official_score",
+        "mean_matches_dense_output",
         "mean_exact_match",
         "mean_qa_f1",
         "mean_decode_ms",
@@ -519,9 +642,10 @@ def build_report(
         markdown_rows.append(
             [
                 str(summary["max_prompt_tokens"]),
-                summary["comparison_case"],
+                str(summary["comparison_case"]),
                 str(summary["n_rows"]),
                 _fmt_float(summary["mean_official_score"]),
+                _fmt_float(summary["mean_matches_dense_output"]),
                 _fmt_float(summary["mean_exact_match"]),
                 _fmt_float(summary["mean_qa_f1"]),
                 _fmt_float(summary["mean_decode_ms_per_step"]),
@@ -539,6 +663,7 @@ def build_report(
         "task_family",
         "n_rows",
         "mean_official_score",
+        "mean_matches_dense_output",
         "mean_decode_ms",
     ]]
     for row in family_breakdown_rows:
@@ -549,6 +674,7 @@ def build_report(
                 str(row["task_family"]),
                 str(row["n_rows"]),
                 _fmt_float(row["mean_official_score"]),
+                _fmt_float(row["mean_matches_dense_output"]),
                 _fmt_float(row["mean_decode_ms_per_step"]),
             ]
         )
