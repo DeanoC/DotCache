@@ -3783,6 +3783,7 @@ def run_qwen35_text_generation_harness(
     input_ids=None,
     attention_mask=None,
     max_new_tokens: int = 8,
+    stop_sequences: tuple[str, ...] = (),
     tokenizer=None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
@@ -3797,6 +3798,7 @@ def run_qwen35_text_generation_harness(
         tokenizer=tokenizer,
         multimodal_inputs=multimodal_inputs,
     )
+    _ = stop_sequences
 
     device = input_ids.device
     prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
@@ -8260,11 +8262,13 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     attention_mask=None,
     tokenizer=None,
     decode_steps: int = 4,
+    stop_sequences: tuple[str, ...] = (),
     profile_backend: bool = False,
     trace_python_allocations: bool = False,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
+    _ = stop_sequences
     input_ids, attention_mask = _normalize_text_inputs(
         adapter,
         prompt=prompt,
