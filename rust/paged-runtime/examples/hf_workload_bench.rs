@@ -959,6 +959,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (shared_prompt_token_ids, mut tokenization_elapsed) =
         build_prompt_token_ids(&model, &args.shared_prompt, args.shared_prompt_token_target)?;
+    if matches!(
+        args.runtime_mode,
+        RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental
+    ) && args.resident_page_budget.is_none()
+        && args.resident_byte_budget.is_none()
+        && args.restore_cooldown_window.is_none()
+    {
+        if let Some(policy) =
+            model.recommended_prompt_policy_for_token_count(shared_prompt_token_ids.len())?
+        {
+            model.apply_prompt_policy(&policy)?;
+        }
+    }
 
     let warmup_start = Instant::now();
     for warmup_index in 0..args.warmup_runs {
@@ -1302,8 +1315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         suffix_prefix: args.suffix_prefix.clone(),
         stress_mode: args.stress_mode,
         stress_suffix_repeats: args.stress_suffix_repeats,
-        resident_page_budget: args.resident_page_budget,
-        resident_byte_budget: args.resident_byte_budget,
+        resident_page_budget: model.resident_physical_page_budget(),
+        resident_byte_budget: model.resident_physical_byte_budget(),
         restore_cooldown_window: args
             .restore_cooldown_window
             .or_else(|| model.restore_cooldown_window()),

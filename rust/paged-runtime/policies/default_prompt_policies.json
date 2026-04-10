@@ -1,5 +1,5 @@
 {
-  "version": "2026-04-08",
+  "version": "2026-04-10",
   "policies": [
     {
       "family": "llama",
@@ -54,6 +54,42 @@
       "resident_byte_budget": null,
       "restore_cooldown_window": 8,
       "source": "hf_prompt_bucket_tune all qwen2 trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 token-buckets=32,128,512 bucket=129-512 recommended=pages-none_bytes-none_cooldown-8"
+    },
+    {
+      "family": "qwen35",
+      "min_prompt_tokens": 0,
+      "max_prompt_tokens": 32,
+      "resident_page_budget": 2,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "manual qwen35 paged tuning on Qwen/Qwen3.5-0.8B metal short bucket aligned with qwen2 short-page heuristic"
+    },
+    {
+      "family": "qwen35",
+      "min_prompt_tokens": 33,
+      "max_prompt_tokens": 128,
+      "resident_page_budget": 2,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "manual qwen35 paged tuning on Qwen/Qwen3.5-0.8B metal medium-short bucket aligned with qwen2 short-page heuristic"
+    },
+    {
+      "family": "qwen35",
+      "min_prompt_tokens": 129,
+      "max_prompt_tokens": 2047,
+      "resident_page_budget": null,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "manual qwen35 paged tuning on Qwen/Qwen3.5-0.8B metal mid-context bucket with no resident page cap"
+    },
+    {
+      "family": "qwen35",
+      "min_prompt_tokens": 2048,
+      "max_prompt_tokens": 16384,
+      "resident_page_budget": 32,
+      "resident_byte_budget": null,
+      "restore_cooldown_window": 8,
+      "source": "manual qwen35 paged tuning on Qwen/Qwen3.5-0.8B metal long-context sweep recommended=pages-32_bytes-none_cooldown-8"
     }
   ]
 }

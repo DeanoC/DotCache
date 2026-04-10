@@ -383,7 +383,20 @@ impl CandleDeviceSelector {
             Self::Cpu => Ok(candle_core::Device::Cpu),
             Self::Metal { ordinal } => candle_core::Device::new_metal(*ordinal).map_err(Into::into),
             Self::Cuda { ordinal } => candle_core::Device::new_cuda(*ordinal).map_err(Into::into),
-            Self::Hip { ordinal } => candle_core::Device::new_hip(*ordinal).map_err(Into::into),
+            Self::Hip { ordinal } => {
+                #[cfg(feature = "candle-hip")]
+                {
+                    candle_core::Device::new_hip(*ordinal).map_err(Into::into)
+                }
+                #[cfg(not(feature = "candle-hip"))]
+                {
+                    let _ = ordinal;
+                    Err(crate::RuntimeError::External {
+                        context: "backend_device",
+                        message: "HIP support requires a Candle checkout with the hip backend enabled".to_string(),
+                    })
+                }
+            }
         }
     }
 

@@ -11,7 +11,7 @@ hf = ["dep:hf-hub", "dep:serde", "dep:serde_json", "dep:tokenizers"]
 candle = ["hf", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
 candle-metal = ["candle", "dep:candle-metal-kernels", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-candle-hip = ["candle", "candle-core/hip", "candle-nn/hip", "candle-transformers/hip"]
+candle-hip = ["candle"]
 candle-accelerate = ["candle", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 
 [dependencies]

@@ -120,4 +120,16 @@ mod tests {
         assert_eq!(qwen_short.resident_page_budget, Some(2));
         assert_eq!(qwen_short.resident_byte_budget, Some(528));
     }
+
+    #[test]
+    fn default_policy_table_captures_qwen35_long_bucket_budget() {
+        let table = default_prompt_policy_table().expect("default policy table should load");
+        let qwen35_long = table
+            .recommended(ModelFamily::Qwen35, 8_192)
+            .expect("qwen35 long bucket");
+        assert_eq!(qwen35_long.min_prompt_tokens, 2_048);
+        assert_eq!(qwen35_long.max_prompt_tokens, 16_384);
+        assert_eq!(qwen35_long.resident_page_budget, Some(32));
+        assert_eq!(qwen35_long.resident_byte_budget, None);
+    }
 }
