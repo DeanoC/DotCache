@@ -1,4 +1,5 @@
 use crate::page::PageId;
+use crate::page_mode::PageModePolicy;
 use crate::virtual_page::{
     AppendPageResult, VirtualCacheMetrics, VirtualPageId, VirtualPagedKvCache, VirtualSeqCache,
 };
@@ -306,8 +307,30 @@ impl SessionRuntime {
         tokens_per_page: usize,
         head_dim: usize,
     ) -> Self {
+        Self::new_with_page_mode_policy(
+            layer_count,
+            kv_head_count,
+            tokens_per_page,
+            head_dim,
+            PageModePolicy::default(),
+        )
+    }
+
+    pub fn new_with_page_mode_policy(
+        layer_count: usize,
+        kv_head_count: usize,
+        tokens_per_page: usize,
+        head_dim: usize,
+        page_mode_policy: PageModePolicy,
+    ) -> Self {
         Self {
-            cache: VirtualPagedKvCache::new(layer_count, kv_head_count, tokens_per_page, head_dim),
+            cache: VirtualPagedKvCache::new_with_page_mode_policy(
+                layer_count,
+                kv_head_count,
+                tokens_per_page,
+                head_dim,
+                page_mode_policy,
+            ),
             sessions: Vec::new(),
         }
     }
@@ -318,6 +341,14 @@ impl SessionRuntime {
 
     pub fn cache_mut(&mut self) -> &mut VirtualPagedKvCache {
         &mut self.cache
+    }
+
+    pub fn page_mode_policy(&self) -> &PageModePolicy {
+        self.cache.page_mode_policy()
+    }
+
+    pub fn set_page_mode_policy(&mut self, policy: PageModePolicy) {
+        self.cache.set_page_mode_policy(policy);
     }
 
     pub fn session_count(&self) -> usize {

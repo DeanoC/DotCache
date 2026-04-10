@@ -7,7 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use candle_core::DType;
     use dotcache_paged_runtime::{
         AttentionPathMode, BackendDevice, CandleCausalLm, CandleDeviceSelector, CausalLm,
-        ModelFamily, RuntimeMode, RuntimeStageMetrics, SessionId, SessionRequestKind,
+        ModelFamily, PageModePolicy, PageModeSpec, RuntimeMode, RuntimeStageMetrics, SessionId,
+        SessionRequestKind,
     };
     use serde::Serialize;
     use serde_json::Value;
@@ -35,6 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        default_key_page_mode: Option<PageModeSpec>,
+        default_value_page_mode: Option<PageModeSpec>,
+        key_layer_page_modes: Option<String>,
+        value_layer_page_modes: Option<String>,
         sync_stage_profile: bool,
     }
 
@@ -91,6 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        default_key_page_mode: String,
+        default_value_page_mode: String,
+        key_layer_page_mode_overrides: Vec<String>,
+        value_layer_page_mode_overrides: Vec<String>,
         request_count: usize,
         prefill_request_count: usize,
         decode_request_count: usize,
@@ -153,10 +162,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         trace_jsonl_path: String,
     }
 
+    fn parse_override_arg(raw: &str) -> Result<Vec<(usize, PageModeSpec)>, String> {
+        PageModePolicy::parse_overrides(raw).map_err(|err| err.to_string())
+    }
+
+    fn build_page_mode_policy(
+        default_key: Option<PageModeSpec>,
+        default_value: Option<PageModeSpec>,
+        key_overrides: Option<&str>,
+        value_overrides: Option<&str>,
+    ) -> Result<PageModePolicy, String> {
+        let mut policy = PageModePolicy::exact();
+        if let Some(mode) = default_key {
+            policy
+                .set_default_key(mode)
+                .map_err(|err| err.to_string())?;
+        }
+        if let Some(mode) = default_value {
+            policy
+                .set_default_value(mode)
+                .map_err(|err| err.to_string())?;
+        }
+        if let Some(raw) = key_overrides {
+            for (layer, mode) in parse_override_arg(raw)? {
+                policy
+                    .set_override(dotcache_paged_runtime::PageSideKind::Key, layer, mode)
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+        if let Some(raw) = value_overrides {
+            for (layer, mode) in parse_override_arg(raw)? {
+                policy
+                    .set_override(dotcache_paged_runtime::PageSideKind::Value, layer, mode)
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+        Ok(policy)
+    }
+
+    fn describe_page_mode_policy(
+        policy: Option<&PageModePolicy>,
+    ) -> (String, String, Vec<String>, Vec<String>) {
+        let Some(policy) = policy else {
+            return (
+                "exact".to_string(),
+                "exact".to_string(),
+                Vec::new(),
+                Vec::new(),
+            );
+        };
+        (
+            policy.default_key().describe(),
+            policy.default_value().describe(),
+            policy
+                .key_overrides()
+                .iter()
+                .map(|(layer, mode)| format!("{layer}={}", mode.describe()))
+                .collect(),
+            policy
+                .value_overrides()
+                .iter()
+                .map(|(layer, mode)| format!("{layer}={}", mode.describe()))
+                .collect(),
+        )
+    }
+
     fn parse_args() -> Result<WorkloadArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
+            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let shared_prompt = args
@@ -188,6 +262,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            default_key_page_mode: None,
+            default_value_page_mode: None,
+            key_layer_page_modes: None,
+            value_layer_page_modes: None,
             sync_stage_profile: false,
         };
 
@@ -333,6 +411,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         value
                             .parse::<u64>()
                             .map_err(|err| format!("invalid --restore-cooldown: {err}"))?,
+                    );
+                }
+                "--default-key-page-mode" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
+                    parsed.default_key_page_mode = Some(
+                        value
+                            .parse::<PageModeSpec>()
+                            .map_err(|err| format!("{err}"))?,
+                    );
+                }
+                "--default-value-page-mode" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
+                    parsed.default_value_page_mode = Some(
+                        value
+                            .parse::<PageModeSpec>()
+                            .map_err(|err| format!("{err}"))?,
+                    );
+                }
+                "--key-layer-page-modes" => {
+                    parsed.key_layer_page_modes = Some(
+                        args.next()
+                            .ok_or_else(|| format!("missing value for {flag}"))?,
+                    );
+                }
+                "--value-layer-page-modes" => {
+                    parsed.value_layer_page_modes = Some(
+                        args.next()
+                            .ok_or_else(|| format!("missing value for {flag}"))?,
                     );
                 }
                 other => return Err(format!("unknown flag {other}")),
@@ -847,6 +957,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            default_key_page_mode: "exact".to_string(),
+            default_value_page_mode: "exact".to_string(),
+            key_layer_page_mode_overrides: Vec::new(),
+            value_layer_page_mode_overrides: Vec::new(),
             request_count: 0,
             prefill_request_count: 0,
             decode_request_count: 0,
@@ -944,6 +1058,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.tokens_per_page,
         args.runtime_mode,
     )?;
+    let page_mode_policy = build_page_mode_policy(
+        args.default_key_page_mode.clone(),
+        args.default_value_page_mode.clone(),
+        args.key_layer_page_modes.as_deref(),
+        args.value_layer_page_modes.as_deref(),
+    )?;
+    model.set_page_mode_policy(page_mode_policy);
     if let Some(attention_path) = args.attention_path {
         model.set_attention_path(attention_path);
     }
@@ -1285,6 +1406,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     stage_metrics.tokenization_millis += millis(tokenization_elapsed);
     let cache_metrics = model.cache_metrics().cloned().unwrap_or_default();
     let cache = model.paged_cache();
+    let (
+        default_key_page_mode,
+        default_value_page_mode,
+        key_layer_page_mode_overrides,
+        value_layer_page_mode_overrides,
+    ) = describe_page_mode_policy(model.page_mode_policy());
 
     let trace_path = PathBuf::from(format!("{}.trace.jsonl", args.out_prefix));
     let summary_path = PathBuf::from(format!("{}.summary.json", args.out_prefix));
@@ -1320,6 +1447,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         restore_cooldown_window: args
             .restore_cooldown_window
             .or_else(|| model.restore_cooldown_window()),
+        default_key_page_mode,
+        default_value_page_mode,
+        key_layer_page_mode_overrides,
+        value_layer_page_mode_overrides,
         request_count,
         prefill_request_count,
         decode_request_count,

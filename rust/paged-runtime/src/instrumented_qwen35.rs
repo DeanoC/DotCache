@@ -233,21 +233,27 @@ impl InstrumentedQwen35 {
     pub fn empty_cache_state(&self) -> candle_transformers::models::qwen3_5::CacheState {
         let full_attention_layers: HashSet<_> =
             self.model.full_attention_layer_ids().into_iter().collect();
-        let linear_attention_layers: HashSet<_> =
-            self.model.linear_attention_layer_ids().into_iter().collect();
-        let layer_count = full_attention_layers.len() + linear_attention_layers.len();
-        let layers = (0..layer_count)
-            .map(|layer_id| {
-                if full_attention_layers.contains(&layer_id) {
-                    candle_transformers::models::qwen3_5::LayerCacheState::Full(Default::default())
-                } else {
-                    debug_assert!(linear_attention_layers.contains(&layer_id));
-                    candle_transformers::models::qwen3_5::LayerCacheState::Linear(
-                        Default::default(),
-                    )
-                }
-            })
+        let linear_attention_layers: HashSet<_> = self
+            .model
+            .linear_attention_layer_ids()
+            .into_iter()
             .collect();
+        let layer_count = full_attention_layers.len() + linear_attention_layers.len();
+        let layers =
+            (0..layer_count)
+                .map(|layer_id| {
+                    if full_attention_layers.contains(&layer_id) {
+                        candle_transformers::models::qwen3_5::LayerCacheState::Full(
+                            Default::default(),
+                        )
+                    } else {
+                        debug_assert!(linear_attention_layers.contains(&layer_id));
+                        candle_transformers::models::qwen3_5::LayerCacheState::Linear(
+                            Default::default(),
+                        )
+                    }
+                })
+                .collect();
         candle_transformers::models::qwen3_5::CacheState { layers }
     }
 }

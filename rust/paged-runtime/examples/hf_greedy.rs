@@ -3,12 +3,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use candle_core::DType;
     use dotcache_paged_runtime::{
         greedy_generate, AttentionPathMode, CandleCausalLm, CandleDeviceSelector, ModelFamily,
-        RuntimeMode,
+        PageModePolicy, PageModeSpec, RuntimeMode,
     };
 
     let mut args = std::env::args().skip(1);
     let family = args.next().ok_or(
-        "usage: hf_greedy <family> <model_id> <prompt> [max_new_tokens] [tokens_per_page] [trace_jsonl_path] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused]",
+        "usage: hf_greedy <family> <model_id> <prompt> [max_new_tokens] [tokens_per_page] [trace_jsonl_path] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...]",
     )?;
     let model_id = args.next().ok_or("missing model_id")?;
     let prompt = args.next().ok_or("missing prompt")?;
@@ -16,6 +16,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut device = CandleDeviceSelector::Cpu;
     let mut runtime_mode = RuntimeMode::PagedControl;
     let mut attention_path = None;
+    let mut default_key_page_mode = None;
+    let mut default_value_page_mode = None;
+    let mut key_layer_page_modes: Option<String> = None;
+    let mut value_layer_page_modes: Option<String> = None;
     while let Some(arg) = args.next() {
         if arg == "--device" {
             let value = args.next().ok_or("missing value for --device")?;
@@ -26,6 +30,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if arg == "--attention-path" {
             let value = args.next().ok_or("missing value for --attention-path")?;
             attention_path = Some(value.parse::<AttentionPathMode>()?);
+        } else if arg == "--default-key-page-mode" {
+            let value = args
+                .next()
+                .ok_or("missing value for --default-key-page-mode")?;
+            default_key_page_mode = Some(value.parse::<PageModeSpec>()?);
+        } else if arg == "--default-value-page-mode" {
+            let value = args
+                .next()
+                .ok_or("missing value for --default-value-page-mode")?;
+            default_value_page_mode = Some(value.parse::<PageModeSpec>()?);
+        } else if arg == "--key-layer-page-modes" {
+            key_layer_page_modes = Some(
+                args.next()
+                    .ok_or("missing value for --key-layer-page-modes")?,
+            );
+        } else if arg == "--value-layer-page-modes" {
+            value_layer_page_modes = Some(
+                args.next()
+                    .ok_or("missing value for --value-layer-page-modes")?,
+            );
         } else {
             positional.push(arg);
         }
@@ -58,6 +82,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokens_per_page,
         runtime_mode,
     )?;
+    let mut page_mode_policy = PageModePolicy::exact();
+    if let Some(mode) = default_key_page_mode {
+        page_mode_policy.set_default_key(mode)?;
+    }
+    if let Some(mode) = default_value_page_mode {
+        page_mode_policy.set_default_value(mode)?;
+    }
+    if let Some(raw) = key_layer_page_modes.as_deref() {
+        for (layer, mode) in PageModePolicy::parse_overrides(raw)? {
+            page_mode_policy.set_override(
+                dotcache_paged_runtime::PageSideKind::Key,
+                layer,
+                mode,
+            )?;
+        }
+    }
+    if let Some(raw) = value_layer_page_modes.as_deref() {
+        for (layer, mode) in PageModePolicy::parse_overrides(raw)? {
+            page_mode_policy.set_override(
+                dotcache_paged_runtime::PageSideKind::Value,
+                layer,
+                mode,
+            )?;
+        }
+    }
+    model.set_page_mode_policy(page_mode_policy);
     if let Some(attention_path) = attention_path {
         model.set_attention_path(attention_path);
     }

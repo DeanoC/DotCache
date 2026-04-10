@@ -1,5 +1,6 @@
 use crate::cache::PagedKvCache;
 use crate::page::{KvPage, PageId};
+use crate::page_mode::{PageModePolicy, PageSideKind};
 use crate::{Result, RuntimeError};
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -249,8 +250,30 @@ impl VirtualPagedKvCache {
         tokens_per_page: usize,
         head_dim: usize,
     ) -> Self {
+        Self::new_with_page_mode_policy(
+            layer_count,
+            kv_head_count,
+            tokens_per_page,
+            head_dim,
+            PageModePolicy::default(),
+        )
+    }
+
+    pub fn new_with_page_mode_policy(
+        layer_count: usize,
+        kv_head_count: usize,
+        tokens_per_page: usize,
+        head_dim: usize,
+        page_mode_policy: PageModePolicy,
+    ) -> Self {
         Self {
-            physical: PagedKvCache::new(layer_count, kv_head_count, tokens_per_page, head_dim),
+            physical: PagedKvCache::new_with_page_mode_policy(
+                layer_count,
+                kv_head_count,
+                tokens_per_page,
+                head_dim,
+                page_mode_policy,
+            ),
             virtual_seq: VirtualSeqCache::new(layer_count, kv_head_count),
             virtual_table: VirtualPageTable::default(),
             pinned_physical_pages: HashMap::new(),
@@ -266,6 +289,14 @@ impl VirtualPagedKvCache {
 
     pub fn physical(&self) -> &PagedKvCache {
         &self.physical
+    }
+
+    pub fn page_mode_policy(&self) -> &PageModePolicy {
+        self.physical.page_mode_policy()
+    }
+
+    pub fn set_page_mode_policy(&mut self, policy: PageModePolicy) {
+        self.physical.set_page_mode_policy(policy);
     }
 
     pub fn layer_count(&self) -> usize {
@@ -798,7 +829,7 @@ fn append_token_to_seq(
         let page = physical.page_mut(physical_page_id)?;
         page.push_token(k_row, v_row)?;
         if page.is_full(tokens_per_page) {
-            page.seal();
+            page.seal()?;
             sealed = true;
         }
     }
@@ -828,8 +859,18 @@ fn allocate_virtual_page(
     kv_head: usize,
     pos: u32,
 ) -> Result<(PageId, VirtualPageId, bool)> {
-    let page_id =
-        physical.push_detached_page(KvPage::new(layer, kv_head, pos, physical.head_dim())?);
+    let page_id = physical.push_detached_page(KvPage::new_with_modes(
+        layer,
+        kv_head,
+        pos,
+        physical.head_dim(),
+        physical
+            .page_mode_policy()
+            .resolve(PageSideKind::Key, layer),
+        physical
+            .page_mode_policy()
+            .resolve(PageSideKind::Value, layer),
+    )?);
     let page = physical.page(page_id)?.clone();
     let virtual_page_id = virtual_table.map_physical(page_id, &page);
     seq.layers[layer].virtual_pages_by_kv_head[kv_head].push(virtual_page_id);

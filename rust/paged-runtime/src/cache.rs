@@ -1,6 +1,6 @@
 use crate::page::{KvPage, PageId};
+use crate::page_mode::{PageModePolicy, PageSideKind};
 use crate::{Result, RuntimeError};
-use half::f16;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
@@ -43,49 +43,24 @@ pub struct PageStore {
 
 #[derive(Clone, Debug)]
 struct SpilledKvPage {
-    layer: u16,
-    kv_head: u16,
-    token_start: u32,
-    token_count: u16,
-    sealed: bool,
-    head_dim: u16,
-    k_bits: Vec<u16>,
-    v_bits: Vec<u16>,
+    page: KvPage,
 }
 
 impl SpilledKvPage {
     fn from_page(page: KvPage) -> Self {
-        Self {
-            layer: page.layer,
-            kv_head: page.kv_head,
-            token_start: page.token_start,
-            token_count: page.token_count,
-            sealed: page.sealed,
-            head_dim: page.head_dim,
-            k_bits: page.k.into_iter().map(f16::to_bits).collect(),
-            v_bits: page.v.into_iter().map(f16::to_bits).collect(),
-        }
+        Self { page }
     }
 
     fn restore(self) -> KvPage {
-        KvPage {
-            layer: self.layer,
-            kv_head: self.kv_head,
-            token_start: self.token_start,
-            token_count: self.token_count,
-            sealed: self.sealed,
-            head_dim: self.head_dim,
-            k: self.k_bits.into_iter().map(f16::from_bits).collect(),
-            v: self.v_bits.into_iter().map(f16::from_bits).collect(),
-        }
+        self.page
     }
 
     fn token_len(&self) -> usize {
-        usize::from(self.token_count)
+        self.page.token_len()
     }
 
     fn kv_byte_len(&self) -> usize {
-        (self.k_bits.len() + self.v_bits.len()) * std::mem::size_of::<u16>()
+        self.page.kv_byte_len()
     }
 }
 
@@ -360,6 +335,7 @@ impl PageStore {
 pub struct PagedKvCache {
     tokens_per_page: usize,
     head_dim: usize,
+    page_mode_policy: PageModePolicy,
     seq: SeqCache,
     store: PageStore,
 }
@@ -371,11 +347,28 @@ impl PagedKvCache {
         tokens_per_page: usize,
         head_dim: usize,
     ) -> Self {
+        Self::new_with_page_mode_policy(
+            layer_count,
+            kv_head_count,
+            tokens_per_page,
+            head_dim,
+            PageModePolicy::default(),
+        )
+    }
+
+    pub fn new_with_page_mode_policy(
+        layer_count: usize,
+        kv_head_count: usize,
+        tokens_per_page: usize,
+        head_dim: usize,
+        page_mode_policy: PageModePolicy,
+    ) -> Self {
         assert!(tokens_per_page > 0, "tokens_per_page must be positive");
         assert!(head_dim > 0, "head_dim must be positive");
         Self {
             tokens_per_page,
             head_dim,
+            page_mode_policy,
             seq: SeqCache::new(layer_count, kv_head_count),
             store: PageStore::default(),
         }
@@ -391,6 +384,14 @@ impl PagedKvCache {
 
     pub fn seq(&self) -> &SeqCache {
         &self.seq
+    }
+
+    pub fn page_mode_policy(&self) -> &PageModePolicy {
+        &self.page_mode_policy
+    }
+
+    pub fn set_page_mode_policy(&mut self, policy: PageModePolicy) {
+        self.page_mode_policy = policy;
     }
 
     pub fn store(&self) -> &PageStore {
@@ -465,7 +466,7 @@ impl PagedKvCache {
             let page = self.store.page_mut(page_id)?;
             page.push_token(k_row, v_row)?;
             if page.is_full(self.tokens_per_page) {
-                page.seal();
+                page.seal()?;
                 sealed = true;
             }
         }
@@ -531,7 +532,14 @@ impl PagedKvCache {
     }
 
     fn allocate_page(&mut self, layer: usize, kv_head: usize, pos: u32) -> Result<PageId> {
-        let page = KvPage::new(layer, kv_head, pos, self.head_dim)?;
+        let page = KvPage::new_with_modes(
+            layer,
+            kv_head,
+            pos,
+            self.head_dim,
+            self.page_mode_policy.resolve(PageSideKind::Key, layer),
+            self.page_mode_policy.resolve(PageSideKind::Value, layer),
+        )?;
         let page_id = self.store.push(page);
         self.seq.layers[layer].pages_by_kv_head[kv_head].push(page_id);
         self.seq.layers[layer].live_by_kv_head[kv_head] = Some(page_id);
@@ -547,7 +555,7 @@ mod tests {
     fn spilled_page_ids_are_not_reused_for_new_pages() {
         let mut store = PageStore::default();
         let mut spilled_page = KvPage::new(0, 0, 0, 4).expect("page");
-        spilled_page.seal();
+        spilled_page.seal().expect("seal");
         let spilled_page_id = store.push(spilled_page);
 
         assert!(store.spill(spilled_page_id).expect("spill page"));
@@ -570,7 +578,7 @@ mod tests {
     fn device_only_page_ids_are_not_reused_for_new_pages() {
         let mut store = PageStore::default();
         let mut sealed_page = KvPage::new(0, 0, 0, 4).expect("page");
-        sealed_page.seal();
+        sealed_page.seal().expect("seal");
         let page_id = store.push(sealed_page);
 
         assert!(store.promote_device_only(page_id).expect("promote page"));

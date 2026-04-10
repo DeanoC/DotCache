@@ -1,5 +1,3 @@
-use half::f16;
-
 use crate::cache::PageStore;
 use crate::page::{KvPage, PageId};
 use crate::{Result, RuntimeError};
@@ -171,29 +169,13 @@ impl PageBackend for CpuReferenceBackend {
 
     fn score(&self, q: &[f32], page: &Self::Prepared<'_>, logits_out: &mut Vec<f32>) -> Result<()> {
         let page = *page;
-        for token_index in 0..page.token_len() {
-            logits_out.push(dot(q, page.key_row(token_index)));
-        }
-        Ok(())
+        page.score_keys(q, logits_out)
     }
 
     fn mix(&self, weights: &[f32], page: &Self::Prepared<'_>, out: &mut [f32]) -> Result<()> {
         let page = *page;
-        debug_assert_eq!(weights.len(), page.token_len());
-        for (token_index, weight) in weights.iter().copied().enumerate() {
-            for (out_value, value) in out.iter_mut().zip(page.value_row(token_index).iter()) {
-                *out_value += weight * value.to_f32();
-            }
-        }
-        Ok(())
+        page.mix_values(weights, out)
     }
-}
-
-fn dot(lhs: &[f32], rhs: &[f16]) -> f32 {
-    lhs.iter()
-        .zip(rhs.iter())
-        .map(|(lhs, rhs)| lhs * rhs.to_f32())
-        .sum()
 }
 
 #[cfg(feature = "candle-metal")]
@@ -393,7 +375,9 @@ impl CandleDeviceSelector {
                     let _ = ordinal;
                     Err(crate::RuntimeError::External {
                         context: "backend_device",
-                        message: "HIP support requires a Candle checkout with the hip backend enabled".to_string(),
+                        message:
+                            "HIP support requires a Candle checkout with the hip backend enabled"
+                                .to_string(),
                     })
                 }
             }
@@ -668,16 +652,8 @@ impl CandlePageBackend {
     fn build_prepared_page(&self, page: &KvPage) -> Result<CachedPreparedPage> {
         let token_count = page.token_len();
         let head_dim = page.head_dim_usize();
-        let key = page
-            .k
-            .iter()
-            .map(|value| value.to_f32())
-            .collect::<Vec<_>>();
-        let value = page
-            .v
-            .iter()
-            .map(|value| value.to_f32())
-            .collect::<Vec<_>>();
+        let key = page.dense_key_storage_f32();
+        let value = page.dense_value_storage_f32();
         Ok(CachedPreparedPage {
             prepared: CandlePreparedPage {
                 key: candle_core::Tensor::from_vec(key, (token_count, head_dim), &self.device)?,
@@ -769,11 +745,18 @@ impl CandlePageBackend {
         let mut value_tensors = Vec::with_capacity(page_ids.len());
 
         for &page_id in page_ids {
+            let page = store.page(page_id)?;
+            if !page.is_exact_fused_compatible() {
+                return Err(RuntimeError::FusedAttentionRequiresExactPages {
+                    page_id,
+                    key_mode: page.key_mode().describe(),
+                    value_mode: page.value_mode().describe(),
+                });
+            }
             let prepared =
                 if let Some(prepared) = self.prepare_cached(page_id, expected_head_dim)? {
                     prepared
                 } else {
-                    let page = store.page(page_id)?;
                     page.validate_layout(page_id)?;
                     if page.head_dim_usize() != expected_head_dim {
                         return Err(RuntimeError::DimensionMismatch {
@@ -1164,10 +1147,12 @@ impl PageBackend for CandlePageBackend {
     }
 }
 
+#[cfg(feature = "candle")]
 fn attention_score_scale(head_dim: usize) -> f32 {
     1.0 / (head_dim as f32).sqrt()
 }
 
+#[cfg(feature = "candle")]
 fn apply_softmax_in_place(logits: &mut [f32], score_scale: f32) {
     if logits.is_empty() {
         return;
