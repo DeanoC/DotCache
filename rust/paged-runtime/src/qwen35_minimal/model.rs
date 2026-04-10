@@ -3,8 +3,8 @@
 #[cfg(feature = "qwen35-minimal-hip")]
 use super::hip;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
-use candle_core as candle;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
+use candle_core as candle;
 use candle_nn::{conv1d_no_bias, embedding, ops, Conv1d, Conv1dConfig, Embedding, VarBuilder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,8 +20,7 @@ fn repeat_kv(xs: Tensor, repeats: usize) -> Result<Tensor> {
     }
     let (b_sz, kv_heads, seq_len, head_dim) = xs.dims4()?;
     let repeated = vec![&xs; repeats];
-    Tensor::cat(&repeated, 2)?
-        .reshape((b_sz, kv_heads * repeats, seq_len, head_dim))
+    Tensor::cat(&repeated, 2)?.reshape((b_sz, kv_heads * repeats, seq_len, head_dim))
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -508,9 +507,9 @@ impl candle::CustomOp2 for HipRmsNorm {
         }
 
         let xs_dims = xs_layout.shape().dims();
-        let n_cols = *xs_dims
-            .last()
-            .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+        let n_cols = *xs_dims.last().ok_or_else(|| {
+            candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
+        })?;
         let n_rows = xs_layout.shape().elem_count() / n_cols;
         let weight_dim = weight_layout.shape().elem_count();
         if n_rows != self.n_rows || n_cols != self.n_cols || weight_dim != self.n_cols {
@@ -652,9 +651,9 @@ fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -
         weight.to_dtype(xs.dtype())?
     };
     let xs_dims = xs.dims();
-    let n_cols = *xs_dims
-        .last()
-        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_cols = *xs_dims.last().ok_or_else(|| {
+        candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
+    })?;
     let n_rows = xs.elem_count() / n_cols;
     xs.apply_op2_no_bwd(
         &weight,
@@ -667,7 +666,12 @@ fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -
     )
 }
 
-fn hip_rms_norm_gated(hidden_states: &Tensor, gate: &Tensor, weight: &Tensor, eps: f64) -> Result<Tensor> {
+fn hip_rms_norm_gated(
+    hidden_states: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Tensor> {
     let hidden_states = hidden_states.contiguous()?;
     let gate = gate.contiguous()?;
     let gate = if gate.dtype() == hidden_states.dtype() {
@@ -735,7 +739,10 @@ impl Qwen35RmsNormGated {
     }
 
     fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
-        if hidden_states.device().is_hip() && gate.device().is_hip() && self.weight.device().is_hip() {
+        if hidden_states.device().is_hip()
+            && gate.device().is_hip()
+            && self.weight.device().is_hip()
+        {
             return hip_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
         }
         let out_dtype = hidden_states.dtype();
@@ -827,9 +834,9 @@ impl candle::CustomOp1 for HipL2Norm {
             candle::bail!("dotcache-hip-l2norm requires contiguous input")
         }
         let dims = layout.shape().dims();
-        let n_cols = *dims
-            .last()
-            .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+        let n_cols = *dims.last().ok_or_else(|| {
+            candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into())
+        })?;
         let n_rows = layout.shape().elem_count() / n_cols;
         if n_rows != self.n_rows || n_cols != self.n_cols {
             candle::bail!(
@@ -1011,6 +1018,23 @@ fn recommended_metal_linear_chunk_size(sequence_length: usize) -> usize {
     }
 }
 
+fn recommended_hip_linear_chunk_size(sequence_length: usize) -> usize {
+    match sequence_length {
+        0..=4 => 4,
+        5..=8 => 8,
+        9..=16 => 16,
+        17..=32 => 32,
+        _ => 64,
+    }
+}
+
+fn use_hip_short_linear_chunks() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_HIP_SHORT_LINEAR_CHUNKS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
 fn debug_linear_chunk_choice(sequence_length: usize, chunk_size: usize) {
     static LOGGED: AtomicBool = AtomicBool::new(false);
     if std::env::var("CANDLE_QWEN35_DEBUG_CHUNK").is_ok() && !LOGGED.swap(true, Ordering::Relaxed) {
@@ -1032,6 +1056,9 @@ fn linear_attention_chunk_size(device: &Device, sequence_length: usize) -> usize
     }
     let chunk_size = match device.location() {
         DeviceLocation::Metal { .. } => recommended_metal_linear_chunk_size(sequence_length),
+        DeviceLocation::Hip { .. } if use_hip_short_linear_chunks() => {
+            recommended_hip_linear_chunk_size(sequence_length)
+        }
         _ => 64,
     };
     debug_linear_chunk_choice(sequence_length, chunk_size);
@@ -1246,6 +1273,33 @@ fn use_linear_prefill_packed_kernel(device: &Device, sequence_length: usize) -> 
     }
 }
 
+fn use_hip_short_linear_prefill_recurrent(device: &Device, sequence_length: usize) -> bool {
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && sequence_length > 1
+        && sequence_length <= linear_attention_chunk_size(device, sequence_length)
+        && matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_SHORT_LINEAR_PREFILL_RECURRENT").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+}
+
+fn use_hip_chunk_single_prefill_kernel(
+    device: &Device,
+    sequence_length: usize,
+    num_chunks: usize,
+    chunk_size: usize,
+) -> bool {
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && num_chunks == 1
+        && sequence_length > 1
+        && sequence_length <= chunk_size
+        && chunk_size <= 64
+        && !matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_CHUNK_SINGLE_PREFILL").as_deref(),
+            Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO")
+        )
+}
+
 fn use_full_attention_prefill_megakernel(
     device: &Device,
     q_len: usize,
@@ -1275,19 +1329,20 @@ fn use_full_attention_prefill_megakernel(
             std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         ),
-        DeviceLocation::Hip { .. } => match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL")
-        {
-            Ok(value)
-                if matches!(
-                    value.as_str(),
-                    "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
-                ) =>
-            {
-                false
+        DeviceLocation::Hip { .. } => {
+            match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
+                Ok(value)
+                    if matches!(
+                        value.as_str(),
+                        "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
+                    ) =>
+                {
+                    false
+                }
+                Ok(_) => true,
+                Err(_) => true,
             }
-            Ok(_) => true,
-            Err(_) => true,
-        },
+        }
         _ => false,
     }
 }
@@ -1303,19 +1358,20 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
-        DeviceLocation::Hip { .. } => match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL")
-        {
-            Ok(value)
-                if matches!(
-                    value.as_str(),
-                    "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
-                ) =>
-            {
-                false
+        DeviceLocation::Hip { .. } => {
+            match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
+                Ok(value)
+                    if matches!(
+                        value.as_str(),
+                        "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
+                    ) =>
+                {
+                    false
+                }
+                Ok(_) => true,
+                Err(_) => true,
             }
-            Ok(_) => true,
-            Err(_) => true,
-        },
+        }
         _ => false,
     }
 }
@@ -2017,7 +2073,9 @@ pub fn paged_attention_decode_megakernel(
     if batch_queries == 0 {
         candle::bail!("paged-attention-decode-megakernel requires at least one query row")
     }
-    let query = queries.contiguous()?.reshape((1, batch_queries, 1, head_dim))?;
+    let query = queries
+        .contiguous()?
+        .reshape((1, batch_queries, 1, head_dim))?;
     let key = key.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
     let value = value.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
     Ok(full_attention_prefill_megakernel(
@@ -3028,7 +3086,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -3073,77 +3131,30 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
 
         let device = initial_state.device().clone();
         let storage_dtype = initial_state.dtype();
-        let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape = candle::Shape::from_dims(&[batch_heads, seq_len + k_head_dim, v_head_dim]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let initial_state = initial_state.cpu_storage().as_slice::<$ty>()?;
-                let initial_state = match initial_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &initial_state[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let query = query.cpu_storage().as_slice::<$ty>()?;
-                let query = match query_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &query[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let key = key.cpu_storage().as_slice::<$ty>()?;
-                let key = match key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &key[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let beta = beta.cpu_storage().as_slice::<$ty>()?;
-                let beta = match beta_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &beta[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let g = g.cpu_storage().as_slice::<$ty>()?;
-                let g = match g_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &g[o1..o2],
-                    None => candle::bail!("delta-recurrent-prefill requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_recurrent_prefill(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        seq_len,
-                        k_head_dim,
-                        v_head_dim,
-                        initial_state.as_ptr() as *const c_void,
-                        query.as_ptr() as *const c_void,
-                        key.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        beta.as_ptr() as *const c_void,
-                        g.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_recurrent_prefill(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                seq_len,
+                k_head_dim,
+                v_head_dim,
+                initial_state.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                    as *const c_void,
+                query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-recurrent-prefill unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -3156,6 +3167,130 @@ fn delta_recurrent_prefill(
     g: &Tensor,
 ) -> Result<Tensor> {
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaRecurrentPrefill)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeltaChunkSinglePrefill;
+
+impl candle::CustomOp6 for DeltaChunkSinglePrefill {
+    fn name(&self) -> &'static str {
+        "delta-chunk-single-prefill"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-chunk-single-prefill has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        initial_state: &candle::HipStorage,
+        initial_layout: &candle::Layout,
+        query: &candle::HipStorage,
+        query_layout: &candle::Layout,
+        key: &candle::HipStorage,
+        key_layout: &candle::Layout,
+        value: &candle::HipStorage,
+        value_layout: &candle::Layout,
+        beta: &candle::HipStorage,
+        beta_layout: &candle::Layout,
+        g: &candle::HipStorage,
+        g_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(initial_layout.is_contiguous()
+            && query_layout.is_contiguous()
+            && key_layout.is_contiguous()
+            && value_layout.is_contiguous()
+            && beta_layout.is_contiguous()
+            && g_layout.is_contiguous())
+        {
+            candle::bail!("delta-chunk-single-prefill requires contiguous inputs")
+        }
+
+        let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+        let (query_bh, chunk_size, query_k) = query_layout.shape().dims3()?;
+        let (key_bh, key_chunk, key_k) = key_layout.shape().dims3()?;
+        let (value_bh, value_chunk, value_v) = value_layout.shape().dims3()?;
+        let (beta_bh, beta_chunk) = beta_layout.shape().dims2()?;
+        let (g_bh, g_chunk) = g_layout.shape().dims2()?;
+        if query_bh != batch_heads
+            || key_bh != batch_heads
+            || value_bh != batch_heads
+            || beta_bh != batch_heads
+            || g_bh != batch_heads
+            || key_chunk != chunk_size
+            || value_chunk != chunk_size
+            || beta_chunk != chunk_size
+            || g_chunk != chunk_size
+            || query_k != k_head_dim
+            || key_k != k_head_dim
+            || value_v != v_head_dim
+        {
+            candle::bail!(
+                "delta-chunk-single-prefill shape mismatch: initial={:?} query={:?} key={:?} value={:?} beta={:?} g={:?}",
+                initial_layout.shape().dims(),
+                query_layout.shape().dims(),
+                key_layout.shape().dims(),
+                value_layout.shape().dims(),
+                beta_layout.shape().dims(),
+                g_layout.shape().dims()
+            )
+        }
+
+        let device = initial_state.device().clone();
+        let storage_dtype = initial_state.dtype();
+        let out_shape =
+            candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_chunk_single_prefill(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_chunk_single_prefill(
+    initial_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Tensor> {
+    initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkSinglePrefill)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6000,12 +6135,7 @@ impl FullAttention {
             .to_dtype(DType::F32)?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
-        } else if use_full_attention_prefill_megakernel(
-            device,
-            q_len,
-            kv_len,
-            seqlen_offset,
-        ) {
+        } else if use_full_attention_prefill_megakernel(device, q_len, kv_len, seqlen_offset) {
             let kernel_start = profile_start(device)?;
             let output = full_attention_prefill_megakernel(
                 &query_states,
@@ -6077,10 +6207,8 @@ impl FullAttention {
             .to_dtype(DType::F32)?
         } else {
             let kv_materialize_start = profile_start(device)?;
-            let key_states =
-                repeat_kv(key_states.clone(), self.num_kv_groups)?.contiguous()?;
-            let value_states =
-                repeat_kv(value_states.clone(), self.num_kv_groups)?.contiguous()?;
+            let key_states = repeat_kv(key_states.clone(), self.num_kv_groups)?.contiguous()?;
+            let value_states = repeat_kv(value_states.clone(), self.num_kv_groups)?.contiguous()?;
             let kv_materialize_elapsed = profile_elapsed(kv_materialize_start, device)?;
             profile.layout_prepare_millis += kv_materialize_elapsed;
             profile.full_attention_kv_materialize_millis += kv_materialize_elapsed;
@@ -6437,11 +6565,11 @@ impl GatedDeltaNet {
         let eye_2d = Tensor::eye(chunk_size, compute_dtype, query.device())?
             .reshape((1, chunk_size, chunk_size))?;
         let strict_lower_2d = lower_2d.broadcast_sub(&eye_2d)?;
-        let decay_mask = g
+        let decay_deltas = g
             .unsqueeze(3)?
             .broadcast_sub(&g.unsqueeze(2)?)?
-            .exp()?
             .broadcast_mul(&lower_2d)?;
+        let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower_2d)?;
         let exp_g = g.exp()?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
@@ -6488,9 +6616,12 @@ impl GatedDeltaNet {
         let weighted_k_flat = weighted_k
             .reshape((solve_batch, chunk_size, k_head_dim))?
             .contiguous()?;
-        let k_cumdecay = attn_flat
-            .matmul(&weighted_k_flat)?
-            .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
+        let k_cumdecay = attn_flat.matmul(&weighted_k_flat)?.reshape((
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+        ))?;
         profile.linear_chunk_solve_millis += profile_elapsed(solve_start, device)?;
 
         let scan_start = profile_start(device)?;
@@ -6621,14 +6752,18 @@ impl GatedDeltaNet {
 
     fn run_depthwise_conv(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         if mixed_qkv.device().is_hip() {
-            return self.run_depthwise_conv_packed_prefill(mixed_qkv)?.transpose(1, 2);
+            return self
+                .run_depthwise_conv_packed_prefill(mixed_qkv)?
+                .transpose(1, 2);
         }
         self.depthwise_conv_from_state(mixed_qkv)
     }
 
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         if mixed_qkv.device().is_hip() {
-            return self.run_depthwise_conv_packed_prefill(mixed_qkv)?.transpose(1, 2);
+            return self
+                .run_depthwise_conv_packed_prefill(mixed_qkv)?
+                .transpose(1, 2);
         }
         self.depthwise_conv_from_state(mixed_qkv)
     }
@@ -6685,6 +6820,59 @@ impl GatedDeltaNet {
                 query.device(),
             )?,
         };
+
+        if device.is_hip() && k_head_dim <= 256 {
+            let batch_heads = batch_size * num_heads;
+            let pack_start = profile_start(device)?;
+            let initial_state = recurrent_state
+                .reshape((batch_heads, k_head_dim, v_head_dim))?
+                .contiguous()?;
+            let query_scan = query
+                .reshape((batch_heads, seq_len, k_head_dim))?
+                .contiguous()?;
+            let key_scan = key
+                .reshape((batch_heads, seq_len, k_head_dim))?
+                .contiguous()?;
+            let value_scan = value
+                .reshape((batch_heads, seq_len, v_head_dim))?
+                .contiguous()?;
+            let beta_scan = beta.reshape((batch_heads, seq_len))?.contiguous()?;
+            let g_scan = g.reshape((batch_heads, seq_len))?.contiguous()?;
+            let pack_elapsed = profile_elapsed(pack_start, device)?;
+            profile.linear_full_kernel_pack_millis += pack_elapsed;
+            profile.transfer_millis += pack_elapsed;
+
+            let kernel_start = profile_start(device)?;
+            let fused = delta_recurrent_prefill(
+                &initial_state,
+                &query_scan,
+                &key_scan,
+                &value_scan,
+                &beta_scan,
+                &g_scan,
+            )?;
+            profile.linear_full_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+
+            let unpack_start = profile_start(device)?;
+            let output = fused
+                .narrow(1, 0, seq_len)?
+                .reshape((batch_size, num_heads, seq_len, v_head_dim))?
+                .transpose(1, 2)?
+                .contiguous()?
+                .to_dtype(initial_dtype)?;
+            let recurrent_state = fused
+                .narrow(1, seq_len, k_head_dim)?
+                .reshape((batch_size, num_heads, k_head_dim, v_head_dim))?
+                .contiguous()?;
+            let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+            profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+            profile.transfer_millis += unpack_elapsed;
+            profile.linear_recurrent_loop_millis += profile.linear_full_kernel_pack_millis
+                + profile.linear_full_kernel_execute_millis
+                + profile.linear_full_kernel_unpack_millis;
+            profile.linear_attention_millis += profile_elapsed(total_start, device)?;
+            return Ok((output, recurrent_state, profile));
+        }
 
         let mut outputs = Vec::with_capacity(seq_len);
         let loop_start = profile_start(device)?;
@@ -6887,6 +7075,51 @@ impl GatedDeltaNet {
         let beta_scan = beta.reshape((batch_heads, num_chunks, chunk_size))?;
         let g_scan = g_raw.reshape((batch_heads, num_chunks, chunk_size))?;
 
+        if use_hip_chunk_single_prefill_kernel(
+            query.device(),
+            sequence_length,
+            num_chunks,
+            chunk_size,
+        ) {
+            let pack_start = profile_start(device)?;
+            let query_i = query_scan.i((.., 0, .., ..))?.contiguous()?;
+            let key_i = key_scan.i((.., 0, .., ..))?.contiguous()?;
+            let value_i = value_scan.i((.., 0, .., ..))?.contiguous()?;
+            let beta_i = beta_scan.i((.., 0, ..))?.contiguous()?;
+            let g_i = g_scan.i((.., 0, ..))?.contiguous()?;
+            let initial_state =
+                Tensor::zeros((batch_heads, k_head_dim, v_head_dim), compute_dtype, query.device())?;
+            let pack_elapsed = profile_elapsed(pack_start, device)?;
+            profile.linear_full_kernel_pack_millis += pack_elapsed;
+            profile.transfer_millis += pack_elapsed;
+
+            let kernel_start = profile_start(device)?;
+            let fused =
+                delta_chunk_single_prefill(&initial_state, &query_i, &key_i, &value_i, &beta_i, &g_i)?;
+            profile.linear_full_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+
+            let unpack_start = profile_start(device)?;
+            let output = fused
+                .narrow(1, 0, total_sequence_length)?
+                .reshape((batch_size, num_heads, total_sequence_length, v_head_dim))?
+                .narrow(2, 0, sequence_length)?
+                .transpose(1, 2)?
+                .contiguous()?
+                .to_dtype(initial_dtype)?;
+            let last_recurrent_state = fused
+                .narrow(1, total_sequence_length, k_head_dim)?
+                .reshape((batch_heads, k_head_dim, v_head_dim))?
+                .contiguous()?;
+            let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+            profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+            profile.transfer_millis += unpack_elapsed;
+            profile.linear_chunk_scan_millis += profile.linear_full_kernel_pack_millis
+                + profile.linear_full_kernel_execute_millis
+                + profile.linear_full_kernel_unpack_millis;
+            profile.linear_attention_millis += profile_elapsed(total_start, device)?;
+            return Ok((output, last_recurrent_state, profile));
+        }
+
         if use_delta_chunk_scan_kernel(query.device(), scan_mode, sequence_length, chunk_size) {
             let pack_start = profile_start(device)?;
             let query_scan = query_scan.contiguous()?;
@@ -7044,11 +7277,11 @@ impl GatedDeltaNet {
         let eye = cache.eye;
         let strict_lower = cache.strict_lower;
 
-        let decay_mask = g
+        let decay_deltas = g
             .unsqueeze(4)?
             .broadcast_sub(&g.unsqueeze(3)?)?
-            .exp()?
             .broadcast_mul(&lower)?;
+        let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
         let key_t = key.transpose(4, 3)?.contiguous()?;
         let solve_batch = batch_size * num_heads * num_chunks;
         let k_beta_flat = k_beta
@@ -7058,8 +7291,8 @@ impl GatedDeltaNet {
             .reshape((solve_batch, k_head_dim, chunk_size))?
             .contiguous()?;
         let decay_mask_flat = decay_mask.reshape((solve_batch, chunk_size, chunk_size))?;
-        let base_attn = k_beta_flat
-            .matmul(&key_t_flat)?
+        let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
+        let base_attn = raw_attn
             .broadcast_mul(&decay_mask_flat)?
             .neg()?
             .broadcast_mul(&strict_lower.reshape((1, chunk_size, chunk_size))?)?
@@ -7153,15 +7386,13 @@ impl GatedDeltaNet {
             DeltaNetScanMode::Flat3d | DeltaNetScanMode::TorchLike => (None, None),
         };
         let local_attn_scan = match scan_mode {
-            DeltaNetScanMode::PrebatchedLocal => Some(
-                {
-                    let key_scan_t = key_scan.transpose(3, 2)?.contiguous()?;
-                    query_scan
-                        .matmul(&key_scan_t)?
-                        .broadcast_mul(&decay_scan)?
-                        .broadcast_mul(&lower_2d.reshape((1, 1, chunk_size, chunk_size))?)?
-                },
-            ),
+            DeltaNetScanMode::PrebatchedLocal => Some({
+                let key_scan_t = key_scan.transpose(3, 2)?.contiguous()?;
+                query_scan
+                    .matmul(&key_scan_t)?
+                    .broadcast_mul(&decay_scan)?
+                    .broadcast_mul(&lower_2d.reshape((1, 1, chunk_size, chunk_size))?)?
+            }),
             _ => None,
         };
         let lower_2d = lower_2d.reshape((1, chunk_size, chunk_size))?;
@@ -7487,7 +7718,8 @@ impl GatedDeltaNet {
         let query = l2norm(&query, 1e-6)?;
         let key = l2norm(&key, 1e-6)?;
         let head_repeat = self.num_v_heads / self.num_k_heads;
-        let (query, key) = if seq_len == 1 && head_repeat > 1 {
+        let use_short_recurrent_prefill = use_hip_short_linear_prefill_recurrent(device, seq_len);
+        let (query, key) = if (seq_len == 1 || use_short_recurrent_prefill) && head_repeat > 1 {
             (
                 repeat_heads(&query, head_repeat)?,
                 repeat_heads(&key, head_repeat)?,
@@ -7523,6 +7755,8 @@ impl GatedDeltaNet {
                     self.recurrent_state.as_ref(),
                 )?
             } else if seq_len == 1 {
+                self.recurrent_gated_delta_rule(&query, &key, &value, &g, &beta, None)?
+            } else if use_short_recurrent_prefill {
                 self.recurrent_gated_delta_rule(&query, &key, &value, &g, &beta, None)?
             } else {
                 self.chunk_gated_delta_rule(&query, &key, &value, &g, &beta, seq_len)?
@@ -8320,7 +8554,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     use std::ffi::OsString;
     #[cfg(feature = "qwen35-minimal-hip")]
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     #[cfg(feature = "qwen35-minimal-hip")]
     fn assert_close(lhs: &[f32], rhs: &[f32], tol: f32) {
@@ -8338,6 +8572,11 @@ mod tests {
     fn hip_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_test_guard() -> MutexGuard<'static, ()> {
+        hip_env_lock().lock().unwrap_or_else(|err| err.into_inner())
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -8368,6 +8607,45 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     impl Drop for HipPersistentPrefillEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct HipChunkSinglePrefillEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl HipChunkSinglePrefillEnvGuard {
+        const KEY: &'static str = "DOTCACHE_QWEN35_HIP_CHUNK_SINGLE_PREFILL";
+
+        fn clear() -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::remove_var(Self::KEY);
+            }
+            Self { saved }
+        }
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for HipChunkSinglePrefillEnvGuard {
         fn drop(&mut self) {
             unsafe {
                 if let Some(value) = self.saved.as_ref() {
@@ -8614,12 +8892,12 @@ mod tests {
 
         let query_data = vec![0.2f32, -0.3, 0.1, 0.0, 0.0, 0.2, 0.2, -0.1];
         let key_data = vec![
-            0.1f32, 0.0, 0.2, -0.1, 0.0, 0.3, -0.2, 0.1, 0.2, -0.1, 0.0, 0.4, -0.3, 0.2, 0.1,
-            0.0, 0.1, 0.1, -0.1, 0.2,
+            0.1f32, 0.0, 0.2, -0.1, 0.0, 0.3, -0.2, 0.1, 0.2, -0.1, 0.0, 0.4, -0.3, 0.2, 0.1, 0.0,
+            0.1, 0.1, -0.1, 0.2,
         ];
         let value_data = vec![
-            0.0f32, 0.2, -0.1, 0.3, 0.1, -0.2, 0.0, 0.2, 0.4, 0.1, -0.3, 0.0, -0.1, 0.3, 0.2,
-            -0.2, 0.2, 0.0, 0.1, 0.4,
+            0.0f32, 0.2, -0.1, 0.3, 0.1, -0.2, 0.0, 0.2, 0.4, 0.1, -0.3, 0.0, -0.1, 0.3, 0.2, -0.2,
+            0.2, 0.0, 0.1, 0.4,
         ];
 
         let query = Tensor::from_vec(
@@ -8768,9 +9046,8 @@ mod tests {
         let a = Tensor::from_vec(a_data.clone(), shape, device)?.to_dtype(DType::F16)?;
         let dt_bias = Tensor::from_vec(dt_bias_data.clone(), (1usize, 1usize, 4usize), device)?
             .to_dtype(DType::F16)?;
-        let a_log_exp =
-            Tensor::from_vec(a_log_exp_data.clone(), (1usize, 1usize, 4usize), device)?
-                .to_dtype(DType::F16)?;
+        let a_log_exp = Tensor::from_vec(a_log_exp_data.clone(), (1usize, 1usize, 4usize), device)?
+            .to_dtype(DType::F16)?;
 
         let mut expected = Vec::with_capacity(a_data.len());
         for value in a_data.chunks_exact(4) {
@@ -8786,6 +9063,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_size = 1usize;
         let conv_dim = 2usize;
@@ -8833,6 +9111,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_size = 1usize;
         let conv_dim = 2usize;
@@ -8865,6 +9144,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_single_step_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_size = 1usize;
         let conv_dim = 2usize;
@@ -8895,7 +9175,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_prefill_matches_reference() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::clear();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
@@ -8917,7 +9197,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_prefill_avoids_host_staging() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::clear();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, _) =
@@ -8941,7 +9221,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_prefill_persistent_matches_reference() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::set("1");
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
@@ -8963,7 +9243,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_prefill_persistent_matches_legacy() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, _) =
             hip_full_attention_prefill_sample(&device)?;
@@ -9000,7 +9280,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_prefill_qwen35_like_matches_reference() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::clear();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
@@ -9013,7 +9293,10 @@ mod tests {
             scale,
             seqlen_offset,
         )?;
-        let output = output.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let output = output
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
 
         assert_close(&output, &expected, 1.5e-1);
         Ok(())
@@ -9022,7 +9305,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_decode_matches_reference() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::clear();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
@@ -9044,7 +9327,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_full_attention_decode_avoids_host_staging() -> Result<()> {
-        let _env_lock = hip_env_lock().lock().unwrap();
+        let _guard = hip_test_guard();
         let _env_guard = HipPersistentPrefillEnvGuard::clear();
         let device = Device::new_hip(0)?;
         let (query, key, value, num_kv_groups, scale, seqlen_offset, _) =
@@ -9068,6 +9351,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_rms_norm_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (xs, gate, weight, expected_norm, expected_gated) = hip_rms_norm_sample(&device)?;
 
@@ -9088,6 +9372,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_rms_norm_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (xs, gate, weight, _expected_norm, _expected_gated) = hip_rms_norm_sample(&device)?;
 
@@ -9110,6 +9395,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_l2norm_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (xs, expected) = hip_l2norm_sample(&device)?;
         let output = l2norm(&xs, 1e-6)?
@@ -9123,6 +9409,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_l2norm_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (xs, _expected) = hip_l2norm_sample(&device)?;
         candle::hip::reset_transfer_counters();
@@ -9137,6 +9424,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_value_decay_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (a, dt_bias, a_log_exp, expected) = hip_value_decay_sample(&device)?;
         let output = hip_value_decay(&a, &dt_bias, &a_log_exp)?
@@ -9150,6 +9438,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_value_decay_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let (a, dt_bias, a_log_exp, _expected) = hip_value_decay_sample(&device)?;
         candle::hip::reset_transfer_counters();
@@ -9164,6 +9453,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_recurrent_prefill_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let seq_len = 3usize;
@@ -9247,7 +9537,176 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
+    fn hip_delta_recurrent_prefill_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let seq_len = 3usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state = Tensor::from_vec(
+            vec![0.1f32, -0.2, 0.05, 0.3],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query = Tensor::from_vec(
+            vec![0.2f32, -0.1, 0.0, 0.3, -0.2, 0.4],
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let key = Tensor::from_vec(
+            vec![0.1f32, 0.2, -0.3, 0.5, 0.4, -0.2],
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            vec![0.3f32, -0.1, 0.2, 0.4, -0.2, 0.1],
+            (batch_heads, seq_len, v_head_dim),
+            &device,
+        )?;
+        let beta = Tensor::from_vec(vec![0.5f32, 0.25, 0.75], (batch_heads, seq_len), &device)?;
+        let g = Tensor::from_vec(vec![0.0f32, -0.2, 0.1], (batch_heads, seq_len), &device)?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_recurrent_prefill(&initial_state, &query, &key, &value, &beta, &g)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), initial_state.dtype());
+        assert!(
+            counters.host_to_device_bytes <= 32,
+            "unexpected recurrent-prefill H2D traffic: {counters:?}"
+        );
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_chunk_single_prefill_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let chunk_size = 4usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let query_data = vec![0.2f32, -0.1, 0.0, 0.3, -0.2, 0.4, 0.1, -0.25];
+        let key_data = vec![0.1f32, 0.2, -0.3, 0.5, 0.4, -0.2, -0.15, 0.05];
+        let value_data = vec![0.3f32, -0.1, 0.2, 0.4, -0.2, 0.1, 0.05, -0.15];
+        let beta_data = vec![0.5f32, 0.25, 0.75, 0.6];
+        let g_data = vec![0.0f32, -0.2, 0.1, -0.15];
+
+        let initial_state =
+            Tensor::zeros((batch_heads, k_head_dim, v_head_dim), DType::F32, &device)?;
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_heads, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_heads, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_heads, chunk_size, v_head_dim),
+            &device,
+        )?;
+        let beta = Tensor::from_vec(beta_data.clone(), (batch_heads, chunk_size), &device)?;
+        let g = Tensor::from_vec(g_data.clone(), (batch_heads, chunk_size), &device)?;
+
+        let output = delta_chunk_single_prefill(&initial_state, &query, &key, &value, &beta, &g)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let mut prefix_g = vec![0.0f32; chunk_size];
+        let mut acc_g = 0.0f32;
+        for t in 0..chunk_size {
+            acc_g += g_data[t];
+            prefix_g[t] = acc_g;
+        }
+
+        let mut expected = vec![0.0f32; batch_heads * (chunk_size + k_head_dim) * v_head_dim];
+        for v_idx in 0..v_head_dim {
+            for i in 0..chunk_size {
+                let row_i_k = i * k_head_dim;
+                let mut out_i = 0.0f32;
+                for j in 0..=i {
+                    let row_j_k = j * k_head_dim;
+                    let mut dot = 0.0f32;
+                    for k_idx in 0..k_head_dim {
+                        dot += query_data[row_i_k + k_idx] * key_data[row_j_k + k_idx];
+                    }
+                    let local = dot * (prefix_g[i] - prefix_g[j]).exp();
+                    out_i += local * value_data[j * v_head_dim + v_idx];
+                }
+                expected[i * v_head_dim + v_idx] = out_i;
+            }
+
+            let state_out = chunk_size * v_head_dim;
+            for k_idx in 0..k_head_dim {
+                let mut state = 0.0f32;
+                for t in 0..chunk_size {
+                    let raw_g_t = g_data[t];
+                    state += key_data[t * k_head_dim + k_idx]
+                        * (g_data[chunk_size - 1] - raw_g_t).exp()
+                        * value_data[t * v_head_dim + v_idx];
+                }
+                expected[state_out + k_idx * v_head_dim + v_idx] = state;
+            }
+        }
+
+        assert_close(&output, &expected, 1e-4);
+        Ok(())
+    }
+
+    #[test]
+    fn delta_decay_mask_avoids_masked_overflow_nans() -> Result<()> {
+        let device = Device::Cpu;
+        let g = Tensor::from_vec(
+            vec![0.0f32, -200.0, -400.0, -600.0],
+            (1usize, 1usize, 1usize, 4usize),
+            &device,
+        )?;
+        let lower = Tensor::tril2(4, DType::F32, &device)?.reshape((1usize, 1usize, 1usize, 4usize, 4usize))?;
+        let decay_mask = g
+            .unsqueeze(4)?
+            .broadcast_sub(&g.unsqueeze(3)?)?
+            .broadcast_mul(&lower)?
+            .exp()?
+            .broadcast_mul(&lower)?;
+        let values = decay_mask.flatten_all()?.to_vec1::<f32>()?;
+        assert!(
+            values.iter().all(|value| value.is_finite()),
+            "decay mask contained non-finite values: {values:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_chunk_single_prefill_gate_defaults_on() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = HipChunkSinglePrefillEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        assert!(use_hip_chunk_single_prefill_kernel(&device, 27, 1, 64));
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_chunk_single_prefill_gate_honors_opt_out() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = HipChunkSinglePrefillEnvGuard::set("0");
+        let device = Device::new_hip(0)?;
+        assert!(!use_hip_chunk_single_prefill_kernel(&device, 27, 1, 64));
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
     fn hip_delta_chunk_step_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let chunk_size = 3usize;
@@ -9332,6 +9791,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_chunk_step_windowed_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let num_chunks = 2usize;
@@ -9426,6 +9886,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_chunk_scan_raw_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let num_chunks = 2usize;
@@ -9520,6 +9981,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_state_scan_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let num_chunks = 2usize;
@@ -9598,6 +10060,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_chunk_fused_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let chunk_size = 2usize;
@@ -9678,6 +10141,7 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_delta_full_scan_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
         let batch_heads = 1usize;
         let num_chunks = 2usize;
@@ -9883,6 +10347,20 @@ mod tests {
         assert_eq!(recommended_metal_linear_chunk_size(512), 16);
         assert_eq!(recommended_metal_linear_chunk_size(2048), 24);
         assert_eq!(recommended_metal_linear_chunk_size(8192), 24);
+    }
+
+    #[test]
+    fn hip_chunk_size_scales_with_sequence_length() {
+        assert_eq!(recommended_hip_linear_chunk_size(1), 4);
+        assert_eq!(recommended_hip_linear_chunk_size(4), 4);
+        assert_eq!(recommended_hip_linear_chunk_size(5), 8);
+        assert_eq!(recommended_hip_linear_chunk_size(8), 8);
+        assert_eq!(recommended_hip_linear_chunk_size(9), 16);
+        assert_eq!(recommended_hip_linear_chunk_size(16), 16);
+        assert_eq!(recommended_hip_linear_chunk_size(17), 32);
+        assert_eq!(recommended_hip_linear_chunk_size(32), 32);
+        assert_eq!(recommended_hip_linear_chunk_size(33), 64);
+        assert_eq!(recommended_hip_linear_chunk_size(8192), 64);
     }
 
     #[test]

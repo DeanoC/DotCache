@@ -605,7 +605,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         && args.resident_byte_budget.is_none()
         && args.restore_cooldown_window.is_none()
     {
-        if let Some(policy) = model.recommended_prompt_policy_for_token_count(prompt_token_ids.len())?
+        if let Some(policy) =
+            model.recommended_prompt_policy_for_token_count(prompt_token_ids.len())?
         {
             model.apply_prompt_policy(&policy)?;
         }

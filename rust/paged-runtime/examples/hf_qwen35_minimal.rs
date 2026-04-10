@@ -80,14 +80,36 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 });
             }
         };
-        let values = last_token.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-        let (index, _) = values
-            .iter()
-            .enumerate()
-            .max_by(|(_, lhs), (_, rhs)| lhs.partial_cmp(rhs).unwrap())
-            .ok_or(RuntimeError::EmptyInput {
-                context: "last-token logits",
-            })?;
+        let values = last_token
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let mut best: Option<(usize, f32)> = None;
+        let mut nan_count = 0usize;
+        for (index, value) in values.iter().copied().enumerate() {
+            if value.is_nan() {
+                nan_count += 1;
+                continue;
+            }
+            match best {
+                Some((_, best_value)) if value <= best_value => {}
+                _ => best = Some((index, value)),
+            }
+        }
+        let (index, _) = best.ok_or_else(|| RuntimeError::External {
+            context: "last-token logits",
+            message: format!(
+                "all logits were NaN for shape {:?} ({} values)",
+                logits.dims(),
+                nan_count
+            ),
+        })?;
+        if nan_count > 0 {
+            eprintln!(
+                "warning: skipped {nan_count} NaN logits when computing argmax for shape {:?}",
+                logits.dims()
+            );
+        }
         Ok(index as u32)
     }
 
@@ -106,6 +128,31 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn logit_nan_count(logits: &Tensor) -> Result<usize> {
+        let values = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        Ok(values.iter().filter(|value| value.is_nan()).count())
+    }
+
+    fn report_linear_nan_trace(
+        runner: &mut MinimalQwen35Runner,
+        input_ids: &Tensor,
+    ) -> Result<()> {
+        for layer_id in runner.model.linear_attention_layer_ids() {
+            let trace = runner.model.trace_linear_attention_layer(input_ids, layer_id, 0)?;
+            let output_nans = logit_nan_count(&trace.layer_output)?;
+            let state_nans = logit_nan_count(&trace.recurrent_state)?;
+            if output_nans > 0 || state_nans > 0 {
+                eprintln!(
+                    "warning: linear layer {layer_id} emitted NaNs output={} recurrent_state={}",
+                    output_nans, state_nans
+                );
+                return Ok(());
+            }
+        }
+        eprintln!("warning: no linear layer trace emitted NaNs despite NaN prefill logits");
+        Ok(())
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -155,8 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cpu_load_elapsed = cpu_load_started.elapsed();
 
     let device_load_started = Instant::now();
-    let mut device_runner =
-        MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &target_device)?;
+    let mut device_runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &target_device)?;
     let device_load_elapsed = device_load_started.elapsed();
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
@@ -182,6 +228,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     {
         print_hip_counters("prefill");
+    }
+    let cpu_prefill_nans = logit_nan_count(&cpu_logits)?;
+    let device_prefill_nans = logit_nan_count(&device_logits)?;
+    if cpu_prefill_nans > 0 || device_prefill_nans > 0 {
+        eprintln!(
+            "warning: prefill logits contain NaNs cpu={} device={}",
+            cpu_prefill_nans, device_prefill_nans
+        );
+        report_linear_nan_trace(&mut cpu_runner, &input_ids)?;
     }
 
     let prefill_delta = max_logit_delta(&cpu_logits, &device_logits)?;
@@ -216,6 +271,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
         {
             print_hip_counters("decode-step");
+        }
+        let cpu_decode_nans = logit_nan_count(&cpu_logits)?;
+        let device_decode_nans = logit_nan_count(&device_logits)?;
+        if cpu_decode_nans > 0 || device_decode_nans > 0 {
+            eprintln!(
+                "warning: decode logits contain NaNs cpu={} device={}",
+                cpu_decode_nans, device_decode_nans
+            );
         }
 
         max_decode_delta = max_decode_delta.max(max_logit_delta(&cpu_logits, &device_logits)?);

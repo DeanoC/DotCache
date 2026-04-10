@@ -124,6 +124,90 @@ int linear_prefill_conv_pack_device(
 }
 
 template <typename T>
+int delta_recurrent_prefill_device(
+    int device_ordinal,
+    int batch_heads,
+    int seq_len,
+    int k_head_dim,
+    int v_head_dim,
+    const void* initial_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (k_head_dim > 256) return 69;
+    constexpr int block = 256;
+    const size_t total_threads =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(v_head_dim);
+    const unsigned int grid = static_cast<unsigned int>((total_threads + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_recurrent_prefill_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        seq_len,
+        k_head_dim,
+        v_head_dim,
+        static_cast<const T*>(initial_state),
+        static_cast<const T*>(query),
+        static_cast<const T*>(key),
+        static_cast<const T*>(value),
+        static_cast<const T*>(beta),
+        static_cast<const T*>(g),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 67;
+    if (hipDeviceSynchronize() != hipSuccess) return 68;
+    return 0;
+}
+
+template <typename T>
+int delta_chunk_single_prefill_device(
+    int device_ordinal,
+    int batch_heads,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (chunk_size > 64 || k_head_dim > 256) return 76;
+    constexpr int block = 256;
+    const size_t total_threads =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(v_head_dim);
+    const unsigned int grid = static_cast<unsigned int>((total_threads + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_chunk_single_prefill_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        chunk_size,
+        k_head_dim,
+        v_head_dim,
+        static_cast<const T*>(query),
+        static_cast<const T*>(key),
+        static_cast<const T*>(value),
+        static_cast<const T*>(beta),
+        static_cast<const T*>(g),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 77;
+    if (hipDeviceSynchronize() != hipSuccess) return 78;
+    return 0;
+}
+
+template <typename T>
 int l2norm_device(
     int device_ordinal,
     int n_rows,
@@ -360,6 +444,126 @@ extern "C" int dotcache_qwen35_hip_linear_prefill_conv_pack(
             out);
     default:
         return 62;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_recurrent_prefill(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t seq_len,
+    size_t k_head_dim,
+    size_t v_head_dim,
+    const void* initial_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_recurrent_prefill_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(seq_len),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 1:
+        return delta_recurrent_prefill_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(seq_len),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 2:
+        return delta_recurrent_prefill_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(seq_len),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    default:
+        return 66;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_chunk_single_prefill(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t chunk_size,
+    size_t k_head_dim,
+    size_t v_head_dim,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_chunk_single_prefill_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 1:
+        return delta_chunk_single_prefill_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 2:
+        return delta_chunk_single_prefill_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    default:
+        return 79;
     }
 }
 

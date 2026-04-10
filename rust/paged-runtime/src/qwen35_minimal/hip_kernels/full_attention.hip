@@ -201,6 +201,204 @@ __global__ void dotcache_qwen35_linear_prefill_conv_pack_kernel(
     out[tid] = dotcache_qwen35_from_float<T>(silu);
 }
 
+template <typename T, int MAX_K = 256>
+__device__ inline void dotcache_qwen35_delta_recurrent_prefill_impl(
+    int batch_heads,
+    int seq_len,
+    int k_head_dim,
+    int v_head_dim,
+    const T* initial_state,
+    const T* query,
+    const T* key,
+    const T* value,
+    const T* beta,
+    const T* g,
+    T* out,
+    int tid
+) {
+    const int total_threads = batch_heads * v_head_dim;
+    if (tid >= total_threads || k_head_dim > MAX_K) {
+        return;
+    }
+
+    const int bh = tid / v_head_dim;
+    const int v_idx = tid - bh * v_head_dim;
+    const int state_stride = k_head_dim * v_head_dim;
+    const int token_stride_k = seq_len * k_head_dim;
+    const int token_stride_v = seq_len * v_head_dim;
+    const int token_stride_s = seq_len;
+    const int out_base = bh * (seq_len + k_head_dim) * v_head_dim;
+
+    float state[MAX_K];
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        state[k_idx] = dotcache_qwen35_to_float(
+            initial_state[bh * state_stride + k_idx * v_head_dim + v_idx]
+        );
+    }
+
+    for (int t = 0; t < seq_len; ++t) {
+        const float g_t = expf(dotcache_qwen35_to_float(g[bh * token_stride_s + t]));
+        const int key_row = bh * token_stride_k + t * k_head_dim;
+        const int value_row = bh * token_stride_v + t * v_head_dim;
+        const int beta_row = bh * token_stride_s + t;
+
+        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+            state[k_idx] *= g_t;
+        }
+
+        float kv_mem = 0.0f;
+        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+            kv_mem += state[k_idx] * dotcache_qwen35_to_float(key[key_row + k_idx]);
+        }
+
+        const float delta =
+            (dotcache_qwen35_to_float(value[value_row + v_idx]) - kv_mem) *
+            dotcache_qwen35_to_float(beta[beta_row]);
+
+        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+            state[k_idx] += dotcache_qwen35_to_float(key[key_row + k_idx]) * delta;
+        }
+
+        float out_t = 0.0f;
+        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+            out_t += state[k_idx] * dotcache_qwen35_to_float(query[key_row + k_idx]);
+        }
+        out[out_base + t * v_head_dim + v_idx] = dotcache_qwen35_from_float<T>(out_t);
+    }
+
+    const int state_out = out_base + seq_len * v_head_dim;
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        out[state_out + k_idx * v_head_dim + v_idx] = dotcache_qwen35_from_float<T>(state[k_idx]);
+    }
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_delta_recurrent_prefill_kernel(
+    int batch_heads,
+    int seq_len,
+    int k_head_dim,
+    int v_head_dim,
+    const T* initial_state,
+    const T* query,
+    const T* key,
+    const T* value,
+    const T* beta,
+    const T* g,
+    T* out
+) {
+    const int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    dotcache_qwen35_delta_recurrent_prefill_impl(
+        batch_heads,
+        seq_len,
+        k_head_dim,
+        v_head_dim,
+        initial_state,
+        query,
+        key,
+        value,
+        beta,
+        g,
+        out,
+        tid
+    );
+}
+
+template <typename T, int MAX_CHUNK = 64, int MAX_K = 256>
+__device__ inline void dotcache_qwen35_delta_chunk_single_prefill_impl(
+    int batch_heads,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const T* query,
+    const T* key,
+    const T* value,
+    const T* beta,
+    const T* g_raw,
+    T* out,
+    int tid
+) {
+    const int total_threads = batch_heads * v_head_dim;
+    if (tid >= total_threads || chunk_size > MAX_CHUNK || k_head_dim > MAX_K) {
+        return;
+    }
+
+    const int bh = tid / v_head_dim;
+    const int v_idx = tid - bh * v_head_dim;
+    const int token_stride_k = chunk_size * k_head_dim;
+    const int token_stride_v = chunk_size * v_head_dim;
+    const int token_stride_s = chunk_size;
+    const int out_base = bh * (chunk_size + k_head_dim) * v_head_dim;
+
+    float prefix_g[MAX_CHUNK];
+    float raw_g[MAX_CHUNK];
+
+    float g_acc = 0.0f;
+    for (int t = 0; t < chunk_size; ++t) {
+        raw_g[t] = dotcache_qwen35_to_float(g_raw[bh * token_stride_s + t]);
+        g_acc += raw_g[t];
+        prefix_g[t] = g_acc;
+    }
+
+    for (int i = 0; i < chunk_size; ++i) {
+        const int row_i_k = bh * token_stride_k + i * k_head_dim;
+        const int row_i_v = bh * token_stride_v + i * v_head_dim;
+        float out_i = 0.0f;
+        for (int j = 0; j <= i; ++j) {
+            const int row_j_k = bh * token_stride_k + j * k_head_dim;
+            float dot = 0.0f;
+            for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+                dot += dotcache_qwen35_to_float(query[row_i_k + k_idx]) *
+                    dotcache_qwen35_to_float(key[row_j_k + k_idx]);
+            }
+            const float local = dot * expf(prefix_g[i] - prefix_g[j]);
+            out_i += local * dotcache_qwen35_to_float(value[bh * token_stride_v + j * v_head_dim + v_idx]);
+        }
+        out[out_base + i * v_head_dim + v_idx] = dotcache_qwen35_from_float<T>(out_i);
+    }
+
+    const float g_last = raw_g[chunk_size - 1];
+    const int state_out = out_base + chunk_size * v_head_dim;
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        float state = 0.0f;
+        for (int t = 0; t < chunk_size; ++t) {
+            const float beta_t = dotcache_qwen35_to_float(beta[bh * token_stride_s + t]);
+            state += dotcache_qwen35_to_float(key[bh * token_stride_k + t * k_head_dim + k_idx]) *
+                expf(g_last - raw_g[t]) *
+                dotcache_qwen35_to_float(value[bh * token_stride_v + t * v_head_dim + v_idx]);
+        }
+        out[state_out + k_idx * v_head_dim + v_idx] = dotcache_qwen35_from_float<T>(state);
+    }
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_delta_chunk_single_prefill_kernel(
+    int batch_heads,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const T* query,
+    const T* key,
+    const T* value,
+    const T* beta,
+    const T* g_raw,
+    T* out
+) {
+    const int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    dotcache_qwen35_delta_chunk_single_prefill_impl(
+        batch_heads,
+        chunk_size,
+        k_head_dim,
+        v_head_dim,
+        query,
+        key,
+        value,
+        beta,
+        g_raw,
+        out,
+        tid
+    );
+}
+
 template <typename T>
 __global__ void dotcache_qwen35_l2norm_kernel(
     int n_rows,

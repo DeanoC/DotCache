@@ -393,7 +393,9 @@ impl CandleDeviceSelector {
                     let _ = ordinal;
                     Err(crate::RuntimeError::External {
                         context: "backend_device",
-                        message: "HIP support requires a Candle checkout with the hip backend enabled".to_string(),
+                        message:
+                            "HIP support requires a Candle checkout with the hip backend enabled"
+                                .to_string(),
                     })
                 }
             }
