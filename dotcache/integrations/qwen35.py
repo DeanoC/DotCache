@@ -25,6 +25,7 @@ from ..persistent_predictor import (
 )
 from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
 from ..tracing import ExecutionTrace
+from ..types import EncodedPage
 from .llama import (
     _begin_cuda_memory_region,
     _end_cuda_memory_region,
@@ -364,6 +365,248 @@ def _tensor_to_float32_numpy(value: Any) -> np.ndarray:
     if torch is not None and torch.is_tensor(value):
         return np.asarray(value.detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
     return np.asarray(value, dtype=np.float32)
+
+
+def _build_persistent_block_layout(token_count: int, block_size: int) -> tuple[np.ndarray, np.ndarray]:
+    starts: list[int] = []
+    counts: list[int] = []
+    for token_start in range(0, int(token_count), int(block_size)):
+        starts.append(int(token_start))
+        counts.append(int(min(int(block_size), int(token_count) - int(token_start))))
+    return np.asarray(starts, dtype=np.int64), np.asarray(counts, dtype=np.int64)
+
+
+def _page_like_to_encoded_page(page: Any) -> EncodedPage:
+    if isinstance(page, EncodedPage):
+        return page
+    source_page = getattr(page, "source_page", None)
+    if source_page is None:
+        raise TypeError("page must be an EncodedPage or PreparedPageTorch-like object")
+
+    def _payload_to_numpy(value: Any) -> Any:
+        if value is None:
+            return None
+        if torch is not None and torch.is_tensor(value):
+            return np.asarray(value.detach().cpu().numpy())
+        return np.asarray(value)
+
+    return EncodedPage(
+        header=source_page.header,
+        payload=_payload_to_numpy(getattr(page, "payload", None) if getattr(page, "payload", None) is not None else source_page.payload),
+        scales=_payload_to_numpy(getattr(page, "scales", None) if getattr(page, "scales", None) is not None else source_page.scales),
+        bias=_payload_to_numpy(getattr(page, "bias", None) if getattr(page, "bias", None) is not None else source_page.bias),
+        codebooks=_payload_to_numpy(
+            getattr(page, "codebooks", None) if getattr(page, "codebooks", None) is not None else source_page.codebooks
+        ),
+        m2_sketch=_payload_to_numpy(
+            getattr(page, "m2_sketch", None) if getattr(page, "m2_sketch", None) is not None else source_page.m2_sketch
+        ),
+        m2_basis=_payload_to_numpy(
+            getattr(page, "m2_basis", None) if getattr(page, "m2_basis", None) is not None else source_page.m2_basis
+        ),
+        m2_mean=_payload_to_numpy(
+            getattr(page, "m2_mean", None) if getattr(page, "m2_mean", None) is not None else source_page.m2_mean
+        ),
+        lut_segment_count=int(source_page.lut_segment_count),
+        escape_payload=_payload_to_numpy(
+            getattr(page, "escape_payload", None)
+            if getattr(page, "escape_payload", None) is not None
+            else source_page.escape_payload
+        ),
+        escape_scales=_payload_to_numpy(
+            getattr(page, "escape_scales", None)
+            if getattr(page, "escape_scales", None) is not None
+            else source_page.escape_scales
+        ),
+        requested_mode=source_page.requested_mode,
+        trial_quant_error=source_page.trial_quant_error,
+        trial_token_p95_error=source_page.trial_token_p95_error,
+        runtime_page_mean=None if source_page.runtime_page_mean is None else np.asarray(source_page.runtime_page_mean),
+        runtime_page_sketch=None if source_page.runtime_page_sketch is None else np.asarray(source_page.runtime_page_sketch),
+        runtime_page_min=None if source_page.runtime_page_min is None else np.asarray(source_page.runtime_page_min),
+        runtime_page_max=None if source_page.runtime_page_max is None else np.asarray(source_page.runtime_page_max),
+    )
+
+
+def _prefill_tail_page_for_kind(head_state: Any, *, kind: str) -> Any | None:
+    if kind == "K":
+        persistent_tail = getattr(head_state, "persistent_key_tail", None)
+        tail_index = 0
+    else:
+        persistent_tail = getattr(head_state, "persistent_value_tail", None)
+        tail_index = 1
+    if persistent_tail is not None:
+        active_page = persistent_tail.active_page
+        if active_page is not None:
+            return active_page
+    tail_builder = getattr(head_state, "tail", None)
+    if tail_builder is None or int(getattr(tail_builder, "token_count", 0)) <= 0:
+        return None
+    temp_pages = tail_builder.build_temp_pages()
+    if temp_pages is None:
+        return None
+    return temp_pages[tail_index]
+
+
+def _prefill_pages_for_kind(head_state: Any, *, kind: str) -> list[Any]:
+    session = getattr(head_state, "session", None)
+    if session is None:
+        return []
+    pages = list(session.key_pages if kind == "K" else session.value_pages)
+    tail_page = _prefill_tail_page_for_kind(head_state, kind=kind)
+    if tail_page is not None:
+        pages.append(tail_page)
+    pages.sort(key=lambda page: int(_page_like_to_encoded_page(page).header.token_start))
+    return pages
+
+
+def _prefill_page_record_from_dense_slice(page: Any, *, dense_history: np.ndarray, kind: str) -> dict[str, Any]:
+    encoded = _page_like_to_encoded_page(page)
+    header = encoded.header
+    token_start = int(header.token_start)
+    token_end = int(header.token_start + header.token_count)
+    mode_name = str(header.mode_default).strip().upper()
+    record = {
+        "token_start": token_start,
+        "token_end": token_end,
+        "mode": mode_name,
+        "comp_error": 0.0,
+        "valid": True,
+    }
+    if kind != "K" or mode_name != "M0":
+        return record
+    dense_slice = np.asarray(dense_history[token_start:token_end], dtype=np.float32)
+    try:
+        decoded = decode_page(encoded).astype(np.float32, copy=False)
+    except Exception:
+        record["valid"] = False
+        return record
+    if decoded.shape != dense_slice.shape:
+        record["valid"] = False
+        return record
+    if decoded.size <= 0:
+        return record
+    residual = dense_slice - decoded
+    record["comp_error"] = float(np.max(np.linalg.norm(residual, axis=1)))
+    return record
+
+
+def _resolve_block_page_record(
+    page_records: list[dict[str, Any]],
+    *,
+    token_start: int,
+    token_end: int,
+) -> tuple[str, float, bool]:
+    if token_end <= token_start:
+        return "M3", 0.0, False
+    overlapping = [
+        record
+        for record in page_records
+        if int(record["token_end"]) > int(token_start) and int(record["token_start"]) < int(token_end)
+    ]
+    if not overlapping:
+        return "M3", 0.0, False
+    overlapping.sort(key=lambda record: int(record["token_start"]))
+    cursor = int(token_start)
+    modes: list[str] = []
+    comp_errors: list[float] = []
+    for record in overlapping:
+        record_start = int(record["token_start"])
+        record_end = int(record["token_end"])
+        if record_start != cursor or record_end > int(token_end) or record_end <= record_start:
+            return "M3", 0.0, False
+        if not bool(record["valid"]):
+            return "M3", 0.0, False
+        resolved_mode = str(record["mode"]).strip().upper()
+        if resolved_mode not in {"M0", "M3"}:
+            return "M3", 0.0, False
+        modes.append(resolved_mode)
+        comp_errors.append(float(record["comp_error"]))
+        cursor = record_end
+    if cursor != int(token_end) or len(set(modes)) != 1:
+        return "M3", 0.0, False
+    resolved_mode = modes[0]
+    return resolved_mode, (max(comp_errors) if resolved_mode == "M0" else 0.0), True
+
+
+def _build_persistent_prefill_block_metadata(
+    *,
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    layer_ids: list[int],
+    dotcache_config: DotCacheConfig | None,
+    block_size: int,
+    num_attention_heads: int,
+) -> dict[int, dict[str, Any]]:
+    if dotcache_config is None or not prefill_tensors or not layer_ids:
+        return {}
+    first_layer_id = int(layer_ids[0])
+    first_keys = _tensor_to_float32_numpy(prefill_tensors[first_layer_id][0])
+    if first_keys.ndim != 4 or int(first_keys.shape[0]) != 1:
+        return {}
+    num_key_value_heads = int(first_keys.shape[1])
+    temp_cache = ModelPagedKVCache(
+        config=dotcache_config,
+        num_hidden_layers=max(int(layer_id) for layer_id in layer_ids) + 1,
+        num_attention_heads=int(num_attention_heads),
+        num_key_value_heads=int(num_key_value_heads),
+        backend="cpu_ref",
+    )
+    metadata_by_layer: dict[int, dict[str, Any]] = {}
+    try:
+        for layer_id in layer_ids:
+            layer_keys = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][0])[0]
+            layer_values = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][1])[0]
+            temp_cache.ingest_prefill_cache(int(layer_id), layer_keys, layer_values)
+        for layer_id in layer_ids:
+            layer_keys = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][0])[0]
+            layer_values = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][1])[0]
+            token_count = int(layer_keys.shape[1])
+            block_token_starts, block_token_counts = _build_persistent_block_layout(token_count, int(block_size))
+            num_blocks = int(len(block_token_starts))
+            block_k_mode = np.full((num_blocks, int(layer_keys.shape[0])), "M3", dtype="<U2")
+            block_v_mode = np.full((num_blocks, int(layer_values.shape[0])), "M3", dtype="<U2")
+            block_k_comp_error = np.zeros((num_blocks, int(layer_keys.shape[0])), dtype=np.float32)
+            block_compression_metadata_valid = np.zeros((num_blocks, int(layer_keys.shape[0])), dtype=np.float32)
+            for kv_head_id in range(int(layer_keys.shape[0])):
+                head_state = temp_cache._states.get((int(layer_id), int(kv_head_id)))
+                if head_state is None:
+                    continue
+                key_page_records = [
+                    _prefill_page_record_from_dense_slice(page, dense_history=layer_keys[int(kv_head_id)], kind="K")
+                    for page in _prefill_pages_for_kind(head_state, kind="K")
+                ]
+                value_page_records = [
+                    _prefill_page_record_from_dense_slice(page, dense_history=layer_values[int(kv_head_id)], kind="V")
+                    for page in _prefill_pages_for_kind(head_state, kind="V")
+                ]
+                for block_id in range(num_blocks):
+                    token_start = int(block_token_starts[block_id])
+                    token_end = int(token_start + block_token_counts[block_id])
+                    key_mode, key_comp_error, key_valid = _resolve_block_page_record(
+                        key_page_records,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    value_mode, _value_comp_error, value_valid = _resolve_block_page_record(
+                        value_page_records,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    if not key_valid or not value_valid:
+                        continue
+                    block_k_mode[block_id, int(kv_head_id)] = key_mode
+                    block_v_mode[block_id, int(kv_head_id)] = value_mode
+                    block_k_comp_error[block_id, int(kv_head_id)] = float(key_comp_error if key_mode == "M0" else 0.0)
+                    block_compression_metadata_valid[block_id, int(kv_head_id)] = 1.0
+            metadata_by_layer[int(layer_id)] = {
+                "block_k_mode": block_k_mode,
+                "block_v_mode": block_v_mode,
+                "block_k_comp_error": block_k_comp_error,
+                "block_compression_metadata_valid": block_compression_metadata_valid,
+            }
+    finally:
+        temp_cache.clear()
+    return metadata_by_layer
 
 
 def _replace_attention_subset_cache_with_placeholders(cache: Any, layer_ids: list[int]) -> None:
@@ -3139,6 +3382,13 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         source_prefill_partition = self.partition_hybrid_state(past_key_values)
         attention_layer_ids = source_prefill_partition.token_growing_layer_ids
         extracted = _extract_attention_subset_prefill_tensors(past_key_values, attention_layer_ids)
+        prefill_block_metadata_by_layer = _build_persistent_prefill_block_metadata(
+            prefill_tensors=extracted,
+            layer_ids=attention_layer_ids,
+            dotcache_config=self.dotcache_config,
+            block_size=int(self.persistent_serving_config.block_size),
+            num_attention_heads=int(len(self.q_head_to_kv_head)),
+        )
         _replace_attention_subset_cache_with_placeholders(past_key_values, attention_layer_ids)
         self.native_hybrid_runtime_state = Qwen35NativeHybridRuntimeState.from_post_handoff_cache(
             past_key_values,
@@ -3148,6 +3398,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.persistent_hybrid_runtime_state = PersistentHybridRuntimeState.from_post_handoff_cache(
             native_state=self.native_hybrid_runtime_state,
             prefill_tensors=extracted,
+            prefill_block_metadata_by_layer=prefill_block_metadata_by_layer,
             linear_layer_ids=source_prefill_partition.fixed_resident_layer_ids,
             q_head_to_kv_head=self.q_head_to_kv_head,
             device=self.device,
@@ -7878,12 +8129,20 @@ def _build_persistent_full_attention_snapshot_runtime(
             value_history[None, None, :, :],
         )
     }
+    prefill_block_metadata_by_layer = _build_persistent_prefill_block_metadata(
+        prefill_tensors=prefill_tensors,
+        layer_ids=[0],
+        dotcache_config=dotcache_config,
+        block_size=int(persistent_serving_config.block_size),
+        num_attention_heads=1,
+    )
     runtime = PersistentFullAttentionState.from_prefill_tensors(
         prefill_tensors=prefill_tensors,
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
         config=persistent_serving_config,
         dotcache_config=dotcache_config,
+        prefill_block_metadata_by_layer=prefill_block_metadata_by_layer,
     )
     shaped_prev_attn = _seed_full_attention_prev_attention_ema_from_snapshot(
         runtime,

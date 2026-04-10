@@ -3,34 +3,40 @@
 ## Summary
 
 - case count: 10
-- dense avg ms/step: 78.0493
-- hand-tuned avg ms/step: 5303.1848
-- bias avg ms/step: 5225.9222
+- dense avg ms/step: 57.3707
+- hand-tuned avg ms/step: 829.1330
+- bias avg ms/step: 804.0753
 - hand-tuned vs dense exact match rate: 0.300
 - bias vs dense exact match rate: 0.300
 - bias vs hand-tuned exact match rate: 1.000
-- bias faster than hand-tuned rate: 0.900
+- bias faster than hand-tuned rate: 1.000
 - hand-tuned policy resolve ms/case: 0.0000
-- bias policy resolve ms/case: 10.8527
-- hand-tuned score ms/case: 85.0376
-- bias score ms/case: 51.0511
-- hand-tuned selection ms/case: 22787.1563
-- bias selection ms/case: 22573.7089
-- hand-tuned policy-bias ms/case: 0.0926
-- bias policy-bias ms/case: 0.1186
+- bias policy resolve ms/case: 8.0146
+- hand-tuned score ms/case: 57.8695
+- bias score ms/case: 49.7635
+- hand-tuned selection ms/case: 707.5874
+- bias selection ms/case: 699.7642
+- hand-tuned optional-selection ms/case: 388.1765
+- bias optional-selection ms/case: 387.0520
+- hand-tuned diverse-selection ms/case: 56.4468
+- bias diverse-selection ms/case: 55.6299
+- hand-tuned compression-selection ms/case: 0.0000
+- bias compression-selection ms/case: 0.0000
+- hand-tuned policy-bias ms/case: 0.0665
+- bias policy-bias ms/case: 0.0909
 
 ## Cases
 
-- AAE_DotCache_Robust_Rewrite: dense 89.5343 ms/step, hand 10766.4152, bias 10645.3100, hand=dense True, bias=dense True, bias=hand True, hand select 50839.77 ms, bias select 50304.02 ms
-- Minimal Agent Loop: dense 85.0071 ms/step, hand 8655.3678, bias 8555.0228, hand=dense True, bias=dense True, bias=hand True, hand select 39799.71 ms, bias select 39450.93 ms
-- auth-and-boundaries: dense 69.4251 ms/step, hand 738.0426, bias 721.5911, hand=dense False, bias=dense False, bias=hand True, hand select 636.09 ms, bias select 601.42 ms
-- codex_algorithmic_alternatives: dense 89.0614 ms/step, hand 9583.5556, bias 9379.1517, hand=dense False, bias=dense False, bias=hand True, hand select 44271.46 ms, bias select 43491.65 ms
-- external-worker-flow: dense 67.9944 ms/step, hand 1026.0364, bias 991.1507, hand=dense False, bias=dense False, bias=hand True, hand select 1597.48 ms, bias select 1563.28 ms
-- model_roadmap: dense 90.2850 ms/step, hand 14426.8150, bias 14470.8058, hand=dense False, bias=dense False, bias=hand True, hand select 68800.96 ms, bias select 68802.14 ms
-- overview: dense 71.5329 ms/step, hand 1253.3922, bias 1241.1354, hand=dense True, bias=dense True, bias=hand True, hand select 2519.23 ms, bias select 2530.60 ms
-- spider_onboarding_design_doc: dense 71.4560 ms/step, hand 2431.2195, bias 2228.3495, hand=dense False, bias=dense False, bias=hand True, hand select 7031.52 ms, bias select 6944.53 ms
-- state_cache_research_note: dense 73.3954 ms/step, hand 3017.6395, bias 2940.4573, hand=dense False, bias=dense False, bias=hand True, hand select 10395.31 ms, bias select 10148.95 ms
-- system-architecture: dense 72.8016 ms/step, hand 1133.3646, bias 1086.2477, hand=dense False, bias=dense False, bias=hand True, hand select 1980.05 ms, bias select 1899.56 ms
+- AAE_DotCache_Robust_Rewrite: dense 62.3172 ms/step, hand 865.7311, bias 818.2177, hand=dense False, bias=dense False, bias=hand True, hand select 762.05 ms, bias select 728.87 ms
+- Minimal Agent Loop: dense 55.4635 ms/step, hand 837.0941, bias 826.5331, hand=dense False, bias=dense False, bias=hand True, hand select 725.30 ms, bias select 727.19 ms
+- auth-and-boundaries: dense 68.0923 ms/step, hand 725.2344, bias 681.1001, hand=dense False, bias=dense False, bias=hand True, hand select 514.12 ms, bias select 475.85 ms
+- codex_algorithmic_alternatives: dense 58.6842 ms/step, hand 836.5586, bias 816.7460, hand=dense False, bias=dense False, bias=hand True, hand select 724.06 ms, bias select 723.73 ms
+- external-worker-flow: dense 57.2932 ms/step, hand 835.5810, bias 816.3529, hand=dense False, bias=dense False, bias=hand True, hand select 729.48 ms, bias select 724.26 ms
+- model_roadmap: dense 56.6998 ms/step, hand 840.3675, bias 816.4833, hand=dense True, bias=dense True, bias=hand True, hand select 725.24 ms, bias select 723.39 ms
+- overview: dense 53.0737 ms/step, hand 837.8129, bias 821.6653, hand=dense False, bias=dense False, bias=hand True, hand select 725.05 ms, bias select 736.76 ms
+- spider_onboarding_design_doc: dense 56.6280 ms/step, hand 836.5239, bias 817.8557, hand=dense False, bias=dense False, bias=hand True, hand select 724.66 ms, bias select 724.90 ms
+- state_cache_research_note: dense 49.5229 ms/step, hand 842.4403, bias 810.0763, hand=dense True, bias=dense True, bias=hand True, hand select 719.49 ms, bias select 711.21 ms
+- system-architecture: dense 55.9319 ms/step, hand 833.9866, bias 815.7230, hand=dense True, bias=dense True, bias=hand True, hand select 726.44 ms, bias select 721.49 ms
 
 ## Read
 

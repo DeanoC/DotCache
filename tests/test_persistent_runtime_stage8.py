@@ -96,6 +96,51 @@ def test_stage8_persistent_full_attention_assigns_dotcache_modes_and_comp_error(
     assert float(layer.block_compression_metadata_valid[0, 0]) == pytest.approx(1.0)
 
 
+def test_stage8_persistent_full_attention_uses_prefill_block_metadata_overrides() -> None:
+    config = PersistentServingConfig(block_size=2, enable_compression=True)
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.125, -0.375], [0.875, 0.625]]]], dtype=torch.float32),
+            torch.tensor([[[[0.5, 1.5], [1.5, 0.5]]]], dtype=torch.float32),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+        dotcache_config=DotCacheConfig(
+            head_dim=2,
+            group_size=2,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=2,
+            default_mode_k="M3",
+            default_mode_v="M3",
+        ),
+        prefill_block_metadata_by_layer={
+            3: {
+                "block_k_mode": np.asarray([["M0"]], dtype="<U2"),
+                "block_v_mode": np.asarray([["M3"]], dtype="<U2"),
+                "block_k_comp_error": np.asarray([[0.25]], dtype=np.float32),
+                "block_compression_metadata_valid": np.asarray([[1.0]], dtype=np.float32),
+            }
+        },
+    )
+    layer = state.layers[3]
+    assert layer.block_k_mode.tolist() == [["M0"]]
+    assert float(layer.block_k_comp_error[0, 0].item()) == pytest.approx(0.25)
+    state.append_step(
+        3,
+        torch.tensor([[[0.5, -0.5]]], dtype=torch.float32),
+        torch.tensor([[[0.5, 0.5]]], dtype=torch.float32),
+        token_index=2,
+    )
+    layer = state.layers[3]
+    assert layer.block_k_mode.tolist() == [["M0"], ["M3"]]
+    assert float(layer.block_k_comp_error[0, 0].item()) == pytest.approx(0.25)
+
+
 def test_stage8_persistent_full_attention_mode_aware_priority_penalizes_m0() -> None:
     serving_config = PersistentServingConfig(
         block_size=2,

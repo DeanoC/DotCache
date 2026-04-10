@@ -56,6 +56,7 @@ class PersistentServingConfig:
     full_attention_optional_bootstrap_near_quota: int | None = None
     full_attention_optional_diversity_weight: float = 0.0
     full_attention_optional_diversity_radius: int = 0
+    full_attention_optional_diversity_strategy: str = "window_suppress"
     full_attention_optional_diversity_requires_history: bool = False
     full_attention_optional_diversity_min_history_count: int = 0
     full_attention_optional_diversity_max_history_count: int | None = None
@@ -73,6 +74,9 @@ class PersistentLayerTelemetry:
     update_ms_total: float = 0.0
     score_ms_total: float = 0.0
     selection_ms_total: float = 0.0
+    optional_selection_ms_total: float = 0.0
+    diverse_selection_ms_total: float = 0.0
+    compression_selection_ms_total: float = 0.0
     policy_bias_ms_total: float = 0.0
     selected_m0_metadata_block_count_total: int = 0
     selected_m3_metadata_block_count_total: int = 0

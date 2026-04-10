@@ -162,6 +162,12 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_score_ms_per_case": 0.0,
             "hand_tuned_selection_ms_per_case": 0.0,
             "bias_selection_ms_per_case": 0.0,
+            "hand_tuned_optional_selection_ms_per_case": 0.0,
+            "bias_optional_selection_ms_per_case": 0.0,
+            "hand_tuned_diverse_selection_ms_per_case": 0.0,
+            "bias_diverse_selection_ms_per_case": 0.0,
+            "hand_tuned_compression_selection_ms_per_case": 0.0,
+            "bias_compression_selection_ms_per_case": 0.0,
             "hand_tuned_policy_bias_ms_per_case": 0.0,
             "bias_policy_bias_ms_per_case": 0.0,
         }
@@ -205,6 +211,24 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_selection_ms_per_case": float(
             sum(float(record["bias_selection_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_optional_selection_ms_per_case": float(
+            sum(float(record["hand_tuned_optional_selection_ms_total"]) for record in records) / case_count
+        ),
+        "bias_optional_selection_ms_per_case": float(
+            sum(float(record["bias_optional_selection_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_diverse_selection_ms_per_case": float(
+            sum(float(record["hand_tuned_diverse_selection_ms_total"]) for record in records) / case_count
+        ),
+        "bias_diverse_selection_ms_per_case": float(
+            sum(float(record["bias_diverse_selection_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_compression_selection_ms_per_case": float(
+            sum(float(record["hand_tuned_compression_selection_ms_total"]) for record in records) / case_count
+        ),
+        "bias_compression_selection_ms_per_case": float(
+            sum(float(record["bias_compression_selection_ms_total"]) for record in records) / case_count
+        ),
         "hand_tuned_policy_bias_ms_per_case": float(
             sum(float(record["hand_tuned_policy_bias_ms_total"]) for record in records) / case_count
         ),
@@ -232,6 +256,20 @@ def _render_markdown(*, records: list[dict[str, Any]], summary: dict[str, Any], 
     lines.append(f"- bias score ms/case: {float(summary['bias_score_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned selection ms/case: {float(summary['hand_tuned_selection_ms_per_case']):.4f}")
     lines.append(f"- bias selection ms/case: {float(summary['bias_selection_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned optional-selection ms/case: {float(summary['hand_tuned_optional_selection_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias optional-selection ms/case: {float(summary['bias_optional_selection_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned diverse-selection ms/case: {float(summary['hand_tuned_diverse_selection_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias diverse-selection ms/case: {float(summary['bias_diverse_selection_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned compression-selection ms/case: {float(summary['hand_tuned_compression_selection_ms_per_case']):.4f}"
+    )
+    lines.append(
+        f"- bias compression-selection ms/case: {float(summary['bias_compression_selection_ms_per_case']):.4f}"
+    )
     lines.append(f"- hand-tuned policy-bias ms/case: {float(summary['hand_tuned_policy_bias_ms_per_case']):.4f}")
     lines.append(f"- bias policy-bias ms/case: {float(summary['bias_policy_bias_ms_per_case']):.4f}")
     lines.append("\n## Cases\n")
@@ -395,6 +433,42 @@ def main() -> None:
                 sum(
                     float(value)
                     for value in bias_result.get("persistent_full_attention_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "hand_tuned_optional_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get("persistent_full_attention_optional_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "bias_optional_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get("persistent_full_attention_optional_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "hand_tuned_diverse_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get("persistent_full_attention_diverse_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "bias_diverse_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get("persistent_full_attention_diverse_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "hand_tuned_compression_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get("persistent_full_attention_compression_selection_ms_total_by_layer", {}).values()
+                )
+            ),
+            "bias_compression_selection_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get("persistent_full_attention_compression_selection_ms_total_by_layer", {}).values()
                 )
             ),
             "hand_tuned_policy_bias_ms_total": float(

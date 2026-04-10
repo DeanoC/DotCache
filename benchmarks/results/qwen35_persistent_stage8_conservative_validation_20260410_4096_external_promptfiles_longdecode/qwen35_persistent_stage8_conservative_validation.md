@@ -8,19 +8,19 @@
 - stage8 avg max abs error: 0.002075
 - baseline max abs error: 0.025333
 - stage8 max abs error: 0.025333
-- stage8 avg selected M0-metadata blocks: 98.000
+- stage8 avg selected M0-metadata blocks: 97.000
 - stage8 avg compression-invalid blocks: 0.000
 
 ## Serving Summary
 
 - case count: 3
-- dense avg ms/step: 75.7121
-- baseline avg ms/step: 5252.3728
-- stage8 avg ms/step: 5275.8021
-- stage8 faster than baseline rate: 0.333
+- dense avg ms/step: 77.2128
+- baseline avg ms/step: 2828.3144
+- stage8 avg ms/step: 2826.2791
+- stage8 faster than baseline rate: 0.667
 - stage8 matches baseline exact rate: 1.000
 - stage8 matches dense exact rate: 0.000
-- stage8 avg selected M0-metadata blocks: 4704.000
+- stage8 avg selected M0-metadata blocks: 4672.000
 - stage8 avg dense fallback count: 0.000
 
 ## Read

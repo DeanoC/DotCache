@@ -59,6 +59,12 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_score_ms_total": 4.0,
                 "hand_tuned_selection_ms_total": 5.0,
                 "bias_selection_ms_total": 6.0,
+                "hand_tuned_optional_selection_ms_total": 2.0,
+                "bias_optional_selection_ms_total": 3.0,
+                "hand_tuned_diverse_selection_ms_total": 1.0,
+                "bias_diverse_selection_ms_total": 2.0,
+                "hand_tuned_compression_selection_ms_total": 0.5,
+                "bias_compression_selection_ms_total": 1.5,
                 "hand_tuned_policy_bias_ms_total": 0.0,
                 "bias_policy_bias_ms_total": 1.5,
             },
@@ -75,6 +81,12 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_score_ms_total": 6.0,
                 "hand_tuned_selection_ms_total": 7.0,
                 "bias_selection_ms_total": 8.0,
+                "hand_tuned_optional_selection_ms_total": 4.0,
+                "bias_optional_selection_ms_total": 5.0,
+                "hand_tuned_diverse_selection_ms_total": 2.0,
+                "bias_diverse_selection_ms_total": 3.0,
+                "hand_tuned_compression_selection_ms_total": 1.5,
+                "bias_compression_selection_ms_total": 2.5,
                 "hand_tuned_policy_bias_ms_total": 0.0,
                 "bias_policy_bias_ms_total": 2.5,
             },
@@ -95,5 +107,11 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     assert summary["bias_score_ms_per_case"] == 5.0
     assert summary["hand_tuned_selection_ms_per_case"] == 6.0
     assert summary["bias_selection_ms_per_case"] == 7.0
+    assert summary["hand_tuned_optional_selection_ms_per_case"] == 3.0
+    assert summary["bias_optional_selection_ms_per_case"] == 4.0
+    assert summary["hand_tuned_diverse_selection_ms_per_case"] == 1.5
+    assert summary["bias_diverse_selection_ms_per_case"] == 2.5
+    assert summary["hand_tuned_compression_selection_ms_per_case"] == 1.0
+    assert summary["bias_compression_selection_ms_per_case"] == 2.0
     assert summary["hand_tuned_policy_bias_ms_per_case"] == 0.0
     assert summary["bias_policy_bias_ms_per_case"] == 2.0

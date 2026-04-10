@@ -107,6 +107,30 @@ def _resolve_full_attention_block_modes(
     return block_k_mode, block_v_mode, block_compression_metadata_valid
 
 
+def _copy_full_attention_block_metadata_prefix(
+    *,
+    state: PersistentFullAttentionLayerState,
+    previous: dict[str, Any],
+    prefix_block_count: int,
+) -> None:
+    if int(prefix_block_count) <= 0:
+        return
+    prefix = slice(0, int(prefix_block_count))
+    state.block_k_center[prefix].copy_(previous["block_k_center"][prefix])
+    state.block_k_radius[prefix].copy_(previous["block_k_radius"][prefix])
+    state.block_k_subcenters[prefix].copy_(previous["block_k_subcenters"][prefix])
+    state.block_k_subradii[prefix].copy_(previous["block_k_subradii"][prefix])
+    state.block_v_center[prefix].copy_(previous["block_v_center"][prefix])
+    state.block_v_radius[prefix].copy_(previous["block_v_radius"][prefix])
+    state.block_v_norm_max[prefix].copy_(previous["block_v_norm_max"][prefix])
+    state.block_prev_attention_ema[prefix].copy_(previous["block_prev_attention_ema"][prefix])
+    state.block_k_comp_error[prefix].copy_(previous["block_k_comp_error"][prefix])
+    state.block_k_mode[prefix] = previous["block_k_mode"][prefix]
+    state.block_v_mode[prefix] = previous["block_v_mode"][prefix]
+    state.block_compression_metadata_valid[prefix] = previous["block_compression_metadata_valid"][prefix]
+    state.metadata_valid[prefix] = previous["metadata_valid"][prefix]
+
+
 def _estimate_m0_key_comp_error(
     *,
     key_slice: Any,
@@ -909,49 +933,94 @@ def _select_diverse_block_ids(
     diversity_radius: int,
     preferred_block_ids: set[int] | None = None,
     preferred_bias_weight: float = 0.0,
+    strategy: str = "greedy",
+    timing_accumulator: dict[str, float] | None = None,
 ) -> list[int]:
+    selection_start = time.perf_counter()
     if count <= 0 or not ranked_candidate_ids:
-        return []
-    if float(diversity_weight) <= 0.0 or int(diversity_radius) <= 0:
-        return [int(block_id) for block_id in ranked_candidate_ids[:count]]
-    selected: list[int] = []
-    selected_anchor_ids = [int(block_id) for block_id in seed_block_ids]
-    remaining = [int(block_id) for block_id in ranked_candidate_ids]
-    radius = max(int(diversity_radius), 1)
-    preferred_ids = {int(block_id) for block_id in (preferred_block_ids or set())}
-    preferred_bonus = _policy_preference_bonus(
-        score_tensor=primary_scores,
-        candidate_block_ids=remaining,
-        preferred_block_ids=preferred_ids,
-        bias_weight=float(preferred_bias_weight),
-    )
-
-    def _distance_penalty(block_id: int, anchor_ids: list[int]) -> float:
-        if not anchor_ids:
-            return 0.0
-        min_distance = min(abs(int(block_id) - int(anchor_id)) for anchor_id in anchor_ids)
-        if min_distance >= radius:
-            return 0.0
-        return float(radius - min_distance) / float(radius)
-
-    while remaining and len(selected) < int(count):
-        best_block_id = max(
-            remaining,
-            key=lambda block_id: (
-                float(primary_scores[int(block_id)].item())
-                + (
-                    float(preferred_bonus)
-                    if int(block_id) in preferred_ids
-                    else 0.0
-                )
-                - float(diversity_weight) * _distance_penalty(int(block_id), selected_anchor_ids + selected),
-                float(primary_scores[int(block_id)].item()),
-                float(secondary_scores[int(block_id)].item()),
-            ),
+        result: list[int] = []
+    elif float(diversity_weight) <= 0.0 or int(diversity_radius) <= 0:
+        result = [int(block_id) for block_id in ranked_candidate_ids[:count]]
+    else:
+        selected: list[int] = []
+        selected_anchor_ids = [int(block_id) for block_id in seed_block_ids]
+        radius = max(int(diversity_radius), 1)
+        preferred_ids = {int(block_id) for block_id in (preferred_block_ids or set())}
+        preferred_bonus = _policy_preference_bonus(
+            score_tensor=primary_scores,
+            candidate_block_ids=[int(block_id) for block_id in ranked_candidate_ids],
+            preferred_block_ids=preferred_ids,
+            bias_weight=float(preferred_bias_weight),
         )
-        selected.append(int(best_block_id))
-        remaining.remove(int(best_block_id))
-    return selected
+
+        def _composite_key(block_id: int) -> tuple[float, float, float]:
+            primary_value = float(primary_scores[int(block_id)].item())
+            return (
+                primary_value + (float(preferred_bonus) if int(block_id) in preferred_ids else 0.0),
+                primary_value,
+                float(secondary_scores[int(block_id)].item()),
+            )
+
+        def _distance_penalty(block_id: int, anchor_ids: list[int]) -> float:
+            if not anchor_ids:
+                return 0.0
+            min_distance = min(abs(int(block_id) - int(anchor_id)) for anchor_id in anchor_ids)
+            if min_distance >= radius:
+                return 0.0
+            return float(radius - min_distance) / float(radius)
+
+        resolved_strategy = str(strategy or "greedy").strip().lower()
+        if resolved_strategy == "window_suppress":
+            ranked_once = sorted(
+                [int(block_id) for block_id in ranked_candidate_ids],
+                key=_composite_key,
+                reverse=True,
+            )
+            max_block_id = max([0] + ranked_once + selected_anchor_ids)
+            blocked = np.zeros((max_block_id + radius + 1,), dtype=np.bool_)
+
+            def _mark_blocked(anchor_id: int) -> None:
+                low = max(0, int(anchor_id) - radius + 1)
+                high = min(int(max_block_id), int(anchor_id) + radius - 1)
+                blocked[low : high + 1] = True
+
+            for anchor_id in selected_anchor_ids:
+                _mark_blocked(int(anchor_id))
+            deferred: list[int] = []
+            for block_id in ranked_once:
+                if len(selected) >= int(count):
+                    break
+                if int(block_id) >= int(blocked.shape[0]) or not bool(blocked[int(block_id)]):
+                    selected.append(int(block_id))
+                    _mark_blocked(int(block_id))
+                else:
+                    deferred.append(int(block_id))
+            if len(selected) < int(count):
+                for block_id in deferred:
+                    if len(selected) >= int(count):
+                        break
+                    if int(block_id) not in selected:
+                        selected.append(int(block_id))
+        else:
+            remaining = [int(block_id) for block_id in ranked_candidate_ids]
+            while remaining and len(selected) < int(count):
+                best_block_id = max(
+                    remaining,
+                    key=lambda block_id: (
+                        _composite_key(int(block_id))[0]
+                        - float(diversity_weight) * _distance_penalty(int(block_id), selected_anchor_ids + selected),
+                        _composite_key(int(block_id))[1],
+                        _composite_key(int(block_id))[2],
+                    ),
+                )
+                selected.append(int(best_block_id))
+                remaining.remove(int(best_block_id))
+        result = selected
+    if timing_accumulator is not None:
+        timing_accumulator["diverse_selection_ms"] = timing_accumulator.get("diverse_selection_ms", 0.0) + (
+            (time.perf_counter() - selection_start) * 1000.0
+        )
+    return result
 
 
 def _select_optional_block_ids(
@@ -972,11 +1041,19 @@ def _select_optional_block_ids(
     seed_block_ids: list[int],
     diversity_weight: float,
     diversity_radius: int,
+    diversity_strategy: str,
     preferred_block_ids: set[int] | None = None,
     preferred_bias_weight: float = 0.0,
+    timing_accumulator: dict[str, float] | None = None,
 ) -> list[int]:
+    selection_start = time.perf_counter()
     if top_k <= 0 or not candidate_block_ids:
-        return []
+        result: list[int] = []
+        if timing_accumulator is not None:
+            timing_accumulator["optional_selection_ms"] = timing_accumulator.get("optional_selection_ms", 0.0) + (
+                (time.perf_counter() - selection_start) * 1000.0
+            )
+        return result
     ranked_by_upper = _rank_optional_block_ids(
         candidate_block_ids=candidate_block_ids,
         priority_scores=priority_scores,
@@ -1001,8 +1078,10 @@ def _select_optional_block_ids(
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
                 diversity_radius=int(diversity_radius),
+                strategy=str(diversity_strategy),
                 preferred_block_ids=preferred_block_ids,
                 preferred_bias_weight=float(preferred_bias_weight),
+                timing_accumulator=timing_accumulator,
             )
         )
     else:
@@ -1015,8 +1094,10 @@ def _select_optional_block_ids(
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
             diversity_radius=int(diversity_radius),
+            strategy=str(diversity_strategy),
             preferred_block_ids=preferred_block_ids,
             preferred_bias_weight=float(preferred_bias_weight),
+            timing_accumulator=timing_accumulator,
         )
         selected.extend(int(block_id) for block_id in upper_selected)
         selected_set.update(int(block_id) for block_id in upper_selected)
@@ -1042,8 +1123,10 @@ def _select_optional_block_ids(
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
                 diversity_radius=int(diversity_radius),
+                strategy=str(diversity_strategy),
                 preferred_block_ids=preferred_block_ids,
                 preferred_bias_weight=float(preferred_bias_weight),
+                timing_accumulator=timing_accumulator,
             )
             for block_id in region_selected:
                 selected.append(block_id)
@@ -1059,14 +1142,20 @@ def _select_optional_block_ids(
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
             diversity_radius=int(diversity_radius),
+            strategy=str(diversity_strategy),
             preferred_block_ids=preferred_block_ids,
             preferred_bias_weight=float(preferred_bias_weight),
+            timing_accumulator=timing_accumulator,
         )
         for block_id in spill_selected:
             selected.append(int(block_id))
             selected_set.add(int(block_id))
     selected = selected[: int(top_k)]
     if int(far_anchor_quota) <= 0 or not selected:
+        if timing_accumulator is not None:
+            timing_accumulator["optional_selection_ms"] = timing_accumulator.get("optional_selection_ms", 0.0) + (
+                (time.perf_counter() - selection_start) * 1000.0
+            )
         return selected
     far_candidates = [
         int(block_id)
@@ -1074,6 +1163,10 @@ def _select_optional_block_ids(
         if int(block_id) not in set(selected) and int(region_ids[int(block_id)]) == 0
     ]
     if not far_candidates:
+        if timing_accumulator is not None:
+            timing_accumulator["optional_selection_ms"] = timing_accumulator.get("optional_selection_ms", 0.0) + (
+                (time.perf_counter() - selection_start) * 1000.0
+            )
         return selected
     max_replacements = min(int(far_anchor_quota), len(far_candidates), len(selected))
     replacements = 0
@@ -1110,6 +1203,10 @@ def _select_optional_block_ids(
         selected_set.remove(int(weakest_selected_id))
         selected_set.add(int(candidate_id))
         replacements += 1
+    if timing_accumulator is not None:
+        timing_accumulator["optional_selection_ms"] = timing_accumulator.get("optional_selection_ms", 0.0) + (
+            (time.perf_counter() - selection_start) * 1000.0
+        )
     return selected
 
 
@@ -1353,6 +1450,7 @@ class PersistentFullAttentionState:
         q_head_to_kv_head: np.ndarray,
         config: PersistentServingConfig,
         dotcache_config: Any | None = None,
+        prefill_block_metadata_by_layer: dict[int, dict[str, Any]] | None = None,
     ) -> "PersistentFullAttentionState":
         torch = _load_torch()
         resolved_device = device
@@ -1361,6 +1459,9 @@ class PersistentFullAttentionState:
         telemetry.backend_kind = executor.backend_kind
         layers: dict[int, PersistentFullAttentionLayerState] = {}
         for layer_id, (layer_keys, layer_values) in prefill_tensors.items():
+            layer_prefill_metadata = None if prefill_block_metadata_by_layer is None else prefill_block_metadata_by_layer.get(
+                int(layer_id)
+            )
             keys = _clone_tensor_like(layer_keys, dtype=torch.float32, device=resolved_device)
             values = _clone_tensor_like(layer_values, dtype=torch.float32, device=resolved_device)
             if keys.ndim != 4 or values.ndim != 4:
@@ -1395,12 +1496,22 @@ class PersistentFullAttentionState:
                     key_centroid_count=int(config.full_attention_key_centroid_count),
                 )
             )
-            block_k_mode, block_v_mode, initial_compression_valid = _resolve_full_attention_block_modes(
-                num_blocks=num_blocks,
-                kv_heads=int(kv_keys.shape[0]),
-                layer_id=int(layer_id),
-                dotcache_config=dotcache_config,
-            )
+            if layer_prefill_metadata is not None:
+                block_k_mode = np.asarray(layer_prefill_metadata["block_k_mode"], dtype="<U2").copy()
+                block_v_mode = np.asarray(layer_prefill_metadata["block_v_mode"], dtype="<U2").copy()
+                initial_compression_valid = np.asarray(
+                    layer_prefill_metadata["block_compression_metadata_valid"],
+                    dtype=np.float32,
+                ).copy()
+                initial_comp_error = np.asarray(layer_prefill_metadata["block_k_comp_error"], dtype=np.float32)
+            else:
+                block_k_mode, block_v_mode, initial_compression_valid = _resolve_full_attention_block_modes(
+                    num_blocks=num_blocks,
+                    kv_heads=int(kv_keys.shape[0]),
+                    layer_id=int(layer_id),
+                    dotcache_config=dotcache_config,
+                )
+                initial_comp_error = None
             block_compression_metadata_valid[...] = initial_compression_valid
             layers[int(layer_id)] = PersistentFullAttentionLayerState(
                 layer_id=int(layer_id),
@@ -1428,6 +1539,11 @@ class PersistentFullAttentionState:
                 block_indices=np.arange(num_blocks, dtype=np.int64),
                 dotcache_config=dotcache_config,
             )
+            if initial_comp_error is not None:
+                layers[int(layer_id)].block_k_comp_error.copy_(
+                    torch.as_tensor(initial_comp_error, dtype=torch.float32, device=resolved_device)
+                )
+                layers[int(layer_id)].block_compression_metadata_valid[...] = initial_compression_valid
         return cls(
             device=resolved_device,
             config=config,
@@ -1460,10 +1576,30 @@ class PersistentFullAttentionState:
         )
         previous_num_blocks = int(len(state.block_token_starts))
         new_num_blocks = int(len(block_token_starts))
+        previous_metadata_valid = np.asarray(state.metadata_valid, dtype=np.float32).copy()
         state.block_token_starts = block_token_starts
         state.block_token_counts = block_token_counts
         state.metadata_valid = metadata_valid
         if new_num_blocks != previous_num_blocks:
+            previous_state = {
+                "block_k_center": state.block_k_center.clone(),
+                "block_k_radius": state.block_k_radius.clone(),
+                "block_k_subcenters": state.block_k_subcenters.clone(),
+                "block_k_subradii": state.block_k_subradii.clone(),
+                "block_v_center": state.block_v_center.clone(),
+                "block_v_radius": state.block_v_radius.clone(),
+                "block_v_norm_max": state.block_v_norm_max.clone(),
+                "block_prev_attention_ema": state.block_prev_attention_ema.clone(),
+                "block_k_comp_error": state.block_k_comp_error.clone(),
+                "block_region_ids": np.asarray(state.block_region_ids, dtype=np.int32).copy(),
+                "block_k_mode": np.asarray(state.block_k_mode, dtype="<U2").copy(),
+                "block_v_mode": np.asarray(state.block_v_mode, dtype="<U2").copy(),
+                "block_compression_metadata_valid": np.asarray(
+                    state.block_compression_metadata_valid,
+                    dtype=np.float32,
+                ).copy(),
+                "metadata_valid": previous_metadata_valid,
+            }
             (
                 state.block_k_center,
                 state.block_k_radius,
@@ -1484,8 +1620,8 @@ class PersistentFullAttentionState:
             )
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             (
-                state.block_k_mode,
-                state.block_v_mode,
+                resolved_block_k_mode,
+                resolved_block_v_mode,
                 initial_compression_valid,
             ) = _resolve_full_attention_block_modes(
                 num_blocks=new_num_blocks,
@@ -1493,8 +1629,25 @@ class PersistentFullAttentionState:
                 layer_id=int(layer_id),
                 dotcache_config=self.dotcache_config,
             )
-            state.block_compression_metadata_valid[...] = initial_compression_valid
-            recompute_block_indices = np.arange(new_num_blocks, dtype=np.int64)
+            state.block_k_mode = resolved_block_k_mode
+            state.block_v_mode = resolved_block_v_mode
+            state.block_compression_metadata_valid[...] = 0.0
+            _copy_full_attention_block_metadata_prefix(
+                state=state,
+                previous=previous_state,
+                prefix_block_count=previous_num_blocks,
+            )
+            if int(previous_num_blocks) < int(new_num_blocks):
+                state.block_k_mode[previous_num_blocks:new_num_blocks] = resolved_block_k_mode[
+                    previous_num_blocks:new_num_blocks
+                ]
+                state.block_v_mode[previous_num_blocks:new_num_blocks] = resolved_block_v_mode[
+                    previous_num_blocks:new_num_blocks
+                ]
+                state.block_compression_metadata_valid[previous_num_blocks:new_num_blocks] = initial_compression_valid[
+                    previous_num_blocks:new_num_blocks
+                ]
+            recompute_block_indices = np.arange(previous_num_blocks, new_num_blocks, dtype=np.int64)
         else:
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             recompute_block_indices = np.asarray([new_num_blocks - 1], dtype=np.int64)
@@ -1595,6 +1748,7 @@ class PersistentFullAttentionState:
                 (time.perf_counter() - policy_bias_start) * 1000.0
             )
         if bool(resolved_config.enable_priority) and int(resolved_config.full_attention_optional_top_k) > 0:
+            selector_timing: dict[str, float] = {}
             soft_recent_set = set(soft_recent_ids)
             optional_candidates = [block_id for block_id in soft_recent_ids if block_id not in selected_ids]
             optional_candidates.extend(
@@ -1627,9 +1781,14 @@ class PersistentFullAttentionState:
                 seed_block_ids=sorted(selected_ids),
                 diversity_weight=float(resolved_config.full_attention_optional_diversity_weight),
                 diversity_radius=int(resolved_config.full_attention_optional_diversity_radius),
+                diversity_strategy=str(resolved_config.full_attention_optional_diversity_strategy),
                 preferred_block_ids=policy_preferred_optional_ids,
                 preferred_bias_weight=float(policy_preferred_bias_weight),
+                timing_accumulator=selector_timing,
             )
+            layer_telemetry = self.telemetry.require_layer(int(layer_id))
+            layer_telemetry.optional_selection_ms_total += float(selector_timing.get("optional_selection_ms", 0.0))
+            layer_telemetry.diverse_selection_ms_total += float(selector_timing.get("diverse_selection_ms", 0.0))
             selected_ids.update(optional_ids)
         else:
             optional_ids = [block_id for block_id in remaining_ids if block_id not in selected_ids]
@@ -1644,6 +1803,7 @@ class PersistentFullAttentionState:
                 processing_block_ids.append(int(block_id))
                 seen_processing_ids.add(int(block_id))
         selected_block_ids = sorted(selected_ids)
+        compression_selection_start = time.perf_counter()
         compression_candidate_block_ids = sorted(set(int(block_id) for block_id in selected_block_ids + ranked_optional_candidate_ids))
         compression_invalid_block_ids = (
             _compression_invalid_block_ids(
@@ -1657,7 +1817,10 @@ class PersistentFullAttentionState:
             state=state,
             block_ids=selected_block_ids,
         )
-        self.telemetry.require_layer(int(layer_id)).selection_ms_total += (
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        if bool(resolved_config.enable_compression):
+            layer_telemetry.compression_selection_ms_total += (time.perf_counter() - compression_selection_start) * 1000.0
+        layer_telemetry.selection_ms_total += (
             (time.perf_counter() - selection_start) * 1000.0
         )
         return {
@@ -2029,6 +2192,18 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).selection_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_optional_selection_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).optional_selection_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_diverse_selection_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).diverse_selection_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_compression_selection_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).compression_selection_ms_total)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_full_attention_policy_bias_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).policy_bias_ms_total)
                 for layer_id in sorted(self.layers)
@@ -2319,6 +2494,7 @@ class PersistentHybridRuntimeState:
         *,
         native_state: Any,
         prefill_tensors: dict[int, tuple[Any, Any]],
+        prefill_block_metadata_by_layer: dict[int, dict[str, Any]] | None = None,
         linear_layer_ids: list[int],
         q_head_to_kv_head: np.ndarray,
         device: Any,
@@ -2332,6 +2508,7 @@ class PersistentHybridRuntimeState:
             q_head_to_kv_head=q_head_to_kv_head,
             config=config,
             dotcache_config=dotcache_config,
+            prefill_block_metadata_by_layer=prefill_block_metadata_by_layer,
         )
         telemetry.backend_kind = full_attention.telemetry.backend_kind
         telemetry.host_to_device_bytes_after_prefill = full_attention.telemetry.host_to_device_bytes_after_prefill

@@ -59,6 +59,7 @@ from dotcache.integrations.qwen35 import (
     summarize_qwen35_dotcache_fit,
     _advance_attention_subset_cache_placeholder,
     _apply_persistent_shortlist_config_overrides,
+    _build_persistent_prefill_block_metadata,
     _extract_attention_subset_prefill_tensors,
     _configure_qwen35_linear_attention_runtime,
     _replace_attention_subset_cache_with_placeholders,
@@ -2126,6 +2127,34 @@ def test_qwen35_attention_subset_persistent_serving_harness_stage8_compression_p
     assert compressed["persistent_full_attention_m0_metadata_blocks_by_layer"]["3"] >= 1
     assert compressed["persistent_full_attention_selected_m0_metadata_block_count_total_by_layer"]["3"] >= 1
     assert compressed["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_build_persistent_prefill_block_metadata_uses_real_page_modes_and_comp_error() -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.125, -0.375, 0.2, 0.9], [0.875, 0.625, -0.1, 0.4]]]], dtype=torch.float32),
+            torch.tensor([[[[0.5, 1.5, 0.0, 1.0], [1.5, 0.5, 1.0, 0.0]]]], dtype=torch.float32),
+        )
+    }
+    metadata = _build_persistent_prefill_block_metadata(
+        prefill_tensors=prefill_tensors,
+        layer_ids=[3],
+        dotcache_config=DotCacheConfig(
+            head_dim=4,
+            group_size=4,
+            bits_k=2,
+            bits_v=4,
+            tokens_per_page=2,
+            default_mode_k="M0",
+            default_mode_v="M3",
+        ),
+        block_size=2,
+        num_attention_heads=1,
+    )
+    assert metadata[3]["block_k_mode"].tolist() == [["M0"]]
+    assert metadata[3]["block_v_mode"].tolist() == [["M3"]]
+    assert float(metadata[3]["block_k_comp_error"][0, 0]) > 0.0
+    assert float(metadata[3]["block_compression_metadata_valid"][0, 0]) == pytest.approx(1.0)
 
 
 def test_qwen35_attention_subset_persistent_serving_harness_disables_compression_for_unsupported_modes() -> None:
