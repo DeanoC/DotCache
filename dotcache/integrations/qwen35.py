@@ -8268,7 +8268,6 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
-    _ = stop_sequences
     input_ids, attention_mask = _normalize_text_inputs(
         adapter,
         prompt=prompt,
@@ -8283,6 +8282,13 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         input_ids=input_ids,
         attention_mask=attention_mask,
         decode_steps=decode_steps,
+        tokenizer=tokenizer,
+        stop_token_ids=(
+            {int(tokenizer.eos_token_id)}
+            if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
+            else None
+        ),
+        stop_sequences=stop_sequences,
     )
 
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
@@ -8303,12 +8309,21 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
 
     dotcache_step_logits: list[np.ndarray] = []
     dotcache_records: list[list[LlamaReplayRecord]] = []
+    dotcache_generated_ids: list[int] = []
     dotcache_decode_ms_total = 0.0
     dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
+    dotcache_stop_reason = None
+    stop_token_ids = (
+        {int(tokenizer.eos_token_id)}
+        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
+        else None
+    )
+    normalized_stop_sequences = tuple(str(sequence) for sequence in stop_sequences if str(sequence))
     managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
     try:
         if decode_steps > 0:
+            current_generated_input_ids = dotcache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             current_attention_mask = torch.cat(
                 [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
@@ -8316,6 +8331,23 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
             dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
             for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
+                dotcache_generated_ids.append(int(current_generated_input_ids.item()))
+                should_stop = bool(
+                    dotcache_generated_ids
+                    and stop_token_ids
+                    and int(dotcache_generated_ids[-1]) in stop_token_ids
+                )
+                if should_stop:
+                    dotcache_stop_reason = f"token:{int(dotcache_generated_ids[-1])}"
+                elif normalized_stop_sequences:
+                    decoded_stop_text = _decode_text(tokenizer, dotcache_generated_ids) or ""
+                    for sequence in normalized_stop_sequences:
+                        if sequence and sequence in decoded_stop_text:
+                            should_stop = True
+                            dotcache_stop_reason = f"text:{sequence}"
+                            break
+                if should_stop:
+                    break
                 adapter.begin_capture_step(step_index)
                 adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
                 adapter_runtime_before = _adapter_runtime_snapshot(adapter)
@@ -8359,6 +8391,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 dotcache_records.append(adapter.end_capture_step())
                 dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
                 runtime_state.advance(outputs.past_key_values)
+                current_generated_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 current_attention_mask = torch.cat(
                     [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
                     dim=1,
@@ -8369,14 +8402,18 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         if managed_python_allocation_tracing:
             tracemalloc.stop()
 
+    dense_generated_ids = list(
+        dense_capture.get("generated_ids") or _decode_input_id_sequence(list(dense_capture.get("decode_inputs", [])))
+    )
+    overlap_step_count = min(len(dense_capture["capture_records"]), len(dotcache_records))
     dense_record_map = {
         (record.step_index, record.layer_id): record
-        for step_records in dense_capture["capture_records"]
+        for step_records in dense_capture["capture_records"][:overlap_step_count]
         for record in step_records
     }
     dotcache_record_map = {
         (record.step_index, record.layer_id): record
-        for step_records in dotcache_records
+        for step_records in dotcache_records[:overlap_step_count]
         for record in step_records
     }
     replay_context_max_abs = 0.0
@@ -8411,22 +8448,22 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         np.concatenate(
             [
                 logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
-                for logits in dense_capture["step_logits"]
+                for logits in dense_capture["step_logits"][:overlap_step_count]
             ],
             axis=0,
         )
-        if dense_capture["step_logits"]
+        if overlap_step_count > 0
         else np.zeros((0, 1), dtype=np.float32)
     )
     dotcache_logits = (
         np.concatenate(
             [
                 logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
-                for logits in dotcache_step_logits
+                for logits in dotcache_step_logits[:overlap_step_count]
             ],
             axis=0,
         )
-        if dotcache_step_logits
+        if overlap_step_count > 0
         else np.zeros((0, 1), dtype=np.float32)
     )
     if dense_logits.size == 0:
@@ -8479,12 +8516,10 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             for dense_step, dotcache_step in zip(dense_logits, dotcache_logits, strict=True)
         ]
 
-    dense_generated_ids = _greedy_id_sequence_from_step_logits(dense_capture["step_logits"])
-    dotcache_generated_ids = _greedy_id_sequence_from_step_logits(dotcache_step_logits)
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
-        decode_steps=decode_steps,
+        decode_steps=len(dense_generated_ids),
         prefill_ms=float(dense_capture["prefill_ms"]),
         dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
         per_step_records=dense_capture["capture_records"],
@@ -8497,8 +8532,21 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "dotcache_prefill_ms": float(dotcache_prefill_ms),
             "dense_generated_ids": list(dense_generated_ids),
             "dotcache_generated_ids": list(dotcache_generated_ids),
-            "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
-            "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "dense_decode_ms_per_step": (
+                float(dense_capture["decode_ms_total"] / max(len(dense_generated_ids), 1))
+                if dense_generated_ids
+                else 0.0
+            ),
+            "dotcache_decode_ms_per_step": (
+                float(dotcache_decode_ms_total / max(len(dotcache_generated_ids), 1))
+                if dotcache_generated_ids
+                else 0.0
+            ),
+            "dense_stopped_early": bool(dense_capture.get("stopped_early", False)),
+            "dense_stop_reason": dense_capture.get("stop_reason"),
+            "dotcache_stopped_early": bool(dotcache_stop_reason is not None),
+            "dotcache_stop_reason": dotcache_stop_reason,
+            "teacher_forced_overlap_steps": int(overlap_step_count),
             "replay_context_max_abs_error": replay_context_max_abs,
             "replay_context_max_rel_error": replay_context_max_rel,
             "replay_output_max_abs_error": replay_output_max_abs,
