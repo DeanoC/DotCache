@@ -850,7 +850,11 @@ impl CandleCausalLm {
     fn qwen35_paged_direct_full_attention_enabled(
         token_count: usize,
         batched_decode: bool,
+        attention_path: AttentionPathMode,
     ) -> bool {
+        if attention_path != AttentionPathMode::Fused {
+            return false;
+        }
         let env_force_enable = matches!(
             std::env::var("DOTCACHE_QWEN35_PAGED_DIRECT_FULL_ATTN").as_deref(),
             Ok("1" | "true" | "TRUE" | "yes" | "YES")
@@ -2475,7 +2479,11 @@ impl CandleCausalLm {
                     let hybrid_restore_started = Instant::now();
                     let input = Tensor::from_slice(&[token_id], (1, 1), &self.device)?;
                     let (logits, next_state, profile) =
-                        if Self::qwen35_paged_direct_full_attention_enabled(1, true) {
+                        if Self::qwen35_paged_direct_full_attention_enabled(
+                            1,
+                            true,
+                            page_backend.attention_path(),
+                        ) {
                             let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
                             stage_metrics.hybrid_cache_restore_millis +=
                                 hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
@@ -2507,7 +2515,11 @@ impl CandleCausalLm {
                     let hybrid_store_started = Instant::now();
                     let next_state = match next_state {
                         crate::session::HybridCacheState::Qwen35(mut state) => {
-                            if !Self::qwen35_paged_direct_full_attention_enabled(1, true) {
+                            if !Self::qwen35_paged_direct_full_attention_enabled(
+                                1,
+                                true,
+                                page_backend.attention_path(),
+                            ) {
                                 let full_layer_ids = model.full_attention_layer_ids();
                                 Self::qwen35_store_full_attention_pages(
                                     sessions,
@@ -2861,7 +2873,11 @@ impl CandleCausalLm {
                     .unwrap_or_else(|| model.empty_cache_state());
                 let hybrid_restore_started = Instant::now();
                 let (logits, next_state, profile) =
-                    if Self::qwen35_paged_direct_full_attention_enabled(input_ids.len(), false) {
+                    if Self::qwen35_paged_direct_full_attention_enabled(
+                        input_ids.len(),
+                        false,
+                        page_backend.attention_path(),
+                    ) {
                         let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
                         stage_metrics.hybrid_cache_restore_millis +=
                             hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
@@ -2893,8 +2909,11 @@ impl CandleCausalLm {
                 let hybrid_store_started = Instant::now();
                 let next_state = match next_state {
                     crate::session::HybridCacheState::Qwen35(mut state) => {
-                        if !Self::qwen35_paged_direct_full_attention_enabled(input_ids.len(), false)
-                        {
+                        if !Self::qwen35_paged_direct_full_attention_enabled(
+                            input_ids.len(),
+                            false,
+                            page_backend.attention_path(),
+                        ) {
                             let full_layer_ids = model.full_attention_layer_ids();
                             Self::qwen35_store_full_attention_pages(
                                 sessions,
