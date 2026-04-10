@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<SweepArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_workload_sweep <family> <model_id> <shared_prompt> <out_dir> [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions-list LIST] [--wave-sizes LIST] [--decode-rounds-per-wave-list LIST] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budgets LIST] [--resident-byte-budgets LIST] [--restore-cooldowns LIST]".to_string()
+            "usage: hf_workload_sweep <family> <model_id> <shared_prompt> <out_dir> [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions-list LIST] [--wave-sizes LIST] [--decode-rounds-per-wave-list LIST] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budgets LIST] [--resident-byte-budgets LIST] [--restore-cooldowns LIST]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let shared_prompt = args

@@ -258,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match device {
             "metal" => "candle,candle-metal",
             "cuda" => "candle,candle-cuda",
+            "hip" => "candle,candle-hip",
             _ => "candle",
         }
     }

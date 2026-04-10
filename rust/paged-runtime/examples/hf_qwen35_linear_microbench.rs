@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fn parse_args() -> Result<Args, DynError> {
         let mut args = std::env::args().skip(1);
         let model_id = args.next().ok_or(
-            "usage: hf_qwen35_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--summary-json PATH] [--list-layers]",
+            "usage: hf_qwen35_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--summary-json PATH] [--list-layers]",
         )?;
         let prompt = args.next().ok_or("missing prompt")?;
         let mut parsed = Args {
