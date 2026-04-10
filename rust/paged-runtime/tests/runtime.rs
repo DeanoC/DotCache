@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use dotcache_paged_runtime::{
     decode_one_head_owned, decode_query_batch_owned, decode_virtual_one_head_owned,
     greedy_generate, softmax_in_place, CausalLm, CpuReferenceBackend, KvRow, ModelArchitecture,
-    ModelFamily, PageBackend, PageId, PageModePolicy, PageModeSpec, PagedKvCache, RuntimeError,
-    SessionRequestKind, SessionRuntime, SessionTokenRows, VirtualCacheMetrics, VirtualPagedKvCache,
+    KvPage, ModelFamily, PageBackend, PageId, PageModePolicy, PageModeSpec, PagedKvCache,
+    RuntimeError, SessionRequestKind, SessionRuntime, SessionTokenRows, VirtualCacheMetrics,
+    VirtualPagedKvCache,
 };
 #[cfg(feature = "candle")]
 use dotcache_paged_runtime::{AttentionPathMode, CandleDeviceSelector, CandlePageBackend};
@@ -270,6 +271,41 @@ fn spilled_m0_pages_restore_and_decode() {
     assert_eq!(output.len(), 2);
     assert!(output[0].is_finite());
     assert!(output[1].is_finite());
+}
+
+#[test]
+fn failed_seal_preserves_live_dense_page_contents() {
+    let mut page = KvPage::new_with_modes(
+        0,
+        0,
+        0,
+        2,
+        "M0/affine/9".parse::<PageModeSpec>().unwrap(),
+        "exact".parse::<PageModeSpec>().unwrap(),
+    )
+    .unwrap();
+    page.push_token(&[1.0, 2.0], &[10.0, 20.0]).unwrap();
+    page.push_token(&[3.0, 4.0], &[30.0, 40.0]).unwrap();
+
+    let err = page.seal().unwrap_err();
+    assert_eq!(
+        err,
+        RuntimeError::UnsupportedPageMode {
+            mode: "M0/affine/9".to_string(),
+            context: "M0 encoding bit width",
+        }
+    );
+
+    assert!(!page.sealed);
+    assert_eq!(page.key_row_f32(0), vec![1.0, 2.0]);
+    assert_eq!(page.key_row_f32(1), vec![3.0, 4.0]);
+    assert_eq!(page.value_row_f32(0), vec![10.0, 20.0]);
+    assert_eq!(page.value_row_f32(1), vec![30.0, 40.0]);
+    assert_eq!(page.dense_key_storage_f32(), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        page.dense_value_storage_f32(),
+        vec![10.0, 20.0, 30.0, 40.0]
+    );
 }
 
 #[test]

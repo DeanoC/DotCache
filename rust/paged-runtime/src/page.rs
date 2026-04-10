@@ -1397,44 +1397,31 @@ impl PageSide {
             self.storage = storage;
             return Ok(());
         };
-        self.storage = match self.mode.tag() {
-            PageModeTag::Exact => PageSideStorage::Exact(dense),
-            PageModeTag::M0 => PageSideStorage::M0(M0PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M1 => PageSideStorage::M1(M1PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M3 => PageSideStorage::M3(M3PageData::encode(
-                dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::T3 => PageSideStorage::T3(T3PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M2 => PageSideStorage::M2(M2PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M4 => PageSideStorage::M4(M4PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
+        if self.mode.tag() == PageModeTag::Exact {
+            self.storage = PageSideStorage::Exact(dense);
+            return Ok(());
+        }
+        let sealed_storage = match self.mode.tag() {
+            PageModeTag::M0 => M0PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M0),
+            PageModeTag::M1 => M1PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M1),
+            PageModeTag::M3 => M3PageData::encode(dense.values.clone(), token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M3),
+            PageModeTag::T3 => T3PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::T3),
+            PageModeTag::M2 => M2PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M2),
+            PageModeTag::M4 => M4PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M4),
+            PageModeTag::Exact => unreachable!("exact pages return early before encoding"),
+        };
+        self.storage = match sealed_storage {
+            Ok(storage) => storage,
+            Err(err) => {
+                self.storage = PageSideStorage::LiveDense(dense);
+                return Err(err);
+            }
         };
         Ok(())
     }

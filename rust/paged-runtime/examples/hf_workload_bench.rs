@@ -229,7 +229,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
 
-    fn apply_serving_preset(parsed: &mut WorkloadArgs, preset: &str) -> Result<(), String> {
+    fn validate_serving_preset_name(preset: &str) -> Result<(), String> {
+        match preset {
+            "m3-int8" => Ok(()),
+            other => Err(format!(
+                "invalid --serving-preset: {other} (expected m3-int8)"
+            )),
+        }
+    }
+
+    fn finalize_serving_preset(parsed: &mut WorkloadArgs) -> Result<(), String> {
+        let Some(preset) = parsed.serving_preset.as_deref() else {
+            return Ok(());
+        };
         match preset {
             "m3-int8" => {
                 if matches!(
@@ -238,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ) {
                     return Err("--serving-preset m3-int8 requires paged_control or dotcache_experimental".to_string());
                 }
-                if matches!(parsed.attention_path, Some(AttentionPathMode::Fused)) {
+                if !matches!(parsed.attention_path, None | Some(AttentionPathMode::Paged)) {
                     return Err("--serving-preset m3-int8 is incompatible with --attention-path fused".to_string());
                 }
                 if parsed.default_key_page_mode.is_some()
@@ -248,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("--serving-preset m3-int8 cannot be combined with explicit page mode overrides".to_string());
                 }
-                parsed.attention_path.get_or_insert(AttentionPathMode::Paged);
+                parsed.attention_path = Some(AttentionPathMode::Paged);
                 parsed.default_key_page_mode = Some(
                     "M3/affine/4/int8"
                         .parse::<PageModeSpec>()
@@ -259,7 +271,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .parse::<PageModeSpec>()
                         .map_err(|err| err.to_string())?,
                 );
-                parsed.serving_preset = Some(preset.to_string());
                 Ok(())
             }
             other => Err(format!(
@@ -459,7 +470,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("missing value for {flag}"))?;
-                    apply_serving_preset(&mut parsed, &value)?;
+                    validate_serving_preset_name(&value)?;
+                    parsed.serving_preset = Some(value);
                 }
                 "--default-key-page-mode" => {
                     let value = args
@@ -523,6 +535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BackendDevice::Cpu => DType::F32,
             };
         }
+        finalize_serving_preset(&mut parsed)?;
         Ok(parsed)
     }
 
