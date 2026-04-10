@@ -9,6 +9,8 @@ pub mod hf;
 mod instrumented_llama;
 #[cfg(feature = "candle")]
 mod instrumented_qwen2;
+#[cfg(feature = "candle")]
+mod instrumented_qwen35;
 pub mod model;
 pub mod page;
 #[cfg(feature = "candle")]
@@ -41,6 +43,8 @@ pub use session::{
     KvRow, LayerDecodePlan, SessionDecodePlan, SessionId, SessionMetrics, SessionPrefix,
     SessionRequestKind, SessionRuntime, SessionState, SessionTokenRows,
 };
+#[cfg(feature = "candle")]
+pub use session::HybridCacheState;
 pub use virtual_page::{
     VirtualCacheMetrics, VirtualLayerCache, VirtualPage, VirtualPageId, VirtualPageTable,
     VirtualPagedKvCache, VirtualSeqCache,

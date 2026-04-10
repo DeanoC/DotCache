@@ -196,6 +196,168 @@ fn dot(lhs: &[f32], rhs: &[f16]) -> f32 {
         .sum()
 }
 
+#[cfg(feature = "candle-metal")]
+#[derive(Debug, Clone, Copy)]
+struct PagedAttentionDecodeMegakernel {
+    batch_size: usize,
+    head_dim: usize,
+    kv_len: usize,
+    scale: f32,
+    seqlen_offset: usize,
+}
+
+#[cfg(feature = "candle-metal")]
+impl candle_core::CustomOp3 for PagedAttentionDecodeMegakernel {
+    fn name(&self) -> &'static str {
+        "paged-attention-decode-megakernel"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle_core::CpuStorage,
+        _l1: &candle_core::Layout,
+        _s2: &candle_core::CpuStorage,
+        _l2: &candle_core::Layout,
+        _s3: &candle_core::CpuStorage,
+        _l3: &candle_core::Layout,
+    ) -> candle_core::Result<(candle_core::CpuStorage, candle_core::Shape)> {
+        candle_core::bail!("paged-attention-decode-megakernel has no cpu implementation")
+    }
+
+    fn metal_fwd(
+        &self,
+        query: &candle_core::MetalStorage,
+        query_layout: &candle_core::Layout,
+        key: &candle_core::MetalStorage,
+        key_layout: &candle_core::Layout,
+        value: &candle_core::MetalStorage,
+        value_layout: &candle_core::Layout,
+    ) -> candle_core::Result<(candle_core::MetalStorage, candle_core::Shape)> {
+        use candle_core::backend::BackendStorage;
+        use candle_core::{DType, MetalError};
+
+        if !(query_layout.is_contiguous()
+            && key_layout.is_contiguous()
+            && value_layout.is_contiguous())
+        {
+            candle_core::bail!("paged-attention-decode-megakernel requires contiguous inputs")
+        }
+
+        let (batch_size, q_heads, q_len, head_dim) = query_layout.shape().dims4()?;
+        let (key_batch, kv_heads, kv_len, key_head_dim) = key_layout.shape().dims4()?;
+        let (value_batch, value_kv_heads, value_kv_len, value_head_dim) =
+            value_layout.shape().dims4()?;
+        if batch_size != 1
+            || key_batch != 1
+            || value_batch != 1
+            || q_heads != self.batch_size
+            || q_len != 1
+            || kv_heads != 1
+            || value_kv_heads != 1
+            || kv_len != self.kv_len
+            || value_kv_len != self.kv_len
+            || head_dim != self.head_dim
+            || key_head_dim != self.head_dim
+            || value_head_dim != self.head_dim
+        {
+            candle_core::bail!(
+                "paged-attention-decode-megakernel shape mismatch: query={:?} key={:?} value={:?}",
+                query_layout.shape().dims(),
+                key_layout.shape().dims(),
+                value_layout.shape().dims()
+            )
+        }
+
+        let device = query.device();
+        let dtype = match query.dtype() {
+            DType::F16 => candle_metal_kernels::DType::F16,
+            DType::F32 => candle_metal_kernels::DType::F32,
+            DType::BF16 => candle_metal_kernels::DType::BF16,
+            other => {
+                candle_core::bail!(
+                    "paged-attention-decode-megakernel unsupported dtype {other:?}"
+                )
+            }
+        };
+        let out_shape = candle_core::Shape::from((1, self.batch_size, 1, self.head_dim));
+        let elem_count = out_shape.elem_count();
+        let output = device.new_buffer(
+            elem_count,
+            query.dtype(),
+            "paged-attention-decode-megakernel",
+        )?;
+        let encoder = device.command_encoder()?;
+        encoder.set_label("paged-attention-decode-megakernel");
+        candle_metal_kernels::call_full_attention_prefill(
+            device.metal_device(),
+            &encoder,
+            device.kernels(),
+            dtype,
+            1,
+            self.batch_size,
+            1,
+            1,
+            self.kv_len,
+            self.head_dim,
+            self.batch_size,
+            self.scale,
+            self.seqlen_offset,
+            candle_metal_kernels::BufferOffset {
+                buffer: query.buffer(),
+                offset_in_bytes: query_layout.start_offset() * query.dtype().size_in_bytes(),
+            },
+            candle_metal_kernels::BufferOffset {
+                buffer: key.buffer(),
+                offset_in_bytes: key_layout.start_offset() * key.dtype().size_in_bytes(),
+            },
+            candle_metal_kernels::BufferOffset {
+                buffer: value.buffer(),
+                offset_in_bytes: value_layout.start_offset() * value.dtype().size_in_bytes(),
+            },
+            &output,
+        )
+        .map_err(MetalError::from)?;
+        Ok((
+            candle_core::MetalStorage::new(output, device.clone(), elem_count, query.dtype()),
+            out_shape,
+        ))
+    }
+}
+
+#[cfg(feature = "candle-metal")]
+fn paged_attention_decode_megakernel(
+    queries: &candle_core::Tensor,
+    key: &candle_core::Tensor,
+    value: &candle_core::Tensor,
+) -> Result<candle_core::Tensor> {
+    let (batch_size, head_dim) = queries.dims2()?;
+    let (kv_len, key_head_dim) = key.dims2()?;
+    let (value_kv_len, value_head_dim) = value.dims2()?;
+    if key_head_dim != head_dim || value_head_dim != head_dim || value_kv_len != kv_len {
+        return Err(RuntimeError::DimensionMismatch {
+            context: "paged decode megakernel shape",
+            expected: kv_len * head_dim,
+            got: value_kv_len * value_head_dim,
+        });
+    }
+    let query = queries.contiguous()?.reshape((1, batch_size, 1, head_dim))?;
+    let key = key.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
+    let value = value.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
+    Ok(query
+        .apply_op3_no_bwd(
+            &key,
+            &value,
+            &PagedAttentionDecodeMegakernel {
+                batch_size,
+                head_dim,
+                kv_len,
+                scale: attention_score_scale(head_dim),
+                seqlen_offset: kv_len.saturating_sub(1),
+            },
+        )?
+        .reshape((batch_size, head_dim))?)
+}
+
 #[cfg(feature = "candle")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandleDeviceSelector {
@@ -328,6 +490,10 @@ pub struct CandlePageBackend {
 impl CandlePageBackend {
     pub fn new(selector: CandleDeviceSelector) -> Result<Self> {
         let device = selector.resolve()?;
+        Self::new_with_device(selector, device)
+    }
+
+    pub fn new_with_device(selector: CandleDeviceSelector, device: candle_core::Device) -> Result<Self> {
         let attention_path = AttentionPathMode::default_for_selector(&selector);
         Ok(Self {
             device,
@@ -619,6 +785,51 @@ impl CandlePageBackend {
             key: candle_core::Tensor::cat(&key_refs, 0)?,
             value: candle_core::Tensor::cat(&value_refs, 0)?,
         })
+    }
+
+    pub fn decode_tensor_fused(
+        &self,
+        store: &PageStore,
+        page_ids: &[PageId],
+        queries: &candle_core::Tensor,
+    ) -> Result<candle_core::Tensor> {
+        if self.attention_path.get() != AttentionPathMode::Fused {
+            return Err(RuntimeError::External {
+                context: "candle_backend",
+                message: "decode_tensor_fused requires fused attention path".to_string(),
+            });
+        }
+        if page_ids.is_empty() {
+            return Err(RuntimeError::EmptyDecode);
+        }
+        let (batch_size, head_dim) = queries.dims2()?;
+        let prepared = self.prepare_sequence(store, page_ids, head_dim)?;
+        #[cfg(feature = "candle-metal")]
+        if matches!(self.selector, CandleDeviceSelector::Metal { .. }) {
+            let mixed = paged_attention_decode_megakernel(queries, &prepared.key, &prepared.value)?;
+            let (out_batch, out_dim) = mixed.dims2()?;
+            if out_batch != batch_size || out_dim != head_dim {
+                return Err(RuntimeError::DimensionMismatch {
+                    context: "decode_tensor_fused metal output",
+                    expected: batch_size * head_dim,
+                    got: out_batch * out_dim,
+                });
+            }
+            return Ok(mixed);
+        }
+        let logits = queries.matmul(&prepared.key.transpose(0, 1)?)?;
+        let logits = (logits * attention_score_scale(head_dim) as f64)?;
+        let logits = candle_nn::ops::softmax_last_dim(&logits)?;
+        let mixed = logits.matmul(&prepared.value)?;
+        let (out_batch, out_dim) = mixed.dims2()?;
+        if out_batch != batch_size || out_dim != head_dim {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "decode_tensor_fused output",
+                expected: batch_size * head_dim,
+                got: out_batch * out_dim,
+            });
+        }
+        Ok(mixed)
     }
 }
 

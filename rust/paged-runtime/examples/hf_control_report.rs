@@ -747,8 +747,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         let stage_mlp_delta_ratio =
             python.and_then(|python| ratio_delta(rust.stage_mlp_millis, python.stage_mlp_millis));
+        // Acceptance is one-sided: faster-than-control should still pass.
         let within_twenty_percent = total_delta_ratio
-            .map(|ratio| ratio.abs() <= 0.20)
+            .map(|ratio| ratio <= 0.20)
             .unwrap_or(false);
         if within_twenty_percent {
             within_twenty_percent_count += 1;
