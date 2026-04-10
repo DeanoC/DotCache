@@ -1,0 +1,45 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+  "feature_set_id": "runtime_safe",
+  "dense_control": {
+    "enabled": true,
+    "report_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260407/task_compare_dense_exact_quality_systems_decode64_512_32/qwen35_0p8b_task_selector_compare.jsonl",
+    "correct_example_weight": 2.0,
+    "incorrect_example_weight": 0.5
+  },
+  "strategies": [
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted"
+    },
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted_dense_control_balanced",
+      "params": {
+        "dense_control_weighting": true
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted_dense_control_conservative",
+      "params": {
+        "dense_control_weighting": true,
+        "safe_bytes_weight": 0.75,
+        "unsafe_error_weight": 0.75
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted_dense_control_strong",
+      "params": {
+        "dense_control_weighting": true,
+        "class_balance": 0.75,
+        "safe_bytes_weight": 0.5,
+        "unsafe_error_weight": 1.0
+      }
+    }
+  ],
+  "serving_smoke": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+  "feature_set_id": "runtime_safe",
+  "strategies": [
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted"
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p95",
+      "params": {
+        "calibration_min_target_accuracy": 0.95,
+        "calibration_min_safe_prediction_rate": 0.95
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p90",
+      "params": {
+        "calibration_min_target_accuracy": 0.90,
+        "calibration_min_safe_prediction_rate": 0.90
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p85",
+      "params": {
+        "calibration_min_target_accuracy": 0.85,
+        "calibration_min_safe_prediction_rate": 0.85
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p80",
+      "params": {
+        "calibration_min_target_accuracy": 0.80,
+        "calibration_min_safe_prediction_rate": 0.80
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p75",
+      "params": {
+        "calibration_min_target_accuracy": 0.75,
+        "calibration_min_safe_prediction_rate": 0.75
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p70",
+      "params": {
+        "calibration_min_target_accuracy": 0.70,
+        "calibration_min_safe_prediction_rate": 0.70
+      }
+    }
+  ],
+  "serving_smoke": {
+    "enabled": false
+  }
+}

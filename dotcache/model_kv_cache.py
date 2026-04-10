@@ -24,7 +24,13 @@ from .encode import encode_page
 from .planner import PageModeSpec, choose_page_mode, observe_page, parse_page_mode_token
 from .page_cache import PreparedPageCache
 from .packing import words_per_group
-from .selector_baselines import adjust_linear_selector_model_logits, LinearSelectorModel, load_linear_selector_model
+from .selector_baselines import (
+    CandidateSafeRouterModel,
+    CandidateTargetRouterModel,
+    LinearSelectorModel,
+    adjust_linear_selector_model_logits,
+    load_page_selector_artifact,
+)
 from .session_runtime import PagedDecodeSession, score_page_relevance, select_execution_page_indices, select_window_page_indices
 from .tracing import ExecutionTrace
 from .types import EncodedPage, PageHeader
@@ -1246,7 +1252,7 @@ class ModelPagedKVCache:
         self._prepared_chunk_cache_frozen_budget_bytes: int | None = None
         self._prepared_chunk_cache_applied_budget_bytes: int | None = None
         self._prepared_chunk_cache_budget_dirty = True
-        self._learned_page_selector_model: LinearSelectorModel | None = None
+        self._learned_page_selector_model: LinearSelectorModel | CandidateSafeRouterModel | CandidateTargetRouterModel | None = None
         self._learned_page_selector_invocations = 0
         self._learned_page_selector_predictions: dict[str, int] = {}
         self._learned_page_selector_fallbacks = 0
@@ -1256,8 +1262,11 @@ class ModelPagedKVCache:
         self._learned_page_selector_ms_total_by_stage: dict[str, float] = {}
         self._learned_page_selector_predictions_by_stage: dict[str, dict[str, int]] = {}
         if self.config.learned_page_selector_enabled():
-            self._learned_page_selector_model = load_linear_selector_model(str(self.config.learned_page_selector_path))
-            if float(self.config.learned_page_selector_logit_offset) != 0.0:
+            self._learned_page_selector_model = load_page_selector_artifact(str(self.config.learned_page_selector_path))
+            if (
+                isinstance(self._learned_page_selector_model, LinearSelectorModel)
+                and float(self.config.learned_page_selector_logit_offset) != 0.0
+            ):
                 self._learned_page_selector_model = adjust_linear_selector_model_logits(
                     self._learned_page_selector_model,
                     candidate_logit_offsets={
@@ -3227,7 +3236,7 @@ class ModelPagedKVCache:
             "kind": str(kind),
             "prompt_family": self.config.learned_page_selector_prompt_family,
             "prompt_variant": self.config.learned_page_selector_prompt_variant,
-            "query_present": False,
+            "query_present": bool(stage_name == "decode"),
             "layer_fraction": float(int(layer_id) / max(self.num_hidden_layers - 1, 1)),
             "kv_head_fraction": float(int(kv_head_id) / max(self.num_key_value_heads - 1, 1)),
             "token_start": int(token_start),
