@@ -1,0 +1,291 @@
+{
+  "results": [
+    {
+      "name": "bias002_all",
+      "avg_max_abs_error": 0.0018030240510900815,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.0013359391854868995,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias005_all",
+      "avg_max_abs_error": 0.0018027409290273984,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.001334806697236167,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias010_all",
+      "avg_max_abs_error": 0.0018026200640532705,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.0013343232373396556,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias005_midlate",
+      "avg_max_abs_error": 0.0018027409290273984,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.75,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.001334806697236167,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias005_midonly",
+      "avg_max_abs_error": 0.0018027409290273984,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.5,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.001334806697236167,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias002_midlate",
+      "avg_max_abs_error": 0.0018030240510900815,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.75,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.0013359391854868995,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    },
+    {
+      "name": "bias010_midlate",
+      "avg_max_abs_error": 0.0018026200640532705,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.75,
+      "by_step_index": {
+        "0": {
+          "avg_history_snapshot_count": 0.0,
+          "avg_max_abs_error": 0.0010839932494693333,
+          "avg_selected_fraction": 0.9385689354275742,
+          "count": 36,
+          "max_abs_error": 0.014319419860839844,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "1": {
+          "avg_history_snapshot_count": 1.0,
+          "avg_max_abs_error": 0.0013343232373396556,
+          "avg_selected_fraction": 0.9385903698534543,
+          "count": 36,
+          "max_abs_error": 0.011478543281555176,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "3": {
+          "avg_history_snapshot_count": 2.0,
+          "avg_max_abs_error": 0.0021700006392267016,
+          "avg_selected_fraction": 0.9386331938633194,
+          "count": 36,
+          "max_abs_error": 0.017964839935302734,
+          "streaming_certified_stop_rate": 1.0
+        },
+        "7": {
+          "avg_history_snapshot_count": 3.0,
+          "avg_max_abs_error": 0.0026221631301773917,
+          "avg_selected_fraction": 0.9387186629526462,
+          "count": 36,
+          "max_abs_error": 0.02691859006881714,
+          "streaming_certified_stop_rate": 1.0
+        }
+      }
+    }
+  ]
+}

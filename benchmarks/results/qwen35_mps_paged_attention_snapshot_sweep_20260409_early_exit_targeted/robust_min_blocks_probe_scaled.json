@@ -1,0 +1,34 @@
+[
+  {
+    "min_blocks": 0,
+    "avg_total_step_time_ms": 135.29451091206917,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 1.0,
+    "max_abs_error": 0.9828324317932129,
+    "max_rel_error": 401.8922424316406
+  },
+  {
+    "min_blocks": 13,
+    "avg_total_step_time_ms": 130.95394920800692,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 1.0,
+    "max_abs_error": 0.9828324317932129,
+    "max_rel_error": 401.8922424316406
+  },
+  {
+    "min_blocks": 14,
+    "avg_total_step_time_ms": 131.34476083138472,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 1.0,
+    "max_abs_error": 0.9828324317932129,
+    "max_rel_error": 401.8922424316406
+  },
+  {
+    "min_blocks": 20,
+    "avg_total_step_time_ms": 130.95901269242978,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 1.0,
+    "max_abs_error": 0.9828324317932129,
+    "max_rel_error": 401.8922424316406
+  }
+]

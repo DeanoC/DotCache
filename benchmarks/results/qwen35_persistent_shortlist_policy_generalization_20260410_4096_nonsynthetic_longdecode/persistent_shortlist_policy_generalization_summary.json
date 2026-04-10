@@ -1,0 +1,152 @@
+{
+  "abs_threshold": 0.05,
+  "compare_input_count": 6,
+  "compare_inputs": [
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/baseline_none_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_sched12_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json"
+  ],
+  "prompt_families": [
+    "performance_journal",
+    "readme",
+    "world_interface_agent_loop_paper"
+  ],
+  "recommendations_json": "/private/tmp/persistent_shortlist_current_longdecode_best/persistent_shortlist_full_recommendations.json",
+  "recommender_summary_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_20260410_4096_nonsynthetic_longdecode/persistent_shortlist_recommender_summary.json",
+  "results": [
+    {
+      "aggregate_summary": {
+        "avg_oracle_selected_token_count": 2339.75,
+        "avg_selected_token_count": 2339.75,
+        "chosen_safe_rate": 0.7430555555555556,
+        "fallback_rate": 0.0,
+        "missing_bucket_rate": 0.0,
+        "snapshot_group_count": 144,
+        "top1_accuracy": 0.625
+      },
+      "avg_policy_group_count": 36.0,
+      "group_by": [
+        "layer_id",
+        "kv_head_id",
+        "step_bucket"
+      ],
+      "group_key": "layer_id__kv_head_id__step_bucket",
+      "heldout_runs": [
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/performance_journal_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.9791666666666666,
+            "fallback_rate": 0.0,
+            "missing_bucket_rate": 0.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 0.6666666666666666
+          },
+          "holdout_prompt_family": "performance_journal",
+          "policy_group_count": 36,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/performance_journal_policy.json"
+        },
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/readme_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.8125,
+            "fallback_rate": 0.0,
+            "missing_bucket_rate": 0.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 0.5833333333333334
+          },
+          "holdout_prompt_family": "readme",
+          "policy_group_count": 36,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/readme_policy.json"
+        },
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/world_interface_agent_loop_paper_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.4375,
+            "fallback_rate": 0.0,
+            "missing_bucket_rate": 0.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 0.625
+          },
+          "holdout_prompt_family": "world_interface_agent_loop_paper",
+          "policy_group_count": 36,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__step_bucket/world_interface_agent_loop_paper_policy.json"
+        }
+      ]
+    },
+    {
+      "aggregate_summary": {
+        "avg_oracle_selected_token_count": 2339.75,
+        "avg_selected_token_count": 2339.75,
+        "chosen_safe_rate": 0.7638888888888888,
+        "fallback_rate": 1.0,
+        "missing_bucket_rate": 1.0,
+        "snapshot_group_count": 144,
+        "top1_accuracy": 1.0
+      },
+      "avg_policy_group_count": 72.0,
+      "group_by": [
+        "layer_id",
+        "kv_head_id",
+        "prompt_family",
+        "step_bucket"
+      ],
+      "group_key": "layer_id__kv_head_id__prompt_family__step_bucket",
+      "heldout_runs": [
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/performance_journal_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.9791666666666666,
+            "fallback_rate": 1.0,
+            "missing_bucket_rate": 1.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 1.0
+          },
+          "holdout_prompt_family": "performance_journal",
+          "policy_group_count": 72,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/performance_journal_policy.json"
+        },
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/readme_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.8333333333333334,
+            "fallback_rate": 1.0,
+            "missing_bucket_rate": 1.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 1.0
+          },
+          "holdout_prompt_family": "readme",
+          "policy_group_count": 72,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/readme_policy.json"
+        },
+        {
+          "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/world_interface_agent_loop_paper_evaluation.json",
+          "evaluation_summary": {
+            "avg_oracle_selected_token_count": 2339.75,
+            "avg_selected_token_count": 2339.75,
+            "chosen_safe_rate": 0.4791666666666667,
+            "fallback_rate": 1.0,
+            "missing_bucket_rate": 1.0,
+            "snapshot_group_count": 48,
+            "top1_accuracy": 1.0
+          },
+          "holdout_prompt_family": "world_interface_agent_loop_paper",
+          "policy_group_count": 72,
+          "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_generalization_20260410_4096_nonsynthetic_longdecode/details/layer_id__kv_head_id__prompt_family__step_bucket/world_interface_agent_loop_paper_policy.json"
+        }
+      ]
+    }
+  ]
+}

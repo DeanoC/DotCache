@@ -1,0 +1,874 @@
+{
+  "group_by": [
+    "layer_id",
+    "kv_head_id",
+    "step_bucket"
+  ],
+  "group_count": 36,
+  "groups": [
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 3,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.034796230494976044,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 3,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.02201545238494873,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.023008376359939575,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 3,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.035893261432647705,
+          "avg_selected_token_count": 2339.3333333333335,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.030317604541778564,
+          "avg_selected_token_count": 2338.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 3,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.054364949464797974,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 3,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.05026453733444214,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.06143605709075928,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 3,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.06885242462158203,
+          "avg_selected_token_count": 2338.6666666666665,
+          "chosen_safe_rate": 0.3333333333333333,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.05653384327888489,
+          "avg_selected_token_count": 2340.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 7,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03402871638536453,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 7,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.02622091770172119,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.04958704113960266,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 7,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03581499308347702,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        },
+        {
+          "avg_max_abs_error": 0.03798450529575348,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 7,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.02613067626953125,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 7,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.010162591934204102,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.07249200344085693,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 7,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.026242509484291077,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 4
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 11,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.006941020488739014,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.040840327739715576,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 11,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.04071609675884247,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 11,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.04584945241610209,
+          "avg_selected_token_count": 2338.6666666666665,
+          "chosen_safe_rate": 0.6666666666666666,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.005424618721008301,
+          "avg_selected_token_count": 2340.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 11,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.007480204105377197,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.023986876010894775,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 11,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03472237288951874,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 11,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.02769969900449117,
+          "avg_selected_token_count": 2339.3333333333335,
+          "chosen_safe_rate": 0.6666666666666666,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.03685685992240906,
+          "avg_selected_token_count": 2338.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 15,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.01201176643371582,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.07213103771209717,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 15,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.00539088249206543,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.050617486238479614,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 15,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.031632788479328156,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        },
+        {
+          "avg_max_abs_error": 0.04571704566478729,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 15,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.13376379013061523,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 15,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.07197754085063934,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 15,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.05540090799331665,
+          "avg_selected_token_count": 2338.6666666666665,
+          "chosen_safe_rate": 0.6666666666666666,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 0.6666666666666666,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.12024089694023132,
+          "avg_selected_token_count": 2340.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 19,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03680378198623657,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.14825081825256348,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 19,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.04085948318243027,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 19,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.08332045748829842,
+          "avg_selected_token_count": 2338.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        },
+        {
+          "avg_max_abs_error": 0.08470228314399719,
+          "avg_selected_token_count": 2340.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 19,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.13850927352905273,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 1
+        },
+        {
+          "avg_max_abs_error": 0.15209674835205078,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 19,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.053778111934661865,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 19,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.09021086245775223,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 0.25,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 4
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 23,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.038196563720703125,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 23,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.038731276988983154,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 0,
+        "layer_id": 23,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.04972862203915914,
+          "avg_selected_token_count": 2338.6666666666665,
+          "chosen_safe_rate": 0.6666666666666666,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 3
+        },
+        {
+          "avg_max_abs_error": 0.04488968849182129,
+          "avg_selected_token_count": 2340.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 1
+        }
+      ],
+      "snapshot_count": 4
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 23,
+        "step_bucket": "bootstrap"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.0365394651889801,
+          "avg_selected_token_count": 2337.0,
+          "chosen_safe_rate": 0.5,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": 0.25, \"persistent_runtime_optional_far_anchor_quota\": 4, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 23,
+        "step_bucket": "late"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03186368942260742,
+          "avg_selected_token_count": 2344.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 2
+    },
+    {
+      "bucket": {
+        "kv_head_id": 1,
+        "layer_id": 23,
+        "step_bucket": "mid"
+      },
+      "ranked_configs": [
+        {
+          "avg_max_abs_error": 0.03136587142944336,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 1.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": null, \"persistent_runtime_optional_diversity_radius\": 0, \"persistent_runtime_optional_diversity_weight\": 0.0, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": null, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 1.0,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json",
+          "vote_count": 2
+        },
+        {
+          "avg_max_abs_error": 0.05340451002120972,
+          "avg_selected_token_count": 2339.0,
+          "chosen_safe_rate": 0.0,
+          "config_key": "{\"persistent_runtime_key_centroid_count\": null, \"persistent_runtime_mandatory_recent_block_count\": 16, \"persistent_runtime_optional_diversity_min_history_count\": 1, \"persistent_runtime_optional_diversity_radius\": 4, \"persistent_runtime_optional_diversity_weight\": 0.5, \"persistent_runtime_optional_far_anchor_priority_margin\": null, \"persistent_runtime_optional_far_anchor_quota\": 0, \"persistent_runtime_optional_far_quota\": 32, \"persistent_runtime_optional_mid_quota\": 48, \"persistent_runtime_optional_near_quota\": 32, \"persistent_runtime_optional_top_k\": 128, \"persistent_runtime_optional_upper_bound_quota\": 16, \"persistent_runtime_probe_refine_top_k\": null, \"persistent_runtime_probe_sample_count\": null, \"persistent_runtime_recent_block_count\": 64, \"persistent_runtime_region_residual_caps\": null, \"persistent_runtime_residual_cluster_count\": null}",
+          "matched_oracle_rate": 0.5,
+          "source_compare_json": "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+          "vote_count": 2
+        }
+      ],
+      "snapshot_count": 4
+    }
+  ]
+}

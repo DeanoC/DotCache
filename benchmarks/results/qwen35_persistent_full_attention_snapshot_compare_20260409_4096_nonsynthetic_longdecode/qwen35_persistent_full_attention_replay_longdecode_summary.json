@@ -1,0 +1,524 @@
+{
+  "best_priority_candidate": {
+    "config": {
+      "block_size": 16,
+      "enable_priority": true,
+      "exploration_blocks_per_region": 1,
+      "history_decay": 0.5,
+      "history_mode": "ema",
+      "mandatory_recent_block_count": 16,
+      "optional_diversity_max_history_count": 2,
+      "optional_diversity_min_history_count": 1,
+      "optional_diversity_radius": 4,
+      "optional_diversity_requires_history": true,
+      "optional_diversity_weight": 0.5,
+      "optional_far_quota": 32,
+      "optional_mid_quota": 48,
+      "optional_near_quota": 32,
+      "optional_top_k": 128,
+      "optional_upper_bound_quota": 16,
+      "optional_use_upper_bounds_first": false,
+      "prev_attention_floor": 1e-06,
+      "prev_attention_neighbor_blend": 0.2,
+      "prev_attention_smoothing_passes": 1,
+      "prev_attention_transform": "sqrt",
+      "priority_prev_weight": 1.0,
+      "priority_recency_decay_blocks": 32.0,
+      "priority_recency_weight": 0.05,
+      "priority_value_norm_weight": 0.05,
+      "recent_block_count": 64,
+      "sink_block_count": 1
+    },
+    "label": "priority_recent64_topk128_sink1_explore1_histema_div0.5_r4_histgate_h1to2",
+    "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_history_ema05_diversity_sched12_longdecode.json",
+    "summary": {
+      "avg_full_block_count": 257.0,
+      "avg_full_token_count": 4099.75,
+      "avg_max_abs_error": 0.040071916869945,
+      "avg_max_rel_error": 80.95031106686737,
+      "avg_selected_block_count": 147.0,
+      "avg_selected_fraction": 0.5707053473266932,
+      "avg_selected_token_count": 2339.75,
+      "max_abs_error": 0.2755606174468994,
+      "max_rel_error": 4773.88330078125,
+      "snapshot_count": 144
+    },
+    "threshold_counts": {
+      "abs_le_0.01": 32,
+      "abs_le_0.1": 133,
+      "abs_le_0.5": 144,
+      "abs_le_1": 144
+    },
+    "worst_records": [
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 3678.51708984375,
+        "selected_token_count": 2337,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.16437053680419922,
+        "max_rel_error": 16.666257858276367,
+        "selected_token_count": 2337,
+        "snapshot_path": "readme/layer19_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 0.16018742322921753,
+        "max_rel_error": 146.7911834716797,
+        "selected_token_count": 2338,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 0.1564478874206543,
+        "max_rel_error": 8.842464447021484,
+        "selected_token_count": 2338,
+        "snapshot_path": "readme/layer19_kv01_step+01.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.14825081825256348,
+        "max_rel_error": 7.439645290374756,
+        "selected_token_count": 2337,
+        "snapshot_path": "readme/layer19_kv00_step+00.npz"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "history_decay": 0.5,
+        "history_mode": "none",
+        "mandatory_recent_block_count": 16,
+        "optional_diversity_radius": 0,
+        "optional_diversity_requires_history": false,
+        "optional_diversity_weight": 0.0,
+        "optional_far_quota": 32,
+        "optional_mid_quota": 48,
+        "optional_near_quota": 32,
+        "optional_top_k": 128,
+        "optional_upper_bound_quota": 16,
+        "optional_use_upper_bounds_first": false,
+        "prev_attention_floor": 1e-06,
+        "prev_attention_neighbor_blend": 0.2,
+        "prev_attention_smoothing_passes": 1,
+        "prev_attention_transform": "sqrt",
+        "priority_prev_weight": 1.0,
+        "priority_recency_decay_blocks": 32.0,
+        "priority_recency_weight": 0.05,
+        "priority_value_norm_weight": 0.05,
+        "recent_block_count": 64,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent64_topk128_sink1_explore1",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_baseline_none_longdecode.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4099.75,
+        "avg_max_abs_error": 0.04045696817855868,
+        "avg_max_rel_error": 81.5738663663829,
+        "avg_selected_block_count": 147.0,
+        "avg_selected_fraction": 0.5707053473266932,
+        "avg_selected_token_count": 2339.75,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 4773.88330078125,
+        "snapshot_count": 144
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 32,
+        "abs_le_0.1": 132,
+        "abs_le_0.5": 144,
+        "abs_le_1": 144
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.2755606174468994,
+          "max_rel_error": 3678.51708984375,
+          "selected_token_count": 2337,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.16437053680419922,
+          "max_rel_error": 16.666257858276367,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.16007602214813232,
+          "max_rel_error": 143.12916564941406,
+          "selected_token_count": 2338,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.1586441993713379,
+          "max_rel_error": 10.417017936706543,
+          "selected_token_count": 2338,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.14825081825256348,
+          "max_rel_error": 7.439645290374756,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "history_decay": 0.5,
+        "history_mode": "ema",
+        "mandatory_recent_block_count": 16,
+        "optional_diversity_radius": 0,
+        "optional_diversity_requires_history": false,
+        "optional_diversity_weight": 0.0,
+        "optional_far_quota": 32,
+        "optional_mid_quota": 48,
+        "optional_near_quota": 32,
+        "optional_top_k": 128,
+        "optional_upper_bound_quota": 16,
+        "optional_use_upper_bounds_first": false,
+        "prev_attention_floor": 1e-06,
+        "prev_attention_neighbor_blend": 0.2,
+        "prev_attention_smoothing_passes": 1,
+        "prev_attention_transform": "sqrt",
+        "priority_prev_weight": 1.0,
+        "priority_recency_decay_blocks": 32.0,
+        "priority_recency_weight": 0.05,
+        "priority_value_norm_weight": 0.05,
+        "recent_block_count": 64,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent64_topk128_sink1_explore1_histema",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_history_ema05_longdecode.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4099.75,
+        "avg_max_abs_error": 0.04045585956838396,
+        "avg_max_rel_error": 81.66210854702837,
+        "avg_selected_block_count": 147.0,
+        "avg_selected_fraction": 0.5707053473266932,
+        "avg_selected_token_count": 2339.75,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 4773.88330078125,
+        "snapshot_count": 144
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 32,
+        "abs_le_0.1": 132,
+        "abs_le_0.5": 144,
+        "abs_le_1": 144
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.2755606174468994,
+          "max_rel_error": 3678.51708984375,
+          "selected_token_count": 2337,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.16437053680419922,
+          "max_rel_error": 16.666257858276367,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.16007602214813232,
+          "max_rel_error": 143.12916564941406,
+          "selected_token_count": 2338,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.1586441993713379,
+          "max_rel_error": 10.417017936706543,
+          "selected_token_count": 2338,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.14825081825256348,
+          "max_rel_error": 7.439645290374756,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "history_decay": 0.5,
+        "history_mode": "ema",
+        "mandatory_recent_block_count": 16,
+        "optional_diversity_radius": 4,
+        "optional_diversity_requires_history": true,
+        "optional_diversity_weight": 0.5,
+        "optional_far_quota": 32,
+        "optional_mid_quota": 48,
+        "optional_near_quota": 32,
+        "optional_top_k": 128,
+        "optional_upper_bound_quota": 16,
+        "optional_use_upper_bounds_first": false,
+        "prev_attention_floor": 1e-06,
+        "prev_attention_neighbor_blend": 0.2,
+        "prev_attention_smoothing_passes": 1,
+        "prev_attention_transform": "sqrt",
+        "priority_prev_weight": 1.0,
+        "priority_recency_decay_blocks": 32.0,
+        "priority_recency_weight": 0.05,
+        "priority_value_norm_weight": 0.05,
+        "recent_block_count": 64,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent64_topk128_sink1_explore1_histema_div0.5_r4_histgate",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_history_ema05_diversity_gated_longdecode.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4099.75,
+        "avg_max_abs_error": 0.040194288439427815,
+        "avg_max_rel_error": 81.0009013460561,
+        "avg_selected_block_count": 147.0,
+        "avg_selected_fraction": 0.5707053473266932,
+        "avg_selected_token_count": 2339.75,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 4773.88330078125,
+        "snapshot_count": 144
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 32,
+        "abs_le_0.1": 133,
+        "abs_le_0.5": 144,
+        "abs_le_1": 144
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.2755606174468994,
+          "max_rel_error": 3678.51708984375,
+          "selected_token_count": 2337,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.16437053680419922,
+          "max_rel_error": 16.666257858276367,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.16018742322921753,
+          "max_rel_error": 146.7911834716797,
+          "selected_token_count": 2338,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.1564478874206543,
+          "max_rel_error": 8.842464447021484,
+          "selected_token_count": 2338,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.14825081825256348,
+          "max_rel_error": 7.439645290374756,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        }
+      ]
+    },
+    {
+      "config": {
+        "block_size": 16,
+        "enable_priority": true,
+        "exploration_blocks_per_region": 1,
+        "history_decay": 0.5,
+        "history_mode": "ema",
+        "mandatory_recent_block_count": 16,
+        "optional_diversity_max_history_count": 2,
+        "optional_diversity_min_history_count": 1,
+        "optional_diversity_radius": 4,
+        "optional_diversity_requires_history": true,
+        "optional_diversity_weight": 0.5,
+        "optional_far_quota": 32,
+        "optional_mid_quota": 48,
+        "optional_near_quota": 32,
+        "optional_top_k": 128,
+        "optional_upper_bound_quota": 16,
+        "optional_use_upper_bounds_first": false,
+        "prev_attention_floor": 1e-06,
+        "prev_attention_neighbor_blend": 0.2,
+        "prev_attention_smoothing_passes": 1,
+        "prev_attention_transform": "sqrt",
+        "priority_prev_weight": 1.0,
+        "priority_recency_decay_blocks": 32.0,
+        "priority_recency_weight": 0.05,
+        "priority_value_norm_weight": 0.05,
+        "recent_block_count": 64,
+        "sink_block_count": 1
+      },
+      "label": "priority_recent64_topk128_sink1_explore1_histema_div0.5_r4_histgate_h1to2",
+      "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_history_ema05_diversity_sched12_longdecode.json",
+      "summary": {
+        "avg_full_block_count": 257.0,
+        "avg_full_token_count": 4099.75,
+        "avg_max_abs_error": 0.040071916869945,
+        "avg_max_rel_error": 80.95031106686737,
+        "avg_selected_block_count": 147.0,
+        "avg_selected_fraction": 0.5707053473266932,
+        "avg_selected_token_count": 2339.75,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 4773.88330078125,
+        "snapshot_count": 144
+      },
+      "threshold_counts": {
+        "abs_le_0.01": 32,
+        "abs_le_0.1": 133,
+        "abs_le_0.5": 144,
+        "abs_le_1": 144
+      },
+      "worst_records": [
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.2755606174468994,
+          "max_rel_error": 3678.51708984375,
+          "selected_token_count": 2337,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.16437053680419922,
+          "max_rel_error": 16.666257858276367,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv01_step+00.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.16018742322921753,
+          "max_rel_error": 146.7911834716797,
+          "selected_token_count": 2338,
+          "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4098,
+          "max_abs_error": 0.1564478874206543,
+          "max_rel_error": 8.842464447021484,
+          "selected_token_count": 2338,
+          "snapshot_path": "readme/layer19_kv01_step+01.npz"
+        },
+        {
+          "full_token_count": 4097,
+          "max_abs_error": 0.14825081825256348,
+          "max_rel_error": 7.439645290374756,
+          "selected_token_count": 2337,
+          "snapshot_path": "readme/layer19_kv00_step+00.npz"
+        }
+      ]
+    }
+  ],
+  "most_aggressive_candidate": {
+    "config": {
+      "block_size": 16,
+      "enable_priority": true,
+      "exploration_blocks_per_region": 1,
+      "history_decay": 0.5,
+      "history_mode": "none",
+      "mandatory_recent_block_count": 16,
+      "optional_diversity_radius": 0,
+      "optional_diversity_requires_history": false,
+      "optional_diversity_weight": 0.0,
+      "optional_far_quota": 32,
+      "optional_mid_quota": 48,
+      "optional_near_quota": 32,
+      "optional_top_k": 128,
+      "optional_upper_bound_quota": 16,
+      "optional_use_upper_bounds_first": false,
+      "prev_attention_floor": 1e-06,
+      "prev_attention_neighbor_blend": 0.2,
+      "prev_attention_smoothing_passes": 1,
+      "prev_attention_transform": "sqrt",
+      "priority_prev_weight": 1.0,
+      "priority_recency_decay_blocks": 32.0,
+      "priority_recency_weight": 0.05,
+      "priority_value_norm_weight": 0.05,
+      "recent_block_count": 64,
+      "sink_block_count": 1
+    },
+    "label": "priority_recent64_topk128_sink1_explore1",
+    "source_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_full_attention_snapshot_compare_20260409_4096_nonsynthetic_longdecode/qwen35_persistent_full_attention_replay_baseline_none_longdecode.json",
+    "summary": {
+      "avg_full_block_count": 257.0,
+      "avg_full_token_count": 4099.75,
+      "avg_max_abs_error": 0.04045696817855868,
+      "avg_max_rel_error": 81.5738663663829,
+      "avg_selected_block_count": 147.0,
+      "avg_selected_fraction": 0.5707053473266932,
+      "avg_selected_token_count": 2339.75,
+      "max_abs_error": 0.2755606174468994,
+      "max_rel_error": 4773.88330078125,
+      "snapshot_count": 144
+    },
+    "threshold_counts": {
+      "abs_le_0.01": 32,
+      "abs_le_0.1": 132,
+      "abs_le_0.5": 144,
+      "abs_le_1": 144
+    },
+    "worst_records": [
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.2755606174468994,
+        "max_rel_error": 3678.51708984375,
+        "selected_token_count": 2337,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.16437053680419922,
+        "max_rel_error": 16.666257858276367,
+        "selected_token_count": 2337,
+        "snapshot_path": "readme/layer19_kv01_step+00.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 0.16007602214813232,
+        "max_rel_error": 143.12916564941406,
+        "selected_token_count": 2338,
+        "snapshot_path": "world_interface_agent_loop_paper/layer15_kv01_step+01.npz"
+      },
+      {
+        "full_token_count": 4098,
+        "max_abs_error": 0.1586441993713379,
+        "max_rel_error": 10.417017936706543,
+        "selected_token_count": 2338,
+        "snapshot_path": "readme/layer19_kv01_step+01.npz"
+      },
+      {
+        "full_token_count": 4097,
+        "max_abs_error": 0.14825081825256348,
+        "max_rel_error": 7.439645290374756,
+        "selected_token_count": 2337,
+        "snapshot_path": "readme/layer19_kv00_step+00.npz"
+      }
+    ]
+  }
+}

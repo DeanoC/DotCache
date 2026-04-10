@@ -11,15 +11,21 @@ import time
 import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
+from ..backends.metal import PersistentFullAttentionState, PersistentHybridRuntimeState, PersistentServingConfig
 from ..config import DotCacheConfig
 from ..decode_reference import decode_page
 from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
 from ..page_oracle import PageTraceRecord, save_page_trace
+from ..persistent_predictor import (
+    load_persistent_shortlist_policy,
+    resolve_persistent_shortlist_policy_choice,
+)
 from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
 from ..tracing import ExecutionTrace
+from ..types import EncodedPage
 from .llama import (
     _begin_cuda_memory_region,
     _end_cuda_memory_region,
@@ -57,7 +63,7 @@ else:  # pragma: no cover - exercised in environments without transformers
     qwen35_mod = None
 
 
-Qwen35Mode = Literal["dense", "dotcache_attention_subset"]
+Qwen35Mode = Literal["dense", "dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"]
 Qwen35DeltaNetStateCacheStage = Literal["readout_only_m0", "post_update_m0"]
 Qwen35DeltaNetStateCacheMode = Literal["M0", "M3"]
 Qwen35DeltaNetStateCacheScope = Literal["recurrent_only", "conv_only", "conv_plus_recurrent"]
@@ -731,6 +737,248 @@ def _tensor_to_float32_numpy(value: Any) -> np.ndarray:
     if torch is not None and torch.is_tensor(value):
         return np.asarray(value.detach().to(dtype=torch.float32).cpu().numpy(), dtype=np.float32)
     return np.asarray(value, dtype=np.float32)
+
+
+def _build_persistent_block_layout(token_count: int, block_size: int) -> tuple[np.ndarray, np.ndarray]:
+    starts: list[int] = []
+    counts: list[int] = []
+    for token_start in range(0, int(token_count), int(block_size)):
+        starts.append(int(token_start))
+        counts.append(int(min(int(block_size), int(token_count) - int(token_start))))
+    return np.asarray(starts, dtype=np.int64), np.asarray(counts, dtype=np.int64)
+
+
+def _page_like_to_encoded_page(page: Any) -> EncodedPage:
+    if isinstance(page, EncodedPage):
+        return page
+    source_page = getattr(page, "source_page", None)
+    if source_page is None:
+        raise TypeError("page must be an EncodedPage or PreparedPageTorch-like object")
+
+    def _payload_to_numpy(value: Any) -> Any:
+        if value is None:
+            return None
+        if torch is not None and torch.is_tensor(value):
+            return np.asarray(value.detach().cpu().numpy())
+        return np.asarray(value)
+
+    return EncodedPage(
+        header=source_page.header,
+        payload=_payload_to_numpy(getattr(page, "payload", None) if getattr(page, "payload", None) is not None else source_page.payload),
+        scales=_payload_to_numpy(getattr(page, "scales", None) if getattr(page, "scales", None) is not None else source_page.scales),
+        bias=_payload_to_numpy(getattr(page, "bias", None) if getattr(page, "bias", None) is not None else source_page.bias),
+        codebooks=_payload_to_numpy(
+            getattr(page, "codebooks", None) if getattr(page, "codebooks", None) is not None else source_page.codebooks
+        ),
+        m2_sketch=_payload_to_numpy(
+            getattr(page, "m2_sketch", None) if getattr(page, "m2_sketch", None) is not None else source_page.m2_sketch
+        ),
+        m2_basis=_payload_to_numpy(
+            getattr(page, "m2_basis", None) if getattr(page, "m2_basis", None) is not None else source_page.m2_basis
+        ),
+        m2_mean=_payload_to_numpy(
+            getattr(page, "m2_mean", None) if getattr(page, "m2_mean", None) is not None else source_page.m2_mean
+        ),
+        lut_segment_count=int(source_page.lut_segment_count),
+        escape_payload=_payload_to_numpy(
+            getattr(page, "escape_payload", None)
+            if getattr(page, "escape_payload", None) is not None
+            else source_page.escape_payload
+        ),
+        escape_scales=_payload_to_numpy(
+            getattr(page, "escape_scales", None)
+            if getattr(page, "escape_scales", None) is not None
+            else source_page.escape_scales
+        ),
+        requested_mode=source_page.requested_mode,
+        trial_quant_error=source_page.trial_quant_error,
+        trial_token_p95_error=source_page.trial_token_p95_error,
+        runtime_page_mean=None if source_page.runtime_page_mean is None else np.asarray(source_page.runtime_page_mean),
+        runtime_page_sketch=None if source_page.runtime_page_sketch is None else np.asarray(source_page.runtime_page_sketch),
+        runtime_page_min=None if source_page.runtime_page_min is None else np.asarray(source_page.runtime_page_min),
+        runtime_page_max=None if source_page.runtime_page_max is None else np.asarray(source_page.runtime_page_max),
+    )
+
+
+def _prefill_tail_page_for_kind(head_state: Any, *, kind: str) -> Any | None:
+    if kind == "K":
+        persistent_tail = getattr(head_state, "persistent_key_tail", None)
+        tail_index = 0
+    else:
+        persistent_tail = getattr(head_state, "persistent_value_tail", None)
+        tail_index = 1
+    if persistent_tail is not None:
+        active_page = persistent_tail.active_page
+        if active_page is not None:
+            return active_page
+    tail_builder = getattr(head_state, "tail", None)
+    if tail_builder is None or int(getattr(tail_builder, "token_count", 0)) <= 0:
+        return None
+    temp_pages = tail_builder.build_temp_pages()
+    if temp_pages is None:
+        return None
+    return temp_pages[tail_index]
+
+
+def _prefill_pages_for_kind(head_state: Any, *, kind: str) -> list[Any]:
+    session = getattr(head_state, "session", None)
+    if session is None:
+        return []
+    pages = list(session.key_pages if kind == "K" else session.value_pages)
+    tail_page = _prefill_tail_page_for_kind(head_state, kind=kind)
+    if tail_page is not None:
+        pages.append(tail_page)
+    pages.sort(key=lambda page: int(_page_like_to_encoded_page(page).header.token_start))
+    return pages
+
+
+def _prefill_page_record_from_dense_slice(page: Any, *, dense_history: np.ndarray, kind: str) -> dict[str, Any]:
+    encoded = _page_like_to_encoded_page(page)
+    header = encoded.header
+    token_start = int(header.token_start)
+    token_end = int(header.token_start + header.token_count)
+    mode_name = str(header.mode_default).strip().upper()
+    record = {
+        "token_start": token_start,
+        "token_end": token_end,
+        "mode": mode_name,
+        "comp_error": 0.0,
+        "valid": True,
+    }
+    if kind != "K" or mode_name != "M0":
+        return record
+    dense_slice = np.asarray(dense_history[token_start:token_end], dtype=np.float32)
+    try:
+        decoded = decode_page(encoded).astype(np.float32, copy=False)
+    except Exception:
+        record["valid"] = False
+        return record
+    if decoded.shape != dense_slice.shape:
+        record["valid"] = False
+        return record
+    if decoded.size <= 0:
+        return record
+    residual = dense_slice - decoded
+    record["comp_error"] = float(np.max(np.linalg.norm(residual, axis=1)))
+    return record
+
+
+def _resolve_block_page_record(
+    page_records: list[dict[str, Any]],
+    *,
+    token_start: int,
+    token_end: int,
+) -> tuple[str, float, bool]:
+    if token_end <= token_start:
+        return "M3", 0.0, False
+    overlapping = [
+        record
+        for record in page_records
+        if int(record["token_end"]) > int(token_start) and int(record["token_start"]) < int(token_end)
+    ]
+    if not overlapping:
+        return "M3", 0.0, False
+    overlapping.sort(key=lambda record: int(record["token_start"]))
+    cursor = int(token_start)
+    modes: list[str] = []
+    comp_errors: list[float] = []
+    for record in overlapping:
+        record_start = int(record["token_start"])
+        record_end = int(record["token_end"])
+        if record_start != cursor or record_end > int(token_end) or record_end <= record_start:
+            return "M3", 0.0, False
+        if not bool(record["valid"]):
+            return "M3", 0.0, False
+        resolved_mode = str(record["mode"]).strip().upper()
+        if resolved_mode not in {"M0", "M3"}:
+            return "M3", 0.0, False
+        modes.append(resolved_mode)
+        comp_errors.append(float(record["comp_error"]))
+        cursor = record_end
+    if cursor != int(token_end) or len(set(modes)) != 1:
+        return "M3", 0.0, False
+    resolved_mode = modes[0]
+    return resolved_mode, (max(comp_errors) if resolved_mode == "M0" else 0.0), True
+
+
+def _build_persistent_prefill_block_metadata(
+    *,
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    layer_ids: list[int],
+    dotcache_config: DotCacheConfig | None,
+    block_size: int,
+    num_attention_heads: int,
+) -> dict[int, dict[str, Any]]:
+    if dotcache_config is None or not prefill_tensors or not layer_ids:
+        return {}
+    first_layer_id = int(layer_ids[0])
+    first_keys = _tensor_to_float32_numpy(prefill_tensors[first_layer_id][0])
+    if first_keys.ndim != 4 or int(first_keys.shape[0]) != 1:
+        return {}
+    num_key_value_heads = int(first_keys.shape[1])
+    temp_cache = ModelPagedKVCache(
+        config=dotcache_config,
+        num_hidden_layers=max(int(layer_id) for layer_id in layer_ids) + 1,
+        num_attention_heads=int(num_attention_heads),
+        num_key_value_heads=int(num_key_value_heads),
+        backend="cpu_ref",
+    )
+    metadata_by_layer: dict[int, dict[str, Any]] = {}
+    try:
+        for layer_id in layer_ids:
+            layer_keys = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][0])[0]
+            layer_values = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][1])[0]
+            temp_cache.ingest_prefill_cache(int(layer_id), layer_keys, layer_values)
+        for layer_id in layer_ids:
+            layer_keys = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][0])[0]
+            layer_values = _tensor_to_float32_numpy(prefill_tensors[int(layer_id)][1])[0]
+            token_count = int(layer_keys.shape[1])
+            block_token_starts, block_token_counts = _build_persistent_block_layout(token_count, int(block_size))
+            num_blocks = int(len(block_token_starts))
+            block_k_mode = np.full((num_blocks, int(layer_keys.shape[0])), "M3", dtype="<U2")
+            block_v_mode = np.full((num_blocks, int(layer_values.shape[0])), "M3", dtype="<U2")
+            block_k_comp_error = np.zeros((num_blocks, int(layer_keys.shape[0])), dtype=np.float32)
+            block_compression_metadata_valid = np.zeros((num_blocks, int(layer_keys.shape[0])), dtype=np.float32)
+            for kv_head_id in range(int(layer_keys.shape[0])):
+                head_state = temp_cache._states.get((int(layer_id), int(kv_head_id)))
+                if head_state is None:
+                    continue
+                key_page_records = [
+                    _prefill_page_record_from_dense_slice(page, dense_history=layer_keys[int(kv_head_id)], kind="K")
+                    for page in _prefill_pages_for_kind(head_state, kind="K")
+                ]
+                value_page_records = [
+                    _prefill_page_record_from_dense_slice(page, dense_history=layer_values[int(kv_head_id)], kind="V")
+                    for page in _prefill_pages_for_kind(head_state, kind="V")
+                ]
+                for block_id in range(num_blocks):
+                    token_start = int(block_token_starts[block_id])
+                    token_end = int(token_start + block_token_counts[block_id])
+                    key_mode, key_comp_error, key_valid = _resolve_block_page_record(
+                        key_page_records,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    value_mode, _value_comp_error, value_valid = _resolve_block_page_record(
+                        value_page_records,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    if not key_valid or not value_valid:
+                        continue
+                    block_k_mode[block_id, int(kv_head_id)] = key_mode
+                    block_v_mode[block_id, int(kv_head_id)] = value_mode
+                    block_k_comp_error[block_id, int(kv_head_id)] = float(key_comp_error if key_mode == "M0" else 0.0)
+                    block_compression_metadata_valid[block_id, int(kv_head_id)] = 1.0
+            metadata_by_layer[int(layer_id)] = {
+                "block_k_mode": block_k_mode,
+                "block_v_mode": block_v_mode,
+                "block_k_comp_error": block_k_comp_error,
+                "block_compression_metadata_valid": block_compression_metadata_valid,
+            }
+    finally:
+        temp_cache.clear()
+    return metadata_by_layer
 
 
 def _replace_attention_subset_cache_with_placeholders(cache: Any, layer_ids: list[int]) -> None:
@@ -2554,6 +2802,24 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 cache_position=cache_position,
                 **kwargs,
             )
+        if self.adapter.mode == "dotcache_attention_subset_persistent_experimental":
+            if not self.adapter.full_attention_persistent_compute_enabled():
+                return self._forward_dense_with_capture(
+                    hidden_states,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    cache_position=cache_position,
+                    **kwargs,
+                )
+            return self._forward_persistent(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+                **kwargs,
+            )
         return self._forward_dotcache(
             hidden_states,
             position_embeddings=position_embeddings,
@@ -2749,8 +3015,385 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                     output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                     gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
                 )
+        )
+        return projected_output, None
+
+    def _forward_persistent(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
+        past_key_values=None,
+        cache_position: torch.LongTensor | None = None,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, None]:
+        if past_key_values is None:
+            raise ValueError("Qwen3.5 persistent attention-subset mode requires the native hybrid past_key_values state")
+        if tuple(hidden_states.shape[:2]) != (1, 1):
+            raise ValueError("Qwen3.5 persistent attention-subset mode only supports batch=1 and query_len=1")
+        runtime_state = self.adapter.require_persistent_hybrid_runtime_state()
+        token_index = self.adapter.current_token_index(cache_position)
+        input_shape = hidden_states.shape[:-1]
+        (query_states, key_states, value_states, gate), qkv_ms = _timed_call(
+            lambda: self._project_qkv(hidden_states, position_embeddings),
+            device=hidden_states.device,
+        )
+        query_step = query_states[0, :, 0, :].detach().to(dtype=torch.float32)
+        key_step = key_states[0].detach().to(dtype=torch.float32)
+        value_step = value_states[0].detach().to(dtype=torch.float32)
+        self.adapter.qkv_projection_ms_total += qkv_ms
+        self.adapter._record_layer_timing(self.adapter.qkv_projection_ms_total_by_layer, self.layer_idx, qkv_ms)
+
+        _, append_ms = _timed_call(
+            lambda: runtime_state.append_full_attention_step(
+                self.layer_idx,
+                key_step,
+                value_step,
+                token_index,
+            ),
+            device=hidden_states.device,
+        )
+        self.adapter.persistent_append_runtime_ms_total += append_ms
+        self.adapter._record_layer_timing(self.adapter.persistent_append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
+
+        persistent_step_index = max(
+            int(token_index) - int(self.adapter.persistent_shortlist_policy_prefill_prompt_length),
+            0,
+        )
+        effective_persistent_config, policy_choice = self.adapter.resolve_persistent_serving_config_for_layer(
+            layer_id=self.layer_idx,
+            step_index=persistent_step_index,
+        )
+        effective_persistent_config = _resolve_history_aware_persistent_serving_config(
+            effective_persistent_config,
+            history_snapshot_count=persistent_step_index,
+        )
+        full_attention_layer_state = runtime_state.full_attention.layers[self.layer_idx]
+        full_block_count = int(len(full_attention_layer_state.block_token_starts))
+
+        def _select_and_cert(current_config: PersistentServingConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+            current_selection = runtime_state.select_full_attention_blocks(
+                self.layer_idx,
+                query_step,
+                query_scale=float(self.base_attention.scaling),
+                config_override=current_config,
+                policy_choice=policy_choice,
+            )
+            current_certificate = runtime_state.certify_full_attention_selected_blocks(
+                self.layer_idx,
+                query=query_step,
+                query_scale=float(self.base_attention.scaling),
+                selected_block_ids=current_selection["selected_block_ids"],
+                upper_bounds=current_selection["upper_bounds"],
+                config_override=current_config,
+            )
+            return current_selection, current_certificate
+
+        def _should_enter_fallback(
+            current_config: PersistentServingConfig,
+            current_selection: dict[str, Any],
+            current_certificate: dict[str, Any],
+        ) -> bool:
+            if bool(current_config.enable_compression) and current_selection.get("compression_invalid_block_ids"):
+                return True
+            if bool(current_certificate.get("instability_flag", False)):
+                return True
+            if bool(current_config.enable_early_exit) and bool(current_certificate.get("fallback_recommended", False)):
+                return True
+            return False
+
+        def _extend_selection_with_next_optional_tranche(
+            current_selection: dict[str, Any],
+            *,
+            tranche_size: int,
+        ) -> dict[str, Any] | None:
+            selected_ids = [int(block_id) for block_id in current_selection["selected_block_ids"]]
+            ranked_optional_candidates = [int(block_id) for block_id in current_selection.get("ranked_optional_candidate_ids", [])]
+            selected_set = set(selected_ids)
+            extra_ids: list[int] = []
+            for block_id in ranked_optional_candidates:
+                if int(block_id) in selected_set:
+                    continue
+                extra_ids.append(int(block_id))
+                if len(extra_ids) >= max(int(tranche_size), 0):
+                    break
+            if not extra_ids:
+                return None
+            next_selection = dict(current_selection)
+            next_selection["selected_block_ids"] = sorted(selected_set | set(int(block_id) for block_id in extra_ids))
+            next_processing_ids = [int(block_id) for block_id in current_selection.get("processing_block_ids", [])]
+            next_selection["processing_block_ids"] = next_processing_ids + [
+                int(block_id) for block_id in extra_ids if int(block_id) not in set(next_processing_ids)
+            ]
+            next_selection["optional_block_ids"] = [
+                int(block_id) for block_id in current_selection.get("optional_block_ids", [])
+            ] + extra_ids
+            return next_selection
+
+        selection, certificate = _select_and_cert(effective_persistent_config)
+        final_config = effective_persistent_config
+        final_selection = selection
+        final_certificate = certificate
+        fallback_rung = 0
+        compression_rerank = False
+        dense_fallback = False
+        if _should_enter_fallback(effective_persistent_config, selection, certificate):
+            fallback_step = max(int(effective_persistent_config.full_attention_fallback_widen_step), 1)
+            fallback_max_optional_top_k = int(effective_persistent_config.full_attention_fallback_max_optional_top_k)
+            if fallback_max_optional_top_k <= 0:
+                fallback_max_optional_top_k = int(full_block_count)
+
+            expanded_selection = _extend_selection_with_next_optional_tranche(
+                selection,
+                tranche_size=fallback_step,
+            )
+            if expanded_selection is not None:
+                fallback_rung = 1
+                final_selection = expanded_selection
+                final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                    self.layer_idx,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    selected_block_ids=final_selection["selected_block_ids"],
+                    upper_bounds=selection["upper_bounds"],
+                    config_override=final_config,
+                )
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                current_top_k = int(final_config.full_attention_optional_top_k)
+                widened_top_k = min(
+                    int(fallback_max_optional_top_k),
+                    max(int(current_top_k), 0) + int(fallback_step),
+                )
+                if bool(final_config.enable_priority) and int(current_top_k) > 0 and int(widened_top_k) > int(current_top_k):
+                    fallback_rung = 2
+                    final_config = replace(final_config, full_attention_optional_top_k=int(widened_top_k))
+                    final_selection, final_certificate = _select_and_cert(final_config)
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate) and bool(final_config.enable_compression):
+                fallback_rung = 3
+                compression_rerank = True
+                final_config = replace(final_config, enable_compression=False)
+                final_selection, final_certificate = _select_and_cert(final_config)
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                fallback_rung = 4
+                final_config = replace(
+                    final_config,
+                    enable_compression=False,
+                    enable_priority=False,
+                    full_attention_optional_top_k=0,
+                )
+                all_block_ids = [int(block_id) for block_id in range(int(full_block_count))]
+                full_score_result = runtime_state.score_full_attention_blocks(
+                    self.layer_idx,
+                    query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    config_override=final_config,
+                )
+                final_selection = {
+                    "selected_block_ids": all_block_ids,
+                    "processing_block_ids": all_block_ids,
+                    "mandatory_block_ids": all_block_ids,
+                    "soft_recent_block_ids": [],
+                    "exploration_block_ids": [],
+                    "optional_block_ids": [],
+                    "ranked_optional_candidate_ids": [],
+                    "priority_scores": full_score_result["priority_scores"],
+                    "upper_bounds": full_score_result["upper_bounds"],
+                    "compression_candidate_block_ids": all_block_ids,
+                    "compression_invalid_block_ids": [],
+                    "selected_k_mode_counts": {},
+                    "policy_preferred_optional_block_ids": [],
+                    "policy_preferred_bias_weight": 0.0,
+                }
+                final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                    self.layer_idx,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    selected_block_ids=all_block_ids,
+                    upper_bounds=full_score_result["upper_bounds"],
+                    config_override=final_config,
+                )
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                fallback_rung = 5
+                dense_fallback = True
+                final_config = replace(final_config, enable_compression=False, enable_priority=False)
+
+        self.adapter.record_persistent_shortlist_policy_application(
+            layer_id=self.layer_idx,
+            choice=policy_choice,
+        )
+        selected_block_ids = [int(block_id) for block_id in final_selection["selected_block_ids"]]
+        runtime_state.record_full_attention_selection_outcome(
+            self.layer_idx,
+            selected_block_ids=selected_block_ids,
+            fallback_rung=fallback_rung,
+            compression_rerank=compression_rerank,
+            dense_fallback=dense_fallback,
+        )
+        if bool(dense_fallback) or len(selected_block_ids) >= int(full_block_count):
+            layer_key_cache, layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
+                self.layer_idx
+            )
+            selected_key_states = layer_key_cache
+            selected_value_states = layer_value_cache
+            selected_block_token_counts = [
+                int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in full_block_ids
+            ]
+            selected_block_ids = full_block_ids
+            selected_token_count = int(full_token_count)
+        else:
+            selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
+                self.layer_idx,
+                selected_block_ids,
+            )
+            selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
+            full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
+        full_key_states = selected_key_states.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
+        full_value_states = selected_value_states.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
+        selected_attention_mask = attention_mask if selected_token_count == full_token_count else None
+        attention_interface = qwen35_mod.ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.base_attention.config._attn_implementation,
+            qwen35_mod.eager_attention_forward,
+        )
+        attention_result, decode_ms = _timed_call(
+            lambda: attention_interface(
+                self.base_attention,
+                query_states,
+                full_key_states,
+                full_value_states,
+                selected_attention_mask,
+                dropout=0.0 if not self.training else self.base_attention.attention_dropout,
+                scaling=self.base_attention.scaling,
+                **kwargs,
+            ),
+            device=hidden_states.device,
+        )
+        attn_output, _attn_weights = attention_result
+        runtime_state.update_full_attention_block_attention_ema(
+            self.layer_idx,
+            selected_block_ids=selected_block_ids,
+            selected_block_token_counts=selected_block_token_counts,
+            attn_weights=_attn_weights,
+        )
+        context_states = attn_output.reshape(*input_shape, -1).contiguous()
+        runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
+        runtime_state.full_attention.telemetry.require_layer(self.layer_idx).decode_ms_total += float(decode_ms)
+        self.adapter.persistent_full_attention_decode_ms_total += float(decode_ms)
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_beta_upper_by_layer,
+            self.layer_idx,
+            float(final_certificate["beta_upper"]),
+        )
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_delta_upper_by_layer,
+            self.layer_idx,
+            float(final_certificate["delta_upper"]),
+        )
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_decode_ms_total_by_layer,
+            self.layer_idx,
+            float(decode_ms),
+        )
+        gated_context = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device) * torch.sigmoid(gate)
+        projected_output, output_projection_ms = _timed_call(
+            lambda: self.base_attention.o_proj(gated_context),
+            device=hidden_states.device,
+        )
+        self.adapter.output_projection_ms_total += output_projection_ms
+        self.adapter._record_layer_timing(
+            self.adapter.output_projection_ms_total_by_layer,
+            self.layer_idx,
+            output_projection_ms,
+        )
+
+        _advance_attention_subset_cache_placeholder(past_key_values, self.layer_idx)
+
+        if self.adapter.capture_enabled:
+            self.adapter.record_replay(
+                LlamaReplayRecord(
+                    step_index=self.adapter.capture_step_index,
+                    layer_id=self.layer_idx,
+                    token_index=token_index,
+                    query_states=query_step.detach().cpu().numpy(),
+                    key_states=key_step[:, 0, :].detach().cpu().numpy(),
+                    value_states=value_step[:, 0, :].detach().cpu().numpy(),
+                    context_states=gated_context[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    output_states=projected_output[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                    gate_states=gate[0, 0].detach().to(dtype=torch.float32).cpu().numpy(),
+                )
             )
         return projected_output, None
+
+
+class PersistentQwen35LinearAttentionBridge(nn.Module):
+    def __init__(self, base_linear_attn: nn.Module, adapter: "Qwen35AttentionSubsetDotCacheModelAdapter") -> None:
+        super().__init__()
+        self.base_linear_attn = base_linear_attn
+        self.adapter = adapter
+        self.layer_idx = int(base_linear_attn.layer_idx)
+
+    def _forward_base_linear_attn(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        cache_params,
+        cache_position: torch.LongTensor | None,
+        attention_mask: torch.Tensor | None,
+    ):
+        try:
+            return self.base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            )
+        except TypeError as exc:
+            if "cache_position" not in str(exc):
+                raise
+            return self.base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                attention_mask=attention_mask,
+            )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_params=None,
+        cache_position: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ):
+        if (
+            self.adapter.mode != "dotcache_attention_subset_persistent_experimental"
+            or cache_params is None
+            or not self.adapter.linear_attention_persistent_compute_enabled()
+        ):
+            return self._forward_base_linear_attn(
+                hidden_states=hidden_states,
+                cache_params=cache_params,
+                cache_position=cache_position,
+                attention_mask=attention_mask,
+            )
+        runtime_state = self.adapter.require_persistent_hybrid_runtime_state()
+        output, linear_ms = _timed_call(
+            lambda: runtime_state.decode_linear_attention_layer(
+                self.layer_idx,
+                layer_module=self.base_linear_attn,
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+            ),
+            device=hidden_states.device,
+        )
+        self.adapter.persistent_linear_attention_ms_total += float(linear_ms)
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_linear_attention_ms_total_by_layer,
+            self.layer_idx,
+            float(linear_ms),
+        )
+        return output
 
 
 @dataclass(slots=True)
@@ -2821,9 +3464,51 @@ class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
         return self.hybrid_fit_summary()["attention_candidate_layer_ids"]
 
 
+_PERSISTENT_SHORTLIST_ASSIST_FIELDS = frozenset(
+    {
+        "full_attention_recent_block_count",
+        "full_attention_mandatory_recent_block_count",
+        "full_attention_optional_top_k",
+        "full_attention_optional_upper_bound_quota",
+        "full_attention_optional_far_quota",
+        "full_attention_optional_mid_quota",
+        "full_attention_optional_near_quota",
+        "full_attention_key_centroid_count",
+        "full_attention_probe_refine_top_k",
+        "full_attention_probe_sample_count",
+        "full_attention_region_residual_caps",
+        "full_attention_residual_cluster_count",
+    }
+)
+
+
+def _apply_persistent_shortlist_config_overrides(
+    base_config: PersistentServingConfig,
+    choice: dict[str, Any] | None,
+) -> PersistentServingConfig:
+    if choice is None:
+        return base_config
+    config_overrides = dict(choice.get("config_overrides", {}))
+    if not config_overrides:
+        return base_config
+    mode = str(base_config.full_attention_shortlist_policy_mode or "replace").strip().lower()
+    if mode == "assist":
+        config_overrides = {
+            key: value
+            for key, value in config_overrides.items()
+            if key in _PERSISTENT_SHORTLIST_ASSIST_FIELDS
+        }
+        if not config_overrides:
+            return base_config
+    elif mode == "bias":
+        return base_config
+    return replace(base_config, **config_overrides)
+
+
 @dataclass(slots=True)
 class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapter):
     dotcache_config: DotCacheConfig = field(default_factory=lambda: DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16))
+    persistent_serving_config: PersistentServingConfig = field(default_factory=PersistentServingConfig)
     backend: str = "cpu_ref"
     cache: PreparedPageCache = field(default_factory=PreparedPageCache)
     model_kv_cache: ModelPagedKVCache = field(init=False, repr=False)
@@ -2832,16 +3517,39 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     qkv_projection_ms_total: float = field(default=0.0, init=False, repr=False)
     output_projection_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_full_attention_decode_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_linear_attention_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_append_runtime_ms_total: float = field(default=0.0, init=False, repr=False)
     profile_backend: bool = field(default=False, init=False, repr=False)
     decode_backend_trace: ExecutionTrace = field(default_factory=ExecutionTrace, init=False, repr=False)
     qkv_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     decode_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     output_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_decode_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_beta_upper_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_delta_upper_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_linear_attention_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_linear_update_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     decode_call_count_by_layer: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     native_hybrid_runtime_state: Qwen35NativeHybridRuntimeState | None = field(default=None, init=False, repr=False)
     hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
+    persistent_hybrid_runtime_state: PersistentHybridRuntimeState | None = field(default=None, init=False, repr=False)
     serving_shortlist_heuristic_applied: bool = field(default=False, init=False, repr=False)
+    persistent_shortlist_policy_prompt_family: str | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_loaded_path: str | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_payload: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_applied_count: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_applied_count_by_layer: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_last_config_key_by_layer: dict[int, str] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_last_bucket_by_layer: dict[int, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_prefill_prompt_length: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_load_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_shortlist_policy_resolve_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_shortlist_policy_load_count: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_resolve_count: int = field(default=0, init=False, repr=False)
+    _linear_wrappers: list[PersistentQwen35LinearAttentionBridge] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         Qwen35AttentionSubsetModelAdapter.__post_init__(self)
@@ -2850,6 +3558,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         if self.dotcache_config.head_dim != expected_head_dim:
             self.dotcache_config = replace(self.dotcache_config, head_dim=expected_head_dim)
         self._rebuild_model_kv_cache()
+        self._install_linear_wrappers()
 
     def _rebuild_model_kv_cache(self) -> None:
         text_config = _qwen35_text_config(self.model)
@@ -2884,9 +3593,18 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         )
         return bool(applied)
 
+    def full_attention_persistent_compute_enabled(self) -> bool:
+        return bool(self.persistent_serving_config.enable_full_attention_persistent_compute)
+
+    def linear_attention_persistent_compute_enabled(self) -> bool:
+        return bool(self.persistent_serving_config.enable_linear_attention_persistent_compute)
+
     def set_mode(self, mode: str) -> None:
-        if mode not in {"dense", "dotcache_attention_subset"}:
-            raise ValueError("Qwen3.5 attention-subset adapter only supports dense and dotcache_attention_subset modes")
+        if mode not in {"dense", "dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"}:
+            raise ValueError(
+                "Qwen3.5 attention-subset adapter only supports dense, dotcache_attention_subset, "
+                "and dotcache_attention_subset_persistent_experimental modes"
+            )
         self.mode = mode  # type: ignore[assignment]
 
     def clear(self) -> None:
@@ -2899,14 +3617,120 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total = 0.0
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
+        self.persistent_full_attention_decode_ms_total = 0.0
+        self.persistent_linear_attention_ms_total = 0.0
+        self.persistent_append_runtime_ms_total = 0.0
         self.decode_backend_trace = ExecutionTrace(capture_timings=self.profile_backend)
         self.qkv_projection_ms_total_by_layer = {}
         self.append_runtime_ms_total_by_layer = {}
         self.decode_runtime_ms_total_by_layer = {}
         self.output_projection_ms_total_by_layer = {}
+        self.persistent_full_attention_decode_ms_total_by_layer = {}
+        self.persistent_full_attention_beta_upper_by_layer = {}
+        self.persistent_full_attention_delta_upper_by_layer = {}
+        self.persistent_append_runtime_ms_total_by_layer = {}
+        self.persistent_linear_attention_ms_total_by_layer = {}
+        self.persistent_linear_update_ms_total_by_layer = {}
+        self.persistent_shortlist_policy_applied_count = 0
+        self.persistent_shortlist_policy_applied_count_by_layer = {}
+        self.persistent_shortlist_policy_last_config_key_by_layer = {}
+        self.persistent_shortlist_policy_last_bucket_by_layer = {}
+        self.persistent_shortlist_policy_prompt_family = None
+        self.persistent_shortlist_policy_loaded_path = None
+        self.persistent_shortlist_policy_payload = None
+        self.persistent_shortlist_policy_prefill_prompt_length = 0
+        self.persistent_shortlist_policy_load_ms_total = 0.0
+        self.persistent_shortlist_policy_resolve_ms_total = 0.0
+        self.persistent_shortlist_policy_load_count = 0
+        self.persistent_shortlist_policy_resolve_count = 0
         self.decode_call_count_by_layer = {}
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
+        self.persistent_hybrid_runtime_state = None
+
+    def configure_persistent_shortlist_policy_context(
+        self,
+        *,
+        prompt_family: str | None,
+        prompt_length: int,
+    ) -> None:
+        self.persistent_shortlist_policy_prompt_family = None if prompt_family is None else str(prompt_family)
+        self.persistent_shortlist_policy_prefill_prompt_length = max(int(prompt_length), 0)
+
+    def _load_persistent_shortlist_policy_payload(self) -> dict[str, Any] | None:
+        policy_path = self.persistent_serving_config.full_attention_shortlist_policy_path
+        if not policy_path:
+            self.persistent_shortlist_policy_loaded_path = None
+            self.persistent_shortlist_policy_payload = None
+            return None
+        start = time.perf_counter()
+        resolved_path = str(Path(policy_path).expanduser().resolve())
+        if (
+            self.persistent_shortlist_policy_payload is not None
+            and self.persistent_shortlist_policy_loaded_path == resolved_path
+        ):
+            return self.persistent_shortlist_policy_payload
+        self.persistent_shortlist_policy_payload = load_persistent_shortlist_policy(resolved_path)
+        self.persistent_shortlist_policy_loaded_path = resolved_path
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.persistent_shortlist_policy_load_ms_total += elapsed_ms
+        self.persistent_shortlist_policy_load_count += 1
+        if self.persistent_hybrid_runtime_state is not None:
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_load_ms_total += elapsed_ms
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_load_count += 1
+        return self.persistent_shortlist_policy_payload
+
+    def resolve_persistent_serving_config_for_layer(
+        self,
+        *,
+        layer_id: int,
+        step_index: int,
+    ) -> tuple[PersistentServingConfig, dict[str, Any] | None]:
+        start = time.perf_counter()
+        base_config = self.persistent_serving_config
+        prompt_family = self.persistent_shortlist_policy_prompt_family
+        policy_payload = self._load_persistent_shortlist_policy_payload()
+        if policy_payload is None or not prompt_family:
+            return base_config, None
+        min_step_index = base_config.full_attention_shortlist_policy_min_step_index
+        if min_step_index is not None and int(step_index) < int(min_step_index):
+            return base_config, None
+        max_step_index = base_config.full_attention_shortlist_policy_max_step_index
+        if max_step_index is not None and int(step_index) > int(max_step_index):
+            return base_config, None
+        choice = resolve_persistent_shortlist_policy_choice(
+            policy_payload,
+            layer_id=int(layer_id),
+            kv_head_ids=sorted({int(kv_head_id) for kv_head_id in self.q_head_to_kv_head.tolist()}),
+            prompt_family=str(prompt_family),
+            step_index=int(step_index),
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.persistent_shortlist_policy_resolve_ms_total += elapsed_ms
+        self.persistent_shortlist_policy_resolve_count += 1
+        if self.persistent_hybrid_runtime_state is not None:
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_resolve_ms_total += elapsed_ms
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_resolve_count += 1
+        return _apply_persistent_shortlist_config_overrides(base_config, choice), choice
+
+    def record_persistent_shortlist_policy_application(
+        self,
+        *,
+        layer_id: int,
+        choice: dict[str, Any] | None,
+    ) -> None:
+        if choice is None:
+            return
+        self.persistent_shortlist_policy_applied_count += 1
+        self.persistent_shortlist_policy_applied_count_by_layer[int(layer_id)] = (
+            int(self.persistent_shortlist_policy_applied_count_by_layer.get(int(layer_id), 0)) + 1
+        )
+        self.persistent_shortlist_policy_last_config_key_by_layer[int(layer_id)] = str(choice.get("config_key", ""))
+        self.persistent_shortlist_policy_last_bucket_by_layer[int(layer_id)] = {
+            "prompt_family": str(self.persistent_shortlist_policy_prompt_family or ""),
+            "step_bucket": str(choice.get("step_bucket", "")),
+            "matched_buckets": list(choice.get("matched_buckets", [])),
+        }
 
     def set_backend_profiling(self, enabled: bool) -> None:
         self.profile_backend = bool(enabled)
@@ -2932,7 +3756,59 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             "dotcache_output_projection_ms_total_by_layer": {
                 str(layer_id): float(total) for layer_id, total in sorted(self.output_projection_ms_total_by_layer.items())
             },
+            "persistent_full_attention_decode_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_decode_ms_total_by_layer.items())
+            },
+            "persistent_full_attention_beta_upper_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_beta_upper_by_layer.items())
+            },
+            "persistent_full_attention_delta_upper_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_delta_upper_by_layer.items())
+            },
+            "persistent_append_runtime_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_append_runtime_ms_total_by_layer.items())
+            },
+            "persistent_linear_attention_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_linear_attention_ms_total_by_layer.items())
+            },
+            "persistent_linear_update_ms_total_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_linear_update_ms_total_by_layer.items())
+            },
+            "persistent_shortlist_policy_applied_count_by_layer": {
+                str(layer_id): int(count)
+                for layer_id, count in sorted(self.persistent_shortlist_policy_applied_count_by_layer.items())
+            },
+            "persistent_shortlist_policy_last_config_key_by_layer": {
+                str(layer_id): str(config_key)
+                for layer_id, config_key in sorted(self.persistent_shortlist_policy_last_config_key_by_layer.items())
+            },
+            "persistent_shortlist_policy_load_ms_total": float(self.persistent_shortlist_policy_load_ms_total),
+            "persistent_shortlist_policy_resolve_ms_total": float(self.persistent_shortlist_policy_resolve_ms_total),
+            "persistent_shortlist_policy_load_count": int(self.persistent_shortlist_policy_load_count),
+            "persistent_shortlist_policy_resolve_count": int(self.persistent_shortlist_policy_resolve_count),
         }
+
+    def _install_linear_wrappers(self) -> None:
+        text_model = _qwen35_text_model(self.model)
+        layers = getattr(text_model, "layers", None)
+        if layers is None:
+            return
+        layer_types = _hybrid_layer_types(self.model)
+        for layer_id, layer in enumerate(layers[: len(layer_types)]):
+            if layer_types[layer_id] != "linear_attention" or not hasattr(layer, "linear_attn"):
+                continue
+            base_linear_attn = layer.linear_attn
+            if isinstance(base_linear_attn, PersistentQwen35LinearAttentionBridge):
+                base_linear_attn = base_linear_attn.base_linear_attn
+            wrapper = PersistentQwen35LinearAttentionBridge(base_linear_attn, self)
+            layer.linear_attn = wrapper
+            self._linear_wrappers.append(wrapper)
 
     def token_growing_layer_ids(self) -> list[int]:
         if self.native_hybrid_runtime_state is not None:
@@ -2981,6 +3857,35 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             native_state=self.native_hybrid_runtime_state,
             model_kv_cache=self.model_kv_cache,
         )
+        self.persistent_hybrid_runtime_state = None
+
+    def load_attention_subset_persistent_prefill_cache(self, past_key_values: Any) -> None:
+        source_prefill_partition = self.partition_hybrid_state(past_key_values)
+        attention_layer_ids = source_prefill_partition.token_growing_layer_ids
+        extracted = _extract_attention_subset_prefill_tensors(past_key_values, attention_layer_ids)
+        prefill_block_metadata_by_layer = _build_persistent_prefill_block_metadata(
+            prefill_tensors=extracted,
+            layer_ids=attention_layer_ids,
+            dotcache_config=self.dotcache_config,
+            block_size=int(self.persistent_serving_config.block_size),
+            num_attention_heads=int(len(self.q_head_to_kv_head)),
+        )
+        _replace_attention_subset_cache_with_placeholders(past_key_values, attention_layer_ids)
+        self.native_hybrid_runtime_state = Qwen35NativeHybridRuntimeState.from_post_handoff_cache(
+            past_key_values,
+            self.model,
+        )
+        self.hybrid_dotcache_runtime_state = None
+        self.persistent_hybrid_runtime_state = PersistentHybridRuntimeState.from_post_handoff_cache(
+            native_state=self.native_hybrid_runtime_state,
+            prefill_tensors=extracted,
+            prefill_block_metadata_by_layer=prefill_block_metadata_by_layer,
+            linear_layer_ids=source_prefill_partition.fixed_resident_layer_ids,
+            q_head_to_kv_head=self.q_head_to_kv_head,
+            device=self.device,
+            config=self.persistent_serving_config,
+            dotcache_config=self.dotcache_config,
+        )
 
     def refresh_native_hybrid_runtime_state(self, past_key_values: Any) -> None:
         if self.hybrid_dotcache_runtime_state is not None:
@@ -3010,6 +3915,11 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         if self.hybrid_dotcache_runtime_state is None:
             raise ValueError("Qwen3.5 attention-subset DotCache runtime state is not initialized")
         return self.hybrid_dotcache_runtime_state
+
+    def require_persistent_hybrid_runtime_state(self) -> PersistentHybridRuntimeState:
+        if self.persistent_hybrid_runtime_state is None:
+            raise ValueError("Qwen3.5 attention-subset persistent runtime state is not initialized")
+        return self.persistent_hybrid_runtime_state
 
 
 @dataclass(slots=True)
@@ -3442,6 +4352,66 @@ class Qwen35AttentionSubsetHarness:
             multimodal_inputs=multimodal_inputs,
         )
 
+    def capture_attention_subset_paged_attention_snapshot(
+        self,
+        *,
+        output_path: str | Path,
+        layer_id: int,
+        kv_head_id: int = 0,
+        step_index: int = -1,
+        tokens_per_page: int = 256,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+            self.model,
+            self.adapter,
+            output_path=output_path,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            step_index=step_index,
+            tokens_per_page=tokens_per_page,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
+    def capture_attention_subset_paged_attention_snapshot_corpus(
+        self,
+        *,
+        output_dir: str | Path,
+        layer_ids: Sequence[int] | None = None,
+        kv_head_ids: Sequence[int] = (0,),
+        step_indices: Sequence[int] = (-1,),
+        tokens_per_page: int = 256,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        multimodal_inputs: Any | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+            self.model,
+            self.adapter,
+            output_dir=output_dir,
+            layer_ids=layer_ids,
+            kv_head_ids=kv_head_ids,
+            step_indices=step_indices,
+            tokens_per_page=tokens_per_page,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            multimodal_inputs=multimodal_inputs,
+        )
+
     def run_prefill_ablation(
         self,
         dotcache_config: DotCacheConfig,
@@ -3546,6 +4516,32 @@ class Qwen35AttentionSubsetDotCacheHarness:
             decode_steps=decode_steps,
             profile_backend=profile_backend,
             multimodal_inputs=multimodal_inputs,
+        )
+
+    def run_attention_subset_persistent_serving(
+        self,
+        *,
+        prompt: str | None = None,
+        input_ids=None,
+        attention_mask=None,
+        decode_steps: int = 4,
+        profile_backend: bool = False,
+        multimodal_inputs: Any | None = None,
+        persistent_serving_config: PersistentServingConfig | None = None,
+        persistent_policy_prompt_family: str | None = None,
+    ) -> dict[str, Any]:
+        return run_qwen35_attention_subset_persistent_serving_harness(
+            self.model,
+            self.adapter,
+            prompt=prompt,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            tokenizer=self.tokenizer,
+            decode_steps=decode_steps,
+            profile_backend=profile_backend,
+            multimodal_inputs=multimodal_inputs,
+            persistent_serving_config=persistent_serving_config,
+            persistent_policy_prompt_family=persistent_policy_prompt_family,
         )
 
     def run_attention_subset_dotcache_serving_quality(
@@ -7175,6 +8171,1008 @@ def build_attention_subset_prefill_page_trace_records(
     )
 
 
+def _resolve_attention_subset_capture_step_index(
+    layer_records: list[LlamaReplayRecord],
+    *,
+    step_index: int,
+) -> tuple[int, LlamaReplayRecord]:
+    if not layer_records:
+        raise ValueError("no attention-subset replay records are available for the requested layer")
+    record_count = len(layer_records)
+    resolved_index = int(step_index)
+    if resolved_index < 0:
+        resolved_index = record_count + resolved_index
+    if resolved_index < 0 or resolved_index >= record_count:
+        raise ValueError(
+            f"requested step_index={step_index} is out of range for {record_count} captured decode steps"
+        )
+    return resolved_index, layer_records[resolved_index]
+
+
+def _build_paged_attention_snapshot_from_history(
+    *,
+    query: np.ndarray,
+    key_history: np.ndarray,
+    value_history: np.ndarray,
+    current_token_index: int,
+    tokens_per_page: int,
+    source: str,
+):
+    from ..backends.mps_persistent_experimental import PagedAttentionSnapshot
+
+    query_np = np.asarray(query, dtype=np.float32)
+    key_history_np = np.asarray(key_history, dtype=np.float32)
+    value_history_np = np.asarray(value_history, dtype=np.float32)
+    if query_np.ndim != 1:
+        raise ValueError("query must have shape [head_dim]")
+    if key_history_np.ndim != 2 or value_history_np.ndim != 2:
+        raise ValueError("key_history and value_history must have shape [seq_len, head_dim]")
+    if key_history_np.shape != value_history_np.shape:
+        raise ValueError("key_history and value_history must have identical shapes")
+    if key_history_np.shape[1] != query_np.shape[0]:
+        raise ValueError("query head_dim must match key/value history head_dim")
+    if int(tokens_per_page) <= 0:
+        raise ValueError("tokens_per_page must be positive")
+    seq_len = int(key_history_np.shape[0])
+    if seq_len <= 0:
+        raise ValueError("key/value history must contain at least one token")
+
+    page_starts = list(range(0, seq_len, int(tokens_per_page)))
+    page_count = len(page_starts)
+    k_pages = np.zeros((page_count, int(tokens_per_page), int(query_np.shape[0])), dtype=np.float32)
+    v_pages = np.zeros_like(k_pages)
+    page_token_counts = np.zeros(page_count, dtype=np.int64)
+    page_token_starts = np.asarray(page_starts, dtype=np.int64)
+    page_k_mean = np.zeros((page_count, int(query_np.shape[0])), dtype=np.float32)
+
+    logits = (key_history_np @ query_np).astype(np.float32, copy=False)
+    shifted = logits - np.max(logits)
+    weights = np.exp(shifted).astype(np.float32, copy=False)
+    weights = weights / np.sum(weights)
+    prev_attn = np.zeros(page_count, dtype=np.float32)
+    distance = np.zeros(page_count, dtype=np.float32)
+
+    for page_id, token_start in enumerate(page_starts):
+        token_end = min(token_start + int(tokens_per_page), seq_len)
+        token_count = token_end - token_start
+        page_token_counts[page_id] = int(token_count)
+        k_pages[page_id, :token_count, :] = key_history_np[token_start:token_end]
+        v_pages[page_id, :token_count, :] = value_history_np[token_start:token_end]
+        page_k_mean[page_id] = key_history_np[token_start:token_end].mean(axis=0, dtype=np.float32)
+        prev_attn[page_id] = float(np.sum(weights[token_start:token_end], dtype=np.float32))
+        distance[page_id] = float(max(int(current_token_index) - int(token_end) + 1, 0))
+
+    return PagedAttentionSnapshot(
+        source=source,
+        query=query_np,
+        page_k_mean=page_k_mean,
+        prev_attn=prev_attn,
+        distance=distance,
+        k_pages=k_pages,
+        v_pages=v_pages,
+        page_token_counts=page_token_counts,
+        page_token_starts=page_token_starts,
+    )
+
+
+def build_qwen35_attention_subset_paged_attention_snapshot(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+):
+    if int(layer_id) not in prefill_tensors:
+        raise ValueError(f"requested attention layer {layer_id} is missing prefill tensors")
+    layer_keys, layer_values = prefill_tensors[int(layer_id)]
+    key_array = _tensor_to_float32_numpy(layer_keys)
+    value_array = _tensor_to_float32_numpy(layer_values)
+    if key_array.ndim != 4 or value_array.ndim != 4 or key_array.shape[0] != 1 or value_array.shape[0] != 1:
+        raise ValueError("prefill tensors must have shape [1, kv_heads, seq_len, head_dim]")
+    if key_array.shape != value_array.shape:
+        raise ValueError("prefill key/value tensors must have identical shapes")
+    kv_head_count = int(key_array.shape[1])
+    resolved_kv_head_id = int(kv_head_id)
+    if resolved_kv_head_id < 0 or resolved_kv_head_id >= kv_head_count:
+        raise ValueError(f"requested kv_head_id={kv_head_id} is out of range for {kv_head_count} KV heads")
+
+    layer_records = [
+        record
+        for step_records in per_step_records
+        for record in step_records
+        if int(record.layer_id) == int(layer_id)
+    ]
+    layer_records.sort(key=lambda record: int(record.step_index))
+    resolved_step_index, selected_record = _resolve_attention_subset_capture_step_index(
+        layer_records,
+        step_index=step_index,
+    )
+    if any(int(record.key_states.shape[0]) != kv_head_count for record in layer_records):
+        raise ValueError("captured decode records do not match the prefill KV head count")
+
+    kv_queries = _aggregate_query_states_by_kv_head(
+        selected_record.query_states,
+        q_head_to_kv_head,
+        num_key_value_heads=kv_head_count,
+    )
+    query = np.asarray(kv_queries[resolved_kv_head_id], dtype=np.float32)
+
+    decode_prefix = layer_records[: resolved_step_index + 1]
+    decode_key_history = np.stack(
+        [np.asarray(record.key_states[resolved_kv_head_id], dtype=np.float32) for record in decode_prefix],
+        axis=0,
+    )
+    decode_value_history = np.stack(
+        [np.asarray(record.value_states[resolved_kv_head_id], dtype=np.float32) for record in decode_prefix],
+        axis=0,
+    )
+    key_history = np.concatenate(
+        [np.asarray(key_array[0, resolved_kv_head_id], dtype=np.float32), decode_key_history],
+        axis=0,
+    )
+    value_history = np.concatenate(
+        [np.asarray(value_array[0, resolved_kv_head_id], dtype=np.float32), decode_value_history],
+        axis=0,
+    )
+    return _build_paged_attention_snapshot_from_history(
+        query=query,
+        key_history=key_history,
+        value_history=value_history,
+        current_token_index=int(selected_record.token_index),
+        tokens_per_page=tokens_per_page,
+        source=source,
+    )
+
+
+def export_qwen35_attention_subset_paged_attention_snapshot(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_path: str | Path,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import save_paged_attention_snapshot
+
+    target = Path(output_path)
+    snapshot = build_qwen35_attention_subset_paged_attention_snapshot(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=q_head_to_kv_head,
+        layer_id=layer_id,
+        kv_head_id=kv_head_id,
+        step_index=step_index,
+        tokens_per_page=tokens_per_page,
+        source=source,
+    )
+    save_paged_attention_snapshot(target, snapshot)
+
+    layer_records = [
+        record
+        for step_records in per_step_records
+        for record in step_records
+        if int(record.layer_id) == int(layer_id)
+    ]
+    layer_records.sort(key=lambda record: int(record.step_index))
+    resolved_step_index, selected_record = _resolve_attention_subset_capture_step_index(
+        layer_records,
+        step_index=step_index,
+    )
+    return {
+        "paged_attention_snapshot_path": str(target),
+        "paged_attention_snapshot_layer_id": int(layer_id),
+        "paged_attention_snapshot_kv_head_id": int(kv_head_id),
+        "paged_attention_snapshot_step_index": int(resolved_step_index),
+        "paged_attention_snapshot_token_index": int(selected_record.token_index),
+        "paged_attention_snapshot_tokens_per_page": int(tokens_per_page),
+        "paged_attention_snapshot_num_pages": int(snapshot.num_pages),
+        "paged_attention_snapshot_total_tokens": int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),
+        "paged_attention_snapshot_source": str(source),
+    }
+
+
+def export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+    prefill_tensors: dict[int, tuple[Any, Any]],
+    per_step_records: list[list[LlamaReplayRecord]],
+    *,
+    q_head_to_kv_head: np.ndarray,
+    output_dir: str | Path,
+    layer_ids: Sequence[int] | None = None,
+    kv_head_ids: Sequence[int] = (0,),
+    step_indices: Sequence[int] = (-1,),
+    tokens_per_page: int = 256,
+    source: str = "qwen35_attention_subset_dense_capture",
+) -> dict[str, Any]:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_layer_ids = sorted(int(layer_id) for layer_id in (layer_ids or sorted(prefill_tensors.keys())))
+    if not resolved_layer_ids:
+        raise ValueError("layer_ids must be non-empty")
+    if not step_indices:
+        raise ValueError("step_indices must be non-empty")
+
+    manifest_records: list[dict[str, Any]] = []
+    counts_by_layer: dict[str, int] = {}
+    counts_by_kv_head: dict[str, int] = {}
+    counts_by_step: dict[str, int] = {}
+
+    for layer_id in resolved_layer_ids:
+        if int(layer_id) not in prefill_tensors:
+            raise ValueError(f"requested attention layer {layer_id} is missing prefill tensors")
+        layer_keys, _layer_values = prefill_tensors[int(layer_id)]
+        key_array = _tensor_to_float32_numpy(layer_keys)
+        kv_head_count = int(key_array.shape[1])
+        resolved_kv_head_ids = sorted(int(kv_head_id) for kv_head_id in kv_head_ids)
+        for kv_head_id in resolved_kv_head_ids:
+            if kv_head_id < 0 or kv_head_id >= kv_head_count:
+                raise ValueError(f"requested kv_head_id={kv_head_id} is out of range for layer {layer_id}")
+            resolved_step_records: dict[int, dict[str, Any]] = {}
+            for requested_step_index in step_indices:
+                target = (
+                    target_dir
+                    / f"layer{int(layer_id):02d}_kv{int(kv_head_id):02d}_step{int(requested_step_index):+03d}.npz"
+                )
+                exported = export_qwen35_attention_subset_paged_attention_snapshot(
+                    prefill_tensors,
+                    per_step_records,
+                    q_head_to_kv_head=q_head_to_kv_head,
+                    output_path=target,
+                    layer_id=int(layer_id),
+                    kv_head_id=int(kv_head_id),
+                    step_index=int(requested_step_index),
+                    tokens_per_page=tokens_per_page,
+                    source=source,
+                )
+                resolved_step_index = int(exported["paged_attention_snapshot_step_index"])
+                if resolved_step_index in resolved_step_records:
+                    target.unlink(missing_ok=True)
+                    continue
+                exported["paged_attention_snapshot_requested_step_index"] = int(requested_step_index)
+                resolved_step_records[resolved_step_index] = exported
+            for resolved_step_index in sorted(resolved_step_records):
+                exported = resolved_step_records[resolved_step_index]
+                manifest_records.append(exported)
+                layer_key = str(int(layer_id))
+                kv_key = str(int(kv_head_id))
+                step_key = str(int(exported["paged_attention_snapshot_step_index"]))
+                counts_by_layer[layer_key] = counts_by_layer.get(layer_key, 0) + 1
+                counts_by_kv_head[kv_key] = counts_by_kv_head.get(kv_key, 0) + 1
+                counts_by_step[step_key] = counts_by_step.get(step_key, 0) + 1
+
+    manifest = {
+        "output_dir": str(target_dir),
+        "snapshot_count": len(manifest_records),
+        "snapshot_records": manifest_records,
+        "layer_ids": resolved_layer_ids,
+        "kv_head_ids": sorted(int(kv_head_id) for kv_head_id in kv_head_ids),
+        "requested_step_indices": [int(step_index) for step_index in step_indices],
+        "resolved_step_indices": sorted(
+            {int(record["paged_attention_snapshot_step_index"]) for record in manifest_records}
+        ),
+        "counts_by_layer": dict(sorted(counts_by_layer.items())),
+        "counts_by_kv_head": dict(sorted(counts_by_kv_head.items())),
+        "counts_by_step_index": dict(sorted(counts_by_step.items())),
+        "tokens_per_page": int(tokens_per_page),
+        "source": str(source),
+    }
+    (target_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def _flatten_paged_attention_snapshot_history(snapshot: Any) -> tuple[np.ndarray, np.ndarray]:
+    total_tokens = int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]) if int(snapshot.num_pages) > 0 else 0
+    key_history = np.zeros((total_tokens, int(snapshot.head_dim)), dtype=np.float32)
+    value_history = np.zeros_like(key_history)
+    for page_id in range(int(snapshot.num_pages)):
+        token_start = int(snapshot.page_token_starts[page_id])
+        token_count = int(snapshot.page_token_counts[page_id])
+        if token_count <= 0:
+            continue
+        token_end = token_start + token_count
+        key_history[token_start:token_end] = np.asarray(snapshot.k_pages[page_id, :token_count], dtype=np.float32)
+        value_history[token_start:token_end] = np.asarray(snapshot.v_pages[page_id, :token_count], dtype=np.float32)
+    return key_history, value_history
+
+
+def _seed_full_attention_prev_attention_ema_from_snapshot(
+    state: PersistentFullAttentionState,
+    *,
+    layer_id: int,
+    snapshot: Any,
+    prev_attention_values: np.ndarray | None = None,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+) -> np.ndarray:
+    def _shape_prev_attention(values: np.ndarray) -> np.ndarray:
+        shaped = np.clip(np.asarray(values, dtype=np.float32), 0.0, None)
+        if prev_attention_transform == "sqrt":
+            shaped = np.sqrt(shaped, dtype=np.float32)
+        elif prev_attention_transform == "log1p":
+            shaped = np.log1p(shaped).astype(np.float32, copy=False)
+        elif prev_attention_transform != "identity":
+            raise ValueError(f"unsupported prev attention transform: {prev_attention_transform}")
+        blend = float(max(prev_attention_neighbor_blend, 0.0))
+        for _ in range(max(int(prev_attention_smoothing_passes), 0)):
+            if shaped.size <= 1 or blend <= 0.0:
+                break
+            mixed = shaped * max(0.0, 1.0 - blend)
+            mixed[1:-1] += 0.5 * blend * (shaped[:-2] + shaped[2:])
+            mixed[0] += blend * shaped[1]
+            mixed[-1] += blend * shaped[-2]
+            shaped = mixed.astype(np.float32, copy=False)
+        if float(prev_attention_floor) > 0.0:
+            shaped = np.maximum(shaped, float(prev_attention_floor), dtype=np.float32)
+        total = float(np.sum(shaped, dtype=np.float64))
+        if total > 0.0:
+            shaped = (shaped / total).astype(np.float32, copy=False)
+        return shaped
+
+    layer_state = state.layers[int(layer_id)]
+    if int(snapshot.num_pages) == 0:
+        return np.zeros((0,), dtype=np.float32)
+    raw_prev_attn = (
+        np.asarray(snapshot.prev_attn, dtype=np.float32)
+        if prev_attention_values is None
+        else np.asarray(prev_attention_values, dtype=np.float32)
+    )
+    shaped_prev_attn = _shape_prev_attention(raw_prev_attn)
+    page_ids_by_token = np.zeros((int(snapshot.page_token_starts[-1] + snapshot.page_token_counts[-1]),), dtype=np.int64)
+    for page_id in range(int(snapshot.num_pages)):
+        token_start = int(snapshot.page_token_starts[page_id])
+        token_count = int(snapshot.page_token_counts[page_id])
+        page_ids_by_token[token_start : token_start + token_count] = int(page_id)
+    layer_state.block_prev_attention_ema.zero_()
+    for block_id in range(int(len(layer_state.block_token_starts))):
+        token_start = int(layer_state.block_token_starts[block_id])
+        token_count = int(layer_state.block_token_counts[block_id])
+        if token_count <= 0:
+            continue
+        token_end = token_start + token_count
+        token_page_ids = page_ids_by_token[token_start:token_end]
+        block_mass = 0.0
+        for page_id in np.unique(token_page_ids):
+            overlap = int(np.count_nonzero(token_page_ids == int(page_id)))
+            page_token_count = max(int(snapshot.page_token_counts[int(page_id)]), 1)
+            block_mass += float(shaped_prev_attn[int(page_id)]) * (float(overlap) / float(page_token_count))
+        layer_state.block_prev_attention_ema[block_id] = float(block_mass)
+    return shaped_prev_attn
+
+
+def _remap_snapshot_prev_attention_to_target_pages(
+    *,
+    source_snapshot: Any,
+    source_prev_attention: np.ndarray,
+    target_snapshot: Any,
+) -> np.ndarray:
+    if int(target_snapshot.num_pages) == 0:
+        return np.zeros((0,), dtype=np.float32)
+    remapped = np.zeros((int(target_snapshot.num_pages),), dtype=np.float32)
+    source_starts = np.asarray(source_snapshot.page_token_starts, dtype=np.int64)
+    source_counts = np.asarray(source_snapshot.page_token_counts, dtype=np.int64)
+    target_starts = np.asarray(target_snapshot.page_token_starts, dtype=np.int64)
+    target_counts = np.asarray(target_snapshot.page_token_counts, dtype=np.int64)
+    for target_page_id in range(int(target_snapshot.num_pages)):
+        target_start = int(target_starts[target_page_id])
+        target_end = target_start + int(target_counts[target_page_id])
+        page_mass = 0.0
+        for source_page_id in range(int(source_snapshot.num_pages)):
+            source_start = int(source_starts[source_page_id])
+            source_end = source_start + int(source_counts[source_page_id])
+            overlap = max(0, min(target_end, source_end) - max(target_start, source_start))
+            if overlap <= 0:
+                continue
+            source_page_count = max(int(source_counts[source_page_id]), 1)
+            page_mass += float(source_prev_attention[source_page_id]) * (float(overlap) / float(source_page_count))
+        remapped[target_page_id] = float(page_mass)
+    return remapped
+
+
+def _aggregate_history_prev_attention(
+    *,
+    target_snapshot: Any,
+    history_snapshots: Sequence[Any],
+    history_mode: str,
+    history_decay: float,
+) -> np.ndarray | None:
+    if not history_snapshots or history_mode == "none":
+        return None
+    remapped = [
+        _remap_snapshot_prev_attention_to_target_pages(
+            source_snapshot=history_snapshot,
+            source_prev_attention=np.asarray(history_snapshot.prev_attn, dtype=np.float32),
+            target_snapshot=target_snapshot,
+        )
+        for history_snapshot in history_snapshots
+    ]
+    if not remapped:
+        return None
+    if history_mode == "mean":
+        return np.mean(np.stack(remapped, axis=0), axis=0, dtype=np.float32)
+    if history_mode == "ema":
+        alpha = min(max(float(history_decay), 0.0), 1.0)
+        aggregate = np.zeros_like(remapped[0], dtype=np.float32)
+        for values in remapped:
+            aggregate = alpha * aggregate + (1.0 - alpha) * values.astype(np.float32, copy=False)
+        return aggregate
+    raise ValueError(f"unsupported history_mode: {history_mode}")
+
+
+def _build_persistent_full_attention_snapshot_runtime(
+    snapshot: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig,
+    dotcache_config: DotCacheConfig | None,
+    query_scale: float | None,
+    prev_attention_values: np.ndarray | None,
+    prev_attention_transform: str,
+    prev_attention_neighbor_blend: float,
+    prev_attention_smoothing_passes: int,
+    prev_attention_floor: float,
+) -> tuple[PersistentFullAttentionState, torch.Tensor, np.ndarray, np.ndarray, float, np.ndarray]:
+    key_history, value_history = _flatten_paged_attention_snapshot_history(snapshot)
+    prefill_tensors = {
+        0: (
+            key_history[None, None, :, :],
+            value_history[None, None, :, :],
+        )
+    }
+    prefill_block_metadata_by_layer = _build_persistent_prefill_block_metadata(
+        prefill_tensors=prefill_tensors,
+        layer_ids=[0],
+        dotcache_config=dotcache_config,
+        block_size=int(persistent_serving_config.block_size),
+        num_attention_heads=1,
+    )
+    runtime = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=persistent_serving_config,
+        dotcache_config=dotcache_config,
+        prefill_block_metadata_by_layer=prefill_block_metadata_by_layer,
+    )
+    shaped_prev_attn = _seed_full_attention_prev_attention_ema_from_snapshot(
+        runtime,
+        layer_id=0,
+        snapshot=snapshot,
+        prev_attention_values=prev_attention_values,
+        prev_attention_transform=prev_attention_transform,
+        prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+        prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+        prev_attention_floor=prev_attention_floor,
+    )
+    query_tensor = torch.as_tensor(np.asarray(snapshot.query, dtype=np.float32)[None, :], dtype=torch.float32)
+    resolved_query_scale = float(query_scale) if query_scale is not None else float(1.0 / math.sqrt(int(snapshot.head_dim)))
+    return runtime, query_tensor, key_history, value_history, resolved_query_scale, shaped_prev_attn
+
+
+def _resolve_history_aware_persistent_serving_config(
+    config: PersistentServingConfig,
+    *,
+    history_snapshot_count: int,
+) -> PersistentServingConfig:
+    if int(history_snapshot_count) == 0 and any(
+        value is not None
+        for value in (
+            config.full_attention_optional_bootstrap_far_anchor_quota,
+            config.full_attention_optional_bootstrap_far_quota,
+            config.full_attention_optional_bootstrap_mid_quota,
+            config.full_attention_optional_bootstrap_near_quota,
+        )
+    ):
+        config = replace(
+            config,
+            full_attention_optional_far_anchor_quota=(
+                int(config.full_attention_optional_bootstrap_far_anchor_quota)
+                if config.full_attention_optional_bootstrap_far_anchor_quota is not None
+                else int(config.full_attention_optional_far_anchor_quota)
+            ),
+            full_attention_optional_far_quota=(
+                int(config.full_attention_optional_bootstrap_far_quota)
+                if config.full_attention_optional_bootstrap_far_quota is not None
+                else int(config.full_attention_optional_far_quota)
+            ),
+            full_attention_optional_mid_quota=(
+                int(config.full_attention_optional_bootstrap_mid_quota)
+                if config.full_attention_optional_bootstrap_mid_quota is not None
+                else int(config.full_attention_optional_mid_quota)
+            ),
+            full_attention_optional_near_quota=(
+                int(config.full_attention_optional_bootstrap_near_quota)
+                if config.full_attention_optional_bootstrap_near_quota is not None
+                else int(config.full_attention_optional_near_quota)
+            ),
+        )
+    requires_history = bool(config.full_attention_optional_diversity_requires_history)
+    min_history_count = max(int(config.full_attention_optional_diversity_min_history_count), 0)
+    max_history_count = (
+        None
+        if config.full_attention_optional_diversity_max_history_count is None
+        else max(int(config.full_attention_optional_diversity_max_history_count), 0)
+    )
+    should_disable = False
+    if requires_history and int(history_snapshot_count) <= 0:
+        should_disable = True
+    if int(history_snapshot_count) < min_history_count:
+        should_disable = True
+    if max_history_count is not None and int(history_snapshot_count) > max_history_count:
+        should_disable = True
+    if not should_disable:
+        return config
+    return replace(
+        config,
+        full_attention_optional_diversity_weight=0.0,
+        full_attention_optional_diversity_radius=0,
+    )
+
+
+def run_qwen35_persistent_full_attention_snapshot_comparison(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    dotcache_config: DotCacheConfig | None = None,
+    shortlist_policy_choice: dict[str, Any] | None = None,
+    query_scale: float | None = None,
+    history_snapshots_or_paths: Sequence[Any] | None = None,
+    history_mode: str = "none",
+    history_decay: float = 0.5,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    history_snapshots = [
+        load_paged_attention_snapshot(item) if isinstance(item, (str, Path)) else item
+        for item in (history_snapshots_or_paths or [])
+    ]
+    history_snapshot_count = int(len(history_snapshots))
+    effective_config = _resolve_history_aware_persistent_serving_config(
+        resolved_config,
+        history_snapshot_count=history_snapshot_count,
+    )
+    history_prev_attention = _aggregate_history_prev_attention(
+        target_snapshot=snapshot,
+        history_snapshots=history_snapshots,
+        history_mode=str(history_mode),
+        history_decay=float(history_decay),
+    )
+    runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
+        _build_persistent_full_attention_snapshot_runtime(
+            snapshot,
+            persistent_serving_config=effective_config,
+            dotcache_config=dotcache_config,
+            query_scale=query_scale,
+            prev_attention_values=history_prev_attention,
+            prev_attention_transform=prev_attention_transform,
+            prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+            prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+            prev_attention_floor=prev_attention_floor,
+        )
+    )
+    selection = runtime.select_blocks(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        policy_choice=shortlist_policy_choice,
+    )
+    selected_block_ids = selection["selected_block_ids"]
+    certificate = runtime.certify_selected_blocks(
+        0,
+        query=query_tensor,
+        query_scale=resolved_query_scale,
+        selected_block_ids=selected_block_ids,
+        upper_bounds=selection["upper_bounds"],
+    )
+    streaming = runtime.stream_decode_layer(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        check_interval=int(effective_config.full_attention_check_interval),
+        stop_on_certificate=False,
+        policy_choice=shortlist_policy_choice,
+    )
+    selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
+    full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
+    selected_output = runtime.executor.decode_exact(
+        query=query_tensor,
+        key_cache=selected_keys,
+        value_cache=selected_values,
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        query_scale=resolved_query_scale,
+        block_size=int(resolved_config.block_size),
+    )
+    abs_error = (selected_output - full_output).abs()
+    rel_error = abs_error / full_output.abs().clamp_min(1e-8)
+    streaming_output = streaming["output"]
+    streaming_abs_error = (streaming_output - full_output).abs()
+    streaming_rel_error = streaming_abs_error / full_output.abs().clamp_min(1e-8)
+    streaming_first_stop = streaming.get("first_certified_stop")
+    streaming_final_checkpoint = streaming.get("final_checkpoint")
+    runtime_summary = runtime.summary()
+    selected_k_mode_counts = selection.get("selected_k_mode_counts", {})
+    return {
+        "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
+        "head_dim": int(snapshot.head_dim),
+        "num_pages": int(snapshot.num_pages),
+        "tokens_per_page": int(snapshot.tokens_per_page),
+        "total_tokens": int(key_history.shape[0]),
+        "query_scale": float(resolved_query_scale),
+        "selected_block_ids": [int(block_id) for block_id in selected_block_ids],
+        "mandatory_block_ids": [int(block_id) for block_id in selection["mandatory_block_ids"]],
+        "soft_recent_block_ids": [int(block_id) for block_id in selection.get("soft_recent_block_ids", [])],
+        "exploration_block_ids": [int(block_id) for block_id in selection["exploration_block_ids"]],
+        "optional_block_ids": [int(block_id) for block_id in selection["optional_block_ids"]],
+        "policy_preferred_optional_block_ids": [
+            int(block_id) for block_id in selection.get("policy_preferred_optional_block_ids", [])
+        ],
+        "policy_preferred_bias_weight": float(selection.get("policy_preferred_bias_weight", 0.0)),
+        "selected_block_count": int(len(selected_block_ids)),
+        "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
+        "selected_m0_metadata_block_count": int(selected_k_mode_counts.get("M0", 0)),
+        "selected_m3_metadata_block_count": int(selected_k_mode_counts.get("M3", 0)),
+        "compression_invalid_block_count": int(len(selection.get("compression_invalid_block_ids", []))),
+        "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+        "full_token_count": int(key_history.shape[0]),
+        "beta_upper": float(certificate["beta_upper"]),
+        "delta_upper": float(certificate["delta_upper"]),
+        "residual_mass_upper": float(certificate["residual_mass_upper"]),
+        "residual_value_upper": float(certificate["residual_value_upper"]),
+        "remaining_block_count": int(certificate["remaining_block_count"]),
+        "remaining_token_count": int(certificate["remaining_token_count"]),
+        "max_bound_excess": float(certificate["max_bound_excess"]),
+        "instability_flag": bool(certificate["instability_flag"]),
+        "instability_reasons": [str(reason) for reason in certificate["instability_reasons"]],
+        "certified_can_stop": bool(certificate["certified_can_stop"]),
+        "fallback_recommended": bool(certificate["fallback_recommended"]),
+        "max_abs_error": float(abs_error.max().item()),
+        "max_rel_error": float(rel_error.max().item()),
+        "streaming_checkpoint_count": int(len(streaming.get("checkpoint_records", []))),
+        "streaming_processed_block_count": int(streaming["processed_block_count"]),
+        "streaming_processed_token_count": int(streaming["processed_token_count"]),
+        "streaming_max_abs_error": float(streaming_abs_error.max().item()),
+        "streaming_max_rel_error": float(streaming_rel_error.max().item()),
+        "streaming_first_certified_stop_block_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_block_count"])
+        ),
+        "streaming_first_certified_stop_token_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_token_count"])
+        ),
+        "streaming_first_certified_stop_beta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["beta_upper"])
+        ),
+        "streaming_first_certified_stop_delta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["delta_upper"])
+        ),
+        "streaming_final_beta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["beta_upper"])
+        ),
+        "streaming_final_delta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
+        ),
+        "persistent_full_attention_m0_metadata_block_count": int(
+            runtime_summary["persistent_full_attention_m0_metadata_blocks_by_layer"]["0"]
+        ),
+        "persistent_full_attention_m3_metadata_block_count": int(
+            runtime_summary["persistent_full_attention_m3_metadata_blocks_by_layer"]["0"]
+        ),
+        "persistent_runtime_enable_compression": bool(effective_config.enable_compression),
+        "persistent_runtime_mode_cost_weight": float(effective_config.full_attention_mode_cost_weight),
+        "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
+        "persistent_runtime_shortlist_policy_mode": str(effective_config.full_attention_shortlist_policy_mode),
+        "persistent_runtime_shortlist_policy_bias_weight": float(
+            effective_config.full_attention_shortlist_policy_bias_weight
+        ),
+        "persistent_runtime_region_residual_caps": bool(effective_config.full_attention_region_residual_caps),
+        "persistent_runtime_residual_cluster_count": int(effective_config.full_attention_residual_cluster_count),
+        "persistent_runtime_key_centroid_count": int(effective_config.full_attention_key_centroid_count),
+        "persistent_runtime_refine_top_k": int(effective_config.full_attention_refine_top_k),
+        "persistent_runtime_probe_refine_top_k": int(effective_config.full_attention_probe_refine_top_k),
+        "persistent_runtime_probe_sample_count": int(effective_config.full_attention_probe_sample_count),
+        "persistent_runtime_optional_top_k": int(effective_config.full_attention_optional_top_k),
+        "persistent_runtime_optional_use_upper_bounds_first": bool(
+            effective_config.full_attention_optional_use_upper_bounds_first
+        ),
+        "persistent_runtime_optional_upper_bound_quota": int(effective_config.full_attention_optional_upper_bound_quota),
+        "persistent_runtime_optional_far_quota": int(effective_config.full_attention_optional_far_quota),
+        "persistent_runtime_optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
+        "persistent_runtime_optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+        "persistent_runtime_optional_far_anchor_quota": int(
+            effective_config.full_attention_optional_far_anchor_quota
+        ),
+        "persistent_runtime_optional_far_anchor_priority_margin": float(
+            effective_config.full_attention_optional_far_anchor_priority_margin
+        ),
+        "persistent_runtime_optional_far_anchor_upper_bound_margin": float(
+            effective_config.full_attention_optional_far_anchor_upper_bound_margin
+        ),
+        "persistent_runtime_optional_bootstrap_far_anchor_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_far_anchor_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_far_anchor_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_far_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_far_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_far_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_mid_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_mid_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_mid_quota)
+        ),
+        "persistent_runtime_optional_bootstrap_near_quota": (
+            None
+            if effective_config.full_attention_optional_bootstrap_near_quota is None
+            else int(effective_config.full_attention_optional_bootstrap_near_quota)
+        ),
+        "persistent_runtime_optional_diversity_weight": float(
+            effective_config.full_attention_optional_diversity_weight
+        ),
+        "persistent_runtime_optional_diversity_radius": int(
+            effective_config.full_attention_optional_diversity_radius
+        ),
+        "persistent_runtime_optional_diversity_requires_history": bool(
+            effective_config.full_attention_optional_diversity_requires_history
+        ),
+        "persistent_runtime_optional_diversity_min_history_count": int(
+            effective_config.full_attention_optional_diversity_min_history_count
+        ),
+        "persistent_runtime_optional_diversity_max_history_count": (
+            None
+            if effective_config.full_attention_optional_diversity_max_history_count is None
+            else int(effective_config.full_attention_optional_diversity_max_history_count)
+        ),
+        "persistent_runtime_priority_prev_attention_weight": float(
+            effective_config.full_attention_priority_prev_attention_weight
+        ),
+        "persistent_runtime_priority_recency_weight": float(
+            effective_config.full_attention_priority_recency_weight
+        ),
+        "persistent_runtime_priority_recency_decay_blocks": float(
+            effective_config.full_attention_priority_recency_decay_blocks
+        ),
+        "persistent_runtime_priority_value_norm_weight": float(
+            effective_config.full_attention_priority_value_norm_weight
+        ),
+        "persistent_runtime_sink_block_count": int(effective_config.full_attention_sink_block_count),
+        "persistent_runtime_recent_block_count": int(effective_config.full_attention_recent_block_count),
+        "persistent_runtime_mandatory_recent_block_count": (
+            None
+            if effective_config.full_attention_mandatory_recent_block_count is None
+            else int(effective_config.full_attention_mandatory_recent_block_count)
+        ),
+        "persistent_runtime_exploration_blocks_per_region": int(effective_config.full_attention_exploration_blocks_per_region),
+        "history_mode": str(history_mode),
+        "history_decay": float(history_decay),
+        "history_snapshot_count": history_snapshot_count,
+        "history_prev_attention_nonzero_count": (
+            int(np.count_nonzero(history_prev_attention)) if history_prev_attention is not None else 0
+        ),
+        "prev_attention_transform": str(prev_attention_transform),
+        "prev_attention_neighbor_blend": float(prev_attention_neighbor_blend),
+        "prev_attention_smoothing_passes": int(prev_attention_smoothing_passes),
+        "prev_attention_floor": float(prev_attention_floor),
+        "shaped_prev_attention_max": float(np.max(shaped_prev_attn)) if shaped_prev_attn.size > 0 else 0.0,
+        "shaped_prev_attention_nonzero_count": int(np.count_nonzero(shaped_prev_attn)),
+    }
+
+
+def debug_qwen35_persistent_full_attention_snapshot_selection(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    dotcache_config: DotCacheConfig | None = None,
+    query_scale: float | None = None,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+    max_rows: int = 16,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    effective_config = _resolve_history_aware_persistent_serving_config(
+        resolved_config,
+        history_snapshot_count=0,
+    )
+    runtime, query_tensor, key_history, _value_history, resolved_query_scale, shaped_prev_attn = (
+        _build_persistent_full_attention_snapshot_runtime(
+            snapshot,
+            persistent_serving_config=effective_config,
+            dotcache_config=dotcache_config,
+            query_scale=query_scale,
+            prev_attention_values=None,
+            prev_attention_transform=prev_attention_transform,
+            prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+            prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+            prev_attention_floor=prev_attention_floor,
+        )
+    )
+    selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    certificate = runtime.certify_selected_blocks(
+        0,
+        query=query_tensor,
+        query_scale=resolved_query_scale,
+        selected_block_ids=selection["selected_block_ids"],
+        upper_bounds=selection["upper_bounds"],
+    )
+    streaming = runtime.stream_decode_layer(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        check_interval=int(effective_config.full_attention_check_interval),
+        stop_on_certificate=False,
+    )
+    streaming_first_stop = streaming.get("first_certified_stop")
+    streaming_final_checkpoint = streaming.get("final_checkpoint")
+    score_result = runtime.score_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    layer_state = runtime.layers[0]
+    selected_set = set(int(block_id) for block_id in selection["selected_block_ids"])
+    mandatory_set = set(int(block_id) for block_id in selection["mandatory_block_ids"])
+    soft_recent_set = set(int(block_id) for block_id in selection.get("soft_recent_block_ids", []))
+    exploration_set = set(int(block_id) for block_id in selection["exploration_block_ids"])
+    optional_set = set(int(block_id) for block_id in selection["optional_block_ids"])
+    block_rows = []
+    for block_id in range(int(len(layer_state.block_token_starts))):
+        block_rows.append(
+            {
+                "block_id": int(block_id),
+                "token_start": int(layer_state.block_token_starts[block_id]),
+                "token_count": int(layer_state.block_token_counts[block_id]),
+                "region_id": int(layer_state.block_region_ids[block_id]),
+                "selected": int(block_id) in selected_set,
+                "mandatory": int(block_id) in mandatory_set,
+                "soft_recent": int(block_id) in soft_recent_set,
+                "exploration": int(block_id) in exploration_set,
+                "optional": int(block_id) in optional_set,
+                "priority_score": float(score_result["priority_scores"][block_id].item()),
+                "upper_bound": float(score_result["upper_bounds"][block_id].item()),
+                "prev_attention_ema": float(layer_state.block_prev_attention_ema[block_id].item()),
+            }
+        )
+    omitted_rows = [row for row in block_rows if not row["selected"]]
+    kept_rows = [row for row in block_rows if row["selected"]]
+    top_omitted = sorted(omitted_rows, key=lambda row: row["priority_score"], reverse=True)[: int(max_rows)]
+    top_upper_omitted = sorted(omitted_rows, key=lambda row: row["upper_bound"], reverse=True)[: int(max_rows)]
+    lowest_kept = sorted(kept_rows, key=lambda row: row["priority_score"])[: int(max_rows)]
+    top_pages = np.argsort(shaped_prev_attn)[::-1][: max(int(max_rows), 1)]
+    return {
+        "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
+        "snapshot_path": str(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else None,
+        "total_tokens": int(key_history.shape[0]),
+        "full_block_count": int(len(layer_state.block_token_starts)),
+        "selected_block_count": int(len(selection["selected_block_ids"])),
+        "selected_token_count": int(
+            sum(int(layer_state.block_token_counts[int(block_id)]) for block_id in selection["selected_block_ids"])
+        ),
+        "beta_upper": float(certificate["beta_upper"]),
+        "delta_upper": float(certificate["delta_upper"]),
+        "residual_mass_upper": float(certificate["residual_mass_upper"]),
+        "residual_value_upper": float(certificate["residual_value_upper"]),
+        "max_bound_excess": float(certificate["max_bound_excess"]),
+        "instability_flag": bool(certificate["instability_flag"]),
+        "instability_reasons": [str(reason) for reason in certificate["instability_reasons"]],
+        "certified_can_stop": bool(certificate["certified_can_stop"]),
+        "fallback_recommended": bool(certificate["fallback_recommended"]),
+        "streaming_checkpoint_count": int(len(streaming.get("checkpoint_records", []))),
+        "streaming_first_certified_stop_block_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_block_count"])
+        ),
+        "streaming_first_certified_stop_token_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_token_count"])
+        ),
+        "streaming_first_certified_stop_beta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["beta_upper"])
+        ),
+        "streaming_first_certified_stop_delta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["delta_upper"])
+        ),
+        "streaming_final_beta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["beta_upper"])
+        ),
+        "streaming_final_delta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
+        ),
+        "query_scale": float(resolved_query_scale),
+        "config": {
+            "block_size": int(resolved_config.block_size),
+            "region_residual_caps": bool(effective_config.full_attention_region_residual_caps),
+            "residual_cluster_count": int(effective_config.full_attention_residual_cluster_count),
+            "key_centroid_count": int(effective_config.full_attention_key_centroid_count),
+            "refine_top_k": int(effective_config.full_attention_refine_top_k),
+            "probe_refine_top_k": int(effective_config.full_attention_probe_refine_top_k),
+            "probe_sample_count": int(effective_config.full_attention_probe_sample_count),
+            "enable_priority": bool(resolved_config.enable_priority),
+            "sink_block_count": int(resolved_config.full_attention_sink_block_count),
+            "recent_block_count": int(resolved_config.full_attention_recent_block_count),
+            "mandatory_recent_block_count": (
+                None
+                if resolved_config.full_attention_mandatory_recent_block_count is None
+                else int(resolved_config.full_attention_mandatory_recent_block_count)
+            ),
+            "exploration_blocks_per_region": int(resolved_config.full_attention_exploration_blocks_per_region),
+            "optional_top_k": int(resolved_config.full_attention_optional_top_k),
+            "optional_use_upper_bounds_first": bool(effective_config.full_attention_optional_use_upper_bounds_first),
+            "optional_upper_bound_quota": int(effective_config.full_attention_optional_upper_bound_quota),
+            "optional_far_quota": int(effective_config.full_attention_optional_far_quota),
+            "optional_mid_quota": int(effective_config.full_attention_optional_mid_quota),
+            "optional_near_quota": int(effective_config.full_attention_optional_near_quota),
+            "optional_far_anchor_quota": int(effective_config.full_attention_optional_far_anchor_quota),
+            "optional_far_anchor_priority_margin": float(
+                effective_config.full_attention_optional_far_anchor_priority_margin
+            ),
+            "optional_far_anchor_upper_bound_margin": float(
+                effective_config.full_attention_optional_far_anchor_upper_bound_margin
+            ),
+            "optional_bootstrap_far_anchor_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_far_anchor_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_far_anchor_quota)
+            ),
+            "optional_bootstrap_far_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_far_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_far_quota)
+            ),
+            "optional_bootstrap_mid_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_mid_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_mid_quota)
+            ),
+            "optional_bootstrap_near_quota": (
+                None
+                if effective_config.full_attention_optional_bootstrap_near_quota is None
+                else int(effective_config.full_attention_optional_bootstrap_near_quota)
+            ),
+            "optional_diversity_weight": float(effective_config.full_attention_optional_diversity_weight),
+            "optional_diversity_radius": int(effective_config.full_attention_optional_diversity_radius),
+            "optional_diversity_requires_history": bool(effective_config.full_attention_optional_diversity_requires_history),
+            "optional_diversity_min_history_count": int(
+                effective_config.full_attention_optional_diversity_min_history_count
+            ),
+            "optional_diversity_max_history_count": (
+                None
+                if effective_config.full_attention_optional_diversity_max_history_count is None
+                else int(effective_config.full_attention_optional_diversity_max_history_count)
+            ),
+        },
+        "prior_config": {
+            "transform": str(prev_attention_transform),
+            "neighbor_blend": float(prev_attention_neighbor_blend),
+            "smoothing_passes": int(prev_attention_smoothing_passes),
+            "floor": float(prev_attention_floor),
+        },
+        "top_shaped_prev_attention_pages": [
+            {
+                "page_id": int(page_id),
+                "raw_prev_attention": float(snapshot.prev_attn[int(page_id)]),
+                "shaped_prev_attention": float(shaped_prev_attn[int(page_id)]),
+            }
+            for page_id in top_pages
+        ],
+        "top_omitted_by_priority": top_omitted,
+        "top_omitted_by_upper_bound": top_upper_omitted,
+        "lowest_kept_by_priority": lowest_kept,
+    }
+
+
 def export_attention_subset_page_traces(
     per_step_records: list[list[LlamaReplayRecord]],
     *,
@@ -7293,6 +9291,137 @@ def run_qwen35_attention_subset_page_trace_capture_harness(
         )
     )
     result["runtime_mode"] = "dense_attention_subset_page_trace_capture"
+    return result
+
+
+def run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    output_path: str | Path,
+    layer_id: int,
+    kv_head_id: int = 0,
+    step_index: int = -1,
+    tokens_per_page: int = 256,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    if int(decode_steps) <= 0:
+        raise ValueError("paged-attention snapshot capture requires decode_steps > 0")
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    result.update(
+        export_qwen35_attention_subset_paged_attention_snapshot(
+            dense_capture["prefill_tensors"],
+            dense_capture["capture_records"],
+            q_head_to_kv_head=adapter.q_head_to_kv_head,
+            output_path=output_path,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            step_index=step_index,
+            tokens_per_page=tokens_per_page,
+        )
+    )
+    result["runtime_mode"] = "dense_attention_subset_paged_attention_snapshot_capture"
+    return result
+
+
+def run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+    model,
+    adapter: Qwen35AttentionSubsetModelAdapter,
+    *,
+    output_dir: str | Path,
+    layer_ids: Sequence[int] | None = None,
+    kv_head_ids: Sequence[int] = (0,),
+    step_indices: Sequence[int] = (-1,),
+    tokens_per_page: int = 256,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    multimodal_inputs: Any | None = None,
+) -> dict[str, Any]:
+    _require_qwen35_model_class()
+    if int(decode_steps) <= 0:
+        raise ValueError("paged-attention snapshot corpus capture requires decode_steps > 0")
+    adapter.set_mode("dense")
+    input_ids, attention_mask = _normalize_text_inputs(
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        multimodal_inputs=multimodal_inputs,
+    )
+    dense_capture = _run_qwen35_attention_subset_dense_capture(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+    )
+    result = _summarize_attention_subset_capture(
+        adapter,
+        input_ids=input_ids,
+        decode_steps=decode_steps,
+        prefill_ms=float(dense_capture["prefill_ms"]),
+        dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
+        per_step_records=dense_capture["capture_records"],
+    )
+    manifest = export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+        dense_capture["prefill_tensors"],
+        dense_capture["capture_records"],
+        q_head_to_kv_head=adapter.q_head_to_kv_head,
+        output_dir=output_dir,
+        layer_ids=layer_ids,
+        kv_head_ids=kv_head_ids,
+        step_indices=step_indices,
+        tokens_per_page=tokens_per_page,
+    )
+    result.update(
+        {
+            "paged_attention_snapshot_corpus_dir": str(output_dir),
+            "paged_attention_snapshot_corpus_manifest_path": str(Path(output_dir) / "manifest.json"),
+            "paged_attention_snapshot_corpus_count": int(manifest["snapshot_count"]),
+            "paged_attention_snapshot_corpus_layer_ids": manifest["layer_ids"],
+            "paged_attention_snapshot_corpus_kv_head_ids": manifest["kv_head_ids"],
+            "paged_attention_snapshot_corpus_requested_step_indices": manifest["requested_step_indices"],
+            "paged_attention_snapshot_corpus_resolved_step_indices": manifest["resolved_step_indices"],
+            "paged_attention_snapshot_corpus_counts_by_layer": manifest["counts_by_layer"],
+            "paged_attention_snapshot_corpus_counts_by_kv_head": manifest["counts_by_kv_head"],
+            "paged_attention_snapshot_corpus_counts_by_step_index": manifest["counts_by_step_index"],
+            "paged_attention_snapshot_tokens_per_page": int(tokens_per_page),
+        }
+    )
+    result["runtime_mode"] = "dense_attention_subset_paged_attention_snapshot_corpus_capture"
     return result
 
 
@@ -7693,6 +9822,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
     tokenizer=None,
     profile_backend: bool = False,
     multimodal_inputs: Any | None = None,
+    runtime_mode: Literal["dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"] = "dotcache_attention_subset",
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
     adapter.set_backend_profiling(profile_backend)
@@ -7714,10 +9844,17 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         device=device,
     )
     adapter.clear()
-    adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
-    adapter.set_mode("dotcache_attention_subset")
+    if runtime_mode == "dotcache_attention_subset_persistent_experimental":
+        adapter.load_attention_subset_persistent_prefill_cache(dotcache_prefill_outputs.past_key_values)
+    else:
+        adapter.load_attention_subset_prefill_cache(dotcache_prefill_outputs.past_key_values)
+    adapter.set_mode(runtime_mode)
     dotcache_prefill_cuda_memory = _end_cuda_memory_region(device, dotcache_prefill_cuda_memory_baseline)
-    runtime_state = adapter.require_hybrid_dotcache_runtime_state()
+    runtime_state = (
+        adapter.require_persistent_hybrid_runtime_state()
+        if runtime_mode == "dotcache_attention_subset_persistent_experimental"
+        else adapter.require_hybrid_dotcache_runtime_state()
+    )
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -7726,6 +9863,7 @@ def _prepare_qwen35_attention_subset_dotcache_runtime(
         "dotcache_prefill_cuda_memory": dotcache_prefill_cuda_memory,
         "runtime_state": runtime_state,
         "serving_shortlist_heuristic_applied": bool(adapter.serving_shortlist_heuristic_applied),
+        "runtime_mode": runtime_mode,
     }
 
 
@@ -7750,6 +9888,7 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
         tokenizer=tokenizer,
         profile_backend=profile_backend,
         multimodal_inputs=multimodal_inputs,
+        runtime_mode="dotcache_attention_subset",
     )
     input_ids = prepared["input_ids"]
     attention_mask = prepared["attention_mask"]
@@ -7888,6 +10027,292 @@ def run_qwen35_attention_subset_dotcache_serving_harness(
     result.update(runtime_state.summary())
     result.update(adapter.hybrid_block_summary())
     result.update(adapter.hybrid_fit_summary())
+    return result
+
+
+def run_qwen35_attention_subset_persistent_serving_harness(
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    *,
+    prompt: str | None = None,
+    input_ids=None,
+    attention_mask=None,
+    tokenizer=None,
+    decode_steps: int = 4,
+    profile_backend: bool = False,
+    multimodal_inputs: Any | None = None,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    persistent_policy_prompt_family: str | None = None,
+) -> dict[str, Any]:
+    persistent_step_runtime_breakdown: list[dict[str, Any]] = []
+    if persistent_serving_config is not None:
+        adapter.persistent_serving_config = persistent_serving_config
+    prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
+        model,
+        adapter,
+        prompt=prompt,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        tokenizer=tokenizer,
+        profile_backend=profile_backend,
+        multimodal_inputs=multimodal_inputs,
+        runtime_mode="dotcache_attention_subset_persistent_experimental",
+    )
+    input_ids = prepared["input_ids"]
+    attention_mask = prepared["attention_mask"]
+    dotcache_prefill_outputs = prepared["dotcache_prefill_outputs"]
+    dotcache_prefill_ms = float(prepared["dotcache_prefill_ms"])
+    dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
+    runtime_state = prepared["runtime_state"]
+    serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    adapter.configure_persistent_shortlist_policy_context(
+        prompt_family=persistent_policy_prompt_family,
+        prompt_length=int(input_ids.shape[1]),
+    )
+    device = input_ids.device
+
+    generated_ids: list[int] = []
+    persistent_decode_ms_total = 0.0
+    decode_cuda_memory: dict[str, int] = {}
+    if decode_steps > 0:
+        current_input_ids = dotcache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
+        for _ in range(decode_steps):
+            generated_ids.append(int(current_input_ids.item()))
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            persistent_decode_ms_total += step_ms
+            persistent_step_runtime_breakdown.append(
+                {
+                    "step_index": int(len(persistent_step_runtime_breakdown)),
+                    "step_ms_total": float(step_ms),
+                    "backend_decode_ms_total": 0.0,
+                    "decode_non_backend_ms_total": 0.0,
+                    "model_step_non_adapter_ms_total": 0.0,
+                    "decode_prepare_pages_with_tail_ms_total": 0.0,
+                    "decode_shortlist_materialization_ms_total": 0.0,
+                    "decode_backend_call_non_backend_ms_total": 0.0,
+                    "decode_non_backend_unattributed_ms_total": 0.0,
+                    "decode_shortlist_candidate_approx_scoring_ms_total": 0.0,
+                    "decode_shortlist_candidate_ranking_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_candidate_index_build_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_sidecar_stack_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_score_compute_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_ranking_ms_total": 0.0,
+                    "decode_chunk_budget_dirty_reason_counts": {},
+                    "decode_chunk_budget_override_calls": 0,
+                    "decode_builtin_selector_cache_hits": 0,
+                    "decode_builtin_selector_cache_builds": 0,
+                    "decode_builtin_selector_cache_build_bytes": 0,
+                    "decode_builtin_selector_cache_build_bytes_max": 0,
+                    "python_tracemalloc_current_bytes_delta": 0,
+                    "python_tracemalloc_peak_bytes": 0,
+                    "python_allocated_blocks_delta": 0,
+                    "python_gc_count_delta": [0, 0, 0],
+                }
+            )
+            runtime_state.advance(outputs.past_key_values)
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+        decode_cuda_memory = _end_cuda_memory_region(device, decode_cuda_memory_baseline)
+
+    result = {
+        "prompt_length": int(input_ids.shape[1]),
+        "decode_steps": int(decode_steps),
+        "dotcache_prefill_ms": float(dotcache_prefill_ms),
+        "dotcache_generated_ids": generated_ids,
+        "dotcache_decode_ms_per_step": float(persistent_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "persistent_generated_ids": generated_ids,
+        "persistent_decode_ms_per_step": float(persistent_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+        "dotcache_attention_subset_ready": True,
+        "persistent_hybrid_runtime_ready": True,
+        "dotcache_ready": False,
+        "runtime_mode": "dotcache_attention_subset_persistent_serving",
+        "uses_native_qwen35_class": True,
+        "text_only": True,
+        "attention_subset_layer_ids": adapter.attention_subset_layer_ids(),
+        "attention_subset_capture_layer_count": len(adapter.attention_subset_layer_ids()),
+        "num_attention_heads": int(adapter.model_kv_cache.num_attention_heads),
+        "num_key_value_heads": int(adapter.model_kv_cache.num_key_value_heads),
+        "query_heads_per_kv_head": int(adapter.model_kv_cache.num_attention_heads // max(adapter.model_kv_cache.num_key_value_heads, 1)),
+        "head_dim": int(adapter.dotcache_config.head_dim),
+        "group_size": int(adapter.dotcache_config.group_size),
+        "num_groups": int(adapter.dotcache_config.num_groups),
+        "padded_head_dim": int(adapter.dotcache_config.padded_head_dim),
+        "tokens_per_page": int(adapter.dotcache_config.tokens_per_page),
+        "execution_recent_window": int(adapter.dotcache_config.execution_recent_window),
+        "execution_sink_window": int(adapter.dotcache_config.execution_sink_window),
+        "execution_recent_window_overrides": list(adapter.dotcache_config.execution_recent_window_overrides),
+        "execution_recent_window_context_overrides": list(
+            adapter.dotcache_config.execution_recent_window_context_overrides
+        ),
+        "execution_relevance_top_k": int(adapter.dotcache_config.execution_relevance_top_k),
+        "execution_relevance_top_k_overrides": list(adapter.dotcache_config.execution_relevance_top_k_overrides),
+        "execution_relevance_top_k_context_overrides": list(adapter.dotcache_config.execution_relevance_top_k_context_overrides),
+        "execution_full_context_layers": list(adapter.dotcache_config.execution_full_context_layers),
+        "execution_disable_grouped_batching_layers": list(
+            adapter.dotcache_config.execution_disable_grouped_batching_layers
+        ),
+        "execution_recent_old_bonus_window": int(adapter.dotcache_config.execution_recent_old_bonus_window),
+        "execution_recent_old_bonus_strength": float(adapter.dotcache_config.execution_recent_old_bonus_strength),
+        "execution_recent_old_bonus_layers": list(adapter.dotcache_config.execution_recent_old_bonus_layers),
+        "execution_relevance_mode": str(adapter.dotcache_config.execution_relevance_mode),
+        "execution_secondary_relevance_mode": str(adapter.dotcache_config.execution_secondary_relevance_mode),
+        "execution_secondary_relevance_top_k": int(adapter.dotcache_config.execution_secondary_relevance_top_k),
+        "execution_secondary_relevance_min_overlap": float(adapter.dotcache_config.execution_secondary_relevance_min_overlap),
+        "execution_secondary_relevance_layers": list(adapter.dotcache_config.execution_secondary_relevance_layers),
+        "execution_recent_neighbor_rescue_top_k": int(adapter.dotcache_config.execution_recent_neighbor_rescue_top_k),
+        "execution_recent_neighbor_rescue_anchor_window": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_anchor_window
+        ),
+        "execution_recent_neighbor_rescue_min_anchor_pages": int(
+            adapter.dotcache_config.execution_recent_neighbor_rescue_min_anchor_pages
+        ),
+        "execution_recent_neighbor_rescue_layers": list(adapter.dotcache_config.execution_recent_neighbor_rescue_layers),
+        "execution_exact_promote_top_k": int(adapter.dotcache_config.execution_exact_promote_top_k),
+        "execution_exact_promote_min_margin_threshold": float(
+            adapter.dotcache_config.execution_exact_promote_min_margin_threshold
+        ),
+        "execution_exact_promote_max_context": int(adapter.dotcache_config.execution_exact_promote_max_context),
+        "execution_exact_promote_margin_threshold": float(adapter.dotcache_config.execution_exact_promote_margin_threshold),
+        "execution_exact_promote_layers": list(adapter.dotcache_config.execution_exact_promote_layers),
+        "execution_exact_promote_union_rescue_top_k": int(
+            adapter.dotcache_config.execution_exact_promote_union_rescue_top_k
+        ),
+        "execution_grouped_decode_compact": bool(adapter.dotcache_config.execution_grouped_decode_compact),
+        "execution_grouped_mix_compact": bool(adapter.dotcache_config.execution_grouped_mix_compact),
+        "execution_grouped_mix_disable_packed_cuda": bool(adapter.dotcache_config.execution_grouped_mix_disable_packed_cuda),
+        "execution_freeze_chunk_budget_during_decode": bool(
+            adapter.dotcache_config.execution_freeze_chunk_budget_during_decode
+        ),
+        "execution_builtin_selector_cache": bool(adapter.dotcache_config.execution_builtin_selector_cache),
+        "execution_builtin_selector_score_all_pages": bool(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages
+        ),
+        "execution_builtin_selector_candidate_only": bool(
+            adapter.dotcache_config.execution_builtin_selector_candidate_only
+        ),
+        "execution_builtin_selector_score_all_pages_min_candidate_fraction": float(
+            adapter.dotcache_config.execution_builtin_selector_score_all_pages_min_candidate_fraction
+        ),
+        "persistent_runtime_block_size": int(adapter.persistent_serving_config.block_size),
+        "persistent_runtime_dense_only": bool(adapter.persistent_serving_config.dense_only),
+        "persistent_runtime_enable_full_attention_persistent_compute": bool(
+            adapter.persistent_serving_config.enable_full_attention_persistent_compute
+        ),
+        "persistent_runtime_enable_linear_attention_persistent_compute": bool(
+            adapter.persistent_serving_config.enable_linear_attention_persistent_compute
+        ),
+        "persistent_runtime_enable_compression": bool(adapter.persistent_serving_config.enable_compression),
+        "persistent_runtime_mode_cost_weight": float(adapter.persistent_serving_config.full_attention_mode_cost_weight),
+        "persistent_runtime_fallback_widen_step": int(adapter.persistent_serving_config.full_attention_fallback_widen_step),
+        "persistent_runtime_fallback_max_optional_top_k": int(
+            adapter.persistent_serving_config.full_attention_fallback_max_optional_top_k
+        ),
+        "persistent_runtime_dense_fallback_on_invalid_compression_metadata": bool(
+            adapter.persistent_serving_config.full_attention_dense_fallback_on_invalid_compression_metadata
+        ),
+        "persistent_runtime_shortlist_policy_path": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_path is None
+            else str(adapter.persistent_serving_config.full_attention_shortlist_policy_path)
+        ),
+        "persistent_runtime_shortlist_policy_mode": str(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_mode
+        ),
+        "persistent_runtime_shortlist_policy_bias_weight": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_bias_weight
+        ),
+        "persistent_runtime_shortlist_policy_min_safe_rate": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_safe_rate
+        ),
+        "persistent_runtime_shortlist_policy_min_matched_oracle_rate": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_matched_oracle_rate
+        ),
+        "persistent_runtime_shortlist_policy_min_vote_count": int(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_vote_count
+        ),
+        "persistent_runtime_shortlist_policy_min_step_index": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_min_step_index is None
+            else int(adapter.persistent_serving_config.full_attention_shortlist_policy_min_step_index)
+        ),
+        "persistent_runtime_shortlist_policy_max_step_index": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_max_step_index is None
+            else int(adapter.persistent_serving_config.full_attention_shortlist_policy_max_step_index)
+        ),
+        "persistent_runtime_shortlist_policy_prompt_family": (
+            None
+            if adapter.persistent_shortlist_policy_prompt_family is None
+            else str(adapter.persistent_shortlist_policy_prompt_family)
+        ),
+        "persistent_runtime_shortlist_policy_applied_count": int(adapter.persistent_shortlist_policy_applied_count),
+        "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
+    }
+    result.update(adapter.per_layer_runtime_summary())
+    result.update(adapter.model_kv_cache.decode_path_summary())
+    result.update(adapter.model_kv_cache.decode_stage_summary())
+    result.update(adapter.model_kv_cache.builtin_selector_summary())
+    result.update(adapter.model_kv_cache.chunk_budget_summary())
+    result.update(adapter.model_kv_cache.execution_value_escape_summary())
+    result.update(runtime_state.summary())
+    result.update(adapter.hybrid_block_summary())
+    result.update(adapter.hybrid_fit_summary())
+    result.update(dotcache_prefill_cuda_memory)
+    result.update(decode_cuda_memory)
+    result.setdefault("dotcache_step_runtime_breakdown", persistent_step_runtime_breakdown)
+    result.setdefault(
+        "dotcache_backend_decode_ms_total_from_trace",
+        float(sum(float(step["backend_decode_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_decode_non_backend_ms_total",
+        float(sum(float(step["decode_non_backend_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_model_step_non_adapter_ms_total",
+        float(sum(float(step["model_step_non_adapter_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault("dotcache_python_allocation_tracing", False)
+    result.setdefault(
+        "dotcache_python_tracemalloc_peak_bytes_max",
+        int(max((int(step["python_tracemalloc_peak_bytes"]) for step in persistent_step_runtime_breakdown), default=0)),
+    )
+    result.setdefault(
+        "dotcache_python_tracemalloc_current_bytes_delta_total",
+        int(sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_python_allocated_blocks_delta_total",
+        int(sum(int(step["python_allocated_blocks_delta"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_python_gc_count_delta_total",
+        [
+            int(sum(int(step["python_gc_count_delta"][idx]) for step in persistent_step_runtime_breakdown))
+            for idx in range(3)
+        ],
+    )
+    if profile_backend:
+        result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     return result
 
 
@@ -9783,15 +12208,23 @@ __all__ = [
     "inspect_qwen35_deltanet_state",
     "inspect_qwen35_hybrid_state",
     "load_qwen35_text_only_from_pretrained",
+    "build_qwen35_attention_subset_paged_attention_snapshot",
+    "debug_qwen35_persistent_full_attention_snapshot_selection",
+    "export_qwen35_attention_subset_paged_attention_snapshot",
+    "export_qwen35_attention_subset_paged_attention_snapshot_corpus",
+    "run_qwen35_persistent_full_attention_snapshot_comparison",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
     "run_qwen35_attention_subset_dotcache_serving_harness",
+    "run_qwen35_attention_subset_persistent_serving_harness",
     "run_qwen35_attention_subset_dotcache_serving_scorer_diagnostic_harness",
     "run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness",
     "run_qwen35_attention_subset_dotcache_serving_quality_harness",
     "run_qwen35_attention_subset_dotcache_loss_harness",
     "run_qwen35_attention_subset_statecache_dotcache_harness",
+    "run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness",
+    "run_qwen35_attention_subset_paged_attention_snapshot_capture_harness",
     "run_qwen35_attention_subset_replay_harness",
     "run_qwen35_deltanet_state_ablation_harness",
     "run_qwen35_deltanet_statecache_localization_harness",

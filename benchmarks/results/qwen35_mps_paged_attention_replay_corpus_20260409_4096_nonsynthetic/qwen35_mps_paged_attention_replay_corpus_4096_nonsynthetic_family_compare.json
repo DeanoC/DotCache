@@ -1,0 +1,122 @@
+[
+  {
+    "label": "experimental_approx_8_128_c8",
+    "engine": "mps_experimental",
+    "avg_total_step_time_ms": 43.66323495977903,
+    "avg_tokens_processed": 242.33333333333334,
+    "avg_selected_page_count": 6.916666666666667,
+    "avg_processed_page_count": 6.916666666666667,
+    "pass_rate": 1.0,
+    "max_abs_error": 4.291534423828125e-06,
+    "max_rel_error": 0.0007117006462067366,
+    "count": 108
+  },
+  {
+    "label": "baseline_approx_8_128_c2",
+    "engine": "torch_mps_baseline",
+    "avg_total_step_time_ms": 45.558866127437255,
+    "avg_tokens_processed": 242.33333333333334,
+    "avg_selected_page_count": 6.916666666666667,
+    "avg_processed_page_count": 6.916666666666667,
+    "pass_rate": 1.0,
+    "max_abs_error": 4.291534423828125e-06,
+    "max_rel_error": 0.0007117006462067366,
+    "count": 108
+  },
+  {
+    "label": "baseline_approx_8_64_c2",
+    "engine": "torch_mps_baseline",
+    "avg_total_step_time_ms": 39.93994905775051,
+    "avg_tokens_processed": 178.33333333333334,
+    "avg_selected_page_count": 5.898148148148148,
+    "avg_processed_page_count": 5.898148148148148,
+    "pass_rate": 0.9907407407407407,
+    "max_abs_error": 4.0531158447265625e-06,
+    "max_rel_error": 0.007777051068842411,
+    "count": 108
+  },
+  {
+    "label": "experimental_approx_8_64_c8",
+    "engine": "mps_experimental",
+    "avg_total_step_time_ms": 40.16261536270139,
+    "avg_tokens_processed": 178.33333333333334,
+    "avg_selected_page_count": 5.898148148148148,
+    "avg_processed_page_count": 5.898148148148148,
+    "pass_rate": 0.9907407407407407,
+    "max_abs_error": 4.0531158447265625e-06,
+    "max_rel_error": 0.007777051068842411,
+    "count": 108
+  },
+  {
+    "label": "experimental_robust_4_64_c8",
+    "engine": "mps_experimental",
+    "avg_total_step_time_ms": 43.06734683201217,
+    "avg_tokens_processed": 226.33333333333334,
+    "avg_selected_page_count": 8.148148148148149,
+    "avg_processed_page_count": 8.148148148148149,
+    "pass_rate": 0.9722222222222222,
+    "max_abs_error": 4.112720489501953e-06,
+    "max_rel_error": 0.006001451052725315,
+    "count": 108
+  },
+  {
+    "label": "baseline_robust_4_64_c2",
+    "engine": "torch_mps_baseline",
+    "avg_total_step_time_ms": 44.244689767731835,
+    "avg_tokens_processed": 226.33333333333334,
+    "avg_selected_page_count": 8.148148148148149,
+    "avg_processed_page_count": 8.148148148148149,
+    "pass_rate": 0.9722222222222222,
+    "max_abs_error": 4.112720489501953e-06,
+    "max_rel_error": 0.006001451052725315,
+    "count": 108
+  },
+  {
+    "label": "baseline_approx_4_128_c2",
+    "engine": "torch_mps_baseline",
+    "avg_total_step_time_ms": 44.28123113218505,
+    "avg_tokens_processed": 242.33333333333334,
+    "avg_selected_page_count": 6.87962962962963,
+    "avg_processed_page_count": 6.87962962962963,
+    "pass_rate": 0.9722222222222222,
+    "max_abs_error": 4.351139068603516e-06,
+    "max_rel_error": 0.007531049661338329,
+    "count": 108
+  },
+  {
+    "label": "experimental_approx_4_128_c8",
+    "engine": "mps_experimental",
+    "avg_total_step_time_ms": 44.691778502763356,
+    "avg_tokens_processed": 242.33333333333334,
+    "avg_selected_page_count": 6.87962962962963,
+    "avg_processed_page_count": 6.87962962962963,
+    "pass_rate": 0.9722222222222222,
+    "max_abs_error": 4.351139068603516e-06,
+    "max_rel_error": 0.007531049661338329,
+    "count": 108
+  },
+  {
+    "label": "experimental_approx_4_64_c8",
+    "engine": "mps_experimental",
+    "avg_total_step_time_ms": 39.864033935440666,
+    "avg_tokens_processed": 178.33333333333334,
+    "avg_selected_page_count": 5.87962962962963,
+    "avg_processed_page_count": 5.87962962962963,
+    "pass_rate": 0.9537037037037037,
+    "max_abs_error": 4.291534423828125e-06,
+    "max_rel_error": 0.009562279097735882,
+    "count": 108
+  },
+  {
+    "label": "baseline_approx_4_64_c2",
+    "engine": "torch_mps_baseline",
+    "avg_total_step_time_ms": 40.57755091990758,
+    "avg_tokens_processed": 178.33333333333334,
+    "avg_selected_page_count": 5.87962962962963,
+    "avg_processed_page_count": 5.87962962962963,
+    "pass_rate": 0.9537037037037037,
+    "max_abs_error": 4.291534423828125e-06,
+    "max_rel_error": 0.009562279097735882,
+    "count": 108
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "heldout_generalization": {
+    "prompt_family_108_group": {
+      "avg_oracle_selected_token_count": 2339.75,
+      "avg_selected_token_count": 2339.75,
+      "chosen_safe_rate": 0.7638888888888888,
+      "fallback_rate": 1.0,
+      "missing_bucket_rate": 1.0,
+      "snapshot_group_count": 144,
+      "top1_accuracy": 1.0
+    },
+    "runtime_candidate_36_group": {
+      "avg_oracle_selected_token_count": 2339.75,
+      "avg_selected_token_count": 2339.75,
+      "chosen_safe_rate": 0.7430555555555556,
+      "fallback_rate": 0.0,
+      "missing_bucket_rate": 0.0,
+      "snapshot_group_count": 144,
+      "top1_accuracy": 0.625
+    }
+  },
+  "in_corpus_hand_tuned": {
+    "avg_max_abs_error": 0.039596252557304173,
+    "avg_selected_token_count": 2339.75,
+    "max_abs_error": 0.2657153606414795
+  },
+  "in_corpus_runtime": {
+    "avg_max_abs_error": 0.03946410750763284,
+    "avg_selected_token_count": 2339.75,
+    "max_abs_error": 0.2657153606414795,
+    "shortlist_policy_bucket_found_rate": 1.0
+  },
+  "recommended_policy_group_by": [
+    "layer_id",
+    "kv_head_id",
+    "step_bucket"
+  ],
+  "recommended_policy_group_count": 36,
+  "recommended_policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_runtime_candidate_20260410_4096_nonsynthetic_longdecode/persistent_shortlist_policy.json"
+}

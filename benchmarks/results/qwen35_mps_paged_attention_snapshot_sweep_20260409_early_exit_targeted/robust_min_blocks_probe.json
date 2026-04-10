@@ -1,0 +1,74 @@
+[
+  {
+    "min_blocks": 0,
+    "avg_total_step_time_ms": 13.70345473886751,
+    "avg_tokens_processed": 177.0,
+    "avg_early_exit_rate": 1.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.036205291748046875,
+    "max_rel_error": 1.3414483070373535
+  },
+  {
+    "min_blocks": 12,
+    "avg_total_step_time_ms": 13.657338783124704,
+    "avg_tokens_processed": 177.0,
+    "avg_early_exit_rate": 1.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.036205291748046875,
+    "max_rel_error": 1.3414483070373535
+  },
+  {
+    "min_blocks": 13,
+    "avg_total_step_time_ms": 13.020235516191663,
+    "avg_tokens_processed": 193.0,
+    "avg_early_exit_rate": 1.0,
+    "pass_rate": 0.8260869565217391,
+    "max_abs_error": 0.03081512451171875,
+    "max_rel_error": 0.22893564403057098
+  },
+  {
+    "min_blocks": 14,
+    "avg_total_step_time_ms": 130.60412873038212,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 0.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.1870800256729126,
+    "max_rel_error": 0.663942813873291
+  },
+  {
+    "min_blocks": 15,
+    "avg_total_step_time_ms": 130.76221747273254,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 0.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.1870800256729126,
+    "max_rel_error": 0.663942813873291
+  },
+  {
+    "min_blocks": 16,
+    "avg_total_step_time_ms": 130.5477591256773,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 0.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.1870800256729126,
+    "max_rel_error": 0.663942813873291
+  },
+  {
+    "min_blocks": 18,
+    "avg_total_step_time_ms": 130.5103677441366,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 0.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.1870800256729126,
+    "max_rel_error": 0.663942813873291
+  },
+  {
+    "min_blocks": 20,
+    "avg_total_step_time_ms": 130.55012670203882,
+    "avg_tokens_processed": 2204.8260869565215,
+    "avg_early_exit_rate": 0.0,
+    "pass_rate": 0.782608695652174,
+    "max_abs_error": 0.1870800256729126,
+    "max_rel_error": 0.663942813873291
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "case_count": 3,
+  "counts_by_prompt_mode": {
+    "prompt_file": 3
+  },
+  "error_case_count": 0,
+  "kv_head_ids": [
+    0,
+    1
+  ],
+  "layer_ids": [
+    3,
+    7,
+    11,
+    15,
+    19,
+    23
+  ],
+  "resolved_step_indices": [
+    0,
+    1,
+    3,
+    7
+  ],
+  "snapshot_count": 144,
+  "success_case_count": 3
+}

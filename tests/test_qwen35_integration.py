@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import numpy as np
 import pytest
+import json
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -9,6 +11,9 @@ transformers = pytest.importorskip("transformers")
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
 from dotcache.config import DotCacheConfig
+from dotcache.backends.mps_persistent_experimental import load_paged_attention_snapshot
+from dotcache.backends.metal import PersistentServingConfig
+from dotcache.integrations.llama import LlamaReplayRecord
 from dotcache.integrations.qwen35 import (
     Qwen35AttentionSubsetDotCacheHarness,
     Qwen35AttentionSubsetDotCacheModelAdapter,
@@ -18,6 +23,8 @@ from dotcache.integrations.qwen35 import (
     Qwen35DeltaNetStateHarness,
     Qwen35DeltaNetStateModelAdapter,
     build_qwen35_deltanet_state_sample,
+    build_qwen35_attention_subset_paged_attention_snapshot,
+    export_qwen35_attention_subset_paged_attention_snapshot_corpus,
     Qwen35TextHarness,
     Qwen35TextModelAdapter,
     inspect_qwen35_deltanet_state,
@@ -34,6 +41,11 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_dotcache_serving_harness,
     run_qwen35_attention_subset_dotcache_serving_recall_analysis_harness,
     run_qwen35_attention_subset_dotcache_serving_quality_harness,
+    run_qwen35_attention_subset_persistent_serving_harness,
+    debug_qwen35_persistent_full_attention_snapshot_selection,
+    run_qwen35_persistent_full_attention_snapshot_comparison,
+    run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness,
+    run_qwen35_attention_subset_paged_attention_snapshot_capture_harness,
     run_qwen35_hybrid_combined_localization_harness,
     run_qwen35_attention_subset_statecache_dotcache_harness,
     run_qwen35_attention_subset_replay_harness,
@@ -46,6 +58,8 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
     _advance_attention_subset_cache_placeholder,
+    _apply_persistent_shortlist_config_overrides,
+    _build_persistent_prefill_block_metadata,
     _extract_attention_subset_prefill_tensors,
     _configure_qwen35_linear_attention_runtime,
     _replace_attention_subset_cache_with_placeholders,
@@ -98,45 +112,49 @@ class _FakeLayerStructuredCache:
 
 
 def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
-    config = Qwen3_5Config(
-        text_config={
-            "hidden_size": 64,
-            "intermediate_size": 128,
-            "num_hidden_layers": 4,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 1,
-            "vocab_size": 128,
-            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
-        },
-        vision_config={
-            "hidden_size": 32,
-            "intermediate_size": 64,
-            "depth": 1,
-            "num_heads": 4,
-        },
-    )
-    return Qwen3_5ForConditionalGeneration(config).eval()
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        config = Qwen3_5Config(
+            text_config={
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 1,
+                "vocab_size": 128,
+                "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            },
+            vision_config={
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "depth": 1,
+                "num_heads": 4,
+            },
+        )
+        return Qwen3_5ForConditionalGeneration(config).eval()
 
 
 def _tiny_deltanet_qwen35_model() -> Qwen3_5ForConditionalGeneration:
-    config = Qwen3_5Config(
-        text_config={
-            "hidden_size": 16,
-            "intermediate_size": 32,
-            "num_hidden_layers": 4,
-            "num_attention_heads": 2,
-            "num_key_value_heads": 1,
-            "vocab_size": 128,
-            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
-        },
-        vision_config={
-            "hidden_size": 8,
-            "intermediate_size": 16,
-            "depth": 1,
-            "num_heads": 2,
-        },
-    )
-    return Qwen3_5ForConditionalGeneration(config).eval()
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        config = Qwen3_5Config(
+            text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "vocab_size": 128,
+                "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            },
+            vision_config={
+                "hidden_size": 8,
+                "intermediate_size": 16,
+                "depth": 1,
+                "num_heads": 2,
+            },
+        )
+        return Qwen3_5ForConditionalGeneration(config).eval()
 
 
 @pytest.mark.parametrize(
@@ -1639,6 +1657,301 @@ def test_qwen35_attention_subset_harness_tokenizes_and_runs() -> None:
     assert result["attention_subset_capture_layer_count"] == 1
 
 
+def test_build_qwen35_attention_subset_paged_attention_snapshot_from_records() -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]]]], dtype=torch.float32),
+            torch.tensor([[[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]]]], dtype=torch.float32),
+        )
+    }
+    per_step_records = [
+        [
+            LlamaReplayRecord(
+                step_index=0,
+                layer_id=3,
+                token_index=2,
+                query_states=np.asarray([[1.0, 0.0, 0.0, 0.0], [3.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[2.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[1.0, 1.0, 1.0, 1.0]], dtype=np.float32),
+                context_states=np.zeros(8, dtype=np.float32),
+                output_states=np.zeros(4, dtype=np.float32),
+            )
+        ],
+        [
+            LlamaReplayRecord(
+                step_index=1,
+                layer_id=3,
+                token_index=3,
+                query_states=np.asarray([[2.0, 0.0, 0.0, 0.0], [4.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[4.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[2.0, 2.0, 2.0, 2.0]], dtype=np.float32),
+                context_states=np.zeros(8, dtype=np.float32),
+                output_states=np.zeros(4, dtype=np.float32),
+            )
+        ],
+    ]
+
+    snapshot = build_qwen35_attention_subset_paged_attention_snapshot(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        layer_id=3,
+        kv_head_id=0,
+        step_index=-1,
+        tokens_per_page=2,
+    )
+
+    assert snapshot.query.shape == (4,)
+    assert float(snapshot.query[0]) == 3.0
+    assert snapshot.num_pages == 2
+    assert int(snapshot.page_token_counts.sum()) == 4
+    assert np.isclose(float(np.sum(snapshot.prev_attn)), 1.0)
+    assert np.all(snapshot.distance >= 0.0)
+
+
+def test_qwen35_attention_subset_paged_attention_snapshot_capture_harness_exports_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset", return_tensors="pt")
+    output_path = tmp_path / "attention_subset_snapshot.npz"
+
+    result = run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_path=output_path,
+        layer_id=3,
+        kv_head_id=0,
+        tokens_per_page=2,
+    )
+
+    snapshot = load_paged_attention_snapshot(output_path)
+
+    assert result["runtime_mode"] == "dense_attention_subset_paged_attention_snapshot_capture"
+    assert result["paged_attention_snapshot_layer_id"] == 3
+    assert result["paged_attention_snapshot_kv_head_id"] == 0
+    assert result["paged_attention_snapshot_num_pages"] == snapshot.num_pages
+    assert output_path.exists()
+    assert snapshot.query.ndim == 1
+    assert snapshot.query.shape[0] == snapshot.k_pages.shape[2]
+    assert int(snapshot.page_token_counts.sum()) == int(encoded["input_ids"].shape[1]) + 2
+
+
+def test_qwen35_attention_subset_harness_can_export_paged_attention_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    harness = Qwen35AttentionSubsetHarness(
+        model=model,
+        tokenizer=tokenizer,
+        adapter=Qwen35AttentionSubsetModelAdapter(model=model),
+    )
+    input_ids, attention_mask = harness.tokenize_prompt("hello")
+    output_path = tmp_path / "harness_snapshot.npz"
+
+    result = harness.capture_attention_subset_paged_attention_snapshot(
+        output_path=output_path,
+        layer_id=3,
+        kv_head_id=0,
+        tokens_per_page=2,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=1,
+    )
+
+    assert result["paged_attention_snapshot_path"] == str(output_path)
+    assert output_path.exists()
+
+
+def test_export_qwen35_attention_subset_paged_attention_snapshot_corpus_writes_manifest(tmp_path) -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.0, 0.0], [0.5, 0.0]]]], dtype=torch.float32),
+            torch.tensor([[[[0.1, 0.2], [0.2, 0.1]]]], dtype=torch.float32),
+        )
+    }
+    per_step_records = [
+        [
+            LlamaReplayRecord(
+                step_index=0,
+                layer_id=3,
+                token_index=2,
+                query_states=np.asarray([[1.0, 0.0], [3.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[2.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[1.0, 1.0]], dtype=np.float32),
+                context_states=np.zeros(4, dtype=np.float32),
+                output_states=np.zeros(2, dtype=np.float32),
+            )
+        ],
+        [
+            LlamaReplayRecord(
+                step_index=1,
+                layer_id=3,
+                token_index=3,
+                query_states=np.asarray([[2.0, 0.0], [4.0, 0.0]], dtype=np.float32),
+                key_states=np.asarray([[4.0, 0.0]], dtype=np.float32),
+                value_states=np.asarray([[2.0, 2.0]], dtype=np.float32),
+                context_states=np.zeros(4, dtype=np.float32),
+                output_states=np.zeros(2, dtype=np.float32),
+            )
+        ],
+    ]
+
+    manifest = export_qwen35_attention_subset_paged_attention_snapshot_corpus(
+        prefill_tensors,
+        per_step_records,
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        output_dir=tmp_path,
+        layer_ids=[3],
+        kv_head_ids=[0],
+        step_indices=[0, -1],
+        tokens_per_page=2,
+    )
+
+    manifest_path = tmp_path / "manifest.json"
+
+    assert manifest["snapshot_count"] == 2
+    assert manifest["resolved_step_indices"] == [0, 1]
+    assert manifest_path.exists()
+    payload = json.loads(manifest_path.read_text())
+    assert payload["snapshot_count"] == 2
+
+
+def test_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness_exports_manifest(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello subset", return_tensors="pt")
+
+    result = run_qwen35_attention_subset_paged_attention_snapshot_corpus_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_dir=tmp_path,
+        layer_ids=[3],
+        kv_head_ids=[0],
+        step_indices=[0, -1],
+        tokens_per_page=2,
+    )
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
+    assert result["runtime_mode"] == "dense_attention_subset_paged_attention_snapshot_corpus_capture"
+    assert result["paged_attention_snapshot_corpus_count"] == 2
+    assert result["paged_attention_snapshot_corpus_resolved_step_indices"] == [0, 1]
+    assert manifest["snapshot_count"] == 2
+    assert manifest_path.exists()
+
+
+def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_snapshot(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    adapter = Qwen35AttentionSubsetModelAdapter(model=model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent comparison", return_tensors="pt")
+    capture = run_qwen35_attention_subset_paged_attention_snapshot_capture_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        output_path=tmp_path / "layer3_snapshot.npz",
+        layer_id=3,
+        kv_head_id=0,
+        step_index=0,
+        tokens_per_page=2,
+    )
+
+    conservative = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=False,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=0,
+        ),
+    )
+    assert conservative["selected_token_count"] == conservative["full_token_count"]
+    assert conservative["max_abs_error"] == pytest.approx(0.0, abs=1e-7)
+    assert conservative["beta_upper"] == pytest.approx(0.0, abs=1e-8)
+    assert conservative["delta_upper"] == pytest.approx(0.0, abs=1e-8)
+    assert conservative["fallback_recommended"] is False
+
+    prioritized = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+    )
+    assert prioritized["persistent_runtime_enable_priority"] is True
+    assert prioritized["selected_token_count"] <= prioritized["full_token_count"]
+    assert prioritized["selected_block_count"] <= prioritized["full_block_count"]
+    assert prioritized["remaining_block_count"] >= 0
+    assert prioritized["beta_upper"] >= 0.0
+    assert prioritized["delta_upper"] >= 0.0
+    assert prioritized["streaming_checkpoint_count"] >= 1
+    assert prioritized["streaming_processed_block_count"] == prioritized["full_block_count"]
+    assert prioritized["streaming_max_abs_error"] == pytest.approx(0.0, abs=1e-6)
+    assert prioritized["max_abs_error"] >= 0.0
+    assert prioritized["prev_attention_transform"] == "sqrt"
+    assert prioritized["shaped_prev_attention_nonzero_count"] > 0
+
+    history_gated = run_qwen35_persistent_full_attention_snapshot_comparison(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+            full_attention_optional_diversity_weight=0.5,
+            full_attention_optional_diversity_radius=4,
+            full_attention_optional_diversity_requires_history=True,
+            full_attention_optional_diversity_min_history_count=1,
+            full_attention_optional_diversity_max_history_count=2,
+        ),
+    )
+    assert history_gated["history_snapshot_count"] == 0
+    assert history_gated["persistent_runtime_optional_diversity_weight"] == 0.0
+    assert history_gated["persistent_runtime_optional_diversity_radius"] == 0
+    assert history_gated["persistent_runtime_optional_diversity_min_history_count"] == 1
+    assert history_gated["persistent_runtime_optional_diversity_max_history_count"] == 2
+
+    debug_payload = debug_qwen35_persistent_full_attention_snapshot_selection(
+        capture["paged_attention_snapshot_path"],
+        persistent_serving_config=PersistentServingConfig(
+            block_size=2,
+            enable_priority=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        max_rows=4,
+    )
+    assert debug_payload["selected_block_count"] <= debug_payload["full_block_count"]
+    assert debug_payload["beta_upper"] >= 0.0
+    assert debug_payload["delta_upper"] >= 0.0
+    assert debug_payload["streaming_checkpoint_count"] >= 1
+    assert len(debug_payload["top_omitted_by_priority"]) <= 4
+    assert len(debug_payload["top_shaped_prev_attention_pages"]) > 0
+
+
 def test_qwen35_attention_subset_dotcache_harness_runs_on_tiny_hybrid_model() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
@@ -1763,6 +2076,42 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_secondary_relevance_mode" in result
     assert "execution_secondary_relevance_top_k" in result
     assert "execution_secondary_relevance_min_overlap" in result
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_model() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        profile_backend=True,
+    )
+    assert result["runtime_mode"] == "dotcache_attention_subset_persistent_serving"
+    assert result["persistent_hybrid_runtime_ready"] is True
+    assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset_persistent"
+    assert result["hybrid_runtime_fixed_resident_layer_ids"] == [0, 1, 2]
+    assert result["hybrid_runtime_token_growing_layer_ids"] == [3]
+    assert result["persistent_runtime_dense_only"] is True
+    assert result["persistent_runtime_enable_full_attention_persistent_compute"] is True
+    assert result["persistent_runtime_enable_linear_attention_persistent_compute"] is False
+    assert result["persistent_full_attention_resident_bytes"] > 0
+    assert result["persistent_linear_resident_bytes"] >= 0
+    assert result["persistent_full_attention_append_counts_by_layer"]["3"] == 2
+    assert result["persistent_linear_state_sync_into_cache_count_by_layer"]["0"] == 0
+    assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] == 0
+    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] == 0
+    assert len(result["persistent_generated_ids"]) == 2
+    assert adapter.persistent_hybrid_runtime_state is not None
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result
     assert "execution_recent_neighbor_rescue_anchor_window" in result
@@ -1780,8 +2129,73 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert "execution_freeze_chunk_budget_during_decode" in result
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
     assert "execution_builtin_selector_candidate_only" in result
     assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_enables_linear_runtime_when_requested() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        persistent_serving_config=PersistentServingConfig(enable_linear_attention_persistent_compute=True),
+    )
+
+    assert result["persistent_runtime_enable_linear_attention_persistent_compute"] is True
+    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] >= 2
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_respects_full_attention_compute_toggle() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        profile_backend=True,
+        persistent_serving_config=PersistentServingConfig(enable_full_attention_persistent_compute=False),
+    )
+
+    assert result["persistent_runtime_enable_full_attention_persistent_compute"] is False
+    assert sum(float(value) for value in result["persistent_full_attention_decode_ms_total_by_layer"].values()) == 0.0
+    assert result["persistent_full_attention_append_counts_by_layer"]["3"] == 0
+    assert len(result["persistent_generated_ids"]) == 2
     assert "execution_builtin_selector_score_all_pages_calls" in result
     assert "execution_builtin_selector_candidate_only_calls" in result
     assert "execution_builtin_selector_candidate_fraction_max" in result
@@ -1812,6 +2226,175 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
 
+def test_qwen35_attention_subset_persistent_serving_harness_stage8_compression_preserves_ids() -> None:
+    model = _tiny_qwen35_model()
+    baseline_model = copy.deepcopy(model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving compression", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=False,
+        ),
+        backend="cpu_ref",
+    )
+    compressed_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    compressed = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        compressed_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert compressed["persistent_runtime_enable_compression"] is True
+    assert compressed["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert compressed["persistent_full_attention_m0_metadata_blocks_by_layer"]["3"] >= 1
+    assert compressed["persistent_full_attention_selected_m0_metadata_block_count_total_by_layer"]["3"] >= 1
+    assert compressed["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_build_persistent_prefill_block_metadata_uses_real_page_modes_and_comp_error() -> None:
+    prefill_tensors = {
+        3: (
+            torch.tensor([[[[1.125, -0.375, 0.2, 0.9], [0.875, 0.625, -0.1, 0.4]]]], dtype=torch.float32),
+            torch.tensor([[[[0.5, 1.5, 0.0, 1.0], [1.5, 0.5, 1.0, 0.0]]]], dtype=torch.float32),
+        )
+    }
+    metadata = _build_persistent_prefill_block_metadata(
+        prefill_tensors=prefill_tensors,
+        layer_ids=[3],
+        dotcache_config=DotCacheConfig(
+            head_dim=4,
+            group_size=4,
+            bits_k=2,
+            bits_v=4,
+            tokens_per_page=2,
+            default_mode_k="M0",
+            default_mode_v="M3",
+        ),
+        block_size=2,
+        num_attention_heads=1,
+    )
+    assert metadata[3]["block_k_mode"].tolist() == [["M0"]]
+    assert metadata[3]["block_v_mode"].tolist() == [["M3"]]
+    assert float(metadata[3]["block_k_comp_error"][0, 0]) > 0.0
+    assert float(metadata[3]["block_compression_metadata_valid"][0, 0]) == pytest.approx(1.0)
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_disables_compression_for_unsupported_modes() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent unsupported compression", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(
+            head_dim=16,
+            group_size=16,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=2,
+            default_mode_k="M1",
+            default_mode_v="M3",
+        ),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            enable_compression=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["persistent_runtime_enable_compression"] is True
+    assert result["persistent_full_attention_compression_rerank_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_fallback_disable_compression_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_falls_back_to_dense_for_invalid_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _tiny_qwen35_model()
+    baseline_model = copy.deepcopy(model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent invalid metadata", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(enable_priority=False, enable_compression=False),
+        backend="cpu_ref",
+    )
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            enable_compression=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    from dotcache.backends.metal.persistent_runtime import PersistentHybridRuntimeState
+
+    original_append = PersistentHybridRuntimeState.append_full_attention_step
+
+    def _patched_append(self, layer_id: int, key_step, value_step, token_index: int) -> None:
+        original_append(self, layer_id, key_step, value_step, token_index)
+        self.full_attention.layers[int(layer_id)].metadata_valid[:] = 0.0
+
+    monkeypatch.setattr(PersistentHybridRuntimeState, "append_full_attention_step", _patched_append)
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert result["persistent_full_attention_dense_fallback_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_last_fallback_rung_by_layer"]["3"] == 5
+
+
 def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay_metrics() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
@@ -1839,7 +2422,91 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert np.isfinite(result["teacher_forced_logit_mean_abs_error"])
     assert np.isfinite(result["teacher_forced_logit_rmse"])
     assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
-    assert len(result["teacher_forced_per_step_logit_max_abs_error"]) == 2
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_applies_shortlist_policy(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_recent_block_count": 64,
+                                "persistent_runtime_mandatory_recent_block_count": 16,
+                                "persistent_runtime_optional_top_k": 128,
+                                "persistent_runtime_optional_upper_bound_quota": 16,
+                                "persistent_runtime_optional_far_quota": 32,
+                                "persistent_runtime_optional_mid_quota": 48,
+                                "persistent_runtime_optional_near_quota": 32,
+                                "persistent_runtime_optional_far_anchor_quota": 4,
+                                "persistent_runtime_optional_far_anchor_priority_margin": 0.25,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                                "persistent_runtime_optional_diversity_min_history_count": 1,
+                                "persistent_runtime_key_centroid_count": None,
+                                "persistent_runtime_probe_refine_top_k": None,
+                                "persistent_runtime_probe_sample_count": None,
+                                "persistent_runtime_region_residual_caps": None,
+                                "persistent_runtime_residual_cluster_count": None,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 5,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            }
+        ],
+    }
+    policy_path = tmp_path / "persistent_shortlist_policy.json"
+    policy_path.write_text(json.dumps(policy_payload))
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            full_attention_recent_block_count=64,
+            full_attention_mandatory_recent_block_count=16,
+            full_attention_optional_top_k=128,
+            full_attention_optional_upper_bound_quota=16,
+            full_attention_optional_far_quota=32,
+            full_attention_optional_mid_quota=48,
+            full_attention_optional_near_quota=32,
+            full_attention_shortlist_policy_path=str(policy_path),
+        ),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        persistent_policy_prompt_family="tiny_family",
+    )
+    assert result["persistent_runtime_shortlist_policy_path"] == str(policy_path)
+    assert result["persistent_runtime_shortlist_policy_prompt_family"] == "tiny_family"
+    assert result["persistent_runtime_shortlist_policy_applied_count"] >= 1
+    assert adapter.persistent_shortlist_policy_applied_count_by_layer[3] >= 1
+    assert adapter.persistent_shortlist_policy_last_config_key_by_layer[3]
     assert "serving_shortlist_heuristic_applied" in result
     assert "execution_recent_window_overrides" in result
     assert "execution_recent_window_context_overrides" in result
@@ -1855,69 +2522,136 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result
     assert "execution_recent_neighbor_rescue_anchor_window" in result
-    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
-    assert "execution_recent_neighbor_rescue_layers" in result
-    assert "execution_exact_promote_top_k" in result
-    assert "execution_exact_promote_min_margin_threshold" in result
-    assert "execution_exact_promote_max_context" in result
-    assert "execution_exact_promote_margin_threshold" in result
-    assert "execution_exact_promote_layers" in result
-    assert "execution_exact_promote_union_rescue_top_k" in result
-    assert "execution_grouped_decode_compact" in result
-    assert "execution_grouped_mix_compact" in result
-    assert "execution_grouped_mix_disable_packed_cuda" in result
-    assert "execution_freeze_chunk_budget_during_decode" in result
-    assert "execution_builtin_selector_cache" in result
-    assert "execution_builtin_selector_score_all_pages" in result
-    assert "execution_builtin_selector_cache_hits" in result
-    assert "execution_builtin_selector_cache_builds" in result
-    assert "execution_builtin_selector_cache_build_bytes" in result
-    assert "execution_builtin_selector_cache_build_bytes_max" in result
-    assert "dotcache_step_runtime_breakdown" in result
-    assert len(result["dotcache_step_runtime_breakdown"]) == 2
-    assert "dotcache_backend_decode_ms_total_from_trace" in result
-    assert "dotcache_decode_non_backend_ms_total" in result
-    assert "dotcache_model_step_non_adapter_ms_total" in result
-    assert "dotcache_python_allocation_tracing" in result
-    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
-    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
-    assert "dotcache_python_allocated_blocks_delta_total" in result
-    assert "dotcache_python_gc_count_delta_total" in result
-    assert "execution_decode_prepare_pages_with_tail_ms_total" in result
-    assert "execution_decode_m2_prefilter_ms_total" in result
-    assert "execution_decode_shortlist_selection_ms_total" in result
-    assert "execution_decode_shortlist_materialization_ms_total" in result
-    assert "execution_decode_backend_call_non_backend_ms_total" in result
-    assert "execution_decode_shortlist_candidate_approx_scoring_ms_total" in result
-    assert "execution_decode_shortlist_candidate_ranking_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_score_compute_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_ranking_ms_total" in result
-    assert "execution_chunk_budget_dirty_marks" in result
-    assert "execution_chunk_budget_dirty_reason_counts" in result
-    assert "execution_chunk_budget_override_calls" in result
-    first_step = result["dotcache_step_runtime_breakdown"][0]
-    assert "decode_prepare_pages_with_tail_ms_total" in first_step
-    assert "decode_shortlist_materialization_ms_total" in first_step
-    assert "decode_backend_call_non_backend_ms_total" in first_step
-    assert "decode_non_backend_unattributed_ms_total" in first_step
-    assert "decode_shortlist_candidate_approx_scoring_ms_total" in first_step
-    assert "decode_shortlist_candidate_ranking_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_score_compute_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
-    assert "decode_chunk_budget_dirty_reason_counts" in first_step
-    assert "decode_chunk_budget_override_calls" in first_step
-    assert "decode_builtin_selector_cache_hits" in first_step
-    assert "decode_builtin_selector_cache_builds" in first_step
-    assert "decode_builtin_selector_cache_build_bytes" in first_step
-    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
-    assert "python_tracemalloc_current_bytes_delta" in first_step
-    assert "python_tracemalloc_peak_bytes" in first_step
-    assert "python_allocated_blocks_delta" in first_step
-    assert "python_gc_count_delta" in first_step
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_gates_shortlist_policy_by_step(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 2,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 64,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            },
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "mid",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 128,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            },
+        ],
+    }
+    policy_path = tmp_path / "persistent_shortlist_policy.json"
+    policy_path.write_text(json.dumps(policy_payload))
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            full_attention_optional_top_k=96,
+            full_attention_shortlist_policy_path=str(policy_path),
+            full_attention_shortlist_policy_min_step_index=1,
+        ),
+        backend="cpu_ref",
+    )
+    adapter.configure_persistent_shortlist_policy_context(
+        prompt_family="tiny_family",
+        prompt_length=int(encoded["input_ids"].shape[1]),
+    )
+    bootstrap_config, bootstrap_choice = adapter.resolve_persistent_serving_config_for_layer(layer_id=3, step_index=0)
+    mid_config, mid_choice = adapter.resolve_persistent_serving_config_for_layer(layer_id=3, step_index=1)
+    assert bootstrap_choice is None
+    assert bootstrap_config.full_attention_optional_top_k == 96
+    assert mid_choice is not None
+    assert mid_config.full_attention_optional_top_k == 128
+
+
+def test_apply_persistent_shortlist_config_overrides_assist_preserves_heuristics() -> None:
+    base_config = PersistentServingConfig(
+        full_attention_shortlist_policy_mode="assist",
+        full_attention_optional_top_k=128,
+        full_attention_optional_far_anchor_quota=4,
+        full_attention_optional_far_anchor_priority_margin=0.25,
+        full_attention_optional_diversity_weight=0.5,
+        full_attention_optional_diversity_radius=4,
+        full_attention_optional_diversity_min_history_count=1,
+    )
+    choice = {
+        "config_overrides": {
+            "full_attention_optional_top_k": 96,
+            "full_attention_optional_far_anchor_quota": 0,
+            "full_attention_optional_diversity_weight": 0.0,
+            "full_attention_optional_diversity_radius": 0,
+            "full_attention_optional_diversity_min_history_count": 0,
+        }
+    }
+    effective_config = _apply_persistent_shortlist_config_overrides(base_config, choice)
+    assert effective_config.full_attention_optional_top_k == 96
+    assert effective_config.full_attention_optional_far_anchor_quota == 4
+    assert effective_config.full_attention_optional_far_anchor_priority_margin == 0.25
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
+    assert effective_config.full_attention_optional_diversity_radius == 4
+    assert effective_config.full_attention_optional_diversity_min_history_count == 1
+
+
+def test_apply_persistent_shortlist_config_overrides_bias_keeps_base_config() -> None:
+    base_config = PersistentServingConfig(
+        full_attention_shortlist_policy_mode="bias",
+        full_attention_optional_top_k=128,
+        full_attention_optional_diversity_weight=0.5,
+    )
+    choice = {
+        "config_overrides": {
+            "full_attention_optional_top_k": 96,
+            "full_attention_optional_diversity_weight": 0.0,
+        }
+    }
+    effective_config = _apply_persistent_shortlist_config_overrides(base_config, choice)
+    assert effective_config.full_attention_optional_top_k == 128
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
 
 
 def test_decode_input_id_sequence_flattens_decode_steps() -> None:

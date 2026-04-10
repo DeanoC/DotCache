@@ -1,0 +1,4126 @@
+{
+  "config": {
+    "block_size": 16,
+    "enable_priority": true,
+    "exploration_blocks_per_region": 1,
+    "optional_top_k": 1,
+    "recent_block_count": 1,
+    "sink_block_count": 1
+  },
+  "records": [
+    {
+      "exploration_block_ids": [
+        31,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.46845656633377075,
+      "max_rel_error": 280.02410888671875,
+      "num_pages": 65,
+      "optional_block_ids": [
+        252
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        31,
+        252,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        65,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5201188325881958,
+      "max_rel_error": 24.287944793701172,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        65,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.44195860624313354,
+      "max_rel_error": 90.67599487304688,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        253,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        26,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.4506645202636719,
+      "max_rel_error": 66.66153717041016,
+      "num_pages": 65,
+      "optional_block_ids": [
+        250
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        26,
+        250,
+        253,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        36,
+        252
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8072389364242554,
+      "max_rel_error": 685.1973876953125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        36,
+        252,
+        253,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.34012722969055176,
+      "max_rel_error": 25.51491928100586,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer03_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.8677763938903809,
+      "max_rel_error": 2188.083740234375,
+      "num_pages": 65,
+      "optional_block_ids": [
+        141
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        141,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        141
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.5333995819091797,
+      "max_rel_error": 181.8531951904297,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        141,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        32,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.684795081615448,
+      "max_rel_error": 46.00884246826172,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        32,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.16459393501281738,
+      "max_rel_error": 19.4156436920166,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        141
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 3.577700138092041,
+      "max_rel_error": 44.44344711303711,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        141,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.2363710403442383,
+      "max_rel_error": 74.28350067138672,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer07_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.924652099609375,
+      "max_rel_error": 51.8054313659668,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.1203383207321167,
+      "max_rel_error": 98.77128601074219,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        44,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5136952996253967,
+      "max_rel_error": 13.914155006408691,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        44,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.9283943772315979,
+      "max_rel_error": 371.4637756347656,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        48,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6528834700584412,
+      "max_rel_error": 57.63774871826172,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        48,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        44,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.31227248907089233,
+      "max_rel_error": 86.27908325195312,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        44,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer11_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.858980119228363,
+      "max_rel_error": 923.8158569335938,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        49,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.4306425452232361,
+      "max_rel_error": 41.68389129638672,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        49,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        48,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.33909058570861816,
+      "max_rel_error": 17.915973663330078,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        48,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.15873336791992188,
+      "max_rel_error": 5.178274631500244,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5743255615234375,
+      "max_rel_error": 34.444278717041016,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        31,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.4056880474090576,
+      "max_rel_error": 9.662120819091797,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        31,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer15_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        237
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 4.184084892272949,
+      "max_rel_error": 23.64344024658203,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        237,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        237
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8173943161964417,
+      "max_rel_error": 520.6238403320312,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        237,
+        254,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        43,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6898612976074219,
+      "max_rel_error": 208.59298706054688,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        43,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        73,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8234462738037109,
+      "max_rel_error": 30.132173538208008,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        73,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5614663362503052,
+      "max_rel_error": 54.771732330322266,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        253,
+        254,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5822994709014893,
+      "max_rel_error": 18.706083297729492,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer19_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.3158128261566162,
+      "max_rel_error": 77.73131561279297,
+      "num_pages": 65,
+      "optional_block_ids": [
+        241
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        241,
+        253,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6351776719093323,
+      "max_rel_error": 130.34506225585938,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        34,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.976995587348938,
+      "max_rel_error": 9.13309383392334,
+      "num_pages": 65,
+      "optional_block_ids": [
+        249
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        34,
+        249,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        60,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6550847291946411,
+      "max_rel_error": 24.805021286010742,
+      "num_pages": 65,
+      "optional_block_ids": [
+        237
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        60,
+        237,
+        253,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        253
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.1645965576171875,
+      "max_rel_error": 83.30388641357422,
+      "num_pages": 65,
+      "optional_block_ids": [
+        237
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        237,
+        253,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        31,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.3215436935424805,
+      "max_rel_error": 21.90388298034668,
+      "num_pages": 65,
+      "optional_block_ids": [
+        238
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        31,
+        238,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/performance_journal/layer23_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        71,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.32436883449554443,
+      "max_rel_error": 79246.40625,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        71,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        17,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8717619180679321,
+      "max_rel_error": 276.6408386230469,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        17,
+        253,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        17,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.7207385897636414,
+      "max_rel_error": 111.31273651123047,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        17,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        15,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.4397909641265869,
+      "max_rel_error": 57.98283004760742,
+      "num_pages": 65,
+      "optional_block_ids": [
+        136
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        15,
+        136,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        62,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.0265616178512573,
+      "max_rel_error": 66.7782211303711,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        62,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        11,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5807050466537476,
+      "max_rel_error": 15.017759323120117,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        11,
+        139,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer03_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        121,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 3.461581230163574,
+      "max_rel_error": 19.652523040771484,
+      "num_pages": 65,
+      "optional_block_ids": [
+        225
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        121,
+        225,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        71,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.2255330085754395,
+      "max_rel_error": 55.83869171142578,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        71,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        71,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8431441187858582,
+      "max_rel_error": 294.978759765625,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        71,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        225
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 4.343193054199219,
+      "max_rel_error": 52494.23828125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        225,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.9933009147644043,
+      "max_rel_error": 10.754383087158203,
+      "num_pages": 65,
+      "optional_block_ids": [
+        225
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        225,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        106,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.7447747588157654,
+      "max_rel_error": 700.1416625976562,
+      "num_pages": 65,
+      "optional_block_ids": [
+        180
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        106,
+        139,
+        180,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer07_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6729661226272583,
+      "max_rel_error": 145.18186950683594,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        142
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.31876039505004883,
+      "max_rel_error": 99.96521759033203,
+      "num_pages": 65,
+      "optional_block_ids": [
+        139
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        142
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.2508455514907837,
+      "max_rel_error": 17.441394805908203,
+      "num_pages": 65,
+      "optional_block_ids": [
+        139
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        225
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.5837364196777344,
+      "max_rel_error": 29.42348861694336,
+      "num_pages": 65,
+      "optional_block_ids": [
+        139
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        225,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.46379441022872925,
+      "max_rel_error": 13497.7041015625,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        117,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.34729188680648804,
+      "max_rel_error": 324.3565368652344,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        117,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer11_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.32688093185424805,
+      "max_rel_error": 445.9093017578125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.391559362411499,
+      "max_rel_error": 46.341182708740234,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6022851467132568,
+      "max_rel_error": 21.215383529663086,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.26519787311553955,
+      "max_rel_error": 6.649066925048828,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.18505120277404785,
+      "max_rel_error": 7.390263080596924,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        15,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.2059880495071411,
+      "max_rel_error": 18.847787857055664,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        15,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer15_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        15,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.2425782680511475,
+      "max_rel_error": 202.0528106689453,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        15,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        99,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.7689900398254395,
+      "max_rel_error": 62.824459075927734,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        99,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.5686993598937988,
+      "max_rel_error": 1610.7618408203125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        99,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.8252301216125488,
+      "max_rel_error": 522.6078491210938,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        99,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        99,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.0109734535217285,
+      "max_rel_error": 360.7384338378906,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        99,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        116,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.800732135772705,
+      "max_rel_error": 264.80108642578125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        116,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer19_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        72,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5689308643341064,
+      "max_rel_error": 5685.22216796875,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        72,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        72,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.7523503303527832,
+      "max_rel_error": 64.87686157226562,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        72,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        142
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.4236178398132324,
+      "max_rel_error": 80.00182342529297,
+      "num_pages": 65,
+      "optional_block_ids": [
+        139
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5750075578689575,
+      "max_rel_error": 30.234905242919922,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.6776671409606934,
+      "max_rel_error": 212.83755493164062,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        139
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.0990605354309082,
+      "max_rel_error": 45.47739791870117,
+      "num_pages": 65,
+      "optional_block_ids": [
+        142
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        139,
+        142,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/readme/layer23_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        81,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.3232955038547516,
+      "max_rel_error": 34.63969039916992,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        81,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        1,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.27032047510147095,
+      "max_rel_error": 331.7078552246094,
+      "num_pages": 65,
+      "optional_block_ids": [
+        252
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        1,
+        252,
+        254,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.28244292736053467,
+      "max_rel_error": 80.87137603759766,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.7254382371902466,
+      "max_rel_error": 115.16844940185547,
+      "num_pages": 65,
+      "optional_block_ids": [
+        250
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        250,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        39,
+        250
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.48255884647369385,
+      "max_rel_error": 74.57015991210938,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        39,
+        250,
+        253,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        250
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5286911725997925,
+      "max_rel_error": 63.94857406616211,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        250,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer03_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8617221713066101,
+      "max_rel_error": 3283.974609375,
+      "num_pages": 65,
+      "optional_block_ids": [
+        81
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        81,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.7275076508522034,
+      "max_rel_error": 94.57823944091797,
+      "num_pages": 65,
+      "optional_block_ids": [
+        9
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        9,
+        10,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        28,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.329700469970703,
+      "max_rel_error": 2677.970947265625,
+      "num_pages": 65,
+      "optional_block_ids": [
+        2
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        28,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.9903870820999146,
+      "max_rel_error": 91.7068862915039,
+      "num_pages": 65,
+      "optional_block_ids": [
+        11
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        11,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.3332496881484985,
+      "max_rel_error": 481.6986999511719,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.9808967113494873,
+      "max_rel_error": 85.4629135131836,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer07_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.5580288171768188,
+      "max_rel_error": 369.6006774902344,
+      "num_pages": 65,
+      "optional_block_ids": [
+        125
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        125,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 4.1117753982543945,
+      "max_rel_error": 41.95244598388672,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        248
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 4.566555500030518,
+      "max_rel_error": 163.8152313232422,
+      "num_pages": 65,
+      "optional_block_ids": [
+        28
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        28,
+        248,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        38,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 3.112632989883423,
+      "max_rel_error": 40.34015655517578,
+      "num_pages": 65,
+      "optional_block_ids": [
+        125
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        38,
+        125,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        122,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.3188483715057373,
+      "max_rel_error": 1213.448486328125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        122,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 3.18756365776062,
+      "max_rel_error": 57.59638595581055,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer11_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        38,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 3.7548274993896484,
+      "max_rel_error": 920.0560302734375,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        38,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        54,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.0321707725524902,
+      "max_rel_error": 1755.388916015625,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        54,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.0638844966888428,
+      "max_rel_error": 113.34784698486328,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 8.21579360961914,
+      "max_rel_error": 90783.734375,
+      "num_pages": 65,
+      "optional_block_ids": [
+        125
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        125,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        252
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 7.9004364013671875,
+      "max_rel_error": 1979.8743896484375,
+      "num_pages": 65,
+      "optional_block_ids": [
+        230
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        230,
+        252,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        120,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 6.2444748878479,
+      "max_rel_error": 142.9747314453125,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        120,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer15_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        80,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.971660614013672,
+      "max_rel_error": 4326.49560546875,
+      "num_pages": 65,
+      "optional_block_ids": [
+        240
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        80,
+        240,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.9569506049156189,
+      "max_rel_error": 336.9746398925781,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 2.3761329650878906,
+      "max_rel_error": 237.41213989257812,
+      "num_pages": 65,
+      "optional_block_ids": [
+        25
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        25,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        80,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.7434515953063965,
+      "max_rel_error": 151.08389282226562,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        80,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.3744125366210938,
+      "max_rel_error": 98.48018646240234,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8803226351737976,
+      "max_rel_error": 151.64926147460938,
+      "num_pages": 65,
+      "optional_block_ids": [
+        255
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer19_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        125,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 1.2149115800857544,
+      "max_rel_error": 222.6346893310547,
+      "num_pages": 65,
+      "optional_block_ids": [
+        254
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        125,
+        254,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv00_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        14,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5605545043945312,
+      "max_rel_error": 21.67206573486328,
+      "num_pages": 65,
+      "optional_block_ids": [
+        252
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        14,
+        252,
+        254,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv00_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        120,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.6259555816650391,
+      "max_rel_error": 31.681673049926758,
+      "num_pages": 65,
+      "optional_block_ids": [
+        253
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        120,
+        253,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv00_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    },
+    {
+      "exploration_block_ids": [
+        10,
+        255
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4097,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.8140703439712524,
+      "max_rel_error": 214.2076873779297,
+      "num_pages": 65,
+      "optional_block_ids": [
+        125
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        10,
+        125,
+        255,
+        256
+      ],
+      "selected_token_count": 65,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv01_step+00.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4097
+    },
+    {
+      "exploration_block_ids": [
+        16,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4098,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.679315447807312,
+      "max_rel_error": 118.82324981689453,
+      "num_pages": 65,
+      "optional_block_ids": [
+        252
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        16,
+        252,
+        254,
+        256
+      ],
+      "selected_token_count": 66,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv01_step+01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4098
+    },
+    {
+      "exploration_block_ids": [
+        2,
+        254
+      ],
+      "full_block_count": 257,
+      "full_token_count": 4100,
+      "head_dim": 256,
+      "mandatory_block_ids": [
+        0,
+        256
+      ],
+      "max_abs_error": 0.5704069137573242,
+      "max_rel_error": 148.71987915039062,
+      "num_pages": 65,
+      "optional_block_ids": [
+        14
+      ],
+      "persistent_runtime_enable_priority": true,
+      "persistent_runtime_exploration_blocks_per_region": 1,
+      "persistent_runtime_optional_top_k": 1,
+      "persistent_runtime_recent_block_count": 1,
+      "persistent_runtime_sink_block_count": 1,
+      "query_scale": 0.0625,
+      "selected_block_count": 5,
+      "selected_block_ids": [
+        0,
+        2,
+        14,
+        254,
+        256
+      ],
+      "selected_token_count": 68,
+      "snapshot_path": "/private/tmp/qwen35_paged_attention_replay_corpus_v2_4096_nonsynthetic/world_interface_agent_loop_paper/layer23_kv01_step-01.npz",
+      "snapshot_source": "qwen35_attention_subset_dense_capture",
+      "tokens_per_page": 64,
+      "total_tokens": 4100
+    }
+  ],
+  "summary": {
+    "avg_full_block_count": 257.0,
+    "avg_full_token_count": 4098.333333333333,
+    "avg_selected_block_count": 5.0,
+    "avg_selected_fraction": 0.016185350133037353,
+    "avg_selected_token_count": 66.33333333333333,
+    "max_abs_error": 8.21579360961914,
+    "max_rel_error": 90783.734375,
+    "snapshot_count": 108
+  }
+}
