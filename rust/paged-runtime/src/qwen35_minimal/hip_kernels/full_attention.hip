@@ -162,3 +162,106 @@ __global__ void dotcache_qwen35_full_attention_prefill_kernel(
         __syncthreads();
     }
 }
+
+template <typename T, bool ADD_UNIT_OFFSET>
+__global__ void dotcache_qwen35_rms_norm_kernel(
+    int n_rows,
+    int n_cols,
+    float eps,
+    const T* xs,
+    const T* weight,
+    T* out
+) {
+    const int row = blockIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const T* row_in = xs + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+    T* row_out = out + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+
+    float partial = 0.0f;
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        const float x = dotcache_qwen35_to_float(row_in[col]);
+        partial += x * x;
+    }
+
+    __shared__ float shared_sum[256];
+    shared_sum[tid] = partial;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        const float mean = shared_sum[0] / static_cast<float>(n_cols);
+        shared_inv_rms = rsqrtf(mean + eps);
+    }
+    __syncthreads();
+
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        const float weight_val = dotcache_qwen35_to_float(weight[col]) + (ADD_UNIT_OFFSET ? 1.0f : 0.0f);
+        const float x = dotcache_qwen35_to_float(row_in[col]);
+        row_out[col] = dotcache_qwen35_from_float<T>(x * shared_inv_rms * weight_val);
+    }
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_rms_norm_gated_kernel(
+    int n_rows,
+    int n_cols,
+    float eps,
+    const T* hidden,
+    const T* gate,
+    const T* weight,
+    T* out
+) {
+    const int row = blockIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const T* row_hidden = hidden + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+    const T* row_gate = gate + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+    T* row_out = out + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+
+    float partial = 0.0f;
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        const float x = dotcache_qwen35_to_float(row_hidden[col]);
+        partial += x * x;
+    }
+
+    __shared__ float shared_sum[256];
+    shared_sum[tid] = partial;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        const float mean = shared_sum[0] / static_cast<float>(n_cols);
+        shared_inv_rms = rsqrtf(mean + eps);
+    }
+    __syncthreads();
+
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        const float x = dotcache_qwen35_to_float(row_hidden[col]);
+        const float gate_x = dotcache_qwen35_to_float(row_gate[col]);
+        const float gate_silu = gate_x / (1.0f + expf(-gate_x));
+        const float weight_val = dotcache_qwen35_to_float(weight[col]);
+        row_out[col] =
+            dotcache_qwen35_from_float<T>(x * shared_inv_rms * weight_val * gate_silu);
+    }
+}

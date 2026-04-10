@@ -87,6 +87,66 @@ int full_attention_prefill_device(
     return 0;
 }
 
+template <typename T, bool ADD_UNIT_OFFSET>
+int rms_norm_device(
+    int device_ordinal,
+    int n_rows,
+    int n_cols,
+    float eps,
+    const void* xs,
+    const void* weight,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_rms_norm_kernel<T, ADD_UNIT_OFFSET>),
+        dim3(static_cast<unsigned int>(n_rows)),
+        dim3(block),
+        0,
+        0,
+        n_rows,
+        n_cols,
+        eps,
+        static_cast<const T*>(xs),
+        static_cast<const T*>(weight),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 71;
+    if (hipDeviceSynchronize() != hipSuccess) return 72;
+    return 0;
+}
+
+template <typename T>
+int rms_norm_gated_device(
+    int device_ordinal,
+    int n_rows,
+    int n_cols,
+    float eps,
+    const void* hidden,
+    const void* gate,
+    const void* weight,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_rms_norm_gated_kernel<T>),
+        dim3(static_cast<unsigned int>(n_rows)),
+        dim3(block),
+        0,
+        0,
+        n_rows,
+        n_cols,
+        eps,
+        static_cast<const T*>(hidden),
+        static_cast<const T*>(gate),
+        static_cast<const T*>(weight),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 81;
+    if (hipDeviceSynchronize() != hipSuccess) return 82;
+    return 0;
+}
+
 } // namespace
 
 extern "C" int dotcache_qwen35_hip_full_attention_prefill(
@@ -156,5 +216,121 @@ extern "C" int dotcache_qwen35_hip_full_attention_prefill(
             out);
     default:
         return 64;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_rms_norm(
+    int dtype,
+    size_t device_ordinal,
+    size_t n_rows,
+    size_t n_cols,
+    float eps,
+    int add_unit_offset,
+    const void* xs,
+    const void* weight,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return add_unit_offset
+            ? rms_norm_device<half, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out)
+            : rms_norm_device<half, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out);
+    case 1:
+        return add_unit_offset
+            ? rms_norm_device<float, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out)
+            : rms_norm_device<float, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out);
+    case 2:
+        return add_unit_offset
+            ? rms_norm_device<hip_bfloat16, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out)
+            : rms_norm_device<hip_bfloat16, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(n_rows),
+                  static_cast<int>(n_cols),
+                  eps,
+                  xs,
+                  weight,
+                  out);
+    default:
+        return 74;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_rms_norm_gated(
+    int dtype,
+    size_t device_ordinal,
+    size_t n_rows,
+    size_t n_cols,
+    float eps,
+    const void* hidden,
+    const void* gate,
+    const void* weight,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return rms_norm_gated_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            hidden,
+            gate,
+            weight,
+            out);
+    case 1:
+        return rms_norm_gated_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            hidden,
+            gate,
+            weight,
+            out);
+    case 2:
+        return rms_norm_gated_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            hidden,
+            gate,
+            weight,
+            out);
+    default:
+        return 84;
     }
 }

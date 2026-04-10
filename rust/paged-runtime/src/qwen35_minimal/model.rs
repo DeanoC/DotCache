@@ -462,6 +462,241 @@ struct Qwen35RmsNorm {
     eps: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HipRmsNorm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+    add_unit_offset: bool,
+}
+
+impl candle::CustomOp2 for HipRmsNorm {
+    fn name(&self) -> &'static str {
+        "dotcache-hip-rms-norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("dotcache-hip-rms-norm has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        xs: &candle::HipStorage,
+        xs_layout: &candle::Layout,
+        weight: &candle::HipStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+            candle::bail!("dotcache-hip-rms-norm requires contiguous inputs")
+        }
+        if xs.dtype() != weight.dtype() {
+            candle::bail!(
+                "dotcache-hip-rms-norm requires matching dtypes, got xs={:?} weight={:?}",
+                xs.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let xs_dims = xs_layout.shape().dims();
+        let n_cols = *xs_dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+        let n_rows = xs_layout.shape().elem_count() / n_cols;
+        let weight_dim = weight_layout.shape().elem_count();
+        if n_rows != self.n_rows || n_cols != self.n_cols || weight_dim != self.n_cols {
+            candle::bail!(
+                "dotcache-hip-rms-norm shape mismatch xs={:?} weight={:?} expected_rows={} expected_cols={}",
+                xs_layout.shape().dims(),
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = xs.device().clone();
+        let out_shape = xs_layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, xs.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_rms_norm(
+                hip::dtype_code(xs.dtype())?,
+                device.ordinal(),
+                self.n_rows,
+                self.n_cols,
+                self.eps,
+                if self.add_unit_offset { 1 } else { 0 },
+                xs.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
+                weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipRmsNormGated {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp3 for HipRmsNormGated {
+    fn name(&self) -> &'static str {
+        "dotcache-hip-rms-norm-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("dotcache-hip-rms-norm-gated has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        hidden: &candle::HipStorage,
+        hidden_layout: &candle::Layout,
+        gate: &candle::HipStorage,
+        gate_layout: &candle::Layout,
+        weight: &candle::HipStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(hidden_layout.is_contiguous()
+            && gate_layout.is_contiguous()
+            && weight_layout.is_contiguous())
+        {
+            candle::bail!("dotcache-hip-rms-norm-gated requires contiguous inputs")
+        }
+        if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+            candle::bail!(
+                "dotcache-hip-rms-norm-gated requires matching dtypes, got hidden={:?} gate={:?} weight={:?}",
+                hidden.dtype(),
+                gate.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let hidden_dims = hidden_layout.shape().dims();
+        let n_cols = *hidden_dims.last().ok_or_else(|| {
+            candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
+        })?;
+        let n_rows = hidden_layout.shape().elem_count() / n_cols;
+        let gate_elems = gate_layout.shape().elem_count();
+        let weight_elems = weight_layout.shape().elem_count();
+        if n_rows != self.n_rows
+            || n_cols != self.n_cols
+            || gate_elems != hidden_layout.shape().elem_count()
+            || weight_elems != self.n_cols
+        {
+            candle::bail!(
+                "dotcache-hip-rms-norm-gated shape mismatch hidden={:?} gate={:?} weight={:?} expected_rows={} expected_cols={}",
+                hidden_layout.shape().dims(),
+                gate_layout.shape().dims(),
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = hidden.device().clone();
+        let out_shape = hidden_layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, hidden.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+                hip::dtype_code(hidden.dtype())?,
+                device.ordinal(),
+                self.n_rows,
+                self.n_cols,
+                self.eps,
+                hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+                gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+                weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == xs.dtype() {
+        weight
+    } else {
+        weight.to_dtype(xs.dtype())?
+    };
+    let xs_dims = xs.dims();
+    let n_cols = *xs_dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op2_no_bwd(
+        &weight,
+        &HipRmsNorm {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
+            add_unit_offset,
+        },
+    )
+}
+
+fn hip_rms_norm_gated(hidden_states: &Tensor, gate: &Tensor, weight: &Tensor, eps: f64) -> Result<Tensor> {
+    let hidden_states = hidden_states.contiguous()?;
+    let gate = gate.contiguous()?;
+    let gate = if gate.dtype() == hidden_states.dtype() {
+        gate
+    } else {
+        gate.to_dtype(hidden_states.dtype())?
+    };
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == hidden_states.dtype() {
+        weight
+    } else {
+        weight.to_dtype(hidden_states.dtype())?
+    };
+    let hidden_dims = hidden_states.dims();
+    let n_cols = *hidden_dims.last().ok_or_else(|| {
+        candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = hidden_states.elem_count() / n_cols;
+    hidden_states.apply_op3_no_bwd(
+        &gate,
+        &weight,
+        &HipRmsNormGated {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
+        },
+    )
+}
+
 impl Qwen35RmsNorm {
     fn new(dim: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
@@ -473,6 +708,9 @@ impl Qwen35RmsNorm {
 
 impl Module for Qwen35RmsNorm {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        if xs.device().is_hip() && self.weight.device().is_hip() {
+            return hip_rms_norm(xs, &self.weight, self.eps, true);
+        }
         let xs_dtype = xs.dtype();
         let xs = xs.to_dtype(DType::F32)?;
         let variance = (xs.sqr()?.sum_keepdim(D::Minus1)? / xs.dim(D::Minus1)? as f64)?;
@@ -497,6 +735,9 @@ impl Qwen35RmsNormGated {
     }
 
     fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
+        if hidden_states.device().is_hip() && gate.device().is_hip() && self.weight.device().is_hip() {
+            return hip_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
+        }
         let out_dtype = hidden_states.dtype();
         let hidden_states = hidden_states.to_dtype(DType::F32)?;
         let variance =
@@ -8274,6 +8515,43 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_rms_norm_sample(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, Vec<f32>, Vec<f32>)> {
+        let xs_data = vec![
+            0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
+        ];
+        let gate_data = vec![
+            -0.2f32, 0.7, 0.5, -1.1, 0.3, -0.4, 0.9, 0.1, -0.8, 0.6, 0.2, -0.5,
+        ];
+        let weight_data = vec![0.1f32, -0.2, 0.3, 0.4];
+        let shape = (1usize, 3usize, 4usize);
+        let eps = 1e-6f64;
+
+        let xs = Tensor::from_vec(xs_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+        let gate = Tensor::from_vec(gate_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+        let weight = Tensor::from_vec(weight_data.clone(), 4usize, device)?.to_dtype(DType::F16)?;
+
+        let mut expected_norm = Vec::with_capacity(xs_data.len());
+        let mut expected_gated = Vec::with_capacity(xs_data.len());
+        for row in 0..3 {
+            let row_slice = &xs_data[row * 4..(row + 1) * 4];
+            let gate_slice = &gate_data[row * 4..(row + 1) * 4];
+            let mean_sq = row_slice.iter().map(|x| x * x).sum::<f32>() / 4.0;
+            let inv_rms = 1.0f32 / (mean_sq + eps as f32).sqrt();
+            for col in 0..4 {
+                let normed = row_slice[col] * inv_rms;
+                expected_norm.push(normed * (weight_data[col] + 1.0));
+                let gate_x = gate_slice[col];
+                let silu = gate_x / (1.0 + (-gate_x).exp());
+                expected_gated.push(normed * weight_data[col] * silu);
+            }
+        }
+
+        Ok((xs, gate, weight, expected_norm, expected_gated))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let device = Device::new_hip(0)?;
@@ -8488,6 +8766,48 @@ mod tests {
         )?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(output.dtype(), DType::F32);
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_rms_norm_matches_reference() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (xs, gate, weight, expected_norm, expected_gated) = hip_rms_norm_sample(&device)?;
+
+        let norm = hip_rms_norm(&xs, &weight, 1e-6, true)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&norm, &expected_norm, 5e-3);
+
+        let gated = hip_rms_norm_gated(&xs, &gate, &weight, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&gated, &expected_gated, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_rms_norm_avoids_host_staging() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (xs, gate, weight, _expected_norm, _expected_gated) = hip_rms_norm_sample(&device)?;
+
+        candle::hip::reset_transfer_counters();
+        let norm = hip_rms_norm(&xs, &weight, 1e-6, true)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(norm.dtype(), xs.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+
+        candle::hip::reset_transfer_counters();
+        let gated = hip_rms_norm_gated(&xs, &gate, &weight, 1e-6)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(gated.dtype(), xs.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())

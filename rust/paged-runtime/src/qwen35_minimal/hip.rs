@@ -38,5 +38,29 @@ pub mod ffi {
             value: *const c_void,
             out: *mut c_void,
         ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_rms_norm(
+            dtype: c_int,
+            device_ordinal: usize,
+            n_rows: usize,
+            n_cols: usize,
+            eps: f32,
+            add_unit_offset: c_int,
+            xs: *const c_void,
+            weight: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_rms_norm_gated(
+            dtype: c_int,
+            device_ordinal: usize,
+            n_rows: usize,
+            n_cols: usize,
+            eps: f32,
+            hidden: *const c_void,
+            gate: *const c_void,
+            weight: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
     }
 }

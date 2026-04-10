@@ -108,6 +108,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(max_delta)
     }
 
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn print_hip_counters(label: &str) {
+        let counters = candle_core::hip::transfer_counters();
+        eprintln!(
+            "hip_transfers[{label}] h2d={} d2h={} d2d={}",
+            counters.host_to_device_bytes,
+            counters.device_to_host_bytes,
+            counters.device_to_device_bytes,
+        );
+    }
+
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
         "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|hip[:ordinal]]",
@@ -155,10 +166,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut cpu_logits, mut cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
     let cpu_prefill_elapsed = cpu_prefill_started.elapsed();
 
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if target_device.is_hip() {
+        candle_core::hip::reset_transfer_counters();
+    }
     let device_prefill_started = Instant::now();
     let (mut device_logits, mut device_cache) =
         device_runner.prefill_from_hidden_states(&hidden_states)?;
     let device_prefill_elapsed = device_prefill_started.elapsed();
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if target_device.is_hip()
+        && matches!(
+            std::env::var("DOTCACHE_QWEN35_PRINT_HIP_TRANSFERS").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    {
+        print_hip_counters("prefill");
+    }
 
     let prefill_delta = max_logit_delta(&cpu_logits, &device_logits)?;
     let mut generated_ids = prompt_ids.clone();
@@ -176,10 +200,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cpu_logits = cpu_runner.decode_from_hidden_state(&next_hidden_state, &mut cpu_cache)?;
         cpu_decode_elapsed += cpu_decode_started.elapsed();
 
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if target_device.is_hip() {
+            candle_core::hip::reset_transfer_counters();
+        }
         let device_decode_started = Instant::now();
         device_logits =
             device_runner.decode_from_hidden_state(&next_hidden_state, &mut device_cache)?;
         device_decode_elapsed += device_decode_started.elapsed();
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if target_device.is_hip()
+            && matches!(
+                std::env::var("DOTCACHE_QWEN35_PRINT_HIP_TRANSFERS").as_deref(),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+            )
+        {
+            print_hip_counters("decode-step");
+        }
 
         max_decode_delta = max_decode_delta.max(max_logit_delta(&cpu_logits, &device_logits)?);
         next_token = argmax_last_token(&cpu_logits)?;
