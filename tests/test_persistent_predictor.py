@@ -5,10 +5,16 @@ from pathlib import Path
 
 from dotcache.persistent_predictor import (
     PERSISTENT_PREDICTOR_FEATURE_NAMES,
+    build_persistent_shortlist_policy,
     evaluate_persistent_pairwise_ranker,
     evaluate_persistent_residual_predictor,
+    evaluate_persistent_shortlist_policy,
     evaluate_safe_then_cheapest_policy,
+    load_persistent_shortlist_policy,
+    parse_persistent_shortlist_config_key,
+    persistent_shortlist_step_bucket,
     recommend_safe_then_cheapest_configs,
+    resolve_persistent_shortlist_policy_choice,
     load_persistent_pairwise_ranker_model,
     load_persistent_residual_predictor_model,
     save_persistent_pairwise_ranker_model,
@@ -186,3 +192,140 @@ def test_recommend_safe_then_cheapest_configs_emits_snapshot_choices() -> None:
     assert payload["summary"]["snapshot_group_count"] == 2
     assert len(payload["recommendations"]) == 2
     assert all("chosen_source_compare_json" in item for item in payload["recommendations"])
+
+
+def test_build_and_evaluate_persistent_shortlist_policy() -> None:
+    records = [
+        _record("/tmp/family_a/layer03_kv00_step+00.npz", max_abs_error=0.03, step_index=0, beta_upper=0.05, delta_upper=0.04)
+        | {"selected_token_count": 112, "persistent_runtime_optional_top_k": 96, "source_compare_json": "a.json"},
+        _record("/tmp/family_a/layer03_kv00_step+00.npz", max_abs_error=0.20, step_index=0, beta_upper=0.35, delta_upper=0.28)
+        | {"selected_token_count": 96, "persistent_runtime_optional_top_k": 64, "source_compare_json": "b.json"},
+        _record("/tmp/family_b/layer03_kv00_step+01.npz", max_abs_error=0.02, step_index=1, beta_upper=0.04, delta_upper=0.03)
+        | {"selected_token_count": 120, "persistent_runtime_optional_top_k": 96, "source_compare_json": "a.json"},
+        _record("/tmp/family_b/layer03_kv00_step+01.npz", max_abs_error=0.06, step_index=1, beta_upper=0.11, delta_upper=0.09)
+        | {"selected_token_count": 96, "persistent_runtime_optional_top_k": 64, "source_compare_json": "b.json"},
+    ]
+    model = train_persistent_residual_predictor(
+        records,
+        abs_threshold=0.05,
+        feature_names=PERSISTENT_PREDICTOR_FEATURE_NAMES,
+        steps=300,
+        learning_rate=0.3,
+        l2=1e-3,
+    )
+    recommendations = recommend_safe_then_cheapest_configs(model, records, abs_threshold=0.05)
+    policy = build_persistent_shortlist_policy(recommendations, group_by=("layer_id", "step_bucket"))
+    evaluation = evaluate_persistent_shortlist_policy(policy, records, abs_threshold=0.05)
+    assert policy["group_count"] == 2
+    assert evaluation["summary"]["snapshot_group_count"] == 2
+    assert evaluation["summary"]["missing_bucket_rate"] == 0.0
+    assert evaluation["summary"]["fallback_rate"] == 0.0
+
+
+def test_parse_and_resolve_persistent_shortlist_policy_choice(tmp_path: Path) -> None:
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 2,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "family_a",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_recent_block_count": 64,
+                                "persistent_runtime_mandatory_recent_block_count": 16,
+                                "persistent_runtime_optional_top_k": 128,
+                                "persistent_runtime_optional_upper_bound_quota": 16,
+                                "persistent_runtime_optional_far_quota": 32,
+                                "persistent_runtime_optional_mid_quota": 48,
+                                "persistent_runtime_optional_near_quota": 32,
+                                "persistent_runtime_optional_far_anchor_quota": 4,
+                                "persistent_runtime_optional_far_anchor_priority_margin": 0.25,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                                "persistent_runtime_optional_diversity_min_history_count": 1,
+                                "persistent_runtime_key_centroid_count": None,
+                                "persistent_runtime_probe_refine_top_k": None,
+                                "persistent_runtime_probe_sample_count": None,
+                                "persistent_runtime_region_residual_caps": None,
+                                "persistent_runtime_residual_cluster_count": None,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "a.json",
+                        "vote_count": 5,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            },
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "family_a",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_recent_block_count": 64,
+                                "persistent_runtime_mandatory_recent_block_count": 16,
+                                "persistent_runtime_optional_top_k": 128,
+                                "persistent_runtime_optional_upper_bound_quota": 16,
+                                "persistent_runtime_optional_far_quota": 32,
+                                "persistent_runtime_optional_mid_quota": 48,
+                                "persistent_runtime_optional_near_quota": 32,
+                                "persistent_runtime_optional_far_anchor_quota": 4,
+                                "persistent_runtime_optional_far_anchor_priority_margin": 0.25,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                                "persistent_runtime_optional_diversity_min_history_count": 1,
+                                "persistent_runtime_key_centroid_count": None,
+                                "persistent_runtime_probe_refine_top_k": None,
+                                "persistent_runtime_probe_sample_count": None,
+                                "persistent_runtime_region_residual_caps": None,
+                                "persistent_runtime_residual_cluster_count": None,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "a.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2310.0,
+                        "avg_max_abs_error": 0.04,
+                    }
+                ],
+            },
+        ],
+    }
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(policy_payload))
+    loaded_policy = load_persistent_shortlist_policy(policy_path)
+    assert persistent_shortlist_step_bucket(0) == "bootstrap"
+    assert persistent_shortlist_step_bucket(2) == "mid"
+    assert persistent_shortlist_step_bucket(7) == "late"
+    choice = resolve_persistent_shortlist_policy_choice(
+        loaded_policy,
+        layer_id=3,
+        kv_head_ids=[0, 1],
+        prompt_family="family_a",
+        step_index=0,
+    )
+    assert choice is not None
+    overrides = parse_persistent_shortlist_config_key(str(choice["config_key"]))
+    assert overrides["full_attention_optional_far_anchor_quota"] == 4
+    assert overrides["full_attention_optional_far_anchor_priority_margin"] == 0.25
+    assert choice["bucket_match_count"] == 2

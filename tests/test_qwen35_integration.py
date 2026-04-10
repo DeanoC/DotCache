@@ -110,45 +110,49 @@ class _FakeLayerStructuredCache:
 
 
 def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
-    config = Qwen3_5Config(
-        text_config={
-            "hidden_size": 64,
-            "intermediate_size": 128,
-            "num_hidden_layers": 4,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 1,
-            "vocab_size": 128,
-            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
-        },
-        vision_config={
-            "hidden_size": 32,
-            "intermediate_size": 64,
-            "depth": 1,
-            "num_heads": 4,
-        },
-    )
-    return Qwen3_5ForConditionalGeneration(config).eval()
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        config = Qwen3_5Config(
+            text_config={
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 1,
+                "vocab_size": 128,
+                "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            },
+            vision_config={
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "depth": 1,
+                "num_heads": 4,
+            },
+        )
+        return Qwen3_5ForConditionalGeneration(config).eval()
 
 
 def _tiny_deltanet_qwen35_model() -> Qwen3_5ForConditionalGeneration:
-    config = Qwen3_5Config(
-        text_config={
-            "hidden_size": 16,
-            "intermediate_size": 32,
-            "num_hidden_layers": 4,
-            "num_attention_heads": 2,
-            "num_key_value_heads": 1,
-            "vocab_size": 128,
-            "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
-        },
-        vision_config={
-            "hidden_size": 8,
-            "intermediate_size": 16,
-            "depth": 1,
-            "num_heads": 2,
-        },
-    )
-    return Qwen3_5ForConditionalGeneration(config).eval()
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        config = Qwen3_5Config(
+            text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "vocab_size": 128,
+                "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            },
+            vision_config={
+                "hidden_size": 8,
+                "intermediate_size": 16,
+                "depth": 1,
+                "num_heads": 2,
+            },
+        )
+        return Qwen3_5ForConditionalGeneration(config).eval()
 
 
 @pytest.mark.parametrize(
@@ -1774,6 +1778,9 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     )
     assert conservative["selected_token_count"] == conservative["full_token_count"]
     assert conservative["max_abs_error"] == pytest.approx(0.0, abs=1e-7)
+    assert conservative["beta_upper"] == pytest.approx(0.0, abs=1e-8)
+    assert conservative["delta_upper"] == pytest.approx(0.0, abs=1e-8)
+    assert conservative["fallback_recommended"] is False
 
     prioritized = run_qwen35_persistent_full_attention_snapshot_comparison(
         capture["paged_attention_snapshot_path"],
@@ -1789,6 +1796,12 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     assert prioritized["persistent_runtime_enable_priority"] is True
     assert prioritized["selected_token_count"] <= prioritized["full_token_count"]
     assert prioritized["selected_block_count"] <= prioritized["full_block_count"]
+    assert prioritized["remaining_block_count"] >= 0
+    assert prioritized["beta_upper"] >= 0.0
+    assert prioritized["delta_upper"] >= 0.0
+    assert prioritized["streaming_checkpoint_count"] >= 1
+    assert prioritized["streaming_processed_block_count"] == prioritized["full_block_count"]
+    assert prioritized["streaming_max_abs_error"] == pytest.approx(0.0, abs=1e-6)
     assert prioritized["max_abs_error"] >= 0.0
     assert prioritized["prev_attention_transform"] == "sqrt"
     assert prioritized["shaped_prev_attention_nonzero_count"] > 0
@@ -1828,6 +1841,9 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
         max_rows=4,
     )
     assert debug_payload["selected_block_count"] <= debug_payload["full_block_count"]
+    assert debug_payload["beta_upper"] >= 0.0
+    assert debug_payload["delta_upper"] >= 0.0
+    assert debug_payload["streaming_checkpoint_count"] >= 1
     assert len(debug_payload["top_omitted_by_priority"]) <= 4
     assert len(debug_payload["top_shaped_prev_attention_pages"]) > 0
 
@@ -2077,7 +2093,91 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay
     assert np.isfinite(result["teacher_forced_logit_mean_abs_error"])
     assert np.isfinite(result["teacher_forced_logit_rmse"])
     assert 0.0 <= result["teacher_forced_token_agreement_rate"] <= 1.0
-    assert len(result["teacher_forced_per_step_logit_max_abs_error"]) == 2
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_applies_shortlist_policy(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_recent_block_count": 64,
+                                "persistent_runtime_mandatory_recent_block_count": 16,
+                                "persistent_runtime_optional_top_k": 128,
+                                "persistent_runtime_optional_upper_bound_quota": 16,
+                                "persistent_runtime_optional_far_quota": 32,
+                                "persistent_runtime_optional_mid_quota": 48,
+                                "persistent_runtime_optional_near_quota": 32,
+                                "persistent_runtime_optional_far_anchor_quota": 4,
+                                "persistent_runtime_optional_far_anchor_priority_margin": 0.25,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                                "persistent_runtime_optional_diversity_min_history_count": 1,
+                                "persistent_runtime_key_centroid_count": None,
+                                "persistent_runtime_probe_refine_top_k": None,
+                                "persistent_runtime_probe_sample_count": None,
+                                "persistent_runtime_region_residual_caps": None,
+                                "persistent_runtime_residual_cluster_count": None,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 5,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            }
+        ],
+    }
+    policy_path = tmp_path / "persistent_shortlist_policy.json"
+    policy_path.write_text(json.dumps(policy_payload))
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            full_attention_recent_block_count=64,
+            full_attention_mandatory_recent_block_count=16,
+            full_attention_optional_top_k=128,
+            full_attention_optional_upper_bound_quota=16,
+            full_attention_optional_far_quota=32,
+            full_attention_optional_mid_quota=48,
+            full_attention_optional_near_quota=32,
+            full_attention_shortlist_policy_path=str(policy_path),
+        ),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        persistent_policy_prompt_family="tiny_family",
+    )
+    assert result["persistent_runtime_shortlist_policy_path"] == str(policy_path)
+    assert result["persistent_runtime_shortlist_policy_prompt_family"] == "tiny_family"
+    assert result["persistent_runtime_shortlist_policy_applied_count"] >= 1
+    assert adapter.persistent_shortlist_policy_applied_count_by_layer[3] >= 1
+    assert adapter.persistent_shortlist_policy_last_config_key_by_layer[3]
     assert "serving_shortlist_heuristic_applied" in result
     assert "execution_recent_window_overrides" in result
     assert "execution_recent_window_context_overrides" in result

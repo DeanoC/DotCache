@@ -14,6 +14,18 @@ class PersistentServingConfig:
     enable_early_exit: bool = False
     enable_compression: bool = False
     fp32_accumulation: bool = True
+    full_attention_shortlist_policy_path: str | None = None
+    full_attention_check_interval: int = 1
+    full_attention_mass_eps: float = 1e-3
+    full_attention_value_eps: float = 1e-3
+    full_attention_min_processed_blocks: int = 1
+    full_attention_bound_eps: float = 1e-3
+    full_attention_region_residual_caps: bool = False
+    full_attention_residual_cluster_count: int = 0
+    full_attention_key_centroid_count: int = 1
+    full_attention_refine_top_k: int = 0
+    full_attention_probe_refine_top_k: int = 0
+    full_attention_probe_sample_count: int = 4
     full_attention_sink_block_count: int = 1
     full_attention_recent_block_count: int = 1
     full_attention_mandatory_recent_block_count: int | None = None
@@ -75,11 +87,16 @@ class PersistentFullAttentionLayerState:
     block_token_counts: Any
     block_k_center: Any
     block_k_radius: Any
+    block_k_subcenters: Any
+    block_k_subradii: Any
+    block_v_center: Any
+    block_v_radius: Any
     block_v_norm_max: Any
     block_prev_attention_ema: Any
     block_region_ids: Any
     block_k_comp_error: Any
     metadata_valid: Any
+    last_residual_certificate: dict[str, Any] | None = None
     append_count: int = 0
 
 

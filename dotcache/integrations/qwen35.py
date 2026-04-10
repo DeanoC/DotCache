@@ -18,6 +18,10 @@ from ..decode_reference import decode_page
 from ..encode import encode_page
 from ..model_kv_cache import ModelPagedKVCache, PreparedPageCache
 from ..page_oracle import PageTraceRecord, save_page_trace
+from ..persistent_predictor import (
+    load_persistent_shortlist_policy,
+    resolve_persistent_shortlist_policy_choice,
+)
 from ..state_cache_sim import StateAblationResult, StateLayerRecord, StateTileSpec, simulate_state_codec
 from ..tracing import ExecutionTrace
 from .llama import (
@@ -2337,10 +2341,35 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         self.adapter.persistent_append_runtime_ms_total += append_ms
         self.adapter._record_layer_timing(self.adapter.persistent_append_runtime_ms_total_by_layer, self.layer_idx, append_ms)
 
+        persistent_step_index = max(
+            int(token_index) - int(self.adapter.persistent_shortlist_policy_prefill_prompt_length),
+            0,
+        )
+        effective_persistent_config, policy_choice = self.adapter.resolve_persistent_serving_config_for_layer(
+            layer_id=self.layer_idx,
+            step_index=persistent_step_index,
+        )
+        effective_persistent_config = _resolve_history_aware_persistent_serving_config(
+            effective_persistent_config,
+            history_snapshot_count=persistent_step_index,
+        )
         selection = runtime_state.select_full_attention_blocks(
             self.layer_idx,
             query_step,
             query_scale=float(self.base_attention.scaling),
+            config_override=effective_persistent_config,
+        )
+        certificate = runtime_state.certify_full_attention_selected_blocks(
+            self.layer_idx,
+            query=query_step,
+            query_scale=float(self.base_attention.scaling),
+            selected_block_ids=selection["selected_block_ids"],
+            upper_bounds=selection["upper_bounds"],
+            config_override=effective_persistent_config,
+        )
+        self.adapter.record_persistent_shortlist_policy_application(
+            layer_id=self.layer_idx,
+            choice=policy_choice,
         )
         selected_block_ids = selection["selected_block_ids"]
         selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
@@ -2380,6 +2409,16 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
         runtime_state.full_attention.telemetry.require_layer(self.layer_idx).decode_ms_total += float(decode_ms)
         self.adapter.persistent_full_attention_decode_ms_total += float(decode_ms)
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_beta_upper_by_layer,
+            self.layer_idx,
+            float(certificate["beta_upper"]),
+        )
+        self.adapter._record_layer_timing(
+            self.adapter.persistent_full_attention_delta_upper_by_layer,
+            self.layer_idx,
+            float(certificate["delta_upper"]),
+        )
         self.adapter._record_layer_timing(
             self.adapter.persistent_full_attention_decode_ms_total_by_layer,
             self.layer_idx,
@@ -2570,6 +2609,8 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     decode_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     output_projection_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     persistent_full_attention_decode_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_beta_upper_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
+    persistent_full_attention_delta_upper_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     persistent_append_runtime_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     persistent_linear_attention_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     persistent_linear_update_ms_total_by_layer: dict[int, float] = field(default_factory=dict, init=False, repr=False)
@@ -2578,6 +2619,14 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     hybrid_dotcache_runtime_state: Qwen35HybridDotCacheRuntimeState | None = field(default=None, init=False, repr=False)
     persistent_hybrid_runtime_state: PersistentHybridRuntimeState | None = field(default=None, init=False, repr=False)
     serving_shortlist_heuristic_applied: bool = field(default=False, init=False, repr=False)
+    persistent_shortlist_policy_prompt_family: str | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_loaded_path: str | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_payload: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    persistent_shortlist_policy_applied_count: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_applied_count_by_layer: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_last_config_key_by_layer: dict[int, str] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_last_bucket_by_layer: dict[int, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
+    persistent_shortlist_policy_prefill_prompt_length: int = field(default=0, init=False, repr=False)
     _linear_wrappers: list[PersistentQwen35LinearAttentionBridge] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -2649,13 +2698,89 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.decode_runtime_ms_total_by_layer = {}
         self.output_projection_ms_total_by_layer = {}
         self.persistent_full_attention_decode_ms_total_by_layer = {}
+        self.persistent_full_attention_beta_upper_by_layer = {}
+        self.persistent_full_attention_delta_upper_by_layer = {}
         self.persistent_append_runtime_ms_total_by_layer = {}
         self.persistent_linear_attention_ms_total_by_layer = {}
         self.persistent_linear_update_ms_total_by_layer = {}
+        self.persistent_shortlist_policy_applied_count = 0
+        self.persistent_shortlist_policy_applied_count_by_layer = {}
+        self.persistent_shortlist_policy_last_config_key_by_layer = {}
+        self.persistent_shortlist_policy_last_bucket_by_layer = {}
+        self.persistent_shortlist_policy_prompt_family = None
+        self.persistent_shortlist_policy_loaded_path = None
+        self.persistent_shortlist_policy_payload = None
+        self.persistent_shortlist_policy_prefill_prompt_length = 0
         self.decode_call_count_by_layer = {}
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
         self.persistent_hybrid_runtime_state = None
+
+    def configure_persistent_shortlist_policy_context(
+        self,
+        *,
+        prompt_family: str | None,
+        prompt_length: int,
+    ) -> None:
+        self.persistent_shortlist_policy_prompt_family = None if prompt_family is None else str(prompt_family)
+        self.persistent_shortlist_policy_prefill_prompt_length = max(int(prompt_length), 0)
+
+    def _load_persistent_shortlist_policy_payload(self) -> dict[str, Any] | None:
+        policy_path = self.persistent_serving_config.full_attention_shortlist_policy_path
+        if not policy_path:
+            self.persistent_shortlist_policy_loaded_path = None
+            self.persistent_shortlist_policy_payload = None
+            return None
+        resolved_path = str(Path(policy_path).expanduser().resolve())
+        if (
+            self.persistent_shortlist_policy_payload is not None
+            and self.persistent_shortlist_policy_loaded_path == resolved_path
+        ):
+            return self.persistent_shortlist_policy_payload
+        self.persistent_shortlist_policy_payload = load_persistent_shortlist_policy(resolved_path)
+        self.persistent_shortlist_policy_loaded_path = resolved_path
+        return self.persistent_shortlist_policy_payload
+
+    def resolve_persistent_serving_config_for_layer(
+        self,
+        *,
+        layer_id: int,
+        step_index: int,
+    ) -> tuple[PersistentServingConfig, dict[str, Any] | None]:
+        base_config = self.persistent_serving_config
+        prompt_family = self.persistent_shortlist_policy_prompt_family
+        policy_payload = self._load_persistent_shortlist_policy_payload()
+        if policy_payload is None or not prompt_family:
+            return base_config, None
+        choice = resolve_persistent_shortlist_policy_choice(
+            policy_payload,
+            layer_id=int(layer_id),
+            kv_head_ids=sorted({int(kv_head_id) for kv_head_id in self.q_head_to_kv_head.tolist()}),
+            prompt_family=str(prompt_family),
+            step_index=int(step_index),
+        )
+        if choice is None or not choice.get("config_overrides"):
+            return base_config, choice
+        return replace(base_config, **choice["config_overrides"]), choice
+
+    def record_persistent_shortlist_policy_application(
+        self,
+        *,
+        layer_id: int,
+        choice: dict[str, Any] | None,
+    ) -> None:
+        if choice is None:
+            return
+        self.persistent_shortlist_policy_applied_count += 1
+        self.persistent_shortlist_policy_applied_count_by_layer[int(layer_id)] = (
+            int(self.persistent_shortlist_policy_applied_count_by_layer.get(int(layer_id), 0)) + 1
+        )
+        self.persistent_shortlist_policy_last_config_key_by_layer[int(layer_id)] = str(choice.get("config_key", ""))
+        self.persistent_shortlist_policy_last_bucket_by_layer[int(layer_id)] = {
+            "prompt_family": str(self.persistent_shortlist_policy_prompt_family or ""),
+            "step_bucket": str(choice.get("step_bucket", "")),
+            "matched_buckets": list(choice.get("matched_buckets", [])),
+        }
 
     def set_backend_profiling(self, enabled: bool) -> None:
         self.profile_backend = bool(enabled)
@@ -2685,6 +2810,14 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
                 str(layer_id): float(total)
                 for layer_id, total in sorted(self.persistent_full_attention_decode_ms_total_by_layer.items())
             },
+            "persistent_full_attention_beta_upper_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_beta_upper_by_layer.items())
+            },
+            "persistent_full_attention_delta_upper_by_layer": {
+                str(layer_id): float(total)
+                for layer_id, total in sorted(self.persistent_full_attention_delta_upper_by_layer.items())
+            },
             "persistent_append_runtime_ms_total_by_layer": {
                 str(layer_id): float(total)
                 for layer_id, total in sorted(self.persistent_append_runtime_ms_total_by_layer.items())
@@ -2696,6 +2829,14 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             "persistent_linear_update_ms_total_by_layer": {
                 str(layer_id): float(total)
                 for layer_id, total in sorted(self.persistent_linear_update_ms_total_by_layer.items())
+            },
+            "persistent_shortlist_policy_applied_count_by_layer": {
+                str(layer_id): int(count)
+                for layer_id, count in sorted(self.persistent_shortlist_policy_applied_count_by_layer.items())
+            },
+            "persistent_shortlist_policy_last_config_key_by_layer": {
+                str(layer_id): str(config_key)
+                for layer_id, config_key in sorted(self.persistent_shortlist_policy_last_config_key_by_layer.items())
             },
         }
 
@@ -3421,6 +3562,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         profile_backend: bool = False,
         multimodal_inputs: Any | None = None,
         persistent_serving_config: PersistentServingConfig | None = None,
+        persistent_policy_prompt_family: str | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_attention_subset_persistent_serving_harness(
             self.model,
@@ -3433,6 +3575,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             profile_backend=profile_backend,
             multimodal_inputs=multimodal_inputs,
             persistent_serving_config=persistent_serving_config,
+            persistent_policy_prompt_family=persistent_policy_prompt_family,
         )
 
     def run_attention_subset_dotcache_serving_quality(
@@ -7630,6 +7773,20 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     )
     selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
     selected_block_ids = selection["selected_block_ids"]
+    certificate = runtime.certify_selected_blocks(
+        0,
+        query=query_tensor,
+        query_scale=resolved_query_scale,
+        selected_block_ids=selected_block_ids,
+        upper_bounds=selection["upper_bounds"],
+    )
+    streaming = runtime.stream_decode_layer(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        check_interval=int(effective_config.full_attention_check_interval),
+        stop_on_certificate=False,
+    )
     selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
     full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
     selected_output = runtime.executor.decode_exact(
@@ -7642,6 +7799,11 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     )
     abs_error = (selected_output - full_output).abs()
     rel_error = abs_error / full_output.abs().clamp_min(1e-8)
+    streaming_output = streaming["output"]
+    streaming_abs_error = (streaming_output - full_output).abs()
+    streaming_rel_error = streaming_abs_error / full_output.abs().clamp_min(1e-8)
+    streaming_first_stop = streaming.get("first_certified_stop")
+    streaming_final_checkpoint = streaming.get("final_checkpoint")
     return {
         "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
         "head_dim": int(snapshot.head_dim),
@@ -7658,9 +7820,49 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
         "full_block_count": int(len(runtime.layers[0].block_token_starts)),
         "full_token_count": int(key_history.shape[0]),
+        "beta_upper": float(certificate["beta_upper"]),
+        "delta_upper": float(certificate["delta_upper"]),
+        "residual_mass_upper": float(certificate["residual_mass_upper"]),
+        "residual_value_upper": float(certificate["residual_value_upper"]),
+        "remaining_block_count": int(certificate["remaining_block_count"]),
+        "remaining_token_count": int(certificate["remaining_token_count"]),
+        "max_bound_excess": float(certificate["max_bound_excess"]),
+        "instability_flag": bool(certificate["instability_flag"]),
+        "instability_reasons": [str(reason) for reason in certificate["instability_reasons"]],
+        "certified_can_stop": bool(certificate["certified_can_stop"]),
+        "fallback_recommended": bool(certificate["fallback_recommended"]),
         "max_abs_error": float(abs_error.max().item()),
         "max_rel_error": float(rel_error.max().item()),
+        "streaming_checkpoint_count": int(len(streaming.get("checkpoint_records", []))),
+        "streaming_processed_block_count": int(streaming["processed_block_count"]),
+        "streaming_processed_token_count": int(streaming["processed_token_count"]),
+        "streaming_max_abs_error": float(streaming_abs_error.max().item()),
+        "streaming_max_rel_error": float(streaming_rel_error.max().item()),
+        "streaming_first_certified_stop_block_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_block_count"])
+        ),
+        "streaming_first_certified_stop_token_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_token_count"])
+        ),
+        "streaming_first_certified_stop_beta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["beta_upper"])
+        ),
+        "streaming_first_certified_stop_delta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["delta_upper"])
+        ),
+        "streaming_final_beta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["beta_upper"])
+        ),
+        "streaming_final_delta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
+        ),
         "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
+        "persistent_runtime_region_residual_caps": bool(effective_config.full_attention_region_residual_caps),
+        "persistent_runtime_residual_cluster_count": int(effective_config.full_attention_residual_cluster_count),
+        "persistent_runtime_key_centroid_count": int(effective_config.full_attention_key_centroid_count),
+        "persistent_runtime_refine_top_k": int(effective_config.full_attention_refine_top_k),
+        "persistent_runtime_probe_refine_top_k": int(effective_config.full_attention_probe_refine_top_k),
+        "persistent_runtime_probe_sample_count": int(effective_config.full_attention_probe_sample_count),
         "persistent_runtime_optional_top_k": int(effective_config.full_attention_optional_top_k),
         "persistent_runtime_optional_use_upper_bounds_first": bool(
             effective_config.full_attention_optional_use_upper_bounds_first
@@ -7782,6 +7984,22 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
         )
     )
     selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    certificate = runtime.certify_selected_blocks(
+        0,
+        query=query_tensor,
+        query_scale=resolved_query_scale,
+        selected_block_ids=selection["selected_block_ids"],
+        upper_bounds=selection["upper_bounds"],
+    )
+    streaming = runtime.stream_decode_layer(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        check_interval=int(effective_config.full_attention_check_interval),
+        stop_on_certificate=False,
+    )
+    streaming_first_stop = streaming.get("first_certified_stop")
+    streaming_final_checkpoint = streaming.get("final_checkpoint")
     score_result = runtime.score_blocks(0, query_tensor, query_scale=resolved_query_scale)
     layer_state = runtime.layers[0]
     selected_set = set(int(block_id) for block_id in selection["selected_block_ids"])
@@ -7822,9 +8040,43 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
         "selected_token_count": int(
             sum(int(layer_state.block_token_counts[int(block_id)]) for block_id in selection["selected_block_ids"])
         ),
+        "beta_upper": float(certificate["beta_upper"]),
+        "delta_upper": float(certificate["delta_upper"]),
+        "residual_mass_upper": float(certificate["residual_mass_upper"]),
+        "residual_value_upper": float(certificate["residual_value_upper"]),
+        "max_bound_excess": float(certificate["max_bound_excess"]),
+        "instability_flag": bool(certificate["instability_flag"]),
+        "instability_reasons": [str(reason) for reason in certificate["instability_reasons"]],
+        "certified_can_stop": bool(certificate["certified_can_stop"]),
+        "fallback_recommended": bool(certificate["fallback_recommended"]),
+        "streaming_checkpoint_count": int(len(streaming.get("checkpoint_records", []))),
+        "streaming_first_certified_stop_block_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_block_count"])
+        ),
+        "streaming_first_certified_stop_token_count": (
+            None if streaming_first_stop is None else int(streaming_first_stop["processed_token_count"])
+        ),
+        "streaming_first_certified_stop_beta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["beta_upper"])
+        ),
+        "streaming_first_certified_stop_delta_upper": (
+            None if streaming_first_stop is None else float(streaming_first_stop["delta_upper"])
+        ),
+        "streaming_final_beta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["beta_upper"])
+        ),
+        "streaming_final_delta_upper": (
+            None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
+        ),
         "query_scale": float(resolved_query_scale),
         "config": {
             "block_size": int(resolved_config.block_size),
+            "region_residual_caps": bool(effective_config.full_attention_region_residual_caps),
+            "residual_cluster_count": int(effective_config.full_attention_residual_cluster_count),
+            "key_centroid_count": int(effective_config.full_attention_key_centroid_count),
+            "refine_top_k": int(effective_config.full_attention_refine_top_k),
+            "probe_refine_top_k": int(effective_config.full_attention_probe_refine_top_k),
+            "probe_sample_count": int(effective_config.full_attention_probe_sample_count),
             "enable_priority": bool(resolved_config.enable_priority),
             "sink_block_count": int(resolved_config.full_attention_sink_block_count),
             "recent_block_count": int(resolved_config.full_attention_recent_block_count),
@@ -8768,7 +9020,9 @@ def run_qwen35_attention_subset_persistent_serving_harness(
     profile_backend: bool = False,
     multimodal_inputs: Any | None = None,
     persistent_serving_config: PersistentServingConfig | None = None,
+    persistent_policy_prompt_family: str | None = None,
 ) -> dict[str, Any]:
+    persistent_step_runtime_breakdown: list[dict[str, Any]] = []
     if persistent_serving_config is not None:
         adapter.persistent_serving_config = persistent_serving_config
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
@@ -8789,6 +9043,10 @@ def run_qwen35_attention_subset_persistent_serving_harness(
     dotcache_prefill_cuda_memory = prepared["dotcache_prefill_cuda_memory"]
     runtime_state = prepared["runtime_state"]
     serving_shortlist_heuristic_applied = bool(prepared["serving_shortlist_heuristic_applied"])
+    adapter.configure_persistent_shortlist_policy_context(
+        prompt_family=persistent_policy_prompt_family,
+        prompt_length=int(input_ids.shape[1]),
+    )
     device = input_ids.device
 
     generated_ids: list[int] = []
@@ -8815,6 +9073,35 @@ def run_qwen35_attention_subset_persistent_serving_harness(
                 device=device,
             )
             persistent_decode_ms_total += step_ms
+            persistent_step_runtime_breakdown.append(
+                {
+                    "step_index": int(len(persistent_step_runtime_breakdown)),
+                    "step_ms_total": float(step_ms),
+                    "backend_decode_ms_total": 0.0,
+                    "decode_non_backend_ms_total": 0.0,
+                    "model_step_non_adapter_ms_total": 0.0,
+                    "decode_prepare_pages_with_tail_ms_total": 0.0,
+                    "decode_shortlist_materialization_ms_total": 0.0,
+                    "decode_backend_call_non_backend_ms_total": 0.0,
+                    "decode_non_backend_unattributed_ms_total": 0.0,
+                    "decode_shortlist_candidate_approx_scoring_ms_total": 0.0,
+                    "decode_shortlist_candidate_ranking_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_candidate_index_build_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_sidecar_stack_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_score_compute_ms_total": 0.0,
+                    "decode_shortlist_candidate_builtin_ranking_ms_total": 0.0,
+                    "decode_chunk_budget_dirty_reason_counts": {},
+                    "decode_chunk_budget_override_calls": 0,
+                    "decode_builtin_selector_cache_hits": 0,
+                    "decode_builtin_selector_cache_builds": 0,
+                    "decode_builtin_selector_cache_build_bytes": 0,
+                    "decode_builtin_selector_cache_build_bytes_max": 0,
+                    "python_tracemalloc_current_bytes_delta": 0,
+                    "python_tracemalloc_peak_bytes": 0,
+                    "python_allocated_blocks_delta": 0,
+                    "python_gc_count_delta": [0, 0, 0],
+                }
+            )
             runtime_state.advance(outputs.past_key_values)
             current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             current_attention_mask = torch.cat(
@@ -8911,6 +9198,17 @@ def run_qwen35_attention_subset_persistent_serving_harness(
         "persistent_runtime_enable_linear_attention_persistent_compute": bool(
             adapter.persistent_serving_config.enable_linear_attention_persistent_compute
         ),
+        "persistent_runtime_shortlist_policy_path": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_path is None
+            else str(adapter.persistent_serving_config.full_attention_shortlist_policy_path)
+        ),
+        "persistent_runtime_shortlist_policy_prompt_family": (
+            None
+            if adapter.persistent_shortlist_policy_prompt_family is None
+            else str(adapter.persistent_shortlist_policy_prompt_family)
+        ),
+        "persistent_runtime_shortlist_policy_applied_count": int(adapter.persistent_shortlist_policy_applied_count),
         "serving_shortlist_heuristic_applied": serving_shortlist_heuristic_applied,
     }
     result.update(adapter.per_layer_runtime_summary())
@@ -8924,6 +9222,39 @@ def run_qwen35_attention_subset_persistent_serving_harness(
     result.update(adapter.hybrid_fit_summary())
     result.update(dotcache_prefill_cuda_memory)
     result.update(decode_cuda_memory)
+    result.setdefault("dotcache_step_runtime_breakdown", persistent_step_runtime_breakdown)
+    result.setdefault(
+        "dotcache_backend_decode_ms_total_from_trace",
+        float(sum(float(step["backend_decode_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_decode_non_backend_ms_total",
+        float(sum(float(step["decode_non_backend_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_model_step_non_adapter_ms_total",
+        float(sum(float(step["model_step_non_adapter_ms_total"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault("dotcache_python_allocation_tracing", False)
+    result.setdefault(
+        "dotcache_python_tracemalloc_peak_bytes_max",
+        int(max((int(step["python_tracemalloc_peak_bytes"]) for step in persistent_step_runtime_breakdown), default=0)),
+    )
+    result.setdefault(
+        "dotcache_python_tracemalloc_current_bytes_delta_total",
+        int(sum(int(step["python_tracemalloc_current_bytes_delta"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_python_allocated_blocks_delta_total",
+        int(sum(int(step["python_allocated_blocks_delta"]) for step in persistent_step_runtime_breakdown)),
+    )
+    result.setdefault(
+        "dotcache_python_gc_count_delta_total",
+        [
+            int(sum(int(step["python_gc_count_delta"][idx]) for step in persistent_step_runtime_breakdown))
+            for idx in range(3)
+        ],
+    )
     if profile_backend:
         result["decode_backend_trace"] = adapter.decode_backend_trace.to_dict()
     return result
