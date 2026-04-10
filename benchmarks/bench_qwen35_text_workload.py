@@ -297,6 +297,9 @@ def _run_workload_pass(harness: Qwen35TextHarness, args: argparse.Namespace) -> 
     if args.total_sessions > 1:
         run_decode_round()
 
+    if args.wave_size <= 0:
+        raise ValueError("--wave-size must be positive")
+
     next_logical = 1
     wave_index = 1
     while next_logical < args.total_sessions:

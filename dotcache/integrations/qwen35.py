@@ -3061,6 +3061,7 @@ class Qwen35TextHarness:
         input_ids=None,
         attention_mask=None,
         max_new_tokens: int = 8,
+        stop_sequences: tuple[str, ...] = (),
         multimodal_inputs: Any | None = None,
     ) -> dict[str, Any]:
         return run_qwen35_text_generation_harness(
@@ -3070,6 +3071,7 @@ class Qwen35TextHarness:
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
             tokenizer=self.tokenizer,
             multimodal_inputs=multimodal_inputs,
         )
@@ -3553,6 +3555,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
         input_ids=None,
         attention_mask=None,
         decode_steps: int = 4,
+        stop_sequences: tuple[str, ...] = (),
         profile_backend: bool = False,
         trace_python_allocations: bool = False,
         multimodal_inputs: Any | None = None,
@@ -3565,6 +3568,7 @@ class Qwen35AttentionSubsetDotCacheHarness:
             attention_mask=attention_mask,
             tokenizer=self.tokenizer,
             decode_steps=decode_steps,
+            stop_sequences=stop_sequences,
             profile_backend=profile_backend,
             trace_python_allocations=trace_python_allocations,
             multimodal_inputs=multimodal_inputs,
