@@ -325,6 +325,177 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel(
     out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel_k4s3(
+    int batch_size,
+    int conv_dim,
+    int seq_len,
+    int num_heads,
+    const T* mixed_qkv,
+    const T* prev_state,
+    const T* weights,
+    const T* a,
+    const T* dt_bias,
+    const T* a_log_exp,
+    T* out
+) {
+    const size_t out_width = static_cast<size_t>(conv_dim) + static_cast<size_t>(num_heads);
+    const size_t tid = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
+    const size_t output_elems =
+        static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) * out_width;
+    if (tid >= output_elems) {
+        return;
+    }
+
+    const size_t b = tid / (static_cast<size_t>(seq_len) * out_width);
+    const size_t rem = tid - b * static_cast<size_t>(seq_len) * out_width;
+    const size_t t = rem / out_width;
+    const size_t c = rem - t * out_width;
+
+    if (c < static_cast<size_t>(conv_dim)) {
+        const size_t mixed_b_offset =
+            b * static_cast<size_t>(conv_dim) * static_cast<size_t>(seq_len);
+        const size_t mixed_c_offset = mixed_b_offset + c * static_cast<size_t>(seq_len);
+        const size_t state_b_offset =
+            b * static_cast<size_t>(conv_dim) * 3u;
+        const size_t state_c_offset = state_b_offset + c * 3u;
+        const size_t weight_offset = c * 4u;
+
+        const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+        const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+        const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+        const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+
+        const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + t]);
+        float x2;
+        float x1;
+        float x0;
+        if (t >= 3) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 1)]);
+            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 2)]);
+            x0 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 3)]);
+        } else if (t == 2) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+        } else if (t == 1) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+        } else {
+            x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+        }
+
+        float acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
+        const float silu = acc / (1.0f + expf(-acc));
+        out[tid] = dotcache_qwen35_from_float<T>(silu);
+        return;
+    }
+
+    const size_t head = c - static_cast<size_t>(conv_dim);
+    const size_t a_base =
+        b * static_cast<size_t>(seq_len) * static_cast<size_t>(num_heads) +
+        t * static_cast<size_t>(num_heads);
+    const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
+    const float bias = dotcache_qwen35_to_float(dt_bias[head]);
+    const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
+    const float softplus = log1pf(expf(a_val + bias));
+    out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_linear_stateful_conv_value_decay_with_state_kernel_k4s3(
+    int batch_size,
+    int conv_dim,
+    int seq_len,
+    int num_heads,
+    const T* mixed_qkv,
+    const T* prev_state,
+    const T* weights,
+    const T* a,
+    const T* dt_bias,
+    const T* a_log_exp,
+    T* out
+) {
+    const size_t out_width = static_cast<size_t>(conv_dim) + static_cast<size_t>(num_heads);
+    const size_t packed_per_batch = static_cast<size_t>(seq_len) * out_width;
+    const size_t state_per_batch = static_cast<size_t>(conv_dim) * 3u;
+    const size_t total_per_batch = packed_per_batch + state_per_batch;
+    const size_t tid = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
+    const size_t total_elems = static_cast<size_t>(batch_size) * total_per_batch;
+    if (tid >= total_elems) {
+        return;
+    }
+
+    const size_t b = tid / total_per_batch;
+    const size_t batch_offset = tid - b * total_per_batch;
+    const size_t mixed_b_offset =
+        b * static_cast<size_t>(conv_dim) * static_cast<size_t>(seq_len);
+    const size_t state_b_offset = b * static_cast<size_t>(conv_dim) * 3u;
+
+    if (batch_offset >= packed_per_batch) {
+        const size_t state_idx = batch_offset - packed_per_batch;
+        const size_t c = state_idx / 3u;
+        const size_t s = state_idx - c * 3u;
+        const size_t mixed_c_offset = mixed_b_offset + c * static_cast<size_t>(seq_len);
+        out[tid] = mixed_qkv[mixed_c_offset + static_cast<size_t>(seq_len - 3) + s];
+        return;
+    }
+
+    const size_t t = batch_offset / out_width;
+    const size_t c = batch_offset - t * out_width;
+
+    if (c < static_cast<size_t>(conv_dim)) {
+        const size_t mixed_c_offset = mixed_b_offset + c * static_cast<size_t>(seq_len);
+        const size_t state_c_offset = state_b_offset + c * 3u;
+        const size_t weight_offset = c * 4u;
+
+        const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+        const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+        const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+        const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+
+        const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + t]);
+        float x2;
+        float x1;
+        float x0;
+        if (t >= 3) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 1)]);
+            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 2)]);
+            x0 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 3)]);
+        } else if (t == 2) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+        } else if (t == 1) {
+            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+        } else {
+            x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+        }
+
+        const float acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
+        const float silu = acc / (1.0f + expf(-acc));
+        out[tid] = dotcache_qwen35_from_float<T>(silu);
+        return;
+    }
+
+    const size_t head = c - static_cast<size_t>(conv_dim);
+    const size_t a_base =
+        b * static_cast<size_t>(seq_len) * static_cast<size_t>(num_heads) +
+        t * static_cast<size_t>(num_heads);
+    const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
+    const float bias = dotcache_qwen35_to_float(dt_bias[head]);
+    const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
+    const float softplus = log1pf(expf(a_val + bias));
+    out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
+}
+
 template <typename T, int MAX_K = 256>
 __global__ void dotcache_qwen35_linear_decode_prepare_kernel(
     int batch_size,

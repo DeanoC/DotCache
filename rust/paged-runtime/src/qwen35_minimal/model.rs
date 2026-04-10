@@ -2366,6 +2366,155 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LinearStatefulConvValueDecayWithState {
+    batch_size: usize,
+    conv_dim: usize,
+    seq_len: usize,
+    state_len: usize,
+    kernel_size: usize,
+    num_heads: usize,
+}
+
+impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
+    fn name(&self) -> &'static str {
+        "linear-stateful-conv-value-decay-with-state"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("linear-stateful-conv-value-decay-with-state has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        mixed_qkv: &candle::HipStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_state: &candle::HipStorage,
+        prev_state_layout: &candle::Layout,
+        weights: &candle::HipStorage,
+        weights_layout: &candle::Layout,
+        a: &candle::HipStorage,
+        a_layout: &candle::Layout,
+        dt_bias: &candle::HipStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::HipStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("linear-stateful-conv-value-decay-with-state requires contiguous inputs")
+        }
+
+        let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+        let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+        let (weights_conv_dim, kernel_size) = weights_layout.shape().dims2()?;
+        let (a_batch, a_seq_len, a_heads) = a_layout.shape().dims3()?;
+        let dt_bias_elems = dt_bias_layout.shape().elem_count();
+        let a_log_exp_elems = a_log_exp_layout.shape().elem_count();
+        if batch_size != self.batch_size
+            || conv_dim != self.conv_dim
+            || seq_len != self.seq_len
+            || state_batch != self.batch_size
+            || state_conv_dim != self.conv_dim
+            || state_len != self.state_len
+            || weights_conv_dim != self.conv_dim
+            || kernel_size != self.kernel_size
+            || a_batch != self.batch_size
+            || a_seq_len != self.seq_len
+            || a_heads != self.num_heads
+            || dt_bias_elems != self.num_heads
+            || a_log_exp_elems != self.num_heads
+        {
+            candle::bail!(
+                "linear-stateful-conv-value-decay-with-state shape mismatch mixed_qkv={:?} prev_state={:?} weights={:?} a={:?} dt_bias={:?} a_log_exp={:?} expected=({}, {}, {}, {}, {}, {})",
+                mixed_qkv_layout.shape().dims(),
+                prev_state_layout.shape().dims(),
+                weights_layout.shape().dims(),
+                a_layout.shape().dims(),
+                dt_bias_layout.shape().dims(),
+                a_log_exp_layout.shape().dims(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size,
+                self.num_heads
+            )
+        }
+        if mixed_qkv.dtype() != prev_state.dtype()
+            || mixed_qkv.dtype() != weights.dtype()
+            || mixed_qkv.dtype() != a.dtype()
+            || mixed_qkv.dtype() != dt_bias.dtype()
+            || mixed_qkv.dtype() != a_log_exp.dtype()
+        {
+            candle::bail!(
+                "linear-stateful-conv-value-decay-with-state requires matching dtypes, got mixed_qkv={:?} prev_state={:?} weights={:?} a={:?} dt_bias={:?} a_log_exp={:?}",
+                mixed_qkv.dtype(),
+                prev_state.dtype(),
+                weights.dtype(),
+                a.dtype(),
+                dt_bias.dtype(),
+                a_log_exp.dtype()
+            )
+        }
+
+        let device = mixed_qkv.device().clone();
+        let flat_width =
+            self.seq_len * (self.conv_dim + self.num_heads) + self.conv_dim * self.state_len;
+        let output_shape = candle::Shape::from((self.batch_size, flat_width));
+        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
+                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                device.ordinal(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size,
+                self.num_heads,
+                mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                    as *const c_void,
+                prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                    as *const c_void,
+                weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+                a.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+                dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
+                a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, output_shape))
+    }
+}
+
 fn linear_stateful_conv_value_decay_hip(
     mixed_qkv: &Tensor,
     prev_state: &Tensor,
@@ -2405,6 +2554,55 @@ fn linear_stateful_conv_value_decay_hip(
         &dt_bias,
         &a_log_exp,
         &LinearStatefulConvValueDecay {
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+        },
+    )
+}
+
+fn linear_stateful_conv_value_decay_with_state_hip(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a = a.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
+    let (a_batch, a_seq_len, num_heads) = a.dims3()?;
+    if state_batch != batch_size || state_conv_dim != conv_dim {
+        candle::bail!(
+            "linear-stateful-conv-value-decay-with-state mismatch: mixed_qkv={:?} prev_state={:?}",
+            mixed_qkv.dims(),
+            prev_state.dims()
+        )
+    }
+    if a_batch != batch_size || a_seq_len != seq_len {
+        candle::bail!(
+            "linear-stateful-conv-value-decay-with-state a mismatch: mixed_qkv={:?} a={:?}",
+            mixed_qkv.dims(),
+            a.dims()
+        )
+    }
+    mixed_qkv.apply_op6_no_bwd(
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        &LinearStatefulConvValueDecayWithState {
             batch_size,
             conv_dim,
             seq_len,
@@ -9221,7 +9419,7 @@ impl GatedDeltaNet {
                     mixed_qkv.device(),
                 )?,
             };
-            let packed = linear_stateful_conv_value_decay_hip(
+            let fused = linear_stateful_conv_value_decay_with_state_hip(
                 &mixed_qkv.contiguous()?,
                 &prev_state,
                 &weights,
@@ -9230,8 +9428,16 @@ impl GatedDeltaNet {
                 &a_log_exp,
                 self.conv_kernel_size,
             )?;
-            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
             let conv_dim = self.conv_dim();
+            let out_width = conv_dim + self.num_v_heads;
+            let packed = fused
+                .narrow(1, 0, seq_len * out_width)?
+                .reshape((batch_size, seq_len, out_width))?;
+            self.conv_state = Some(
+                fused.narrow(1, seq_len * out_width, conv_dim * state_len)?
+                    .reshape((batch_size, conv_dim, state_len))?
+                    .contiguous()?,
+            );
             let mixed_qkv = packed.narrow(D::Minus1, 0, conv_dim)?;
             let g = packed.narrow(D::Minus1, conv_dim, self.num_v_heads)?;
             let g = if g.dtype() == compute_dtype {
@@ -11068,6 +11274,7 @@ mod tests {
         }
         Ok((mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, expected))
     }
+
 
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_linear_decode_step_sample(

@@ -157,7 +157,6 @@ int linear_stateful_conv_device(
         static_cast<const T*>(weights),
         static_cast<T*>(out));
     if (hipGetLastError() != hipSuccess) return 62;
-    if (hipDeviceSynchronize() != hipSuccess) return 63;
     return 0;
 }
 
@@ -184,27 +183,95 @@ int linear_stateful_conv_value_decay_device(
     const size_t out_elems =
         static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) * out_width;
     const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
-    hipLaunchKernelGGL(
-        HIP_KERNEL_NAME(dotcache_qwen35_linear_stateful_conv_value_decay_kernel<T>),
-        dim3(grid),
-        dim3(block),
-        0,
-        0,
-        batch_size,
-        conv_dim,
-        seq_len,
-        state_len,
-        kernel_size,
-        num_heads,
-        static_cast<const T*>(mixed_qkv),
-        static_cast<const T*>(prev_state),
-        static_cast<const T*>(weights),
-        static_cast<const T*>(a),
-        static_cast<const T*>(dt_bias),
-        static_cast<const T*>(a_log_exp),
-        static_cast<T*>(out));
+    if (kernel_size == 4 && state_len == 3) {
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_linear_stateful_conv_value_decay_kernel_k4s3<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_size,
+            conv_dim,
+            seq_len,
+            num_heads,
+            static_cast<const T*>(mixed_qkv),
+            static_cast<const T*>(prev_state),
+            static_cast<const T*>(weights),
+            static_cast<const T*>(a),
+            static_cast<const T*>(dt_bias),
+            static_cast<const T*>(a_log_exp),
+            static_cast<T*>(out));
+    } else {
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_linear_stateful_conv_value_decay_kernel<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            static_cast<const T*>(mixed_qkv),
+            static_cast<const T*>(prev_state),
+            static_cast<const T*>(weights),
+            static_cast<const T*>(a),
+            static_cast<const T*>(dt_bias),
+            static_cast<const T*>(a_log_exp),
+            static_cast<T*>(out));
+    }
     if (hipGetLastError() != hipSuccess) return 64;
-    if (hipDeviceSynchronize() != hipSuccess) return 65;
+    return 0;
+}
+
+template <typename T>
+int linear_stateful_conv_value_decay_with_state_device(
+    int device_ordinal,
+    int batch_size,
+    int conv_dim,
+    int seq_len,
+    int state_len,
+    int kernel_size,
+    int num_heads,
+    const void* mixed_qkv,
+    const void* prev_state,
+    const void* weights,
+    const void* a,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const size_t out_width = static_cast<size_t>(conv_dim) + static_cast<size_t>(num_heads);
+    const size_t total_per_batch = static_cast<size_t>(seq_len) * out_width +
+        static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
+    const size_t out_elems = static_cast<size_t>(batch_size) * total_per_batch;
+    const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
+    if (kernel_size == 4 && state_len == 3) {
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_linear_stateful_conv_value_decay_with_state_kernel_k4s3<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_size,
+            conv_dim,
+            seq_len,
+            num_heads,
+            static_cast<const T*>(mixed_qkv),
+            static_cast<const T*>(prev_state),
+            static_cast<const T*>(weights),
+            static_cast<const T*>(a),
+            static_cast<const T*>(dt_bias),
+            static_cast<const T*>(a_log_exp),
+            static_cast<T*>(out));
+    } else {
+        return 66;
+    }
+    if (hipGetLastError() != hipSuccess) return 67;
     return 0;
 }
 
@@ -1308,6 +1375,76 @@ extern "C" int dotcache_qwen35_hip_linear_stateful_conv_value_decay(
             out);
     default:
         return 67;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_size,
+    size_t conv_dim,
+    size_t seq_len,
+    size_t state_len,
+    size_t kernel_size,
+    size_t num_heads,
+    const void* mixed_qkv,
+    const void* prev_state,
+    const void* weights,
+    const void* a,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return linear_stateful_conv_value_decay_with_state_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(seq_len),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(num_heads),
+            mixed_qkv,
+            prev_state,
+            weights,
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 1:
+        return linear_stateful_conv_value_decay_with_state_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(seq_len),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(num_heads),
+            mixed_qkv,
+            prev_state,
+            weights,
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 2:
+        return linear_stateful_conv_value_decay_with_state_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(seq_len),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(num_heads),
+            mixed_qkv,
+            prev_state,
+            weights,
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    default:
+        return 68;
     }
 }
 
