@@ -3424,8 +3424,8 @@ def run_qwen35_text_generation_harness(
         "decode_steps": int(max_new_tokens),
         "prefill_ms": float(prefill_ms),
         "dense_decode_ms_per_step": (
-            float(dense_decode_ms_total / max(len(generated_ids), 1))
-            if generated_ids
+            float(dense_decode_ms_total / max(len(generated_ids) - 1, 1))
+            if len(generated_ids) > 1
             else 0.0
         ),
         "dense_generated_ids": list(generated_ids),
@@ -7874,7 +7874,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
             else None
         ),
-        stop_sequences=(),
+        stop_sequences=stop_sequences,
     )
 
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
