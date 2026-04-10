@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotcache.integrations.qwen35 import (
     PersistentServingConfig,
+    _apply_persistent_shortlist_config_overrides,
     run_qwen35_persistent_full_attention_snapshot_comparison,
 )
 from dotcache.persistent_predictor import (
@@ -66,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history-mode", default="none", choices=["none", "mean", "ema"])
     parser.add_argument("--history-decay", type=float, default=0.5)
     parser.add_argument("--shortlist-policy-path", default=None)
+    parser.add_argument("--persistent-shortlist-policy-mode", default="replace", choices=["replace", "assist"])
     parser.add_argument("--persistent-shortlist-policy-min-step-index", type=int, default=None)
     parser.add_argument("--persistent-shortlist-policy-max-step-index", type=int, default=None)
     parser.add_argument("--output-json", default=None)
@@ -263,7 +265,7 @@ def _resolve_policy_driven_config(
     )
     if choice is None or not choice.get("config_overrides"):
         return base_config, choice
-    return replace(base_config, **choice["config_overrides"]), choice
+    return _apply_persistent_shortlist_config_overrides(base_config, choice), choice
 
 
 def main() -> None:
@@ -320,6 +322,7 @@ def main() -> None:
         full_attention_priority_recency_weight=float(args.priority_recency_weight),
         full_attention_priority_recency_decay_blocks=float(args.priority_recency_decay_blocks),
         full_attention_priority_value_norm_weight=float(args.priority_value_norm_weight),
+        full_attention_shortlist_policy_mode=str(args.persistent_shortlist_policy_mode),
         full_attention_shortlist_policy_min_step_index=(
             None
             if args.persistent_shortlist_policy_min_step_index is None
@@ -449,6 +452,7 @@ def main() -> None:
             "prev_attention_floor": float(args.prev_attention_floor),
             "history_mode": str(args.history_mode),
             "history_decay": float(args.history_decay),
+            "shortlist_policy_mode": str(config.full_attention_shortlist_policy_mode),
             "shortlist_policy_min_step_index": (
                 None
                 if config.full_attention_shortlist_policy_min_step_index is None

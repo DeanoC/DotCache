@@ -58,6 +58,7 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_text_loss_harness,
     summarize_qwen35_dotcache_fit,
     _advance_attention_subset_cache_placeholder,
+    _apply_persistent_shortlist_config_overrides,
     _extract_attention_subset_prefill_tensors,
     _configure_qwen35_linear_attention_runtime,
     _replace_attention_subset_cache_with_placeholders,
@@ -2293,6 +2294,34 @@ def test_qwen35_attention_subset_persistent_serving_harness_gates_shortlist_poli
     assert bootstrap_config.full_attention_optional_top_k == 96
     assert mid_choice is not None
     assert mid_config.full_attention_optional_top_k == 128
+
+
+def test_apply_persistent_shortlist_config_overrides_assist_preserves_heuristics() -> None:
+    base_config = PersistentServingConfig(
+        full_attention_shortlist_policy_mode="assist",
+        full_attention_optional_top_k=128,
+        full_attention_optional_far_anchor_quota=4,
+        full_attention_optional_far_anchor_priority_margin=0.25,
+        full_attention_optional_diversity_weight=0.5,
+        full_attention_optional_diversity_radius=4,
+        full_attention_optional_diversity_min_history_count=1,
+    )
+    choice = {
+        "config_overrides": {
+            "full_attention_optional_top_k": 96,
+            "full_attention_optional_far_anchor_quota": 0,
+            "full_attention_optional_diversity_weight": 0.0,
+            "full_attention_optional_diversity_radius": 0,
+            "full_attention_optional_diversity_min_history_count": 0,
+        }
+    }
+    effective_config = _apply_persistent_shortlist_config_overrides(base_config, choice)
+    assert effective_config.full_attention_optional_top_k == 96
+    assert effective_config.full_attention_optional_far_anchor_quota == 4
+    assert effective_config.full_attention_optional_far_anchor_priority_margin == 0.25
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
+    assert effective_config.full_attention_optional_diversity_radius == 4
+    assert effective_config.full_attention_optional_diversity_min_history_count == 1
 
 
 def test_decode_input_id_sequence_flattens_decode_steps() -> None:

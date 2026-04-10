@@ -269,3 +269,58 @@ def test_resolve_policy_driven_config_respects_shortlist_policy_step_gate() -> N
     assert bootstrap_config.full_attention_optional_top_k == 128
     assert mid_choice is not None
     assert mid_config.full_attention_optional_top_k == 96
+
+
+def test_resolve_policy_driven_config_assist_mode_preserves_diversity() -> None:
+    base_config = PersistentServingConfig(
+        enable_priority=True,
+        full_attention_shortlist_policy_mode="assist",
+        full_attention_optional_top_k=128,
+        full_attention_optional_diversity_weight=0.5,
+        full_attention_optional_diversity_radius=4,
+    )
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "paper",
+                    "step_bucket": "mid",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 96,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            }
+        ],
+    }
+    effective_config, choice = _resolve_policy_driven_config(
+        base_config=base_config,
+        shortlist_policy_payload=policy_payload,
+        case_tag="paper",
+        layer_id=3,
+        kv_head_id=1,
+        step_index=1,
+    )
+    assert choice is not None
+    assert effective_config.full_attention_optional_top_k == 96
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
+    assert effective_config.full_attention_optional_diversity_radius == 4

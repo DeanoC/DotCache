@@ -2587,6 +2587,45 @@ class Qwen35AttentionSubsetModelAdapter(Qwen35TextModelAdapter):
         return self.hybrid_fit_summary()["attention_candidate_layer_ids"]
 
 
+_PERSISTENT_SHORTLIST_ASSIST_FIELDS = frozenset(
+    {
+        "full_attention_recent_block_count",
+        "full_attention_mandatory_recent_block_count",
+        "full_attention_optional_top_k",
+        "full_attention_optional_upper_bound_quota",
+        "full_attention_optional_far_quota",
+        "full_attention_optional_mid_quota",
+        "full_attention_optional_near_quota",
+        "full_attention_key_centroid_count",
+        "full_attention_probe_refine_top_k",
+        "full_attention_probe_sample_count",
+        "full_attention_region_residual_caps",
+        "full_attention_residual_cluster_count",
+    }
+)
+
+
+def _apply_persistent_shortlist_config_overrides(
+    base_config: PersistentServingConfig,
+    choice: dict[str, Any] | None,
+) -> PersistentServingConfig:
+    if choice is None:
+        return base_config
+    config_overrides = dict(choice.get("config_overrides", {}))
+    if not config_overrides:
+        return base_config
+    mode = str(base_config.full_attention_shortlist_policy_mode or "replace").strip().lower()
+    if mode == "assist":
+        config_overrides = {
+            key: value
+            for key, value in config_overrides.items()
+            if key in _PERSISTENT_SHORTLIST_ASSIST_FIELDS
+        }
+        if not config_overrides:
+            return base_config
+    return replace(base_config, **config_overrides)
+
+
 @dataclass(slots=True)
 class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapter):
     dotcache_config: DotCacheConfig = field(default_factory=lambda: DotCacheConfig(head_dim=256, group_size=32, bits_k=4, bits_v=4, tokens_per_page=16))
@@ -2765,9 +2804,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             prompt_family=str(prompt_family),
             step_index=int(step_index),
         )
-        if choice is None or not choice.get("config_overrides"):
-            return base_config, choice
-        return replace(base_config, **choice["config_overrides"]), choice
+        return _apply_persistent_shortlist_config_overrides(base_config, choice), choice
 
     def record_persistent_shortlist_policy_application(
         self,
@@ -9208,6 +9245,9 @@ def run_qwen35_attention_subset_persistent_serving_harness(
             None
             if adapter.persistent_serving_config.full_attention_shortlist_policy_path is None
             else str(adapter.persistent_serving_config.full_attention_shortlist_policy_path)
+        ),
+        "persistent_runtime_shortlist_policy_mode": str(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_mode
         ),
         "persistent_runtime_shortlist_policy_min_step_index": (
             None
