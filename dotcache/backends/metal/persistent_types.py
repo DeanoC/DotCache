@@ -15,6 +15,8 @@ class PersistentServingConfig:
     enable_compression: bool = False
     fp32_accumulation: bool = True
     full_attention_shortlist_policy_path: str | None = None
+    full_attention_shortlist_policy_min_step_index: int | None = None
+    full_attention_shortlist_policy_max_step_index: int | None = None
     full_attention_check_interval: int = 1
     full_attention_mass_eps: float = 1e-3
     full_attention_value_eps: float = 1e-3

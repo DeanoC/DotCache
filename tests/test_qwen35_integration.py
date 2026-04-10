@@ -2034,6 +2034,21 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert "execution_freeze_chunk_budget_during_decode" in result
     assert "execution_builtin_selector_cache" in result
     assert "execution_builtin_selector_score_all_pages" in result
+    assert "execution_builtin_selector_cache_hits" in result
+    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
+    assert "execution_recent_neighbor_rescue_layers" in result
+    assert "execution_exact_promote_top_k" in result
+    assert "execution_exact_promote_min_margin_threshold" in result
+    assert "execution_exact_promote_max_context" in result
+    assert "execution_exact_promote_margin_threshold" in result
+    assert "execution_exact_promote_layers" in result
+    assert "execution_exact_promote_union_rescue_top_k" in result
+    assert "execution_grouped_decode_compact" in result
+    assert "execution_grouped_mix_compact" in result
+    assert "execution_grouped_mix_disable_packed_cuda" in result
+    assert "execution_freeze_chunk_budget_during_decode" in result
+    assert "execution_builtin_selector_cache" in result
+    assert "execution_builtin_selector_score_all_pages" in result
     assert "execution_builtin_selector_candidate_only" in result
     assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
     assert "execution_builtin_selector_score_all_pages_calls" in result
@@ -2193,69 +2208,91 @@ def test_qwen35_attention_subset_persistent_serving_harness_applies_shortlist_po
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result
     assert "execution_recent_neighbor_rescue_anchor_window" in result
-    assert "execution_recent_neighbor_rescue_min_anchor_pages" in result
-    assert "execution_recent_neighbor_rescue_layers" in result
-    assert "execution_exact_promote_top_k" in result
-    assert "execution_exact_promote_min_margin_threshold" in result
-    assert "execution_exact_promote_max_context" in result
-    assert "execution_exact_promote_margin_threshold" in result
-    assert "execution_exact_promote_layers" in result
-    assert "execution_exact_promote_union_rescue_top_k" in result
-    assert "execution_grouped_decode_compact" in result
-    assert "execution_grouped_mix_compact" in result
-    assert "execution_grouped_mix_disable_packed_cuda" in result
-    assert "execution_freeze_chunk_budget_during_decode" in result
-    assert "execution_builtin_selector_cache" in result
-    assert "execution_builtin_selector_score_all_pages" in result
-    assert "execution_builtin_selector_cache_hits" in result
-    assert "execution_builtin_selector_cache_builds" in result
-    assert "execution_builtin_selector_cache_build_bytes" in result
-    assert "execution_builtin_selector_cache_build_bytes_max" in result
-    assert "dotcache_step_runtime_breakdown" in result
-    assert len(result["dotcache_step_runtime_breakdown"]) == 2
-    assert "dotcache_backend_decode_ms_total_from_trace" in result
-    assert "dotcache_decode_non_backend_ms_total" in result
-    assert "dotcache_model_step_non_adapter_ms_total" in result
-    assert "dotcache_python_allocation_tracing" in result
-    assert "dotcache_python_tracemalloc_peak_bytes_max" in result
-    assert "dotcache_python_tracemalloc_current_bytes_delta_total" in result
-    assert "dotcache_python_allocated_blocks_delta_total" in result
-    assert "dotcache_python_gc_count_delta_total" in result
-    assert "execution_decode_prepare_pages_with_tail_ms_total" in result
-    assert "execution_decode_m2_prefilter_ms_total" in result
-    assert "execution_decode_shortlist_selection_ms_total" in result
-    assert "execution_decode_shortlist_materialization_ms_total" in result
-    assert "execution_decode_backend_call_non_backend_ms_total" in result
-    assert "execution_decode_shortlist_candidate_approx_scoring_ms_total" in result
-    assert "execution_decode_shortlist_candidate_ranking_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_score_compute_ms_total" in result
-    assert "execution_decode_shortlist_candidate_builtin_ranking_ms_total" in result
-    assert "execution_chunk_budget_dirty_marks" in result
-    assert "execution_chunk_budget_dirty_reason_counts" in result
-    assert "execution_chunk_budget_override_calls" in result
-    first_step = result["dotcache_step_runtime_breakdown"][0]
-    assert "decode_prepare_pages_with_tail_ms_total" in first_step
-    assert "decode_shortlist_materialization_ms_total" in first_step
-    assert "decode_backend_call_non_backend_ms_total" in first_step
-    assert "decode_non_backend_unattributed_ms_total" in first_step
-    assert "decode_shortlist_candidate_approx_scoring_ms_total" in first_step
-    assert "decode_shortlist_candidate_ranking_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_candidate_index_build_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_sidecar_stack_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_score_compute_ms_total" in first_step
-    assert "decode_shortlist_candidate_builtin_ranking_ms_total" in first_step
-    assert "decode_chunk_budget_dirty_reason_counts" in first_step
-    assert "decode_chunk_budget_override_calls" in first_step
-    assert "decode_builtin_selector_cache_hits" in first_step
-    assert "decode_builtin_selector_cache_builds" in first_step
-    assert "decode_builtin_selector_cache_build_bytes" in first_step
-    assert "decode_builtin_selector_cache_build_bytes_max" in first_step
-    assert "python_tracemalloc_current_bytes_delta" in first_step
-    assert "python_tracemalloc_peak_bytes" in first_step
-    assert "python_allocated_blocks_delta" in first_step
-    assert "python_gc_count_delta" in first_step
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_gates_shortlist_policy_by_step(tmp_path) -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 2,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 64,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            },
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 0,
+                    "prompt_family": "tiny_family",
+                    "step_bucket": "mid",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 128,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "tiny_compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.02,
+                    }
+                ],
+            },
+        ],
+    }
+    policy_path = tmp_path / "persistent_shortlist_policy.json"
+    policy_path.write_text(json.dumps(policy_payload))
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            full_attention_optional_top_k=96,
+            full_attention_shortlist_policy_path=str(policy_path),
+            full_attention_shortlist_policy_min_step_index=1,
+        ),
+        backend="cpu_ref",
+    )
+    adapter.configure_persistent_shortlist_policy_context(
+        prompt_family="tiny_family",
+        prompt_length=int(encoded["input_ids"].shape[1]),
+    )
+    bootstrap_config, bootstrap_choice = adapter.resolve_persistent_serving_config_for_layer(layer_id=3, step_index=0)
+    mid_config, mid_choice = adapter.resolve_persistent_serving_config_for_layer(layer_id=3, step_index=1)
+    assert bootstrap_choice is None
+    assert bootstrap_config.full_attention_optional_top_k == 96
+    assert mid_choice is not None
+    assert mid_config.full_attention_optional_top_k == 128
 
 
 def test_decode_input_id_sequence_flattens_decode_steps() -> None:

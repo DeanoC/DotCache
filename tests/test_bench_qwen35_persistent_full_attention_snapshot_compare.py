@@ -133,8 +133,31 @@ def test_resolve_policy_driven_config_applies_matching_bucket() -> None:
     )
     policy_payload = {
         "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
-        "group_count": 1,
+        "group_count": 2,
         "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "paper",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {"persistent_runtime_optional_top_k": 64},
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            },
             {
                 "bucket": {
                     "layer_id": 3,
@@ -189,3 +212,60 @@ def test_resolve_policy_driven_config_applies_matching_bucket() -> None:
     assert choice is not None
     assert effective_config.full_attention_optional_far_anchor_quota == 4
     assert effective_config.full_attention_optional_far_anchor_priority_margin == 0.25
+
+
+def test_resolve_policy_driven_config_respects_shortlist_policy_step_gate() -> None:
+    base_config = PersistentServingConfig(
+        enable_priority=True,
+        full_attention_optional_top_k=128,
+        full_attention_shortlist_policy_min_step_index=1,
+    )
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "paper",
+                    "step_bucket": "mid",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {"persistent_runtime_optional_top_k": 96},
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            }
+        ],
+    }
+    bootstrap_config, bootstrap_choice = _resolve_policy_driven_config(
+        base_config=base_config,
+        shortlist_policy_payload=policy_payload,
+        case_tag="paper",
+        layer_id=3,
+        kv_head_id=1,
+        step_index=0,
+    )
+    mid_config, mid_choice = _resolve_policy_driven_config(
+        base_config=base_config,
+        shortlist_policy_payload=policy_payload,
+        case_tag="paper",
+        layer_id=3,
+        kv_head_id=1,
+        step_index=1,
+    )
+    assert bootstrap_choice is None
+    assert bootstrap_config.full_attention_optional_top_k == 128
+    assert mid_choice is not None
+    assert mid_config.full_attention_optional_top_k == 96

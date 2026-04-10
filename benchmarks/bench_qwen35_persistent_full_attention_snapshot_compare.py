@@ -66,6 +66,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history-mode", default="none", choices=["none", "mean", "ema"])
     parser.add_argument("--history-decay", type=float, default=0.5)
     parser.add_argument("--shortlist-policy-path", default=None)
+    parser.add_argument("--persistent-shortlist-policy-min-step-index", type=int, default=None)
+    parser.add_argument("--persistent-shortlist-policy-max-step-index", type=int, default=None)
     parser.add_argument("--output-json", default=None)
     return parser.parse_args()
 
@@ -246,6 +248,12 @@ def _resolve_policy_driven_config(
 ) -> tuple[PersistentServingConfig, dict[str, object] | None]:
     if shortlist_policy_payload is None:
         return base_config, None
+    min_step_index = base_config.full_attention_shortlist_policy_min_step_index
+    if min_step_index is not None and int(step_index) < int(min_step_index):
+        return base_config, None
+    max_step_index = base_config.full_attention_shortlist_policy_max_step_index
+    if max_step_index is not None and int(step_index) > int(max_step_index):
+        return base_config, None
     choice = resolve_persistent_shortlist_policy_choice(
         shortlist_policy_payload,
         layer_id=int(layer_id),
@@ -312,6 +320,16 @@ def main() -> None:
         full_attention_priority_recency_weight=float(args.priority_recency_weight),
         full_attention_priority_recency_decay_blocks=float(args.priority_recency_decay_blocks),
         full_attention_priority_value_norm_weight=float(args.priority_value_norm_weight),
+        full_attention_shortlist_policy_min_step_index=(
+            None
+            if args.persistent_shortlist_policy_min_step_index is None
+            else int(args.persistent_shortlist_policy_min_step_index)
+        ),
+        full_attention_shortlist_policy_max_step_index=(
+            None
+            if args.persistent_shortlist_policy_max_step_index is None
+            else int(args.persistent_shortlist_policy_max_step_index)
+        ),
     )
     shortlist_policy_payload = (
         load_persistent_shortlist_policy(args.shortlist_policy_path)
@@ -431,6 +449,16 @@ def main() -> None:
             "prev_attention_floor": float(args.prev_attention_floor),
             "history_mode": str(args.history_mode),
             "history_decay": float(args.history_decay),
+            "shortlist_policy_min_step_index": (
+                None
+                if config.full_attention_shortlist_policy_min_step_index is None
+                else int(config.full_attention_shortlist_policy_min_step_index)
+            ),
+            "shortlist_policy_max_step_index": (
+                None
+                if config.full_attention_shortlist_policy_max_step_index is None
+                else int(config.full_attention_shortlist_policy_max_step_index)
+            ),
             "shortlist_policy_path": None if args.shortlist_policy_path is None else str(Path(args.shortlist_policy_path).resolve()),
             "shortlist_policy_group_count": (
                 0 if shortlist_policy_payload is None else int(shortlist_policy_payload.get("group_count", 0))

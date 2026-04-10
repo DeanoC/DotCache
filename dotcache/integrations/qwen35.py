@@ -2752,6 +2752,12 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         policy_payload = self._load_persistent_shortlist_policy_payload()
         if policy_payload is None or not prompt_family:
             return base_config, None
+        min_step_index = base_config.full_attention_shortlist_policy_min_step_index
+        if min_step_index is not None and int(step_index) < int(min_step_index):
+            return base_config, None
+        max_step_index = base_config.full_attention_shortlist_policy_max_step_index
+        if max_step_index is not None and int(step_index) > int(max_step_index):
+            return base_config, None
         choice = resolve_persistent_shortlist_policy_choice(
             policy_payload,
             layer_id=int(layer_id),
@@ -9202,6 +9208,16 @@ def run_qwen35_attention_subset_persistent_serving_harness(
             None
             if adapter.persistent_serving_config.full_attention_shortlist_policy_path is None
             else str(adapter.persistent_serving_config.full_attention_shortlist_policy_path)
+        ),
+        "persistent_runtime_shortlist_policy_min_step_index": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_min_step_index is None
+            else int(adapter.persistent_serving_config.full_attention_shortlist_policy_min_step_index)
+        ),
+        "persistent_runtime_shortlist_policy_max_step_index": (
+            None
+            if adapter.persistent_serving_config.full_attention_shortlist_policy_max_step_index is None
+            else int(adapter.persistent_serving_config.full_attention_shortlist_policy_max_step_index)
         ),
         "persistent_runtime_shortlist_policy_prompt_family": (
             None
