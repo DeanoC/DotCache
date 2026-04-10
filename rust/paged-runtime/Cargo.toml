@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Minimal page-native KV-cache runtime skeleton for DotCache experiments"
 publish = false
+build = "build.rs"
 
 [features]
 default = []
@@ -13,6 +14,8 @@ candle-metal = ["candle", "dep:candle-metal-kernels", "candle-core/metal", "cand
 candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 candle-hip = ["candle"]
 candle-accelerate = ["candle", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+qwen35-minimal = ["hf", "dep:candle-core", "dep:candle-nn"]
+qwen35-minimal-hip = ["qwen35-minimal", "candle-core/hip", "candle-nn/hip"]
 
 [dependencies]
 half = "2.4"

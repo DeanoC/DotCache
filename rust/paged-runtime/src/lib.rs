@@ -15,6 +15,8 @@ pub mod model;
 pub mod page;
 #[cfg(feature = "candle")]
 pub mod policy;
+#[cfg(feature = "qwen35-minimal")]
+pub mod qwen35_minimal;
 pub mod session;
 #[cfg(feature = "candle")]
 pub mod torch_control;
@@ -39,6 +41,10 @@ pub use model::{RuntimeMode, RuntimeStageMetrics};
 pub use page::{KvPage, PageId};
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
+#[cfg(feature = "qwen35-minimal")]
+pub use qwen35_minimal::{
+    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35Runner, MinimalQwen35Weights,
+};
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;
 pub use session::{
@@ -250,7 +256,7 @@ impl From<tokenizers::Error> for RuntimeError {
     }
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "qwen35-minimal"))]
 impl From<candle_core::Error> for RuntimeError {
     fn from(err: candle_core::Error) -> Self {
         Self::External {
