@@ -1435,7 +1435,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -1474,77 +1474,33 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         let storage_dtype = query.dtype();
         let out_shape =
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $to_f32:expr) => {{
-                let query = query.cpu_storage().as_slice::<$ty>()?;
-                let query = match query_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &query[o1..o2],
-                    None => {
-                        candle::bail!(
-                            "full-attention-prefill-megakernel requires contiguous inputs"
-                        )
-                    }
-                };
-                let key = key.cpu_storage().as_slice::<$ty>()?;
-                let key = match key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &key[o1..o2],
-                    None => {
-                        candle::bail!(
-                            "full-attention-prefill-megakernel requires contiguous inputs"
-                        )
-                    }
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => {
-                        candle::bail!(
-                            "full-attention-prefill-megakernel requires contiguous inputs"
-                        )
-                    }
-                };
-                let query_f32 = query.iter().copied().map($to_f32).collect::<Vec<f32>>();
-                let key_f32 = key.iter().copied().map($to_f32).collect::<Vec<f32>>();
-                let value_f32 = value.iter().copied().map($to_f32).collect::<Vec<f32>>();
-                let mut output = vec![0.0f32; elem_count];
-                let status = unsafe {
-                    hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
-                        hip::dtype_code(DType::F32)?,
-                        device.ordinal(),
-                        self.batch_size,
-                        self.q_heads,
-                        self.kv_heads,
-                        self.q_len,
-                        self.kv_len,
-                        self.head_dim,
-                        self.num_kv_groups,
-                        self.scale,
-                        self.seqlen_offset,
-                        query_f32.as_ptr() as *const c_void,
-                        key_f32.as_ptr() as *const c_void,
-                        value_f32.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(hip::hip_error(self.name(), status));
-                }
-                let storage = <f32 as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, DType::F32)? };
+        let query_ptr = query.raw_device_ptr_with_offset(query_layout.start_offset())?;
+        let key_ptr = key.raw_device_ptr_with_offset(key_layout.start_offset())?;
+        let value_ptr = value.raw_device_ptr_with_offset(value_layout.start_offset())?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                self.batch_size,
+                self.q_heads,
+                self.kv_heads,
+                self.q_len,
+                self.kv_len,
+                self.head_dim,
+                self.num_kv_groups,
+                self.scale,
+                self.seqlen_offset,
+                query_ptr as *const c_void,
+                key_ptr as *const c_void,
+                value_ptr as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, |value: half::f16| value.to_f32()),
-            DType::F32 => launch!(f32, |value: f32| value),
-            DType::BF16 => launch!(half::bf16, |value: half::bf16| value.to_f32()),
-            other => candle::bail!("full-attention-prefill-megakernel unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -8224,6 +8180,30 @@ mod tests {
         let output = output.flatten_all()?.to_vec1::<f32>()?;
 
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_full_attention_prefill_avoids_host_staging() -> Result<()> {
+        let _env_lock = hip_env_lock().lock().unwrap();
+        let _env_guard = HipPersistentPrefillEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, _) =
+            hip_full_attention_prefill_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = full_attention_prefill_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), DType::F32);
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
     }
 

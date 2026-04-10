@@ -25,7 +25,7 @@ struct ScopedHipDevice {
 };
 
 template <typename T>
-int full_attention_prefill_host(
+int full_attention_prefill_device(
     int device_ordinal,
     int batch_size,
     int q_heads,
@@ -48,30 +48,13 @@ int full_attention_prefill_host(
         return 1;
     }
 
-    const size_t query_elems =
-        static_cast<size_t>(batch_size) * q_heads * q_len * head_dim;
-    const size_t key_elems =
-        static_cast<size_t>(batch_size) * kv_heads * kv_len * head_dim;
-    const size_t out_elems = query_elems;
-
-    T* d_query = nullptr;
-    T* d_key = nullptr;
-    T* d_value = nullptr;
-    T* d_out = nullptr;
+    const T* d_query = static_cast<const T*>(query);
+    const T* d_key = static_cast<const T*>(key);
+    const T* d_value = static_cast<const T*>(value);
+    float* d_out = static_cast<float*>(out);
     unsigned int* d_row_counter = nullptr;
 
-    if (hipMalloc(&d_query, query_elems * sizeof(T)) != hipSuccess) return 2;
-    if (hipMalloc(&d_key, key_elems * sizeof(T)) != hipSuccess) return 3;
-    if (hipMalloc(&d_value, key_elems * sizeof(T)) != hipSuccess) return 4;
-    if (hipMalloc(&d_out, out_elems * sizeof(T)) != hipSuccess) return 5;
-    if (hipMalloc(&d_row_counter, sizeof(unsigned int)) != hipSuccess) return 6;
-
-    if (hipMemcpy(d_query, query, query_elems * sizeof(T), hipMemcpyHostToDevice) != hipSuccess)
-        return 7;
-    if (hipMemcpy(d_key, key, key_elems * sizeof(T), hipMemcpyHostToDevice) != hipSuccess)
-        return 8;
-    if (hipMemcpy(d_value, value, key_elems * sizeof(T), hipMemcpyHostToDevice) != hipSuccess)
-        return 9;
+    if (hipMalloc(&d_row_counter, sizeof(unsigned int)) != hipSuccess) return 2;
     if (hipMemset(d_row_counter, 0, sizeof(unsigned int)) != hipSuccess) return 10;
 
     const int grid = props.multiProcessorCount > 0 ? props.multiProcessorCount : 1;
@@ -99,14 +82,8 @@ int full_attention_prefill_host(
         d_row_counter);
     if (hipGetLastError() != hipSuccess) return 11;
     if (hipDeviceSynchronize() != hipSuccess) return 12;
-    if (hipMemcpy(out, d_out, out_elems * sizeof(T), hipMemcpyDeviceToHost) != hipSuccess)
-        return 13;
 
     hipFree(d_row_counter);
-    hipFree(d_out);
-    hipFree(d_value);
-    hipFree(d_key);
-    hipFree(d_query);
     return 0;
 }
 
@@ -130,7 +107,7 @@ extern "C" int dotcache_qwen35_hip_full_attention_prefill(
     void* out) {
     switch (dtype) {
     case 0:
-        return full_attention_prefill_host<half>(
+        return full_attention_prefill_device<half>(
             static_cast<int>(device_ordinal),
             static_cast<int>(batch_size),
             static_cast<int>(q_heads),
@@ -146,7 +123,7 @@ extern "C" int dotcache_qwen35_hip_full_attention_prefill(
             value,
             out);
     case 1:
-        return full_attention_prefill_host<float>(
+        return full_attention_prefill_device<float>(
             static_cast<int>(device_ordinal),
             static_cast<int>(batch_size),
             static_cast<int>(q_heads),
@@ -162,7 +139,7 @@ extern "C" int dotcache_qwen35_hip_full_attention_prefill(
             value,
             out);
     case 2:
-        return full_attention_prefill_host<hip_bfloat16>(
+        return full_attention_prefill_device<hip_bfloat16>(
             static_cast<int>(device_ordinal),
             static_cast<int>(batch_size),
             static_cast<int>(q_heads),

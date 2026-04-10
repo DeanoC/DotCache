@@ -63,7 +63,7 @@ __global__ void dotcache_qwen35_full_attention_prefill_kernel(
     const T* query,
     const T* key,
     const T* value,
-    T* out,
+    float* out,
     unsigned int* row_counter
 ) {
     const int lane = threadIdx.x;
@@ -91,7 +91,7 @@ __global__ void dotcache_qwen35_full_attention_prefill_kernel(
         const T* q_row = query + (((batch * q_heads + q_head) * q_len + q_pos) * head_dim);
         const T* k_head_ptr = key + ((batch * kv_heads + kv_head) * kv_len * head_dim);
         const T* v_head_ptr = value + ((batch * kv_heads + kv_head) * kv_len * head_dim);
-        T* out_row = out + (((batch * q_heads + q_head) * q_len + q_pos) * head_dim);
+        float* out_row = out + (((batch * q_heads + q_head) * q_len + q_pos) * head_dim);
 
         float running_max = -INFINITY;
         float denom = 0.0f;
@@ -157,8 +157,7 @@ __global__ void dotcache_qwen35_full_attention_prefill_kernel(
         }
         __syncthreads();
         for (int i = 0; i < local_count; ++i) {
-            out_row[local_dims[i]] =
-                dotcache_qwen35_from_float<T>(local_acc[i] * shared_inv_denom);
+            out_row[local_dims[i]] = local_acc[i] * shared_inv_denom;
         }
         __syncthreads();
     }
