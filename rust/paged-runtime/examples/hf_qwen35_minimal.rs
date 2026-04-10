@@ -249,10 +249,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         generated_ids.push(next_token);
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
-        let next_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
+        let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
+        let device_hidden_state = device_runner.hidden_states_from_input_ids(&decode_input)?;
 
         let cpu_decode_started = Instant::now();
-        cpu_logits = cpu_runner.decode_from_hidden_state(&next_hidden_state, &mut cpu_cache)?;
+        cpu_logits = cpu_runner.decode_from_hidden_state(&cpu_hidden_state, &mut cpu_cache)?;
         cpu_decode_elapsed += cpu_decode_started.elapsed();
 
         #[cfg(feature = "qwen35-minimal-hip")]
@@ -261,7 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         let device_decode_started = Instant::now();
         device_logits =
-            device_runner.decode_from_hidden_state(&next_hidden_state, &mut device_cache)?;
+            device_runner.decode_from_hidden_state(&device_hidden_state, &mut device_cache)?;
         device_decode_elapsed += device_decode_started.elapsed();
         #[cfg(feature = "qwen35-minimal-hip")]
         if target_device.is_hip()

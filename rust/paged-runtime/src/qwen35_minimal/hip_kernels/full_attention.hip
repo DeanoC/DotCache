@@ -909,6 +909,85 @@ __global__ void dotcache_qwen35_delta_attn_solve_scan_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_swiglu_mul_kernel(
+    int elem_count,
+    const T* gate,
+    const T* up,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= elem_count) {
+        return;
+    }
+    const float gate_x = dotcache_qwen35_to_float(gate[idx]);
+    const float up_x = dotcache_qwen35_to_float(up[idx]);
+    const float silu = gate_x / (1.0f + expf(-gate_x));
+    out[idx] = dotcache_qwen35_from_float<T>(silu * up_x);
+}
+
+template <typename T, typename IndexT>
+__global__ void dotcache_qwen35_embedding_lookup_kernel(
+    int token_count,
+    int vocab_size,
+    int hidden_size,
+    const T* embeddings,
+    const IndexT* indexes,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int total_elems = token_count * hidden_size;
+    if (idx >= total_elems) {
+        return;
+    }
+    const int token_idx = idx / hidden_size;
+    const int col = idx - token_idx * hidden_size;
+    const int64_t row = static_cast<int64_t>(indexes[token_idx]);
+    if (row < 0 || row >= static_cast<int64_t>(vocab_size)) {
+        out[idx] = dotcache_qwen35_from_float<T>(0.0f);
+        return;
+    }
+    out[idx] = embeddings[row * hidden_size + col];
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_causal_mask_kernel(
+    int batch_size,
+    int tgt_len,
+    int seqlen_offset,
+    T* out
+) {
+    const int kv_len = tgt_len + seqlen_offset;
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int total_elems = batch_size * tgt_len * kv_len;
+    if (idx >= total_elems) {
+        return;
+    }
+    const int col = idx % kv_len;
+    const int row = (idx / kv_len) % tgt_len;
+    const bool allowed = col <= (seqlen_offset + row);
+    out[idx] = dotcache_qwen35_from_float<T>(allowed ? 0.0f : -INFINITY);
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_cumsum_last_dim_kernel(
+    int rows,
+    int cols,
+    const T* xs,
+    T* out
+) {
+    const int row = static_cast<int>(blockIdx.x);
+    if (row >= rows || threadIdx.x != 0) {
+        return;
+    }
+    const int row_offset = row * cols;
+    float acc = 0.0f;
+    for (int col = 0; col < cols; ++col) {
+        acc += dotcache_qwen35_to_float(xs[row_offset + col]);
+        out[row_offset + col] = dotcache_qwen35_from_float<T>(acc);
+    }
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_delta_full_scan_pack_kernel(
     int batch_heads,
     int num_chunks,

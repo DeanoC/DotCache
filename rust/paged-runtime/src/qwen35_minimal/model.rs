@@ -777,9 +777,14 @@ impl Mlp {
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let lhs = xs.apply(&self.gate_proj)?.apply(&self.act_fn)?;
-        let rhs = xs.apply(&self.up_proj)?;
-        (lhs * rhs)?.apply(&self.down_proj)
+        let gate = xs.apply(&self.gate_proj)?;
+        let up = xs.apply(&self.up_proj)?;
+        let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
+            hip_swiglu_mul(&gate, &up)?
+        } else {
+            (gate.apply(&self.act_fn)? * up)?
+        };
+        hidden.apply(&self.down_proj)
     }
 }
 
@@ -799,6 +804,304 @@ fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     }
     let norm = xs.sqr()?.sum_keepdim(D::Minus1)?;
     xs.broadcast_div(&(norm + eps)?.sqrt()?)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipSwigluMul;
+
+impl candle::CustomOp2 for HipSwigluMul {
+    fn name(&self) -> &'static str {
+        "hip-swiglu-mul"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-swiglu-mul has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        gate: &candle::HipStorage,
+        gate_layout: &candle::Layout,
+        up: &candle::HipStorage,
+        up_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
+            candle::bail!("hip-swiglu-mul requires contiguous inputs")
+        }
+        if gate_layout.shape() != up_layout.shape() {
+            candle::bail!(
+                "hip-swiglu-mul shape mismatch: gate={:?} up={:?}",
+                gate_layout.shape().dims(),
+                up_layout.shape().dims()
+            )
+        }
+        if gate.dtype() != up.dtype() {
+            candle::bail!(
+                "hip-swiglu-mul requires matching dtypes, got gate={:?} up={:?}",
+                gate.dtype(),
+                up.dtype()
+            )
+        }
+
+        let device = gate.device().clone();
+        let storage_dtype = gate.dtype();
+        let elem_count = gate_layout.shape().elem_count();
+        let out_shape = gate_layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                elem_count,
+                gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+                up.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    gate.apply_op2_no_bwd(up, &HipSwigluMul)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipEmbeddingLookup {
+    vocab_size: usize,
+    hidden_size: usize,
+}
+
+impl candle::CustomOp2 for HipEmbeddingLookup {
+    fn name(&self) -> &'static str {
+        "hip-embedding-lookup"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-embedding-lookup has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        embeddings: &candle::HipStorage,
+        embeddings_layout: &candle::Layout,
+        indexes: &candle::HipStorage,
+        indexes_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
+            candle::bail!("hip-embedding-lookup requires contiguous inputs")
+        }
+        let dims = embeddings_layout.shape().dims();
+        if dims.len() != 2 {
+            candle::bail!(
+                "hip-embedding-lookup expected [vocab, hidden] embeddings, got {:?}",
+                dims
+            )
+        }
+        if dims[0] != self.vocab_size || dims[1] != self.hidden_size {
+            candle::bail!(
+                "hip-embedding-lookup embedding shape mismatch got {:?} expected [{}, {}]",
+                dims,
+                self.vocab_size,
+                self.hidden_size
+            )
+        }
+
+        let mut out_dims = indexes_layout.shape().dims().to_vec();
+        out_dims.push(self.hidden_size);
+        let out_shape = candle::Shape::from(out_dims);
+        let device = embeddings.device().clone();
+        let token_count = indexes_layout.shape().elem_count();
+        let output = unsafe { device.alloc_uninit(&out_shape, embeddings.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+                hip::dtype_code(embeddings.dtype())?,
+                hip::index_dtype_code(indexes.dtype())?,
+                device.ordinal(),
+                token_count,
+                self.vocab_size,
+                self.hidden_size,
+                embeddings.raw_device_ptr_with_offset(embeddings_layout.start_offset())?
+                    as *const c_void,
+                indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor> {
+    let embeddings = embeddings.contiguous()?;
+    let indexes = indexes.contiguous()?;
+    let (vocab_size, hidden_size) = embeddings.dims2()?;
+    embeddings.apply_op2_no_bwd(
+        &indexes,
+        &HipEmbeddingLookup {
+            vocab_size,
+            hidden_size,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipCausalMask {
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+}
+
+impl candle::CustomOp1 for HipCausalMask {
+    fn name(&self) -> &'static str {
+        "hip-causal-mask"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-causal-mask has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        storage: &candle::HipStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        let device = storage.device().clone();
+        let kv_len = self.tgt_len + self.seqlen_offset;
+        let out_shape = candle::Shape::from((self.batch_size, 1usize, self.tgt_len, kv_len));
+        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_causal_mask(
+                hip::dtype_code(storage.dtype())?,
+                device.ordinal(),
+                self.batch_size,
+                self.tgt_len,
+                self.seqlen_offset,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, tgt_len: usize, seqlen_offset: usize) -> Result<Tensor> {
+    let seed = Tensor::zeros(1usize, dtype, device)?;
+    seed.apply_op1_no_bwd(&HipCausalMask {
+        batch_size,
+        tgt_len,
+        seqlen_offset,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipCumsumLastDim {
+    rows: usize,
+    cols: usize,
+}
+
+impl candle::CustomOp1 for HipCumsumLastDim {
+    fn name(&self) -> &'static str {
+        "hip-cumsum-last-dim"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-cumsum-last-dim has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        storage: &candle::HipStorage,
+        layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !layout.is_contiguous() {
+            candle::bail!("hip-cumsum-last-dim requires contiguous input")
+        }
+        let dims = layout.shape().dims();
+        let cols = *dims.last().ok_or_else(|| {
+            candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+        })?;
+        let rows = layout.shape().elem_count() / cols;
+        if rows != self.rows || cols != self.cols {
+            candle::bail!(
+                "hip-cumsum-last-dim shape mismatch input={:?} expected_rows={} expected_cols={}",
+                dims,
+                self.rows,
+                self.cols
+            )
+        }
+
+        let device = storage.device().clone();
+        let out_shape = layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
+                hip::dtype_code(storage.dtype())?,
+                device.ordinal(),
+                self.rows,
+                self.cols,
+                storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_cumsum_last_dim(xs: &Tensor) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let dims = xs.dims();
+    let cols = *dims.last().ok_or_else(|| {
+        candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+    })?;
+    let rows = xs.elem_count() / cols;
+    xs.apply_op1_no_bwd(&HipCumsumLastDim { rows, cols })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6926,9 +7229,14 @@ impl GatedDeltaNet {
         let key = key.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let k_beta = k_beta.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let v_beta = v_beta.reshape((batch_heads, num_chunks, chunk_size, v_head_dim))?;
-        let g = g
-            .reshape((batch_heads, num_chunks, chunk_size))?
-            .cumsum(D::Minus1)?;
+        let g = {
+            let g = g.reshape((batch_heads, num_chunks, chunk_size))?;
+            if g.device().is_hip() {
+                hip_cumsum_last_dim(&g)?
+            } else {
+                g.cumsum(D::Minus1)?
+            }
+        };
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower_2d = cache.lower_2d.reshape((1, chunk_size, chunk_size))?;
         let eye_2d = Tensor::eye(chunk_size, compute_dtype, query.device())?
@@ -7645,7 +7953,11 @@ impl GatedDeltaNet {
 
         let prepare_start = profile_start(device)?;
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
-        let g = g_raw.cumsum(D::Minus1)?;
+        let g = if g_raw.device().is_hip() {
+            hip_cumsum_last_dim(&g_raw)?
+        } else {
+            g_raw.cumsum(D::Minus1)?
+        };
         let exp_g = g.exp()?;
         let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
 
@@ -8485,6 +8797,9 @@ impl TextModel {
         tgt_len: usize,
         seqlen_offset: usize,
     ) -> Result<Tensor> {
+        if self.device.is_hip() {
+            return hip_causal_mask(&self.device, self.dtype, b_size, tgt_len, seqlen_offset);
+        }
         let lower = Tensor::tril2(tgt_len, DType::U8, &self.device)?;
         let on_true = lower.zeros_like()?.to_dtype(self.dtype)?;
         let on_false = Tensor::full(f32::NEG_INFINITY, (tgt_len, tgt_len), &self.device)?
@@ -8510,6 +8825,9 @@ impl TextModel {
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
+        if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
+            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
+        }
         self.embed_tokens.forward(input_ids)
     }
 
@@ -8555,7 +8873,7 @@ impl TextModel {
         } else {
             None
         };
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
         for layer in self.layers.iter_mut().take(target_layer) {
             let mask = if layer.layer_type() == "full_attention" {
                 attention_mask.as_ref()
@@ -8629,7 +8947,7 @@ impl TextModel {
         } else {
             None
         };
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
         for layer in self.layers.iter_mut().take(target_layer) {
             let mask = if layer.layer_type() == "full_attention" {
                 attention_mask.as_ref()
@@ -8675,7 +8993,7 @@ impl TextModel {
             None
         };
         profile.scheduler_planning_millis += profile_elapsed(scheduler_start, device)?;
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
         let mut traces = Vec::new();
         for (layer_id, layer) in self.layers.iter_mut().enumerate() {
             let mask = if layer.layer_type() == "full_attention" {
@@ -8740,7 +9058,7 @@ impl TextModel {
             None
         };
         profile.scheduler_planning_millis += profile_elapsed(scheduler_start, device)?;
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
         let mut external = Some(external_full_attention);
         for (layer_id, layer) in self.layers.iter_mut().enumerate() {
             let mask = if layer.layer_type() == "full_attention" {
@@ -8776,7 +9094,7 @@ impl TextModel {
             None
         };
         profile.scheduler_planning_millis += profile_elapsed(scheduler_start, device)?;
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
         for layer in self.layers.iter_mut() {
             let mask = if layer.layer_type() == "full_attention" {
                 attention_mask.as_ref()
@@ -9758,6 +10076,88 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_swiglu_mul_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
+        let gate_data = vec![
+            0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
+        ];
+        let up_data = vec![
+            1.2f32, -0.4, 0.8, 0.3, -1.1, 0.6, 0.5, 2.0, 0.7, -0.9, 1.3, 0.2,
+        ];
+        let shape = (1usize, 3usize, 4usize);
+        let gate = Tensor::from_vec(gate_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+        let up = Tensor::from_vec(up_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+
+        let mut expected = Vec::with_capacity(gate_data.len());
+        for (gate_x, up_x) in gate_data.iter().zip(up_data.iter()) {
+            let silu = *gate_x / (1.0 + (-*gate_x).exp());
+            expected.push(silu * *up_x);
+        }
+        Ok((gate, up, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_embedding_lookup_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
+        let embeddings_data = vec![
+            0.1f32, 0.2, 0.3, 0.4, //
+            1.0, 1.1, 1.2, 1.3, //
+            2.0, 2.1, 2.2, 2.3, //
+            3.0, 3.1, 3.2, 3.3,
+        ];
+        let index_data = vec![2u32, 0, 3, 1];
+        let embeddings = Tensor::from_vec(embeddings_data.clone(), (4usize, 4usize), device)?
+            .to_dtype(DType::F16)?;
+        let indexes = Tensor::from_vec(index_data.clone(), (2usize, 2usize), device)?;
+        let mut expected = Vec::with_capacity(index_data.len() * 4);
+        for token in index_data {
+            let row = token as usize;
+            expected.extend_from_slice(&embeddings_data[row * 4..(row + 1) * 4]);
+        }
+        Ok((embeddings, indexes, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_causal_mask_expected(
+        batch_size: usize,
+        tgt_len: usize,
+        seqlen_offset: usize,
+    ) -> Vec<f32> {
+        let kv_len = tgt_len + seqlen_offset;
+        let mut expected = Vec::with_capacity(batch_size * tgt_len * kv_len);
+        for _batch in 0..batch_size {
+            for row in 0..tgt_len {
+                for col in 0..kv_len {
+                    expected.push(if col <= seqlen_offset + row {
+                        0.0
+                    } else {
+                        f32::NEG_INFINITY
+                    });
+                }
+            }
+        }
+        expected
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_cumsum_last_dim_sample(device: &Device) -> Result<(Tensor, Vec<f32>)> {
+        let xs_data = vec![
+            0.5f32, -1.0, 0.25, 1.5, //
+            -0.75, 0.2, 0.9, -0.4, //
+            1.1, -0.6, 0.3, 0.8,
+        ];
+        let xs = Tensor::from_vec(xs_data.clone(), (1usize, 3usize, 4usize), device)?
+            .to_dtype(DType::F16)?;
+        let mut expected = Vec::with_capacity(xs_data.len());
+        for row in xs_data.chunks_exact(4) {
+            let mut acc = 0.0f32;
+            for value in row {
+                acc += *value;
+                expected.push(acc);
+            }
+        }
+        Ok((xs, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_value_decay_sample(device: &Device) -> Result<(Tensor, Tensor, Tensor, Vec<f32>)> {
         let a_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -10136,6 +10536,131 @@ mod tests {
         let (xs, _expected) = hip_l2norm_sample(&device)?;
         candle::hip::reset_transfer_counters();
         let output = l2norm(&xs, 1e-6)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), xs.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_swiglu_mul_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
+        let output = hip_swiglu_mul(&gate, &up)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_swiglu_mul_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (gate, up, _expected) = hip_swiglu_mul_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = hip_swiglu_mul(&gate, &up)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), gate.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_embedding_lookup_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (embeddings, indexes, expected) = hip_embedding_lookup_sample(&device)?;
+        let output = hip_embedding_lookup(&embeddings, &indexes)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_embedding_lookup_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (embeddings, indexes, _expected) = hip_embedding_lookup_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = hip_embedding_lookup(&embeddings, &indexes)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), embeddings.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_causal_mask_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_size = 2usize;
+        let tgt_len = 4usize;
+        let seqlen_offset = 3usize;
+        let output = hip_causal_mask(&device, DType::F16, batch_size, tgt_len, seqlen_offset)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let expected = hip_causal_mask_expected(batch_size, tgt_len, seqlen_offset);
+        assert_eq!(output.len(), expected.len());
+        for (out, exp) in output.iter().zip(expected.iter()) {
+            if exp.is_infinite() {
+                assert!(out.is_infinite() && out.is_sign_negative());
+            } else {
+                assert!((out - exp).abs() <= 1e-6);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_causal_mask_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        candle::hip::reset_transfer_counters();
+        let output = hip_causal_mask(&device, DType::F16, 2, 4, 3)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), DType::F16);
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_cumsum_last_dim_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (xs, expected) = hip_cumsum_last_dim_sample(&device)?;
+        let output = hip_cumsum_last_dim(&xs)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_cumsum_last_dim_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (xs, _expected) = hip_cumsum_last_dim_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = hip_cumsum_last_dim(&xs)?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(output.dtype(), xs.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);

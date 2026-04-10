@@ -56,7 +56,12 @@ impl MinimalQwen35Runner {
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
-        Ok(self.model.hidden_states_from_input_ids(input_ids)?)
+        let input_ids = if input_ids.device().same_device(&self.device) {
+            input_ids.clone()
+        } else {
+            input_ids.to_device(&self.device)?
+        };
+        Ok(self.model.hidden_states_from_input_ids(&input_ids)?)
     }
 
     pub fn prefill_from_hidden_states(

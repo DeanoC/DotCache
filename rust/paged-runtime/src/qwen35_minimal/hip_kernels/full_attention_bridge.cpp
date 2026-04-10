@@ -525,6 +525,115 @@ int delta_attn_solve_scan_device(
 }
 
 template <typename T>
+int swiglu_mul_device(
+    int device_ordinal,
+    int elem_count,
+    const void* gate,
+    const void* up,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid = static_cast<unsigned int>((elem_count + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_swiglu_mul_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        elem_count,
+        static_cast<const T*>(gate),
+        static_cast<const T*>(up),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 121;
+    if (hipDeviceSynchronize() != hipSuccess) return 122;
+    return 0;
+}
+
+template <typename T, typename IndexT>
+int embedding_lookup_device(
+    int device_ordinal,
+    int token_count,
+    int vocab_size,
+    int hidden_size,
+    const void* embeddings,
+    const void* indexes,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const int total_elems = token_count * hidden_size;
+    const unsigned int grid = static_cast<unsigned int>((total_elems + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_embedding_lookup_kernel<T, IndexT>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        token_count,
+        vocab_size,
+        hidden_size,
+        static_cast<const T*>(embeddings),
+        static_cast<const IndexT*>(indexes),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 123;
+    if (hipDeviceSynchronize() != hipSuccess) return 124;
+    return 0;
+}
+
+template <typename T>
+int causal_mask_device(
+    int device_ordinal,
+    int batch_size,
+    int tgt_len,
+    int seqlen_offset,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const int kv_len = tgt_len + seqlen_offset;
+    const int total_elems = batch_size * tgt_len * kv_len;
+    const unsigned int grid = static_cast<unsigned int>((total_elems + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_causal_mask_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_size,
+        tgt_len,
+        seqlen_offset,
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 125;
+    if (hipDeviceSynchronize() != hipSuccess) return 126;
+    return 0;
+}
+
+template <typename T>
+int cumsum_last_dim_device(
+    int device_ordinal,
+    int rows,
+    int cols,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_cumsum_last_dim_kernel<T>),
+        dim3(static_cast<unsigned int>(rows)),
+        dim3(1),
+        0,
+        0,
+        rows,
+        cols,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 127;
+    if (hipDeviceSynchronize() != hipSuccess) return 128;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -1456,6 +1565,220 @@ extern "C" int dotcache_qwen35_hip_delta_attn_solve_scan(
             out);
     default:
         return 120;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_swiglu_mul(
+    int dtype,
+    size_t device_ordinal,
+    size_t elem_count,
+    const void* gate,
+    const void* up,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return swiglu_mul_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(elem_count),
+            gate,
+            up,
+            out);
+    case 1:
+        return swiglu_mul_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(elem_count),
+            gate,
+            up,
+            out);
+    case 2:
+        return swiglu_mul_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(elem_count),
+            gate,
+            up,
+            out);
+    default:
+        return 122;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_embedding_lookup(
+    int dtype,
+    int index_dtype,
+    size_t device_ordinal,
+    size_t token_count,
+    size_t vocab_size,
+    size_t hidden_size,
+    const void* embeddings,
+    const void* indexes,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        switch (index_dtype) {
+        case 0:
+            return embedding_lookup_device<half, uint8_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 1:
+            return embedding_lookup_device<half, uint32_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 2:
+            return embedding_lookup_device<half, int64_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        default:
+            return 123;
+        }
+    case 1:
+        switch (index_dtype) {
+        case 0:
+            return embedding_lookup_device<float, uint8_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 1:
+            return embedding_lookup_device<float, uint32_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 2:
+            return embedding_lookup_device<float, int64_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        default:
+            return 123;
+        }
+    case 2:
+        switch (index_dtype) {
+        case 0:
+            return embedding_lookup_device<hip_bfloat16, uint8_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 1:
+            return embedding_lookup_device<hip_bfloat16, uint32_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        case 2:
+            return embedding_lookup_device<hip_bfloat16, int64_t>(
+                static_cast<int>(device_ordinal),
+                static_cast<int>(token_count),
+                static_cast<int>(vocab_size),
+                static_cast<int>(hidden_size),
+                embeddings,
+                indexes,
+                out);
+        default:
+            return 123;
+        }
+    default:
+        return 124;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_causal_mask(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_size,
+    size_t tgt_len,
+    size_t seqlen_offset,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return causal_mask_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(tgt_len),
+            static_cast<int>(seqlen_offset),
+            out);
+    case 1:
+        return causal_mask_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(tgt_len),
+            static_cast<int>(seqlen_offset),
+            out);
+    case 2:
+        return causal_mask_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(tgt_len),
+            static_cast<int>(seqlen_offset),
+            out);
+    default:
+        return 126;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_cumsum_last_dim(
+    int dtype,
+    size_t device_ordinal,
+    size_t rows,
+    size_t cols,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return cumsum_last_dim_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(cols),
+            xs,
+            out);
+    case 1:
+        return cumsum_last_dim_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(cols),
+            xs,
+            out);
+    case 2:
+        return cumsum_last_dim_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(cols),
+            xs,
+            out);
+    default:
+        return 128;
     }
 }
 

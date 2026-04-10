@@ -13,6 +13,17 @@ pub fn dtype_code(dtype: DType) -> Result<c_int> {
     }
 }
 
+pub fn index_dtype_code(dtype: DType) -> Result<c_int> {
+    match dtype {
+        DType::U8 => Ok(0),
+        DType::U32 => Ok(1),
+        DType::I64 => Ok(2),
+        other => Err(Error::Hip(
+            format!("unsupported Qwen3.5 minimal HIP index dtype {other:?}").into(),
+        )),
+    }
+}
+
 pub fn hip_error(op: &str, status: c_int) -> Error {
     Error::Hip(format!("{op} failed with HIP status {status}").into())
 }
@@ -268,6 +279,45 @@ pub mod ffi {
             hidden: *const c_void,
             gate: *const c_void,
             weight: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_swiglu_mul(
+            dtype: c_int,
+            device_ordinal: usize,
+            elem_count: usize,
+            gate: *const c_void,
+            up: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_embedding_lookup(
+            dtype: c_int,
+            index_dtype: c_int,
+            device_ordinal: usize,
+            token_count: usize,
+            vocab_size: usize,
+            hidden_size: usize,
+            embeddings: *const c_void,
+            indexes: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_causal_mask(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_size: usize,
+            tgt_len: usize,
+            seqlen_offset: usize,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_cumsum_last_dim(
+            dtype: c_int,
+            device_ordinal: usize,
+            rows: usize,
+            cols: usize,
+            xs: *const c_void,
             out: *mut c_void,
         ) -> c_int;
     }
