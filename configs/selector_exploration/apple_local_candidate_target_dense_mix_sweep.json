@@ -1,0 +1,82 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+  "feature_set_id": "runtime_safe",
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {"strategy_id": "linear_softmax_compression_weighted", "result_id": "linear_softmax_compression_weighted"},
+    {"strategy_id": "candidate_target_linear", "result_id": "candidate_target_linear_by_family", "calibration_mode": "per_prompt_family"},
+    {
+      "strategy_id": "candidate_target_linear",
+      "result_id": "candidate_target_trace_softmax_by_family",
+      "calibration_mode": "per_prompt_family",
+      "params": {
+        "loss_kind": "trace_softmax"
+      }
+    },
+    {
+      "strategy_id": "candidate_target_linear",
+      "result_id": "candidate_target_dense_mix_light_by_family",
+      "calibration_mode": "per_prompt_family",
+      "params": {
+        "loss_kind": "trace_softmax",
+        "candidate_class_balance": 0.5,
+        "non_reference_target_weight": 0.75,
+        "compression_target_weight": 0.5,
+        "reference_false_positive_weight": 0.25,
+        "reference_logit_offset": -0.25
+      }
+    },
+    {
+      "strategy_id": "candidate_target_linear",
+      "result_id": "candidate_target_dense_mix_medium_by_family",
+      "calibration_mode": "per_prompt_family",
+      "params": {
+        "loss_kind": "trace_softmax",
+        "candidate_class_balance": 0.5,
+        "non_reference_target_weight": 1.0,
+        "compression_target_weight": 1.0,
+        "reference_false_positive_weight": 0.5,
+        "reference_logit_offset": -0.5
+      }
+    },
+    {
+      "strategy_id": "candidate_target_linear",
+      "result_id": "candidate_target_dense_mix_heavy_by_family",
+      "calibration_mode": "per_prompt_family",
+      "params": {
+        "loss_kind": "trace_softmax",
+        "candidate_class_balance": 0.75,
+        "non_reference_target_weight": 1.25,
+        "compression_target_weight": 1.25,
+        "reference_false_positive_weight": 0.75,
+        "reference_logit_offset": -0.75
+      }
+    }
+  ],
+  "weighted_selector": {
+    "steps": 400,
+    "learning_rate": 0.2,
+    "l2": 0.001,
+    "class_balance": 0.5,
+    "safe_bytes_weight": 1.0,
+    "unsafe_error_weight": 0.5,
+    "reference_candidate": "M3/affine/4/float16",
+    "target_candidate": "M3/affine/4/float16"
+  },
+  "calibration": {
+    "fraction": 0.25,
+    "seed": 0,
+    "min_target_accuracy": 0.999,
+    "min_safe_prediction_rate": 1.0,
+    "linear_offsets": [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5],
+    "binary_thresholds": [0.3, 0.4, 0.5, 0.6, 0.7]
+  },
+  "serving_smoke": {
+    "enabled": false
+  }
+}

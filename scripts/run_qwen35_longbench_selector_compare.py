@@ -15,8 +15,10 @@ from benchmarks.bench_qwen35_attention_subset_dotcache_longbench_qa import (
     DEFAULT_LONGBENCH_ZIP_URL,
     _ensure_longbench_zip,
     build_longbench_record,
+    clean_longbench_generated_text,
     load_longbench_harness_from_args,
     parse_args as parse_benchmark_args,
+    score_longbench_answers,
 )
 from dotcache.longbench_v1 import build_prompt_specs_from_zip
 
@@ -52,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--comparison-cases",
         nargs="+",
-        choices=["exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
-        default=["exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
+        choices=["dense", "exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
+        default=["dense", "exact", "quality", "systems", "streaming_sink_recent", "quest_like"],
     )
     parser.add_argument(
         "--prompt-pack",
@@ -125,6 +127,11 @@ def _resolve_selector_artifact(path: str) -> Path:
 
 
 def _case_extra_args(case: str, *, selector_artifact: str) -> list[str]:
+    if case == "dense":
+        return [
+            "--learned-page-selector-profile",
+            "quality",
+        ]
     if case == "exact":
         return [
             "--learned-page-selector-profile",
@@ -207,6 +214,63 @@ def _apply_prompt_shard(
     if shard_count == 1:
         return list(prompt_specs)
     return [spec for index, spec in enumerate(prompt_specs) if index % shard_count == shard_index]
+
+
+def _apply_comparison_view(payload: dict[str, Any], *, case: str) -> dict[str, Any]:
+    record = dict(payload)
+    answers = list(record.get("longbench_answers") or [])
+    if case == "dense":
+        generated_text = str(record.get("dense_text", "")).strip()
+        answer_score = score_longbench_answers(generated_text, answers)
+        cleaned_generated_text = clean_longbench_generated_text(generated_text)
+        cleaned_answer_score = score_longbench_answers(cleaned_generated_text, answers)
+        record.update(
+            {
+                "comparison_generated_text": generated_text,
+                "comparison_generated_text_cleaned": cleaned_generated_text,
+                "comparison_answer_exact_match": answer_score["longbench_answer_exact_match"],
+                "comparison_answer_exact_match_cleaned": cleaned_answer_score["longbench_answer_exact_match"],
+                "comparison_qa_f1_max": answer_score["longbench_qa_f1_max"],
+                "comparison_qa_f1_max_cleaned": cleaned_answer_score["longbench_qa_f1_max"],
+                "comparison_best_matching_answer": answer_score["longbench_best_matching_answer"],
+                "comparison_best_matching_answer_cleaned": cleaned_answer_score["longbench_best_matching_answer"],
+                "comparison_generated_text_scored": answer_score["longbench_generated_text_scored"],
+                "comparison_generated_text_scored_cleaned": cleaned_answer_score["longbench_generated_text_scored"],
+                "comparison_chat_artifact_cleaned": bool(cleaned_generated_text != generated_text),
+                "comparison_decode_ms_per_step": float(record.get("dense_decode_ms_per_step", 0.0) or 0.0),
+                "comparison_decode_ms_per_step_p95": float(
+                    record.get("dense_decode_ms_per_step_p95", record.get("dense_decode_ms_per_step", 0.0)) or 0.0
+                ),
+                "comparison_teacher_forced_perplexity_ratio": 1.0,
+                "comparison_teacher_forced_logit_rmse": 0.0,
+                "comparison_official_score": None,
+            }
+        )
+        return record
+
+    record.update(
+        {
+            "comparison_generated_text": str(record.get("longbench_generated_text", "")).strip(),
+            "comparison_generated_text_cleaned": str(record.get("longbench_generated_text_cleaned", "")).strip(),
+            "comparison_answer_exact_match": bool(record.get("longbench_answer_exact_match")),
+            "comparison_answer_exact_match_cleaned": bool(record.get("longbench_answer_exact_match_cleaned")),
+            "comparison_qa_f1_max": float(record.get("longbench_qa_f1_max", 0.0) or 0.0),
+            "comparison_qa_f1_max_cleaned": float(record.get("longbench_qa_f1_max_cleaned", 0.0) or 0.0),
+            "comparison_best_matching_answer": str(record.get("longbench_best_matching_answer", "")),
+            "comparison_best_matching_answer_cleaned": str(record.get("longbench_best_matching_answer_cleaned", "")),
+            "comparison_generated_text_scored": str(record.get("longbench_generated_text_scored", "")),
+            "comparison_generated_text_scored_cleaned": str(record.get("longbench_generated_text_scored_cleaned", "")),
+            "comparison_chat_artifact_cleaned": bool(record.get("longbench_chat_artifact_cleaned")),
+            "comparison_decode_ms_per_step": float(record.get("dotcache_decode_ms_per_step", 0.0) or 0.0),
+            "comparison_decode_ms_per_step_p95": float(
+                record.get("dotcache_decode_ms_per_step_p95", record.get("dotcache_decode_ms_per_step", 0.0)) or 0.0
+            ),
+            "comparison_teacher_forced_perplexity_ratio": record.get("teacher_forced_perplexity_ratio"),
+            "comparison_teacher_forced_logit_rmse": record.get("teacher_forced_logit_rmse"),
+            "comparison_official_score": record.get("longbench_official_score"),
+        }
+    )
+    return record
 
 
 def _benchmark_command(
@@ -313,7 +377,7 @@ def _run_single_in_process(
         _empty_torch_cache()
 
     elapsed = time.monotonic() - started_at
-    payload = dict(payload)
+    payload = _apply_comparison_view(payload, case=case)
     payload.update(
         {
             "comparison_case": case,

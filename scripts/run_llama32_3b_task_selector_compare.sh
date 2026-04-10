@@ -25,6 +25,7 @@ mkdir -p "${OUTPUT_DIR}"
   --device cuda \
   --torch-dtype float16 \
   --selector-artifact benchmarks/results/llama32_selector_suite_20260401/serving_selector_artifact/linear_selector_model.json \
+  --profiles dense exact quality systems \
   --prompt-lengths 1024 2048 \
   --warmup-runs 1 \
   --measured-runs 5 \

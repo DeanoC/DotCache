@@ -1,0 +1,1777 @@
+{
+  "config": {
+    "calibration": {
+      "binary_thresholds": [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "fraction": 0.25,
+      "linear_offsets": [
+        -1.5,
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
+        1.5
+      ],
+      "min_safe_prediction_rate": 1.0,
+      "min_target_accuracy": 0.999,
+      "seed": 0
+    },
+    "feature_set_id": "research_extended",
+    "report_axes": [
+      "min_family_safe_prediction_rate",
+      "min_family_target_accuracy",
+      "mean_predicted_total_bytes",
+      "mean_safe_bytes_regret"
+    ],
+    "serving_smoke": {
+      "command_template": [
+        "bash",
+        "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+        "{output_dir}",
+        "{artifact_path}",
+        "--profiles",
+        "exact",
+        "quality",
+        "--warmup-runs",
+        "0",
+        "--measured-runs",
+        "1",
+        "--max-new-tokens-retrieval",
+        "16",
+        "--max-new-tokens-reasoning",
+        "16",
+        "--max-new-tokens-instruction",
+        "8"
+      ],
+      "enabled": false
+    },
+    "strategies": [
+      {
+        "result_id": "static_rule",
+        "strategy_id": "static_rule"
+      },
+      {
+        "result_id": "linear_softmax",
+        "strategy_id": "linear_softmax"
+      },
+      {
+        "result_id": "linear_softmax_compression_weighted",
+        "strategy_id": "linear_softmax_compression_weighted"
+      },
+      {
+        "calibration_mode": "global",
+        "result_id": "candidate_safe_router_global",
+        "strategy_id": "candidate_safe_router"
+      },
+      {
+        "calibration_mode": "per_prompt_family",
+        "result_id": "candidate_safe_router_by_family",
+        "strategy_id": "candidate_safe_router"
+      },
+      {
+        "calibration_mode": "global",
+        "result_id": "candidate_target_linear_global",
+        "strategy_id": "candidate_target_linear"
+      },
+      {
+        "calibration_mode": "per_prompt_family",
+        "result_id": "candidate_target_linear_by_family",
+        "strategy_id": "candidate_target_linear"
+      },
+      {
+        "calibration_mode": "global",
+        "result_id": "candidate_target_mlp_global",
+        "strategy_id": "candidate_target_mlp"
+      },
+      {
+        "calibration_mode": "per_prompt_family",
+        "result_id": "candidate_target_mlp_by_family",
+        "strategy_id": "candidate_target_mlp"
+      },
+      {
+        "calibration_mode": "global",
+        "result_id": "candidate_target_gbdt_global",
+        "strategy_id": "candidate_target_gbdt"
+      },
+      {
+        "calibration_mode": "per_prompt_family",
+        "result_id": "candidate_target_gbdt_by_family",
+        "strategy_id": "candidate_target_gbdt"
+      }
+    ],
+    "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+    "weighted_selector": {
+      "class_balance": 0.5,
+      "l2": 0.001,
+      "learning_rate": 0.2,
+      "reference_candidate": "M3/affine/4/float16",
+      "safe_bytes_weight": 1.0,
+      "steps": 400,
+      "target_candidate": "M3/affine/4/float16",
+      "unsafe_error_weight": 0.5
+    }
+  },
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3141.184326171875,
+        "mean_safe_bytes_regret": 364.6387634277344,
+        "mean_safe_prediction_rate": 0.8178029656410217,
+        "mean_target_accuracy": 0.7403408885002136,
+        "min_family_safe_prediction_rate": 0.75,
+        "min_family_target_accuracy": 0.7355113625526428,
+        "min_variant_safe_prediction_rate": 0.75,
+        "min_variant_target_accuracy": 0.7272727489471436
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "static_rule",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3732.276611328125,
+          "mean_safe_bytes_regret": 546.9581298828125,
+          "safe_prediction_rate": 0.8517045378684998,
+          "target_accuracy": 0.7355113625526428
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 1959.0,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.75,
+          "target_accuracy": 0.75
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "model_type": "static_rule"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3639.33740234375,
+          "mean_safe_bytes_regret": 561.159423828125,
+          "safe_prediction_rate": 0.8625,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.74375
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 1959.0,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.75,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.75
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3825.2158203125,
+          "mean_safe_bytes_regret": 532.7567749023438,
+          "safe_prediction_rate": 0.8409090909090909,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.7272727272727273
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/static_rule/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/static_rule/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "static_rule",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3412.15283203125,
+          "mean_safe_bytes_regret": 594.0,
+          "safe_prediction_rate": 0.8888888955116272,
+          "target_accuracy": 0.7638888955116272
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3825.2158203125,
+          "mean_safe_bytes_regret": 532.7567749023438,
+          "safe_prediction_rate": 0.8409090638160706,
+          "target_accuracy": 0.7272727489471436
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 1707.5833740234375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.75,
+          "target_accuracy": 0.75
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 2147.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.75,
+          "target_accuracy": 0.75
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "linear_softmax",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/linear_softmax/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/linear_softmax/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "linear_softmax_compression_weighted",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/linear_softmax_compression_weighted/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/linear_softmax_compression_weighted/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_weighted",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_safe_router",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.3,
+        "fallback_candidate": "M3/affine/4/float16",
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {}
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_safe_router_global/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_safe_router_global/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_safe_router_global",
+      "strategy_kind": "candidate_safe",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_safe_router",
+      "calibration_mode": "per_prompt_family",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.5,
+        "fallback_candidate": "M3/affine/4/float16",
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {
+          "instruction": 0.3,
+          "reasoning": 0.3,
+          "retrieval": 0.3
+        }
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_safe_router_by_family/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_safe_router_by_family/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_safe_router_by_family",
+      "strategy_kind": "candidate_safe",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_linear",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.3,
+        "fallback_candidate": "M3/affine/4/float16",
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {}
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_linear_global/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_linear_global/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_linear_global",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_linear",
+      "calibration_mode": "per_prompt_family",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.5,
+        "fallback_candidate": "M3/affine/4/float16",
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {
+          "instruction": 0.3,
+          "reasoning": 0.3,
+          "retrieval": 0.3
+        }
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_linear_by_family/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_linear_by_family/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_linear_by_family",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_mlp",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.3,
+        "fallback_candidate": "M3/affine/4/float16",
+        "feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "candidate_bytes_over_best_safe",
+          "log_best_safe_total_bytes",
+          "compression_gain_vs_m3",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "hidden_dim": 16,
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {},
+        "research_model_type": "candidate_target_mlp"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_mlp_global/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_mlp_global/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_mlp_global",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_mlp",
+      "calibration_mode": "per_prompt_family",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.5,
+        "fallback_candidate": "M3/affine/4/float16",
+        "feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "candidate_bytes_over_best_safe",
+          "log_best_safe_total_bytes",
+          "compression_gain_vs_m3",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "hidden_dim": 16,
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {
+          "instruction": 0.3,
+          "reasoning": 0.3,
+          "retrieval": 0.3
+        },
+        "research_model_type": "candidate_target_mlp"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_mlp_by_family/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_mlp_by_family/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_mlp_by_family",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_gbdt",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.3,
+        "fallback_candidate": "M3/affine/4/float16",
+        "feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "candidate_bytes_over_best_safe",
+          "log_best_safe_total_bytes",
+          "compression_gain_vs_m3",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {},
+        "research_model_type": "candidate_target_gbdt"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_gbdt_global/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_gbdt_global/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_gbdt_global",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3489.1083984375,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": false,
+      "artifact_path": null,
+      "base_strategy_id": "candidate_target_gbdt",
+      "calibration_mode": "per_prompt_family",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3851.876708984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "research_extended",
+      "model_summary": {
+        "candidate_tokens": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "decision_threshold": 0.5,
+        "fallback_candidate": "M3/affine/4/float16",
+        "feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "candidate_bytes_over_best_safe",
+          "log_best_safe_total_bytes",
+          "compression_gain_vs_m3",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "model_type": "candidate_router",
+        "prompt_family_thresholds": {
+          "instruction": 0.3,
+          "reasoning": 0.3,
+          "retrieval": 0.3
+        },
+        "research_model_type": "candidate_target_gbdt"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3718.53759765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_gbdt_by_family/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_research_extended_broad_20260406/strategies/candidate_target_gbdt_by_family/research_model.json",
+      "runtime_compatible": false,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "candidate_target_gbdt_by_family",
+      "strategy_kind": "candidate_target",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3392.59716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3985.2158203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    }
+  ]
+}

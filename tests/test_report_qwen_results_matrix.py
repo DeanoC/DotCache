@@ -30,10 +30,16 @@ def test_build_report_renders_task_longbench_and_backend_tables(tmp_path: Path) 
                     {
                         "task_name": "retrieval_passkey",
                         "prompt_length": 1024,
+                        "dense_success": 1.0,
                         "exact_success": 1.0,
+                        "exact_matches_dense_output": 1.0,
                         "quality_success": 1.0,
+                        "quality_matches_dense_output": 1.0,
                         "systems_success": 1.0,
+                        "systems_matches_dense_output": 0.0,
+                        "dense_decode_ms_per_step": 200.0,
                         "quality_decode_ms_per_step": 100.0,
+                        "quality_vs_dense_speedup": 2.0,
                         "systems_decode_ms_per_step": 25.0,
                         "systems_vs_quality_speedup": 4.0,
                         "quality_teacher_forced_logit_rmse": 0.4,
@@ -52,9 +58,21 @@ def test_build_report_renders_task_longbench_and_backend_tables(tmp_path: Path) 
             {
                 "rows": [
                     {
+                        "comparison_case": "dense",
+                        "max_prompt_tokens": 4096,
+                        "mean_matches_dense_output": 1.0,
+                        "mean_exact_match": 0.30,
+                        "mean_qa_f1": 0.50,
+                        "mean_decode_ms_per_step": 180.0,
+                        "p95_decode_ms_per_step": 181.0,
+                        "mean_teacher_forced_perplexity_ratio": 1.0,
+                        "mean_teacher_forced_logit_rmse": 0.0,
+                    },
+                    {
                         "comparison_case": "systems",
                         "max_prompt_tokens": 4096,
                         "mean_official_score": 0.44,
+                        "mean_matches_dense_output": 0.9,
                         "mean_exact_match": 0.25,
                         "mean_qa_f1": 0.44,
                         "mean_decode_ms_per_step": 90.0,
@@ -99,12 +117,15 @@ def test_build_report_renders_task_longbench_and_backend_tables(tmp_path: Path) 
     payload, markdown = MODULE.build_report(manifest, output_dir=tmp_path)
     assert payload["title"] == "Qwen Matrix Test"
     assert len(payload["task_rows"]) == 1
-    assert len(payload["longbench_rows"]) == 1
+    assert len(payload["longbench_rows"]) == 2
     assert len(payload["backend_rows"]) == 1
     assert "Task Compare Matrix" in markdown
     assert "LongBench Matrix" in markdown
     assert "Backend Truth Matrix" in markdown
     assert "Qwen/Qwen3.5-27B" in markdown
+    assert "quality_matches_dense" in markdown
+    assert "mean_matches_dense_output" in markdown
+    assert "official_score" in markdown
 
 
 def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path) -> None:
@@ -125,6 +146,7 @@ def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path
                         "comparison_case": "systems",
                         "max_prompt_tokens": 4096,
                         "mean_official_score": 0.44,
+                        "mean_matches_dense_output": 0.5,
                         "mean_exact_match": 0.25,
                         "mean_qa_f1": 0.44,
                         "mean_decode_ms_per_step": 90.0,
@@ -141,4 +163,4 @@ def test_build_report_renders_missing_longbench_ppl_ratio_as_dash(tmp_path: Path
 
     payload, markdown = MODULE.build_report(manifest, output_dir=tmp_path)
     assert len(payload["longbench_rows"]) == 1
-    assert "| Qwen/Qwen3.5-9B | 4096 | systems | 0.440 | 0.250 | 0.440 | 90.000 | 91.000 | 4.000 | - | 0.020 |" in markdown
+    assert "| Qwen/Qwen3.5-9B | 4096 | systems | 0.440 | 0.500 | 0.250 | 0.440 | 90.000 | 91.000 | 4.000 | - | 0.020 |" in markdown

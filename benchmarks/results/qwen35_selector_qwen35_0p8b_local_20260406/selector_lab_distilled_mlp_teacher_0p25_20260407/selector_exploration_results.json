@@ -1,0 +1,410 @@
+{
+  "config": {
+    "calibration": {
+      "binary_thresholds": [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "fraction": 0.25,
+      "linear_offsets": [
+        -1.5,
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
+        1.5
+      ],
+      "min_safe_prediction_rate": 1.0,
+      "min_target_accuracy": 0.999,
+      "seed": 0
+    },
+    "distillation": {
+      "teacher_epochs": 120,
+      "teacher_feature_set_id": "research_extended",
+      "teacher_hidden_dim": 16,
+      "teacher_learning_rate": 0.01,
+      "teacher_seed": 0,
+      "teacher_temperature": 1.0,
+      "teacher_weight": 0.5
+    },
+    "feature_set_id": "runtime_safe",
+    "report_axes": [
+      "min_family_safe_prediction_rate",
+      "min_family_target_accuracy",
+      "mean_predicted_total_bytes",
+      "mean_safe_bytes_regret"
+    ],
+    "serving_smoke": {
+      "command_template": [
+        "bash",
+        "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+        "{output_dir}",
+        "{artifact_path}",
+        "--profiles",
+        "exact",
+        "quality",
+        "--warmup-runs",
+        "0",
+        "--measured-runs",
+        "1",
+        "--max-new-tokens-retrieval",
+        "16",
+        "--max-new-tokens-reasoning",
+        "16",
+        "--max-new-tokens-instruction",
+        "8"
+      ],
+      "enabled": true
+    },
+    "strategies": [
+      {
+        "params": {
+          "teacher_weight": 0.25
+        },
+        "result_id": "linear_softmax_distilled_mlp_teacher_0p25",
+        "strategy_id": "linear_softmax_distilled_mlp_teacher"
+      }
+    ],
+    "suite_root": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/suite",
+    "weighted_selector": {
+      "class_balance": 0.5,
+      "l2": 0.001,
+      "learning_rate": 0.2,
+      "reference_candidate": "M3/affine/4/float16",
+      "safe_bytes_weight": 1.0,
+      "steps": 400,
+      "target_candidate": "M3/affine/4/float16",
+      "unsafe_error_weight": 0.5
+    }
+  },
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3427.775146484375,
+        "mean_safe_bytes_regret": 84.73967742919922,
+        "mean_safe_prediction_rate": 0.9543560147285461,
+        "mean_target_accuracy": 0.9284090995788574,
+        "min_family_safe_prediction_rate": 0.9315340518951416,
+        "min_family_target_accuracy": 0.8926136493682861,
+        "min_variant_safe_prediction_rate": 0.9305555820465088,
+        "min_variant_target_accuracy": 0.875
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/strategies/linear_softmax_distilled_mlp_teacher_0p25/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_distilled_mlp_teacher",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 248,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3759.876708984375,
+          "mean_safe_bytes_regret": 127.10951232910156,
+          "safe_prediction_rate": 0.9315340518951416,
+          "target_accuracy": 0.8926136493682861
+        },
+        {
+          "example_count": 28,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "classes": [
+          "M0/affine/2",
+          "M0/affine/3",
+          "M0/affine/4",
+          "M1/lut/4",
+          "M2/sketch/4",
+          "M3/affine/4/float16",
+          "M4/project/4",
+          "T3/turbo3/3"
+        ],
+        "model_type": "linear_selector_model_distilled",
+        "teacher_epochs": 120,
+        "teacher_feature_names": [
+          "stage_decode",
+          "kind_key",
+          "query_present",
+          "layer_fraction",
+          "kv_head_fraction",
+          "log_sequence_length",
+          "log_token_start",
+          "log_token_age",
+          "token_count",
+          "head_dim",
+          "safe_candidate_count",
+          "trace_rms",
+          "log_trace_abs_max",
+          "trace_channel_range_mean",
+          "trace_outlier_fraction",
+          "age_per_token",
+          "page_distance",
+          "log_page_distance",
+          "page_distance_ge_2",
+          "page_distance_ge_4",
+          "page_distance_ge_8",
+          "token_end_fraction",
+          "token_age_fraction",
+          "age_bucket_ge_64",
+          "age_bucket_ge_256",
+          "age_bucket_ge_1024",
+          "sequence_length_ge_512",
+          "sequence_length_ge_1024",
+          "sequence_length_ge_2048",
+          "decode_old_page_indicator",
+          "decode_long_context_indicator",
+          "decode_key_indicator",
+          "candidate_mode_m0",
+          "candidate_mode_m1",
+          "candidate_mode_m2",
+          "candidate_mode_m3",
+          "candidate_mode_m4",
+          "candidate_mode_t3",
+          "decode_candidate_mode_m0",
+          "decode_candidate_mode_m1",
+          "decode_candidate_mode_m2",
+          "decode_candidate_mode_m3",
+          "decode_candidate_mode_m4",
+          "decode_candidate_mode_t3",
+          "candidate_bits",
+          "candidate_scheme_affine",
+          "candidate_scheme_lut",
+          "candidate_scheme_sketch",
+          "candidate_scheme_project",
+          "candidate_scheme_turbo3",
+          "log_candidate_total_bytes",
+          "log_candidate_payload_bytes",
+          "log_candidate_metadata_bytes",
+          "candidate_has_escape_dtype",
+          "family_instruction",
+          "family_reasoning",
+          "family_retrieval",
+          "variant_arithmetic",
+          "variant_constraints",
+          "variant_formatting",
+          "variant_logic",
+          "variant_memo",
+          "variant_transcript"
+        ],
+        "teacher_feature_set_id": "research_extended",
+        "teacher_hidden_dim": 16,
+        "teacher_learning_rate": 0.01,
+        "teacher_model_type": "candidate_target_mlp",
+        "teacher_seed": 0,
+        "teacher_temperature": 1.0,
+        "teacher_train_safe_prediction_rate": 1.0,
+        "teacher_train_target_accuracy": 1.0,
+        "teacher_weight": 0.25
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 160,
+          "mean_predicted_total_bytes": 3630.53759765625,
+          "mean_safe_bytes_regret": 151.1946258544922,
+          "safe_prediction_rate": 0.93125,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.8875
+        },
+        {
+          "example_count": 28,
+          "mean_predicted_total_bytes": 2763.571533203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 88,
+          "mean_predicted_total_bytes": 3889.2158203125,
+          "mean_safe_bytes_regret": 103.0243911743164,
+          "safe_prediction_rate": 0.9318181818181818,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.8977272727272727
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/strategies/linear_softmax_distilled_mlp_teacher_0p25/predictions.jsonl",
+      "promotable": true,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": {
+        "command": [
+          "bash",
+          "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+          "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher_0p25",
+          "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/strategies/linear_softmax_distilled_mlp_teacher_0p25/selector_artifact.json",
+          "--profiles",
+          "exact",
+          "quality",
+          "--warmup-runs",
+          "0",
+          "--measured-runs",
+          "1",
+          "--max-new-tokens-retrieval",
+          "16",
+          "--max-new-tokens-reasoning",
+          "16",
+          "--max-new-tokens-instruction",
+          "8"
+        ],
+        "json_report_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher_0p25/task_selector_compare.json",
+        "markdown_report_path": "benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher_0p25/task_selector_compare.md",
+        "report": {
+          "rows": [
+            {
+              "exact_decode_ms_per_step": 240.0560990008671,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 673.3384478739026,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.2152162790298462,
+              "quality_teacher_forced_perplexity_ratio": 0.9892489524739062,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "instruction_constraints"
+            },
+            {
+              "exact_decode_ms_per_step": 306.4337447449361,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 854.9207917494641,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.2232251614332199,
+              "quality_teacher_forced_perplexity_ratio": 0.9878295477699766,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "instruction_constraints"
+            },
+            {
+              "exact_decode_ms_per_step": 268.0041325611455,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 666.1224374402082,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.21492063999176025,
+              "quality_teacher_forced_perplexity_ratio": 0.9983029327911569,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "reasoning_arithmetic"
+            },
+            {
+              "exact_decode_ms_per_step": 346.0151379367744,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 945.6198541238336,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.18663440644741058,
+              "quality_teacher_forced_perplexity_ratio": 0.9960201960439382,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "reasoning_arithmetic"
+            },
+            {
+              "exact_decode_ms_per_step": 288.1442577499911,
+              "exact_success": 0.0,
+              "prompt_length": 512,
+              "quality_decode_ms_per_step": 663.2082395617545,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.21601122617721558,
+              "quality_teacher_forced_perplexity_ratio": 0.9966580193634014,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "retrieval_passkey"
+            },
+            {
+              "exact_decode_ms_per_step": 348.9547734352527,
+              "exact_success": 0.0,
+              "prompt_length": 1024,
+              "quality_decode_ms_per_step": 852.7427006238213,
+              "quality_success": 0.0,
+              "quality_teacher_forced_logit_rmse": 0.20086950063705444,
+              "quality_teacher_forced_perplexity_ratio": 0.9973147382233382,
+              "systems_decode_ms_per_step": 0.0,
+              "systems_success": 0.0,
+              "systems_teacher_forced_logit_rmse": null,
+              "systems_teacher_forced_perplexity_ratio": null,
+              "systems_vs_quality_speedup": null,
+              "task_name": "retrieval_passkey"
+            }
+          ]
+        },
+        "returncode": 0,
+        "status": "ok",
+        "stderr_tail": "The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d\n\nLoading weights:   0%|          | 0/473 [00:00<?, ?it/s]\nLoading weights:   0%|          | 1/473 [00:00<07:24,  1.06it/s]\nLoading weights: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 473/473 [00:00<00:00, 498.07it/s]\n\nLoading weights:   0%|          | 0/473 [00:00<?, ?it/s]\nLoading weights:  25%|\u2588\u2588\u258d       | 118/473 [00:00<00:00, 1178.66it/s]\nLoading weights:  54%|\u2588\u2588\u2588\u2588\u2588\u258d    | 257/473 [00:00<00:00, 1293.12it/s]\nLoading weights:  82%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u258f | 387/473 [00:00<00:00, 1046.25it/s]\nLoading weights: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 473/473 [00:00<00:00, 1214.93it/s]\n",
+        "stdout_tail": "ken_p95_error_p95\": 0.0, \"v_m1_trial_token_p95_error_p95_mean\": 0.0, \"v_m1_trial_token_p95_error_p95_median\": 0.0, \"v_m1_trial_token_p95_error_p95_p95\": 0.0, \"v_m2_pages\": 0, \"v_m2_pages_mean\": 0.0, \"v_m2_pages_median\": 0.0, \"v_m2_pages_p95\": 0.0, \"v_m2_sidecar_pages\": 0, \"v_m2_sidecar_pages_mean\": 0.0, \"v_m2_sidecar_pages_median\": 0.0, \"v_m2_sidecar_pages_p95\": 0.0, \"v_m3_pages\": 395, \"v_m3_pages_mean\": 395.0, \"v_m3_pages_median\": 395.0, \"v_m3_pages_p95\": 395.0, \"v_m4_pages\": 0, \"v_m4_pages_mean\": 0.0, \"v_m4_pages_median\": 0.0, \"v_m4_pages_p95\": 0.0, \"v_requested_m1_pages\": 0, \"v_requested_m1_pages_mean\": 0.0, \"v_requested_m1_pages_median\": 0.0, \"v_requested_m1_pages_p95\": 0.0, \"v_total_static_pages\": 768, \"v_total_static_pages_mean\": 768.0, \"v_total_static_pages_median\": 768.0, \"v_total_static_pages_p95\": 768.0, \"vision_config_present\": true, \"warmup_runs\": 0, \"warmup_runs_mean\": 0.0, \"warmup_runs_median\": 0.0, \"warmup_runs_p95\": 0.0}\n# Qwen Task Selector Compare\n\n| task | prompt_length | exact_success | quality_success | systems_success | exact_decode_ms | quality_decode_ms | systems_decode_ms | systems_vs_quality_speedup | quality_ppl_ratio | systems_ppl_ratio | quality_rmse | systems_rmse |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| instruction_constraints | 512 | 0.000 | 0.000 | 0.000 | 240.056 | 673.338 | 0.000 | - | 0.989 | - | 0.215 | - |\n| instruction_constraints | 1024 | 0.000 | 0.000 | 0.000 | 306.434 | 854.921 | 0.000 | - | 0.988 | - | 0.223 | - |\n| reasoning_arithmetic | 512 | 0.000 | 0.000 | 0.000 | 268.004 | 666.122 | 0.000 | - | 0.998 | - | 0.215 | - |\n| reasoning_arithmetic | 1024 | 0.000 | 0.000 | 0.000 | 346.015 | 945.620 | 0.000 | - | 0.996 | - | 0.187 | - |\n| retrieval_passkey | 512 | 0.000 | 0.000 | 0.000 | 288.144 | 663.208 | 0.000 | - | 0.997 | - | 0.216 | - |\n| retrieval_passkey | 1024 | 0.000 | 0.000 | 0.000 | 348.955 | 852.743 | 0.000 | - | 0.997 | - | 0.201 | - |\n\n## Sample Outputs\n\n| task | prompt_length | profile | success | expected | generated_first_line | generated_text |\n| --- | --- | --- | --- | --- | --- | --- |\n| instruction_constraints | 512 | exact | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 512 | quality | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 1024 | exact | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| instruction_constraints | 1024 | quality | 0.000 | STATUS: READY\\nCOLOR: BLUE | </think> | </think>\\n\\nSTATUS: READY\\nCOLOR: |\n| reasoning_arithmetic | 512 | exact | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 512 | quality | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 1024 | exact | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| reasoning_arithmetic | 1024 | quality | 0.000 | 48 | integer> | integer>\\n\\n<think>\\nThinking Process:\\n\\n1.  **Analyze the |\n| retrieval_passkey | 512 | exact | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 512 | quality | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 1024 | exact | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\n| retrieval_passkey | 1024 | quality | 0.000 | RIVER-58142 | IVER-58142 | IVER-58142\\n</think>\\n\\nRIVER-581 |\nWrote JSONL: benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher_0p25/qwen35_0p8b_task_selector_compare.jsonl\nWrote report: benchmarks/results/qwen35_selector_qwen35_0p8b_local_20260406/selector_lab_distilled_mlp_teacher_0p25_20260407/serving_smoke/linear_softmax_distilled_mlp_teacher_0p25/task_selector_compare.md\n"
+      },
+      "status": "ok",
+      "strategy_id": "linear_softmax_distilled_mlp_teacher_0p25",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 72,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3314.375,
+          "mean_safe_bytes_regret": 210.1492462158203,
+          "safe_prediction_rate": 0.9305555820465088,
+          "target_accuracy": 0.875
+        },
+        {
+          "example_count": 176,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3889.2158203125,
+          "mean_safe_bytes_regret": 103.0243911743164,
+          "safe_prediction_rate": 0.9318181872367859,
+          "target_accuracy": 0.8977272510528564
+        },
+        {
+          "example_count": 12,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2411.583251953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 16,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3027.5625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    }
+  ]
+}

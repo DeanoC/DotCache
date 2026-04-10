@@ -1,0 +1,29 @@
+{
+  "fields": [
+    "age_per_token",
+    "best_safe_total_bytes",
+    "head_dim",
+    "kind",
+    "kv_head_fraction",
+    "kv_head_id",
+    "layer_fraction",
+    "layer_id",
+    "prompt_family",
+    "prompt_variant",
+    "query_present",
+    "safe_candidate_count",
+    "source",
+    "stage",
+    "target_candidate",
+    "target_present",
+    "token_age",
+    "token_count",
+    "token_start",
+    "trace_abs_max",
+    "trace_channel_range_mean",
+    "trace_outlier_fraction",
+    "trace_path",
+    "trace_rms"
+  ],
+  "row_count": 499
+}

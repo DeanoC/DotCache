@@ -1,0 +1,49 @@
+{
+  "rows": [
+    {
+      "exact_decode_ms_per_step": 0.0,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 936.3577421886475,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.293269544839859,
+      "quality_teacher_forced_perplexity_ratio": 1.0260448374381723,
+      "systems_decode_ms_per_step": 0.0,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": null,
+      "systems_teacher_forced_perplexity_ratio": null,
+      "systems_vs_quality_speedup": null,
+      "task_name": "instruction_constraints"
+    },
+    {
+      "exact_decode_ms_per_step": 0.0,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 1175.773586689047,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.5386649370193481,
+      "quality_teacher_forced_perplexity_ratio": 1.0028295930637654,
+      "systems_decode_ms_per_step": 0.0,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": null,
+      "systems_teacher_forced_perplexity_ratio": null,
+      "systems_vs_quality_speedup": null,
+      "task_name": "reasoning_arithmetic"
+    },
+    {
+      "exact_decode_ms_per_step": 0.0,
+      "exact_success": 0.0,
+      "prompt_length": 1024,
+      "quality_decode_ms_per_step": 1171.5588762328935,
+      "quality_success": 0.0,
+      "quality_teacher_forced_logit_rmse": 0.2458670735359192,
+      "quality_teacher_forced_perplexity_ratio": 1.0205664815622872,
+      "systems_decode_ms_per_step": 0.0,
+      "systems_success": 0.0,
+      "systems_teacher_forced_logit_rmse": null,
+      "systems_teacher_forced_perplexity_ratio": null,
+      "systems_vs_quality_speedup": null,
+      "task_name": "retrieval_passkey"
+    }
+  ]
+}

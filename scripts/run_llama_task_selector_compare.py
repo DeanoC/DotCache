@@ -61,7 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selector-prompt-family", default="cache")
     parser.add_argument("--selector-prompt-variant", default="locality")
     parser.add_argument("--prompt-lengths", type=int, nargs="+", default=[1024, 2048])
-    parser.add_argument("--profiles", nargs="+", choices=["exact", "quality", "systems"], default=["exact", "quality", "systems"])
+    parser.add_argument(
+        "--profiles",
+        nargs="+",
+        choices=["dense", "exact", "quality", "systems"],
+        default=["dense", "exact", "quality", "systems"],
+    )
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measured-runs", type=int, default=5)
     parser.add_argument("--max-new-tokens-retrieval", type=int, default=64)
@@ -87,6 +92,7 @@ def _strip_chat_artifacts(text: str) -> str:
 def _strip_think_blocks(text: str) -> str:
     cleaned = str(text)
     cleaned = re.sub(r"(?is)<think>.*?</think>", " ", cleaned)
+    cleaned = re.sub(r"(?is)</?think>", " ", cleaned)
     cleaned = re.sub(r"(?im)^\s*thinking process:\s*$", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -94,8 +100,28 @@ def _strip_think_blocks(text: str) -> str:
 def _strip_think_blocks_preserve_lines(text: str) -> str:
     cleaned = str(text)
     cleaned = re.sub(r"(?is)<think>.*?</think>", "\n", cleaned)
+    cleaned = re.sub(r"(?is)</?think>", "\n", cleaned)
     cleaned = re.sub(r"(?im)^\s*thinking process:\s*$", "", cleaned)
     return cleaned
+
+
+def _normalize_nonempty_lines(text: str) -> list[str]:
+    return [line.strip() for line in str(text).splitlines() if line.strip()]
+
+
+def _normalize_contract_lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip().upper() for line in _normalize_nonempty_lines(text)]
+
+
+def _contains_expected_line_block(observed_lines: list[str], expected_lines: list[str]) -> bool:
+    if not expected_lines:
+        return not observed_lines
+    if len(observed_lines) < len(expected_lines):
+        return False
+    for start in range(0, len(observed_lines) - len(expected_lines) + 1):
+        if observed_lines[start : start + len(expected_lines)] == expected_lines:
+            return True
+    return False
 
 
 def _build_suffix_task_inputs(
@@ -131,8 +157,10 @@ def _build_reasoning_inputs(tokenizer, *, device: torch.device, prompt_length: i
     suffix = (
         "A clerk solves a budget worksheet.\n"
         "Compute 17 + 26 - 9 + 14.\n"
-        "You may think silently, but the visible response must end with a final line exactly in the form FINAL: <integer>.\n"
-        "Do not include any words after the final integer.\n"
+        "You may think silently, but the only visible output must be exactly one line.\n"
+        "That line must start with FINAL: followed by the integer answer.\n"
+        "Do not echo the prompt, do not include analysis, and do not output angle brackets.\n"
+        "Answer:\n"
         "FINAL:"
     )
     input_ids, attention_mask = _build_suffix_task_inputs(
@@ -154,12 +182,12 @@ def _build_instruction_inputs(
     answer = "STATUS: READY\nCOLOR: BLUE"
     suffix = (
         "Follow these instructions exactly.\n"
-        "1. Reply with exactly two lines.\n"
-        "2. First line must be: STATUS: READY\n"
-        "3. Second line must be: COLOR: BLUE\n"
-        "4. Do not add any other words, punctuation, explanation, or <think> block.\n"
-        "5. The first visible line must begin immediately with STATUS: READY.\n"
-        "Response:"
+        "1. The only visible output must be exactly two lines.\n"
+        "2. First line: STATUS: READY\n"
+        "3. Second line: COLOR: BLUE\n"
+        "4. Do not repeat the prompt.\n"
+        "5. Do not add any extra words, punctuation, explanation, or <think> block.\n"
+        "Answer:"
     )
     input_ids, attention_mask = _build_suffix_task_inputs(
         tokenizer,
@@ -173,8 +201,9 @@ def _build_instruction_inputs(
 
 def _score_reasoning(generated_text: str, expected_answer: str) -> dict[str, object]:
     stripped = generated_text.strip()
-    first_line = next((line.strip() for line in stripped.splitlines() if line.strip()), "")
-    cleaned = _strip_chat_artifacts(_strip_think_blocks(stripped))
+    cleaned = _strip_chat_artifacts(_strip_think_blocks_preserve_lines(stripped))
+    cleaned_lines = _normalize_nonempty_lines(cleaned)
+    first_line = cleaned_lines[0] if cleaned_lines else ""
     final_match = re.search(r"FINAL:\s*(-?\d+)", cleaned, flags=re.IGNORECASE)
     if final_match:
         predicted = final_match.group(1)
@@ -189,16 +218,22 @@ def _score_reasoning(generated_text: str, expected_answer: str) -> dict[str, obj
             else:
                 all_numbers = re.findall(r"-?\d+", cleaned)
                 predicted = all_numbers[-1] if all_numbers else ""
-    correct = predicted == expected_answer
+    answer_correct = predicted == expected_answer
+    expected_contract_line = f"FINAL: {expected_answer}"
+    contract_correct = _normalize_contract_lines(cleaned) == [expected_contract_line.upper()]
     return {
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
         "task_generated_first_line": first_line,
         "task_generated_text_cleaned": cleaned,
         "task_generated_value": predicted,
-        "task_success": bool(correct),
-        "task_metric_name": "exact_integer_match",
-        "task_metric_value": 1.0 if correct else 0.0,
+        "task_generated_lines": cleaned_lines,
+        "task_contract_expected_line": expected_contract_line,
+        "task_answer_success": bool(answer_correct),
+        "task_contract_success": bool(contract_correct),
+        "task_success": bool(contract_correct),
+        "task_metric_name": "exact_output_contract",
+        "task_metric_value": 1.0 if contract_correct else 0.0,
     }
 
 
@@ -211,20 +246,18 @@ def _score_instruction(generated_text: str, expected_answer: str) -> dict[str, o
     cleaned = _strip_chat_artifacts(_strip_think_blocks_preserve_lines(stripped))
     expected_lines = _normalize_instruction_lines(expected_answer)
     observed_lines = _normalize_instruction_lines(cleaned)
-    correct = observed_lines == expected_lines
-    if not correct and len(observed_lines) >= len(expected_lines):
-        for start in range(0, len(observed_lines) - len(expected_lines) + 1):
-            if observed_lines[start : start + len(expected_lines)] == expected_lines:
-                correct = True
-                break
+    answer_correct = _contains_expected_line_block(observed_lines, expected_lines)
+    contract_correct = observed_lines == expected_lines
     return {
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
         "task_generated_text_cleaned": cleaned,
         "task_generated_lines": observed_lines,
-        "task_success": bool(correct),
-        "task_metric_name": "exact_constraint_following",
-        "task_metric_value": 1.0 if correct else 0.0,
+        "task_answer_success": bool(answer_correct),
+        "task_contract_success": bool(contract_correct),
+        "task_success": bool(contract_correct),
+        "task_metric_name": "exact_output_contract",
+        "task_metric_value": 1.0 if contract_correct else 0.0,
     }
 
 
@@ -238,14 +271,18 @@ def _score_retrieval(generated_text: str, expected_answer: str) -> dict[str, obj
         or normalized_expected == cleaned.rstrip(" .\n\t")
         or normalized_expected in cleaned
     )
+    contract_correct = cleaned == normalized_expected
     return {
         **needle_score,
-        "task_success": bool(answer_present),
-        "task_metric_name": "answer_correct",
-        "task_metric_value": 1.0 if answer_present else 0.0,
+        "task_answer_success": bool(answer_present),
+        "task_contract_success": bool(contract_correct),
+        "task_success": bool(contract_correct),
+        "task_metric_name": "exact_output_contract",
+        "task_metric_value": 1.0 if contract_correct else 0.0,
         "task_expected_answer": expected_answer,
         "task_generated_text": stripped,
         "task_generated_text_cleaned": cleaned,
+        "task_generated_value": cleaned,
     }
 
 
@@ -253,7 +290,7 @@ def _build_harness(args: argparse.Namespace, *, profile: str) -> LlamaDotCacheHa
     auth_kwargs = resolve_hf_auth_kwargs()
     model_config = AutoConfig.from_pretrained(args.model_id, **auth_kwargs)
     head_dim = int(model_config.hidden_size) // int(model_config.num_attention_heads)
-    if profile == "exact":
+    if profile in {"dense", "exact"}:
         selector_path = None
         selector_profile = "quality"
         selector_target_candidate = "M3/affine/4/float16"
@@ -319,8 +356,8 @@ def _task_specs(
         needle_template="Important detail: the {needle_key} is {needle_value}. Remember it exactly.\n",
         question_template=(
             "Question: What is the {needle_key}? "
-            "The first visible output token must begin the exact value only. "
-            "Do not include analysis, <think>, or any extra words.\n"
+            "Return only the exact value on a single line. "
+            "Do not include analysis, <think>, punctuation, or any extra words.\n"
             "Answer:"
         ),
     )
@@ -378,6 +415,24 @@ def _append_record(path: Path, record: dict[str, Any]) -> None:
         handle.write("\n")
 
 
+def _result_generated_ids(record: dict[str, Any], *, profile: str) -> list[int]:
+    if profile == "dense":
+        return list(record.get("dense_generated_ids") or [])
+    return list(record.get("dotcache_generated_ids") or [])
+
+
+def _result_generated_text(record: dict[str, Any], *, profile: str) -> str:
+    if profile == "dense":
+        return str(record.get("dense_text", ""))
+    return str(record.get("dotcache_text", ""))
+
+
+def _record_decode_ms_per_step(record: dict[str, Any], *, profile: str) -> float:
+    if profile == "dense":
+        return float(record.get("dense_decode_ms_per_step", 0.0) or 0.0)
+    return float(record.get("decode_ms_per_step", 0.0) or 0.0)
+
+
 def _run_case(
     harness: LlamaDotCacheHarness,
     *,
@@ -413,7 +468,7 @@ def main() -> int:
                         attention_mask=task_spec["attention_mask"],
                         decode_steps=int(task_spec["decode_steps"]),
                     )
-                    decoded = str(warmup_record.get("dotcache_text", ""))
+                    decoded = _result_generated_text(warmup_record, profile=profile)
                     warmup_record.update(
                         {
                             "benchmark": "llama_task_selector_compare",
@@ -427,6 +482,8 @@ def main() -> int:
                             "warmup_runs": int(args.warmup_runs),
                             "measured_runs": int(args.measured_runs),
                             "prompt_length_requested": int(prompt_length),
+                            "task_generated_token_ids": _result_generated_ids(warmup_record, profile=profile),
+                            "task_decode_ms_per_step": _record_decode_ms_per_step(warmup_record, profile=profile),
                         }
                     )
                     warmup_record.update(task_spec["score_fn"](decoded))
@@ -442,7 +499,7 @@ def main() -> int:
                         attention_mask=task_spec["attention_mask"],
                         decode_steps=int(task_spec["decode_steps"]),
                     )
-                    decoded = str(record.get("dotcache_text", ""))
+                    decoded = _result_generated_text(record, profile=profile)
                     record.update(
                         {
                             "benchmark": "llama_task_selector_compare",
@@ -456,6 +513,8 @@ def main() -> int:
                             "warmup_runs": int(args.warmup_runs),
                             "measured_runs": int(args.measured_runs),
                             "prompt_length_requested": int(prompt_length),
+                            "task_generated_token_ids": _result_generated_ids(record, profile=profile),
+                            "task_decode_ms_per_step": _record_decode_ms_per_step(record, profile=profile),
                         }
                     )
                     record.update(task_spec["score_fn"](decoded))

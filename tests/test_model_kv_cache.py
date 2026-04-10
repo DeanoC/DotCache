@@ -19,7 +19,16 @@ from dotcache.model_kv_cache import (
     _grouped_pages_can_batch,
     default_q_head_to_kv_head,
 )
-from dotcache.selector_baselines import LinearSelectorModel, RUNTIME_SELECTOR_FEATURE_NAMES, save_linear_selector_model
+from dotcache.selector_baselines import (
+    CandidateSafeLinearSelectorModel,
+    CandidateSafeRouterModel,
+    CandidateTargetLinearSelectorModel,
+    CandidateTargetRouterModel,
+    LinearSelectorModel,
+    RUNTIME_SELECTOR_FEATURE_NAMES,
+    save_linear_selector_model,
+    save_page_selector_artifact,
+)
 from dotcache.tracing import ExecutionTrace
 
 
@@ -438,10 +447,189 @@ def test_model_paged_kv_cache_can_apply_learned_page_selector_logit_offset(tmp_p
     assert cache._states[(0, 0)].session.key_pages[0].header.mode_default == "M3"
     assert cache._states[(0, 0)].session.value_pages[0].header.mode_default == "M3"
 
+
+def test_model_paged_kv_cache_can_use_candidate_safe_router_artifact(tmp_path) -> None:
+    rng = np.random.default_rng(30414)
+    artifact_path = tmp_path / "candidate_safe_router_model.json"
+    safe_model = CandidateSafeLinearSelectorModel(
+        weight=np.zeros((26,), dtype=np.float32),
+        bias=0.0,
+        feature_mean=np.zeros((26,), dtype=np.float32),
+        feature_std=np.ones((26,), dtype=np.float32),
+        feature_names=(
+            "stage_decode",
+            "kind_key",
+            "query_present",
+            "layer_fraction",
+            "kv_head_fraction",
+            "log_sequence_length",
+            "log_token_start",
+            "log_token_age",
+            "token_count",
+            "head_dim",
+            "trace_rms",
+            "log_trace_abs_max",
+            "trace_channel_range_mean",
+            "trace_outlier_fraction",
+            "age_per_token",
+            "candidate_mode_m0",
+            "candidate_mode_m1",
+            "candidate_mode_m2",
+            "candidate_mode_m3",
+            "candidate_mode_m4",
+            "candidate_mode_t3",
+            "candidate_bits",
+            "candidate_scheme_affine",
+            "log_candidate_total_bytes",
+            "log_candidate_payload_bytes",
+            "log_candidate_metadata_bytes",
+        ),
+        decision_threshold=0.5,
+    )
+    save_page_selector_artifact(
+        CandidateSafeRouterModel(
+            safe_model=safe_model,
+            candidate_tokens=("M0/affine/4", "M3/affine/4/float16"),
+            fallback_candidate="M3/affine/4/float16",
+        ),
+        artifact_path,
+    )
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        learned_page_selector_path=str(artifact_path),
+        learned_page_selector_prompt_family="cache",
+        learned_page_selector_prompt_variant="locality",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+
+    assert cache._states[(0, 0)].session.key_pages[0].header.mode_default == "M0"
+    assert cache._states[(0, 0)].session.value_pages[0].header.mode_default == "M0"
+    assert bool(summary["learned_page_selector_enabled"]) is True
+    assert summary["learned_page_selector_prediction_counts"] == {"M0/affine/4": int(summary["total_static_pages"])}
+
     summary = cache.page_mode_summary()
     assert summary["learned_page_selector_profile"] == "quality"
     assert summary["learned_page_selector_target_candidate"] == "M3/affine/4/float16"
-    assert float(summary["learned_page_selector_logit_offset"]) == 1.0
+    assert float(summary["learned_page_selector_logit_offset"]) == 0.0
+
+
+def test_model_paged_kv_cache_can_use_candidate_target_router_artifact(tmp_path) -> None:
+    rng = np.random.default_rng(30415)
+    artifact_path = tmp_path / "candidate_target_router_model.json"
+    target_model = CandidateTargetLinearSelectorModel(
+        weight=np.asarray(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -2.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float32,
+        ),
+        bias=0.0,
+        feature_mean=np.zeros((26,), dtype=np.float32),
+        feature_std=np.ones((26,), dtype=np.float32),
+        feature_names=(
+            "stage_decode",
+            "kind_key",
+            "query_present",
+            "layer_fraction",
+            "kv_head_fraction",
+            "log_sequence_length",
+            "log_token_start",
+            "log_token_age",
+            "token_count",
+            "head_dim",
+            "trace_rms",
+            "log_trace_abs_max",
+            "trace_channel_range_mean",
+            "trace_outlier_fraction",
+            "age_per_token",
+            "candidate_mode_m0",
+            "candidate_mode_m1",
+            "candidate_mode_m2",
+            "candidate_mode_m3",
+            "candidate_mode_m4",
+            "candidate_mode_t3",
+            "candidate_bits",
+            "candidate_scheme_affine",
+            "log_candidate_total_bytes",
+            "log_candidate_payload_bytes",
+            "log_candidate_metadata_bytes",
+        ),
+        decision_threshold=0.5,
+    )
+    save_page_selector_artifact(
+        CandidateTargetRouterModel(
+            target_model=target_model,
+            candidate_tokens=("M0/affine/4", "M3/affine/4/float16"),
+            fallback_candidate="M3/affine/4/float16",
+            prompt_family_thresholds={"cache": 0.4},
+        ),
+        artifact_path,
+    )
+    config = DotCacheConfig(
+        head_dim=32,
+        group_size=32,
+        bits_k=4,
+        bits_v=4,
+        tokens_per_page=4,
+        learned_page_selector_path=str(artifact_path),
+        learned_page_selector_prompt_family="cache",
+        learned_page_selector_prompt_variant="locality",
+    )
+    cache = ModelPagedKVCache(
+        config=config,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        backend="cpu_ref",
+    )
+    layer_keys = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+    layer_values = rng.normal(size=(2, 8, config.head_dim)).astype(np.float32)
+
+    cache.ingest_prefill_cache(0, layer_keys, layer_values)
+    summary = cache.page_mode_summary()
+
+    assert bool(summary["learned_page_selector_enabled"]) is True
+    assert summary["learned_page_selector_prediction_counts"] == {"M3/affine/4/float16": int(summary["total_static_pages"])}
 
 
 def test_dotcache_config_resolves_specific_mode_overrides() -> None:
