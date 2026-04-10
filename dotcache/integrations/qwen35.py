@@ -7,6 +7,7 @@ import math
 import numpy as np
 import os
 import sys
+import time
 import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
@@ -27,6 +28,7 @@ from .llama import (
     _normalize_input_ids,
     _require_transformers,
     _run_inference,
+    _synchronize_device,
     LlamaReplayRecord,
     _torch_backend_matches_device,
     _timed_call,
@@ -76,6 +78,168 @@ _QWEN35_890M_CONTEXT_BANDED_READOUT_RENORM_FULL: dict[int, int] = {5: 2, 8: 2, 1
 _QWEN35_890M_CONTEXT_BANDED_READOUT_RENORM_EARLY: dict[int, int] = {5: 2, 8: 2}
 _QWEN35_890M_M3_OUTLIER_PAIR_OVERRIDES: dict[int, Qwen35DeltaNetStateCacheMode] = {4: "M3", 20: "M3"}
 _QWEN35_890M_LONG_HORIZON_GROUP_ESCAPE_OVERRIDES: dict[int, int] = {18: 8, 20: 8}
+
+
+@dataclass(slots=True)
+class Qwen35DenseStagePhaseProfile:
+    qkv_projection_ms: float = 0.0
+    kv_append_write_ms: float = 0.0
+    output_projection_ms: float = 0.0
+    linear_conv_ms: float = 0.0
+    linear_attention_ms: float = 0.0
+    linear_chunk_prepare_ms: float = 0.0
+    linear_chunk_solve_ms: float = 0.0
+    linear_chunk_scan_ms: float = 0.0
+    linear_chunk_local_attn_ms: float = 0.0
+    linear_chunk_recurrent_read_ms: float = 0.0
+    linear_chunk_state_update_ms: float = 0.0
+    full_attention_ms: float = 0.0
+    mlp_ms: float = 0.0
+
+    def to_result_dict(self, *, prefix: str) -> dict[str, float]:
+        return {
+            f"{prefix}_stage_qkv_projection_ms": float(self.qkv_projection_ms),
+            f"{prefix}_stage_kv_append_write_ms": float(self.kv_append_write_ms),
+            f"{prefix}_stage_output_projection_ms": float(self.output_projection_ms),
+            f"{prefix}_stage_linear_conv_ms": float(self.linear_conv_ms),
+            f"{prefix}_stage_linear_attention_ms": float(self.linear_attention_ms),
+            f"{prefix}_stage_linear_chunk_prepare_ms": float(self.linear_chunk_prepare_ms),
+            f"{prefix}_stage_linear_chunk_solve_ms": float(self.linear_chunk_solve_ms),
+            f"{prefix}_stage_linear_chunk_scan_ms": float(self.linear_chunk_scan_ms),
+            f"{prefix}_stage_linear_chunk_local_attn_ms": float(self.linear_chunk_local_attn_ms),
+            f"{prefix}_stage_linear_chunk_recurrent_read_ms": float(self.linear_chunk_recurrent_read_ms),
+            f"{prefix}_stage_linear_chunk_state_update_ms": float(self.linear_chunk_state_update_ms),
+            f"{prefix}_stage_full_attention_ms": float(self.full_attention_ms),
+            f"{prefix}_stage_mlp_ms": float(self.mlp_ms),
+        }
+
+
+@dataclass(slots=True)
+class Qwen35DenseStageProfiler:
+    prefill: Qwen35DenseStagePhaseProfile = field(default_factory=Qwen35DenseStagePhaseProfile)
+    decode: Qwen35DenseStagePhaseProfile = field(default_factory=Qwen35DenseStagePhaseProfile)
+    active_phase: Literal["prefill", "decode"] | None = None
+
+    def reset(self) -> None:
+        self.prefill = Qwen35DenseStagePhaseProfile()
+        self.decode = Qwen35DenseStagePhaseProfile()
+        self.active_phase = None
+
+    def begin_phase(self, phase: Literal["prefill", "decode"]) -> None:
+        self.active_phase = phase
+
+    def end_phase(self) -> None:
+        self.active_phase = None
+
+    def add(self, stage_name: str, millis: float) -> None:
+        if self.active_phase is None:
+            return
+        phase_profile = self.prefill if self.active_phase == "prefill" else self.decode
+        setattr(phase_profile, stage_name, float(getattr(phase_profile, stage_name)) + float(millis))
+
+    def to_result_dict(self) -> dict[str, float]:
+        result = {}
+        result.update(self.prefill.to_result_dict(prefix="dense_prefill"))
+        result.update(self.decode.to_result_dict(prefix="dense_decode"))
+        return result
+
+
+_ACTIVE_QWEN35_DENSE_STAGE_PROFILER: Qwen35DenseStageProfiler | None = None
+
+
+def _profile_qwen35_stage_call(stage_name: str, device: Any | None, fn):
+    profiler = _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+    if profiler is None or profiler.active_phase is None or device is None:
+        return fn()
+    result, elapsed = _timed_call(fn, device=device)
+    profiler.add(stage_name, elapsed)
+    return result
+
+
+def _extract_tensor_device(value: Any) -> Any | None:
+    if torch is None:
+        return None
+    if torch.is_tensor(value):
+        return value.device
+    if isinstance(value, dict):
+        for nested in value.values():
+            device = _extract_tensor_device(nested)
+            if device is not None:
+                return device
+        return None
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            device = _extract_tensor_device(nested)
+            if device is not None:
+                return device
+    return None
+
+
+def _module_device(module: Any) -> Any | None:
+    if torch is None:
+        return None
+    for parameter in module.parameters(recurse=False):
+        return parameter.device
+    for buffer in module.buffers(recurse=False):
+        return buffer.device
+    return None
+
+
+def _install_qwen35_dense_stage_cache_wrappers() -> None:
+    if torch is None:
+        return
+    import transformers.cache_utils as cache_utils
+
+    if not getattr(cache_utils.Cache.update, "_dotcache_qwen35_stage_profile_wrapped", False):
+        original_update = cache_utils.Cache.update
+
+        def _profiled_update(self, key_states, value_states, layer_idx, *args, **kwargs):
+            profiler = _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+            if profiler is None or profiler.active_phase is None:
+                return original_update(self, key_states, value_states, layer_idx, *args, **kwargs)
+            result, elapsed = _timed_call(
+                lambda: original_update(self, key_states, value_states, layer_idx, *args, **kwargs),
+                device=key_states.device,
+            )
+            profiler.add("kv_append_write_ms", elapsed)
+            return result
+
+        setattr(_profiled_update, "_dotcache_qwen35_stage_profile_wrapped", True)
+        cache_utils.Cache.update = _profiled_update
+
+    if not getattr(cache_utils.Cache.update_conv_state, "_dotcache_qwen35_stage_profile_wrapped", False):
+        original_update_conv_state = cache_utils.Cache.update_conv_state
+
+        def _profiled_update_conv_state(self, conv_states, layer_idx, **kwargs):
+            profiler = _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+            if profiler is None or profiler.active_phase is None:
+                return original_update_conv_state(self, conv_states, layer_idx, **kwargs)
+            result, elapsed = _timed_call(
+                lambda: original_update_conv_state(self, conv_states, layer_idx, **kwargs),
+                device=conv_states.device,
+            )
+            profiler.add("kv_append_write_ms", elapsed)
+            return result
+
+        setattr(_profiled_update_conv_state, "_dotcache_qwen35_stage_profile_wrapped", True)
+        cache_utils.Cache.update_conv_state = _profiled_update_conv_state
+
+    if not getattr(cache_utils.Cache.update_recurrent_state, "_dotcache_qwen35_stage_profile_wrapped", False):
+        original_update_recurrent_state = cache_utils.Cache.update_recurrent_state
+
+        def _profiled_update_recurrent_state(self, recurrent_states, layer_idx, **kwargs):
+            profiler = _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+            if profiler is None or profiler.active_phase is None:
+                return original_update_recurrent_state(self, recurrent_states, layer_idx, **kwargs)
+            result, elapsed = _timed_call(
+                lambda: original_update_recurrent_state(self, recurrent_states, layer_idx, **kwargs),
+                device=recurrent_states.device,
+            )
+            profiler.add("kv_append_write_ms", elapsed)
+            return result
+
+        setattr(_profiled_update_recurrent_state, "_dotcache_qwen35_stage_profile_wrapped", True)
+        cache_utils.Cache.update_recurrent_state = _profiled_update_recurrent_state
 
 
 def _require_qwen35_model_class() -> None:
@@ -242,6 +406,215 @@ def _qwen35_attention_head_dim(model_or_config: Any) -> int:
     return int(getattr(text_config, "head_dim", int(text_config.hidden_size) // int(text_config.num_attention_heads)))
 
 
+def _profiled_qwen35_chunk_gated_delta_rule(
+    query,
+    key,
+    value,
+    g,
+    beta,
+    chunk_size=64,
+    initial_state=None,
+    output_final_state=False,
+    use_qk_l2norm_in_kernel=False,
+):
+    if qwen35_mod is None or torch is None:
+        raise RuntimeError("Qwen3.5 chunk-gated delta rule profiling requires transformers + torch")
+    device = query.device
+    initial_dtype = query.dtype
+
+    def _prepare():
+        local_query = query
+        local_key = key
+        if use_qk_l2norm_in_kernel:
+            local_query = qwen35_mod.l2norm(local_query, dim=-1, eps=1e-6)
+            local_key = qwen35_mod.l2norm(local_key, dim=-1, eps=1e-6)
+        local_query, local_key, local_value, local_beta, local_g = [
+            x.transpose(1, 2).contiguous().to(torch.float32) for x in (local_query, local_key, value, beta, g)
+        ]
+        batch_size, num_heads, sequence_length, k_head_dim = local_key.shape
+        v_head_dim = local_value.shape[-1]
+        pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size
+        local_query = qwen35_mod.F.pad(local_query, (0, 0, 0, pad_size))
+        local_key = qwen35_mod.F.pad(local_key, (0, 0, 0, pad_size))
+        local_value = qwen35_mod.F.pad(local_value, (0, 0, 0, pad_size))
+        local_beta = qwen35_mod.F.pad(local_beta, (0, pad_size))
+        local_g = qwen35_mod.F.pad(local_g, (0, pad_size))
+        total_sequence_length = sequence_length + pad_size
+        scale = 1 / (local_query.shape[-1] ** 0.5)
+        local_query = local_query * scale
+        v_beta = local_value * local_beta.unsqueeze(-1)
+        k_beta = local_key * local_beta.unsqueeze(-1)
+        local_query, local_key, local_value, k_beta, v_beta = [
+            x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1])
+            for x in (local_query, local_key, local_value, k_beta, v_beta)
+        ]
+        local_g = local_g.reshape(local_g.shape[0], local_g.shape[1], -1, chunk_size)
+        return (
+            local_query,
+            local_key,
+            local_value,
+            local_g,
+            k_beta,
+            v_beta,
+            sequence_length,
+            total_sequence_length,
+            batch_size,
+            num_heads,
+            k_head_dim,
+            v_head_dim,
+        )
+
+    (
+        query_f,
+        key_f,
+        value_f,
+        g_f,
+        k_beta,
+        v_beta,
+        sequence_length,
+        total_sequence_length,
+        batch_size,
+        num_heads,
+        k_head_dim,
+        v_head_dim,
+    ) = _profile_qwen35_stage_call("linear_chunk_prepare_ms", device, _prepare)
+
+    def _solve():
+        mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query_f.device), diagonal=0)
+        g_cumsum = g_f.cumsum(dim=-1)
+        decay_mask = ((g_cumsum.unsqueeze(-1) - g_cumsum.unsqueeze(-2)).tril().exp().float()).tril()
+        attn = -((k_beta @ key_f.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
+        for i in range(1, chunk_size):
+            row = attn[..., i, :i].clone()
+            sub = attn[..., :i, :i].clone()
+            attn[..., i, :i] = row + (row.unsqueeze(-1) * sub).sum(-2)
+        attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
+        solved_value = attn @ v_beta
+        solved_k_cumdecay = attn @ (k_beta * g_cumsum.exp().unsqueeze(-1))
+        local_mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query_f.device), diagonal=1)
+        return g_cumsum, decay_mask, solved_value, solved_k_cumdecay, local_mask
+
+    g_cumsum, decay_mask, solved_value, k_cumdecay, local_mask = _profile_qwen35_stage_call(
+        "linear_chunk_solve_ms", device, _solve
+    )
+
+    def _scan():
+        last_recurrent_state = (
+            torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(solved_value)
+            if initial_state is None
+            else initial_state.to(solved_value)
+        )
+        core_attn_out = torch.zeros_like(solved_value)
+        for chunk_idx in range(0, total_sequence_length // chunk_size):
+            q_i, k_i, v_i = query_f[:, :, chunk_idx], key_f[:, :, chunk_idx], solved_value[:, :, chunk_idx]
+
+            def _recurrent_read():
+                v_prime = k_cumdecay[:, :, chunk_idx] @ last_recurrent_state
+                attn_inter = (q_i * g_cumsum[:, :, chunk_idx, :, None].exp()) @ last_recurrent_state
+                return v_prime, attn_inter
+
+            v_prime, attn_inter = _profile_qwen35_stage_call(
+                "linear_chunk_recurrent_read_ms", device, _recurrent_read
+            )
+            v_new = v_i - v_prime
+
+            def _local_attn():
+                attn_local = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, chunk_idx]).masked_fill_(local_mask, 0)
+                return attn_local, attn_local @ v_new
+
+            attn_local, local_out = _profile_qwen35_stage_call(
+                "linear_chunk_local_attn_ms", device, _local_attn
+            )
+            core_attn_out[:, :, chunk_idx] = attn_inter + local_out
+
+            def _state_update():
+                return (
+                    last_recurrent_state * g_cumsum[:, :, chunk_idx, -1, None, None].exp()
+                    + (k_i * (g_cumsum[:, :, chunk_idx, -1, None] - g_cumsum[:, :, chunk_idx]).exp()[..., None])
+                    .transpose(-1, -2)
+                    @ v_new
+                )
+
+            last_recurrent_state = _profile_qwen35_stage_call(
+                "linear_chunk_state_update_ms", device, _state_update
+            )
+        return core_attn_out, last_recurrent_state
+
+    core_attn_out, last_recurrent_state = _profile_qwen35_stage_call("linear_chunk_scan_ms", device, _scan)
+
+    if not output_final_state:
+        last_recurrent_state = None
+    core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], core_attn_out.shape[1], -1, core_attn_out.shape[-1])
+    core_attn_out = core_attn_out[:, :, :sequence_length]
+    core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
+    return core_attn_out, last_recurrent_state
+
+
+def _profiled_qwen35_recurrent_gated_delta_rule(
+    query, key, value, g, beta, initial_state, output_final_state, use_qk_l2norm_in_kernel=False
+):
+    if qwen35_mod is None or torch is None:
+        raise RuntimeError("Qwen3.5 recurrent delta rule profiling requires transformers + torch")
+    device = query.device
+    initial_dtype = query.dtype
+
+    def _prepare():
+        local_query = query
+        local_key = key
+        if use_qk_l2norm_in_kernel:
+            local_query = qwen35_mod.l2norm(local_query, dim=-1, eps=1e-6)
+            local_key = qwen35_mod.l2norm(local_key, dim=-1, eps=1e-6)
+        local_query, local_key, local_value, local_beta, local_g = [
+            x.transpose(1, 2).contiguous().to(torch.float32) for x in (local_query, local_key, value, beta, g)
+        ]
+        batch_size, num_heads, sequence_length, k_head_dim = local_key.shape
+        v_head_dim = local_value.shape[-1]
+        local_query = local_query * (1 / (local_query.shape[-1] ** 0.5))
+        core_attn_out = torch.zeros(batch_size, num_heads, sequence_length, v_head_dim).to(local_value)
+        last_state = (
+            torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim).to(local_value)
+            if initial_state is None
+            else initial_state.to(local_value)
+        )
+        return local_query, local_key, local_value, local_beta, local_g, core_attn_out, last_state
+
+    local_query, local_key, local_value, local_beta, local_g, core_attn_out, last_recurrent_state = (
+        _profile_qwen35_stage_call("linear_chunk_prepare_ms", device, _prepare)
+    )
+
+    def _scan():
+        nonlocal last_recurrent_state
+        for index in range(local_key.shape[2]):
+            q_t = local_query[:, :, index]
+            k_t = local_key[:, :, index]
+            v_t = local_value[:, :, index]
+            g_t = local_g[:, :, index].exp().unsqueeze(-1).unsqueeze(-1)
+            beta_t = local_beta[:, :, index].unsqueeze(-1)
+
+            def _state_update():
+                state = last_recurrent_state * g_t
+                kv_mem = (state * k_t.unsqueeze(-1)).sum(dim=-2)
+                delta = (v_t - kv_mem) * beta_t
+                state = state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)
+                return state
+
+            last_recurrent_state = _profile_qwen35_stage_call(
+                "linear_chunk_state_update_ms", device, _state_update
+            )
+
+            def _read():
+                return (last_recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2)
+
+            core_attn_out[:, :, index] = _profile_qwen35_stage_call("linear_chunk_recurrent_read_ms", device, _read)
+        return core_attn_out, last_recurrent_state
+
+    core_attn_out, last_recurrent_state = _profile_qwen35_stage_call("linear_chunk_scan_ms", device, _scan)
+    if not output_final_state:
+        last_recurrent_state = None
+    core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
+    return core_attn_out, last_recurrent_state
+
+
 def _configure_qwen35_linear_attention_runtime(model_or_config: Any) -> None:
     if qwen35_mod is None or torch is None:
         return
@@ -266,8 +639,8 @@ def _configure_qwen35_linear_attention_runtime(model_or_config: Any) -> None:
             continue
         linear_attn.causal_conv1d_fn = None
         linear_attn.causal_conv1d_update = qwen35_mod.torch_causal_conv1d_update
-        linear_attn.chunk_gated_delta_rule = qwen35_mod.torch_chunk_gated_delta_rule
-        linear_attn.recurrent_gated_delta_rule = qwen35_mod.torch_recurrent_gated_delta_rule
+        linear_attn.chunk_gated_delta_rule = _profiled_qwen35_chunk_gated_delta_rule
+        linear_attn.recurrent_gated_delta_rule = _profiled_qwen35_recurrent_gated_delta_rule
         if type(linear_attn.norm).__name__ != "Qwen3_5RMSNormGated":
             fallback_norm = qwen35_mod.Qwen3_5RMSNormGated(
                 linear_attn.head_v_dim,
@@ -1851,23 +2224,6 @@ def _decode_text(tokenizer: Any | None, token_ids: list[int]) -> str | None:
     return str(tokenizer.decode(token_ids, skip_special_tokens=True))
 
 
-def _maybe_stop_decoding(
-    tokenizer: Any | None,
-    generated_ids: list[int],
-    *,
-    stop_token_ids: set[int] | None = None,
-    stop_sequences: tuple[str, ...] = (),
-) -> tuple[bool, str | None]:
-    if generated_ids and stop_token_ids and int(generated_ids[-1]) in stop_token_ids:
-        return True, f"token:{int(generated_ids[-1])}"
-    if stop_sequences:
-        decoded_text = _decode_text(tokenizer, generated_ids) or ""
-        for sequence in stop_sequences:
-            if sequence and sequence in decoded_text:
-                return True, f"text:{sequence}"
-    return False, None
-
-
 def load_qwen35_text_only_from_pretrained(
     model_id: str,
     *,
@@ -1912,9 +2268,16 @@ def load_qwen35_text_only_from_pretrained(
 class Qwen35TextModelAdapter:
     model: Any
     mode: Qwen35Mode = "dense"
+    profile_dense_stages: bool = False
+    _dense_stage_profiler: Qwen35DenseStageProfiler | None = field(default=None, init=False, repr=False)
+    _dense_stage_handles: list[Any] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         _configure_qwen35_linear_attention_runtime(self.model)
+        if self.profile_dense_stages:
+            self._dense_stage_profiler = Qwen35DenseStageProfiler()
+            _install_qwen35_dense_stage_cache_wrappers()
+            self._install_dense_stage_profiling()
 
     @property
     def device(self):
@@ -1938,6 +2301,89 @@ class Qwen35TextModelAdapter:
 
     def partition_hybrid_state(self, cache: Any) -> Qwen35HybridStatePartition:
         return partition_qwen35_hybrid_state(cache, self.model)
+
+    def _install_dense_stage_profiling(self) -> None:
+        if torch is None or self._dense_stage_profiler is None:
+            return
+        text_model = _qwen35_text_model(self.model)
+        layers = getattr(text_model, "layers", None)
+        if layers is None:
+            return
+        layer_types = _hybrid_layer_types(self.model)
+        for layer_id, layer in enumerate(layers[: len(layer_types)]):
+            self._register_dense_stage_module(layer.mlp, "mlp_ms")
+            if layer_types[layer_id] == "linear_attention" and hasattr(layer, "linear_attn"):
+                linear_attn = layer.linear_attn
+                self._register_dense_stage_module(linear_attn, "linear_attention_ms")
+                self._register_dense_stage_module(linear_attn.in_proj_qkv, "qkv_projection_ms")
+                self._register_dense_stage_module(linear_attn.in_proj_z, "qkv_projection_ms")
+                self._register_dense_stage_module(linear_attn.in_proj_b, "qkv_projection_ms")
+                self._register_dense_stage_module(linear_attn.in_proj_a, "qkv_projection_ms")
+                self._register_dense_stage_module(linear_attn.conv1d, "linear_conv_ms")
+                self._register_dense_stage_module(linear_attn.out_proj, "output_projection_ms")
+            elif layer_types[layer_id] == "full_attention" and hasattr(layer, "self_attn"):
+                self_attn = layer.self_attn
+                self._register_dense_stage_module(self_attn, "full_attention_ms")
+                self._register_dense_stage_module(self_attn.q_proj, "qkv_projection_ms")
+                self._register_dense_stage_module(self_attn.k_proj, "qkv_projection_ms")
+                self._register_dense_stage_module(self_attn.v_proj, "qkv_projection_ms")
+                self._register_dense_stage_module(self_attn.o_proj, "output_projection_ms")
+
+    def _register_dense_stage_module(self, module: Any, stage_name: str) -> None:
+        if torch is None or self._dense_stage_profiler is None:
+            return
+
+        def _pre_hook(mod: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+            profiler = self._dense_stage_profiler
+            if profiler is None or profiler.active_phase is None:
+                return
+            device = _extract_tensor_device((args, kwargs)) or _module_device(mod)
+            if device is not None:
+                _synchronize_device(device)
+            mod._dotcache_qwen35_stage_profile_start = (time.perf_counter(), device)
+
+        def _post_hook(mod: Any, args: tuple[Any, ...], kwargs: dict[str, Any], output: Any) -> None:
+            profiler = self._dense_stage_profiler
+            if profiler is None or profiler.active_phase is None:
+                return
+            start_record = getattr(mod, "_dotcache_qwen35_stage_profile_start", None)
+            if start_record is None:
+                return
+            if hasattr(mod, "_dotcache_qwen35_stage_profile_start"):
+                delattr(mod, "_dotcache_qwen35_stage_profile_start")
+            start_time, device = start_record
+            if device is None:
+                device = _extract_tensor_device(output) or _module_device(mod)
+            if device is not None:
+                _synchronize_device(device)
+            profiler.add(stage_name, (time.perf_counter() - start_time) * 1000.0)
+
+        self._dense_stage_handles.append(module.register_forward_pre_hook(_pre_hook, with_kwargs=True))
+        self._dense_stage_handles.append(module.register_forward_hook(_post_hook, with_kwargs=True))
+
+    def reset_dense_stage_profile(self) -> None:
+        if self._dense_stage_profiler is not None:
+            self._dense_stage_profiler.reset()
+
+    def begin_dense_stage_phase(self, phase: Literal["prefill", "decode"]) -> None:
+        global _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+        if self._dense_stage_profiler is None:
+            return
+        self._dense_stage_profiler.begin_phase(phase)
+        _ACTIVE_QWEN35_DENSE_STAGE_PROFILER = self._dense_stage_profiler
+
+    def end_dense_stage_phase(self) -> None:
+        global _ACTIVE_QWEN35_DENSE_STAGE_PROFILER
+        if self._dense_stage_profiler is None:
+            return
+        self._dense_stage_profiler.end_phase()
+        if _ACTIVE_QWEN35_DENSE_STAGE_PROFILER is self._dense_stage_profiler:
+            _ACTIVE_QWEN35_DENSE_STAGE_PROFILER = None
+
+    def dense_stage_summary(self) -> dict[str, float]:
+        if self._dense_stage_profiler is None:
+            return {}
+        return self._dense_stage_profiler.to_result_dict()
 
 
 class CaptureQwen35DeltaNet(nn.Module):
@@ -2580,6 +3026,7 @@ class Qwen35TextHarness:
         device: str | None = None,
         torch_dtype: str = "float16",
         weight_quantization: str = "none",
+        profile_dense_stages: bool = False,
     ) -> "Qwen35TextHarness":
         model, tokenizer = load_qwen35_text_only_from_pretrained(
             model_id,
@@ -2587,7 +3034,7 @@ class Qwen35TextHarness:
             torch_dtype=torch_dtype,
             weight_quantization=weight_quantization,
         )
-        adapter = Qwen35TextModelAdapter(model=model)
+        adapter = Qwen35TextModelAdapter(model=model, profile_dense_stages=profile_dense_stages)
         return cls(model=model, tokenizer=tokenizer, adapter=adapter)
 
     def tokenize_prompt(
@@ -2624,8 +3071,8 @@ class Qwen35TextHarness:
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            tokenizer=self.tokenizer,
             stop_sequences=stop_sequences,
+            tokenizer=self.tokenizer,
             multimodal_inputs=multimodal_inputs,
         )
 
@@ -3336,12 +3783,13 @@ def run_qwen35_text_generation_harness(
     input_ids=None,
     attention_mask=None,
     max_new_tokens: int = 8,
-    tokenizer=None,
     stop_sequences: tuple[str, ...] = (),
+    tokenizer=None,
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     _require_qwen35_model_class()
     adapter.set_mode("dense")
+    adapter.reset_dense_stage_profile()
     input_ids, attention_mask = _normalize_text_inputs(
         adapter,
         prompt=prompt,
@@ -3350,36 +3798,28 @@ def run_qwen35_text_generation_harness(
         tokenizer=tokenizer,
         multimodal_inputs=multimodal_inputs,
     )
+    _ = stop_sequences
 
     device = input_ids.device
     prefill_cuda_memory_baseline = _begin_cuda_memory_region(device)
-    prefill_outputs, prefill_ms = _timed_call(
-        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
-        device=device,
-    )
+    adapter.begin_dense_stage_phase("prefill")
+    try:
+        prefill_outputs, prefill_ms = _timed_call(
+            lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+            device=device,
+        )
+    finally:
+        adapter.end_dense_stage_phase()
     prefill_cuda_memory = _end_cuda_memory_region(device, prefill_cuda_memory_baseline)
     prefill_cache_bytes = _hybrid_cache_nbytes(prefill_outputs.past_key_values)
     generated_ids: list[int] = []
     dense_decode_ms_total = 0.0
     final_past_key_values = prefill_outputs.past_key_values
     decode_cuda_memory: dict[str, int] = {}
-    stop_reason = None
-    stop_token_ids = (
-        {int(tokenizer.eos_token_id)}
-        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
-        else None
-    )
-    normalized_stop_sequences = tuple(str(sequence) for sequence in stop_sequences if str(sequence))
 
     if max_new_tokens > 0:
         current_input_ids = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         generated_ids.append(int(current_input_ids.item()))
-        should_stop, stop_reason = _maybe_stop_decoding(
-            tokenizer,
-            generated_ids,
-            stop_token_ids=stop_token_ids,
-            stop_sequences=normalized_stop_sequences,
-        )
         current_attention_mask = torch.cat(
             [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=attention_mask.device)],
             dim=1,
@@ -3389,29 +3829,25 @@ def run_qwen35_text_generation_harness(
         decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
 
         for _ in range(max(max_new_tokens - 1, 0)):
-            if should_stop:
-                break
-            outputs, step_ms = _timed_call(
-                lambda: _run_dense_decode_step(
-                    model,
-                    decode_input_ids=current_input_ids,
-                    attention_mask=current_attention_mask,
-                    past_key_values=past_key_values,
-                    cache_position=cache_position,
-                ),
-                device=device,
-            )
+            adapter.begin_dense_stage_phase("decode")
+            try:
+                outputs, step_ms = _timed_call(
+                    lambda: _run_dense_decode_step(
+                        model,
+                        decode_input_ids=current_input_ids,
+                        attention_mask=current_attention_mask,
+                        past_key_values=past_key_values,
+                        cache_position=cache_position,
+                    ),
+                    device=device,
+                )
+            finally:
+                adapter.end_dense_stage_phase()
             dense_decode_ms_total += step_ms
             past_key_values = outputs.past_key_values
             final_past_key_values = outputs.past_key_values
             current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             generated_ids.append(int(current_input_ids.item()))
-            should_stop, stop_reason = _maybe_stop_decoding(
-                tokenizer,
-                generated_ids,
-                stop_token_ids=stop_token_ids,
-                stop_sequences=normalized_stop_sequences,
-            )
             current_attention_mask = torch.cat(
                 [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=current_attention_mask.device)],
                 dim=1,
@@ -3421,16 +3857,10 @@ def run_qwen35_text_generation_harness(
 
     result = {
         "prompt_length": int(input_ids.shape[1]),
-        "decode_steps": int(max_new_tokens),
+        "decode_steps": max(max_new_tokens - 1, 0),
         "prefill_ms": float(prefill_ms),
-        "dense_decode_ms_per_step": (
-            float(dense_decode_ms_total / max(len(generated_ids) - 1, 1))
-            if len(generated_ids) > 1
-            else 0.0
-        ),
+        "dense_decode_ms_per_step": float(dense_decode_ms_total / max(max_new_tokens - 1, 1)) if max_new_tokens > 1 else 0.0,
         "dense_generated_ids": list(generated_ids),
-        "dense_stopped_early": bool(stop_reason is not None),
-        "dense_stop_reason": stop_reason,
         "dense_prefill_cache_bytes": int(prefill_cache_bytes),
         "dense_final_cache_bytes": int(_hybrid_cache_nbytes(final_past_key_values)),
         "cache_metric_kind": "hybrid_cache_bytes",
@@ -3442,6 +3872,7 @@ def run_qwen35_text_generation_harness(
     result.update({f"dense_prefill_{key}": value for key, value in prefill_cuda_memory.items()})
     result.update({f"dense_decode_{key}": value for key, value in decode_cuda_memory.items()})
     result.update(adapter.hybrid_block_summary())
+    result.update(adapter.dense_stage_summary())
     decoded_text = _decode_text(tokenizer, generated_ids)
     if decoded_text is not None:
         result["dense_text"] = decoded_text
@@ -6389,9 +6820,6 @@ def _run_qwen35_attention_subset_dense_capture(
     input_ids,
     attention_mask,
     decode_steps: int,
-    tokenizer=None,
-    stop_token_ids: set[int] | None = None,
-    stop_sequences: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     prefill_outputs, prefill_ms = _timed_call(
         lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
@@ -6403,9 +6831,7 @@ def _run_qwen35_attention_subset_dense_capture(
     per_step_records: list[list[LlamaReplayRecord]] = []
     decode_inputs: list[Any] = []
     step_logits: list[np.ndarray] = []
-    generated_ids: list[int] = []
     dense_decode_ms_total = 0.0
-    stop_reason = None
 
     if decode_steps > 0:
         current_input_ids = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
@@ -6416,16 +6842,7 @@ def _run_qwen35_attention_subset_dense_capture(
         cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=input_ids.device)
         past_key_values = prefill_outputs.past_key_values
         for step_index in range(decode_steps):
-            generated_ids.append(int(current_input_ids.item()))
             decode_inputs.append(current_input_ids.detach().clone())
-            should_stop, stop_reason = _maybe_stop_decoding(
-                tokenizer,
-                generated_ids,
-                stop_token_ids=stop_token_ids,
-                stop_sequences=stop_sequences,
-            )
-            if should_stop:
-                break
             adapter.begin_capture_step(step_index)
             adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
             try:
@@ -6460,9 +6877,6 @@ def _run_qwen35_attention_subset_dense_capture(
         "decode_inputs": decode_inputs,
         "step_logits": step_logits,
         "capture_records": per_step_records,
-        "generated_ids": generated_ids,
-        "stopped_early": bool(stop_reason is not None),
-        "stop_reason": stop_reason,
     }
 
 
@@ -7854,6 +8268,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
     multimodal_inputs: Any | None = None,
 ) -> dict[str, Any]:
     adapter.set_mode("dense")
+    _ = stop_sequences
     input_ids, attention_mask = _normalize_text_inputs(
         adapter,
         prompt=prompt,
@@ -7868,13 +8283,6 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         input_ids=input_ids,
         attention_mask=attention_mask,
         decode_steps=decode_steps,
-        tokenizer=tokenizer,
-        stop_token_ids=(
-            {int(tokenizer.eos_token_id)}
-            if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
-            else None
-        ),
-        stop_sequences=stop_sequences,
     )
 
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(
@@ -7895,21 +8303,12 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
 
     dotcache_step_logits: list[np.ndarray] = []
     dotcache_records: list[list[LlamaReplayRecord]] = []
-    dotcache_generated_ids: list[int] = []
     dotcache_decode_ms_total = 0.0
     dotcache_step_runtime_breakdown: list[dict[str, Any]] = []
     dotcache_decode_cuda_memory: dict[str, int] = {}
-    dotcache_stop_reason = None
-    stop_token_ids = (
-        {int(tokenizer.eos_token_id)}
-        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
-        else None
-    )
-    normalized_stop_sequences = tuple(str(sequence) for sequence in stop_sequences if str(sequence))
     managed_python_allocation_tracing = _ensure_python_allocation_tracing(trace_python_allocations)
     try:
         if decode_steps > 0:
-            current_generated_input_ids = dotcache_prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             current_attention_mask = torch.cat(
                 [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
                 dim=1,
@@ -7917,15 +8316,6 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
             dotcache_decode_cuda_memory_baseline = _begin_cuda_memory_region(device)
             for step_index, decode_input_ids in enumerate(dense_capture["decode_inputs"]):
-                dotcache_generated_ids.append(int(current_generated_input_ids.item()))
-                should_stop, dotcache_stop_reason = _maybe_stop_decoding(
-                    tokenizer,
-                    dotcache_generated_ids,
-                    stop_token_ids=stop_token_ids,
-                    stop_sequences=normalized_stop_sequences,
-                )
-                if should_stop:
-                    break
                 adapter.begin_capture_step(step_index)
                 adapter.set_current_token_index(int(input_ids.shape[1] + step_index))
                 adapter_runtime_before = _adapter_runtime_snapshot(adapter)
@@ -7969,7 +8359,6 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
                 dotcache_records.append(adapter.end_capture_step())
                 dotcache_step_logits.append(outputs.logits[:, -1, :].detach().to(dtype=torch.float32).cpu().numpy())
                 runtime_state.advance(outputs.past_key_values)
-                current_generated_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
                 current_attention_mask = torch.cat(
                     [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
                     dim=1,
@@ -7980,18 +8369,14 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         if managed_python_allocation_tracing:
             tracemalloc.stop()
 
-    dense_generated_ids = list(
-        dense_capture.get("generated_ids") or _decode_input_id_sequence(list(dense_capture.get("decode_inputs", [])))
-    )
-    overlap_step_count = min(len(dense_capture["capture_records"]), len(dotcache_records))
     dense_record_map = {
         (record.step_index, record.layer_id): record
-        for step_records in dense_capture["capture_records"][:overlap_step_count]
+        for step_records in dense_capture["capture_records"]
         for record in step_records
     }
     dotcache_record_map = {
         (record.step_index, record.layer_id): record
-        for step_records in dotcache_records[:overlap_step_count]
+        for step_records in dotcache_records
         for record in step_records
     }
     replay_context_max_abs = 0.0
@@ -8026,22 +8411,22 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
         np.concatenate(
             [
                 logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
-                for logits in dense_capture["step_logits"][:overlap_step_count]
+                for logits in dense_capture["step_logits"]
             ],
             axis=0,
         )
-        if overlap_step_count > 0
+        if dense_capture["step_logits"]
         else np.zeros((0, 1), dtype=np.float32)
     )
     dotcache_logits = (
         np.concatenate(
             [
                 logits.astype(np.float32, copy=False).reshape(-1, logits.shape[-1])
-                for logits in dotcache_step_logits[:overlap_step_count]
+                for logits in dotcache_step_logits
             ],
             axis=0,
         )
-        if overlap_step_count > 0
+        if dotcache_step_logits
         else np.zeros((0, 1), dtype=np.float32)
     )
     if dense_logits.size == 0:
@@ -8094,10 +8479,12 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             for dense_step, dotcache_step in zip(dense_logits, dotcache_logits, strict=True)
         ]
 
+    dense_generated_ids = _greedy_id_sequence_from_step_logits(dense_capture["step_logits"])
+    dotcache_generated_ids = _greedy_id_sequence_from_step_logits(dotcache_step_logits)
     result = _summarize_attention_subset_capture(
         adapter,
         input_ids=input_ids,
-        decode_steps=len(dense_generated_ids),
+        decode_steps=decode_steps,
         prefill_ms=float(dense_capture["prefill_ms"]),
         dense_decode_ms_total=float(dense_capture["decode_ms_total"]),
         per_step_records=dense_capture["capture_records"],
@@ -8110,21 +8497,8 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             "dotcache_prefill_ms": float(dotcache_prefill_ms),
             "dense_generated_ids": list(dense_generated_ids),
             "dotcache_generated_ids": list(dotcache_generated_ids),
-            "dense_decode_ms_per_step": (
-                float(dense_capture["decode_ms_total"] / max(len(dense_generated_ids), 1))
-                if dense_generated_ids
-                else 0.0
-            ),
-            "dotcache_decode_ms_per_step": (
-                float(dotcache_decode_ms_total / max(len(dotcache_generated_ids), 1))
-                if dotcache_generated_ids
-                else 0.0
-            ),
-            "dense_stopped_early": bool(dense_capture.get("stopped_early", False)),
-            "dense_stop_reason": dense_capture.get("stop_reason"),
-            "dotcache_stopped_early": bool(dotcache_stop_reason is not None),
-            "dotcache_stop_reason": dotcache_stop_reason,
-            "teacher_forced_overlap_steps": int(overlap_step_count),
+            "dense_decode_ms_per_step": float(dense_capture["decode_ms_total"] / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
+            "dotcache_decode_ms_per_step": float(dotcache_decode_ms_total / max(decode_steps, 1)) if decode_steps > 0 else 0.0,
             "replay_context_max_abs_error": replay_context_max_abs,
             "replay_context_max_rel_error": replay_context_max_rel,
             "replay_output_max_abs_error": replay_output_max_abs,
