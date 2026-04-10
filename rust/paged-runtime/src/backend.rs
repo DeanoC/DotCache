@@ -833,6 +833,23 @@ impl CandlePageBackend {
             }
             return Ok(mixed);
         }
+        #[cfg(feature = "candle-cuda")]
+        if matches!(self.selector, CandleDeviceSelector::Cuda { .. }) {
+            let mixed = candle_transformers::models::qwen3_5::paged_attention_decode_megakernel(
+                queries,
+                &prepared.key,
+                &prepared.value,
+            )?;
+            let (out_batch, out_dim) = mixed.dims2()?;
+            if out_batch != batch_size || out_dim != head_dim {
+                return Err(RuntimeError::DimensionMismatch {
+                    context: "decode_tensor_fused cuda output",
+                    expected: batch_size * head_dim,
+                    got: out_batch * out_dim,
+                });
+            }
+            return Ok(mixed);
+        }
         let logits = queries.matmul(&prepared.key.transpose(0, 1)?)?;
         let logits = (logits * attention_score_scale(head_dim) as f64)?;
         let logits = candle_nn::ops::softmax_last_dim(&logits)?;
