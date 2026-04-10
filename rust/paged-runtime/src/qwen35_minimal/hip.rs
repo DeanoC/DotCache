@@ -95,6 +95,36 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_linear_decode_prepare(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_size: usize,
+            num_v_heads: usize,
+            head_k_dim: usize,
+            head_v_dim: usize,
+            state_len: usize,
+            kernel_size: usize,
+            head_repeat: usize,
+            mixed_qkv: *const c_void,
+            prev_conv_state: *const c_void,
+            weights: *const c_void,
+            a_beta_raw: *const c_void,
+            dt_bias: *const c_void,
+            a_log_exp: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_linear_decode_apply(
+            device_ordinal: usize,
+            batch_size: usize,
+            num_v_heads: usize,
+            head_k_dim: usize,
+            head_v_dim: usize,
+            packed: *const c_void,
+            initial_state: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_delta_recurrent_prefill(
             dtype: c_int,
             device_ordinal: usize,

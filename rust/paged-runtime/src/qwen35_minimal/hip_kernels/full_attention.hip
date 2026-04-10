@@ -326,6 +326,152 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel(
 }
 
 template <typename T, int MAX_K = 256>
+__global__ void dotcache_qwen35_linear_decode_prepare_kernel(
+    int batch_size,
+    int num_v_heads,
+    int head_k_dim,
+    int head_v_dim,
+    int state_len,
+    int kernel_size,
+    int head_repeat,
+    const T* mixed_qkv,
+    const T* prev_conv_state,
+    const T* weights,
+    const T* a_beta_raw,
+    const T* dt_bias,
+    const T* a_log_exp,
+    float* out
+) {
+    const int pair = static_cast<int>(blockIdx.x);
+    const int tid = static_cast<int>(threadIdx.x);
+    const int total_pairs = batch_size * num_v_heads;
+    if (pair >= total_pairs || head_k_dim > MAX_K) {
+        return;
+    }
+
+    const int value_dim = num_v_heads * head_v_dim;
+    const int key_dim = (num_v_heads / head_repeat) * head_k_dim;
+    const int conv_dim = key_dim * 2 + value_dim;
+    const int packed_width = 2 * head_k_dim + head_v_dim + 2;
+
+    const int batch = pair / num_v_heads;
+    const int v_head = pair - batch * num_v_heads;
+    const int k_head = v_head / head_repeat;
+    const int mixed_batch_base = batch * conv_dim;
+    const int state_batch_base = batch * conv_dim * state_len;
+    const int pair_out_base = pair * packed_width;
+
+    auto conv_channel = [&](int channel) -> float {
+        const int weight_base = channel * kernel_size;
+        const int state_base = state_batch_base + channel * state_len;
+        float acc = 0.0f;
+        for (int tap = 0; tap < kernel_size; ++tap) {
+            float x = 0.0f;
+            if (tap + 1 == kernel_size) {
+                x = dotcache_qwen35_to_float(mixed_qkv[mixed_batch_base + channel]);
+            } else if (tap < state_len) {
+                x = dotcache_qwen35_to_float(prev_conv_state[state_base + tap]);
+            }
+            acc += x * dotcache_qwen35_to_float(weights[weight_base + tap]);
+        }
+        return acc / (1.0f + expf(-acc));
+    };
+
+    __shared__ float shared_q[MAX_K];
+    __shared__ float shared_k[MAX_K];
+    if (tid < head_k_dim) {
+        const int q_base = k_head * head_k_dim;
+        const int k_base = key_dim + k_head * head_k_dim;
+        shared_q[tid] = conv_channel(q_base + tid);
+        shared_k[tid] = conv_channel(k_base + tid);
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        float q_sq_sum = 0.0f;
+        float k_sq_sum = 0.0f;
+        for (int k_idx = 0; k_idx < head_k_dim; ++k_idx) {
+            q_sq_sum += shared_q[k_idx] * shared_q[k_idx];
+            k_sq_sum += shared_k[k_idx] * shared_k[k_idx];
+        }
+        const float q_inv = rsqrtf(q_sq_sum + 1e-6f);
+        const float k_inv = rsqrtf(k_sq_sum + 1e-6f);
+        for (int k_idx = 0; k_idx < head_k_dim; ++k_idx) {
+            out[pair_out_base + k_idx] = shared_q[k_idx] * q_inv * rsqrtf(static_cast<float>(head_k_dim));
+            out[pair_out_base + head_k_dim + k_idx] = shared_k[k_idx] * k_inv;
+        }
+        const int head_base = batch * (2 * num_v_heads) + v_head;
+        const float a_raw = dotcache_qwen35_to_float(a_beta_raw[head_base]);
+        const float beta_raw = dotcache_qwen35_to_float(a_beta_raw[head_base + num_v_heads]);
+        out[pair_out_base + 2 * head_k_dim + head_v_dim] = 1.0f / (1.0f + expf(-beta_raw));
+        const float bias = dotcache_qwen35_to_float(dt_bias[v_head]);
+        const float decay = dotcache_qwen35_to_float(a_log_exp[v_head]);
+        const float g = -log1pf(expf(a_raw + bias)) * decay;
+        out[pair_out_base + 2 * head_k_dim + head_v_dim + 1] = expf(g);
+    }
+    if (tid < head_v_dim) {
+        const int value_channel = key_dim * 2 + v_head * head_v_dim + tid;
+        out[pair_out_base + 2 * head_k_dim + tid] = conv_channel(value_channel);
+    }
+}
+
+template <int MAX_K = 256>
+__global__ void dotcache_qwen35_linear_decode_apply_kernel(
+    int batch_size,
+    int num_v_heads,
+    int head_k_dim,
+    int head_v_dim,
+    const float* packed,
+    const float* initial_state,
+    float* out
+) {
+    const int pair = static_cast<int>(blockIdx.x);
+    const int tid = static_cast<int>(threadIdx.x);
+    const int total_pairs = batch_size * num_v_heads;
+    if (pair >= total_pairs || head_k_dim > MAX_K || tid >= head_v_dim) {
+        return;
+    }
+
+    const int value_dim = num_v_heads * head_v_dim;
+    const int packed_width = 2 * head_k_dim + head_v_dim + 2;
+    const int batch = pair / num_v_heads;
+    const int v_head = pair - batch * num_v_heads;
+    const int v_idx = tid;
+    const int pair_base = pair * packed_width;
+    const int state_head_base =
+        ((batch * num_v_heads + v_head) * head_k_dim) * head_v_dim + v_idx;
+    const int out_base =
+        batch * (value_dim + num_v_heads * head_k_dim * head_v_dim) + value_dim +
+        (v_head * head_k_dim) * head_v_dim + v_idx;
+
+    const float* q = packed + pair_base;
+    const float* k = packed + pair_base + head_k_dim;
+    const float* value = packed + pair_base + 2 * head_k_dim;
+    const float beta = packed[pair_base + 2 * head_k_dim + head_v_dim];
+    const float g_exp = packed[pair_base + 2 * head_k_dim + head_v_dim + 1];
+
+    float state[MAX_K];
+    for (int k_idx = 0; k_idx < head_k_dim; ++k_idx) {
+        state[k_idx] = initial_state[state_head_base + k_idx * head_v_dim] * g_exp;
+    }
+
+    float kv_mem = 0.0f;
+    for (int k_idx = 0; k_idx < head_k_dim; ++k_idx) {
+        kv_mem += state[k_idx] * k[k_idx];
+    }
+    const float delta = (value[v_idx] - kv_mem) * beta;
+
+    float out_value = 0.0f;
+    for (int k_idx = 0; k_idx < head_k_dim; ++k_idx) {
+        state[k_idx] += k[k_idx] * delta;
+        out_value += state[k_idx] * q[k_idx];
+        out[out_base + k_idx * head_v_dim] = state[k_idx];
+    }
+    out[batch * (value_dim + num_v_heads * head_k_dim * head_v_dim) + v_head * head_v_dim + v_idx] =
+        out_value;
+}
+
+template <typename T, int MAX_K = 256>
 __device__ inline void dotcache_qwen35_delta_recurrent_prefill_impl(
     int batch_heads,
     int seq_len,

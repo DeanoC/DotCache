@@ -1648,6 +1648,19 @@ fn use_hip_combined_linear_prefill(device: &Device, sequence_length: usize) -> b
         )
 }
 
+fn use_hip_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
+    // Keep the combined decode path opt-in on this UMA ROCm host: it cuts transfer
+    // traffic substantially, but the custom kernels are still slower than the split
+    // path here. This remains worth testing on larger discrete ROCm systems where
+    // transfer cost is materially higher.
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && sequence_length == 1
+        && matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+}
+
 fn use_hip_chunk_single_prefill_kernel(
     device: &Device,
     sequence_length: usize,
@@ -2398,6 +2411,223 @@ fn linear_stateful_conv_value_decay_hip(
             state_len,
             kernel_size,
             num_heads,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinearDecodePrepare {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+}
+
+impl candle::CustomOp6 for LinearDecodePrepare {
+    fn name(&self) -> &'static str {
+        "linear-decode-prepare"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("linear-decode-prepare has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        mixed_qkv: &candle::HipStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_conv_state: &candle::HipStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::HipStorage,
+        weights_layout: &candle::Layout,
+        a_beta_raw: &candle::HipStorage,
+        a_beta_raw_layout: &candle::Layout,
+        dt_bias: &candle::HipStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::HipStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_beta_raw_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("linear-decode-prepare requires contiguous inputs")
+        }
+        let device = mixed_qkv.device().clone();
+        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
+        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
+        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
+                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                device.ordinal(),
+                self.batch_size,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                self.state_len,
+                self.kernel_size,
+                self.head_repeat,
+                mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                    as *const c_void,
+                prev_conv_state.raw_device_ptr_with_offset(prev_conv_state_layout.start_offset())?
+                    as *const c_void,
+                weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+                a_beta_raw.raw_device_ptr_with_offset(a_beta_raw_layout.start_offset())?
+                    as *const c_void,
+                dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
+                a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, output_shape))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinearDecodeApply {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+}
+
+impl candle::CustomOp2 for LinearDecodeApply {
+    fn name(&self) -> &'static str {
+        "linear-decode-apply"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("linear-decode-apply has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        packed: &candle::HipStorage,
+        packed_layout: &candle::Layout,
+        initial_state: &candle::HipStorage,
+        initial_state_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
+            candle::bail!("linear-decode-apply requires contiguous inputs")
+        }
+        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
+            candle::bail!("linear-decode-apply requires F32 packed/state inputs")
+        }
+        let device = packed.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
+                device.ordinal(),
+                self.batch_size,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                packed.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
+                initial_state.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, output_shape))
+    }
+}
+
+fn linear_decode_step_hip(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_beta_raw = a_beta_raw.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    let packed = mixed_qkv.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &a_beta_raw,
+        &dt_bias,
+        &a_log_exp,
+        &LinearDecodePrepare {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+        },
+    )?;
+    packed.apply_op2_no_bwd(
+        &initial_state,
+        &LinearDecodeApply {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
         },
     )
 }
@@ -8859,9 +9089,112 @@ impl GatedDeltaNet {
             self.num_v_heads,
             self.head_v_dim,
         ))?;
-        let beta = ops::sigmoid(&self.in_proj_b.forward(&hidden_states)?)?;
+        let beta_raw = self.in_proj_b.forward(&hidden_states)?;
         let a = self.in_proj_a.forward(&hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+
+        if use_hip_combined_linear_decode(device, seq_len) {
+            let kv_append_start = profile_start(device)?;
+            let target_dtype = mixed_qkv.dtype();
+            let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+            let state_len = self.conv_kernel_size.saturating_sub(1);
+            let prev_conv_state = match &self.conv_state {
+                Some(prev_state) => {
+                    if prev_state.dtype() == target_dtype {
+                        prev_state.clone()
+                    } else {
+                        prev_state.to_dtype(target_dtype)?
+                    }
+                }
+                None => Tensor::zeros(
+                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    target_dtype,
+                    mixed_qkv.device(),
+                )?,
+            };
+            let a = if a.dtype() == target_dtype {
+                a.clone()
+            } else {
+                a.to_dtype(target_dtype)?
+            };
+            let beta_raw = if beta_raw.dtype() == target_dtype {
+                beta_raw.clone()
+            } else {
+                beta_raw.to_dtype(target_dtype)?
+            };
+            let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
+            let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+            let initial_state = match &self.recurrent_state {
+                Some(state) => {
+                    let state = if state.rank() == 3 {
+                        state.reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                    } else {
+                        state.clone()
+                    };
+                    if state.dtype() == DType::F32 {
+                        state
+                    } else {
+                        state.to_dtype(DType::F32)?
+                    }
+                }
+                None => Tensor::zeros(
+                    (
+                        batch_size,
+                        self.num_v_heads,
+                        self.head_k_dim,
+                        self.head_v_dim,
+                    ),
+                    DType::F32,
+                    device,
+                )?,
+            };
+            let head_repeat = self.num_v_heads / self.num_k_heads;
+            let fused = linear_decode_step_hip(
+                &mixed_qkv.contiguous()?,
+                &prev_conv_state,
+                &weights,
+                &a_beta_raw,
+                &dt_bias,
+                &a_log_exp,
+                &initial_state,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                self.conv_kernel_size,
+                head_repeat,
+            )?;
+            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
+            let core_attn_out = fused
+                .narrow(1, 0, self.value_dim)?
+                .reshape((batch_size, seq_len, self.value_dim))?;
+            let recurrent_state = fused
+                .narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
+                .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                .contiguous()?;
+            let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
+            profile.linear_conv_millis += kv_append_elapsed;
+            profile.kv_append_write_millis += kv_append_elapsed;
+            profile.linear_recurrent_loop_millis += kv_append_elapsed;
+
+            let output_start = profile_start(device)?;
+            let core_attn_out = self
+                .norm
+                .forward(
+                    &core_attn_out
+                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                )?
+                .reshape((batch_size, seq_len, self.value_dim))?;
+            let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
+                core_attn_out
+            } else {
+                core_attn_out.to_dtype(hidden_states.dtype())?
+            };
+            let output = self.out_proj.forward(&core_attn_out)?;
+            profile.output_projection_millis += profile_elapsed(output_start, device)?;
+            profile.linear_attention_millis += profile_elapsed(total_start, device)?;
+            return Ok((output, recurrent_state, profile));
+        }
 
         let kv_append_start = profile_start(device)?;
         let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
@@ -8976,6 +9309,7 @@ impl GatedDeltaNet {
         } else {
             value.to_dtype(compute_dtype)?
         };
+        let beta = ops::sigmoid(&beta_raw)?;
         let beta = if beta.dtype() == compute_dtype {
             beta
         } else {
@@ -10736,6 +11070,149 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_linear_decode_step_sample(
+        device: &Device,
+    ) -> Result<(
+        Tensor,
+        Tensor,
+        Tensor,
+        Tensor,
+        Tensor,
+        Tensor,
+        Tensor,
+        Vec<f32>,
+    )> {
+        let batch_size = 1usize;
+        let num_v_heads = 2usize;
+        let head_k_dim = 2usize;
+        let head_v_dim = 2usize;
+        let head_repeat = 2usize;
+        let num_k_heads = num_v_heads / head_repeat;
+        let key_dim = num_k_heads * head_k_dim;
+        let value_dim = num_v_heads * head_v_dim;
+        let conv_dim = key_dim * 2 + value_dim;
+        let state_len = 2usize;
+        let kernel_size = 3usize;
+
+        let mixed_qkv_data = vec![
+            0.10f32, -0.20, 0.30, 0.05, -0.10, 0.25, 0.40, -0.15,
+        ];
+        let prev_conv_state_data = vec![
+            0.05f32, 0.02, -0.10, 0.03, 0.12, -0.07, -0.02, 0.04, 0.08, -0.05, -0.03, 0.09,
+            0.11, -0.06, -0.08, 0.01,
+        ];
+        let weight_data = vec![
+            0.5f32, -0.25, 0.75, -0.4, 0.3, 0.2, 0.35, -0.1, 0.45, 0.1, 0.25, -0.2, 0.6, -0.15,
+            0.4, -0.3, 0.2, 0.5, 0.15, -0.05, 0.3, -0.25, 0.4, 0.2,
+        ];
+        let a_beta_raw_data = vec![0.5f32, -0.6, 0.2, -0.3];
+        let dt_bias_data = vec![0.1f32, -0.2];
+        let a_log_exp_data = vec![0.7f32, 0.8];
+        let initial_state_data = vec![
+            0.10f32, -0.20, 0.05, 0.30, -0.15, 0.08, 0.12, -0.04,
+        ];
+
+        let mixed_qkv =
+            Tensor::from_vec(mixed_qkv_data.clone(), (batch_size, conv_dim, 1usize), device)?
+                .to_dtype(DType::F16)?;
+        let prev_conv_state = Tensor::from_vec(
+            prev_conv_state_data.clone(),
+            (batch_size, conv_dim, state_len),
+            device,
+        )?
+        .to_dtype(DType::F16)?;
+        let weights = Tensor::from_vec(weight_data.clone(), (conv_dim, kernel_size), device)?
+            .to_dtype(DType::F16)?;
+        let a_beta_raw =
+            Tensor::from_vec(a_beta_raw_data.clone(), (batch_size, 1usize, 4usize), device)?
+                .to_dtype(DType::F16)?;
+        let dt_bias =
+            Tensor::from_vec(dt_bias_data.clone(), (1usize, 1usize, num_v_heads), device)?
+                .to_dtype(DType::F16)?;
+        let a_log_exp =
+            Tensor::from_vec(a_log_exp_data.clone(), (1usize, 1usize, num_v_heads), device)?
+                .to_dtype(DType::F16)?;
+        let initial_state = Tensor::from_vec(
+            initial_state_data.clone(),
+            (batch_size, num_v_heads, head_k_dim, head_v_dim),
+            device,
+        )?;
+
+        let conv_channel = |channel: usize| -> f32 {
+            let mut acc = 0.0f32;
+            let state_base = channel * state_len;
+            let weight_base = channel * kernel_size;
+            for tap in 0..kernel_size {
+                let x = if tap + 1 == kernel_size {
+                    mixed_qkv_data[channel]
+                } else {
+                    prev_conv_state_data[state_base + tap]
+                };
+                acc += x * weight_data[weight_base + tap];
+            }
+            acc / (1.0 + (-acc).exp())
+        };
+
+        let mut expected = vec![0.0f32; value_dim + num_v_heads * head_k_dim * head_v_dim];
+        for v_head in 0..num_v_heads {
+            let k_head = v_head / head_repeat;
+            let q_base = k_head * head_k_dim;
+            let k_base = key_dim + k_head * head_k_dim;
+            let mut q = vec![0.0f32; head_k_dim];
+            let mut k = vec![0.0f32; head_k_dim];
+            let mut q_sq = 0.0f32;
+            let mut k_sq = 0.0f32;
+            for k_idx in 0..head_k_dim {
+                q[k_idx] = conv_channel(q_base + k_idx);
+                k[k_idx] = conv_channel(k_base + k_idx);
+                q_sq += q[k_idx] * q[k_idx];
+                k_sq += k[k_idx] * k[k_idx];
+            }
+            let q_inv = 1.0f32 / (q_sq + 1e-6).sqrt();
+            let k_inv = 1.0f32 / (k_sq + 1e-6).sqrt();
+            let q_scale = 1.0f32 / (head_k_dim as f32).sqrt();
+            let a_raw = a_beta_raw_data[v_head];
+            let beta_raw = a_beta_raw_data[num_v_heads + v_head];
+            let beta = 1.0 / (1.0 + (-beta_raw).exp());
+            let g = -((a_raw + dt_bias_data[v_head]).exp() + 1.0).ln() * a_log_exp_data[v_head];
+            let g_exp = g.exp();
+
+            for v_idx in 0..head_v_dim {
+                let value_raw = conv_channel(key_dim * 2 + v_head * head_v_dim + v_idx);
+                let mut state = vec![0.0f32; head_k_dim];
+                for k_idx in 0..head_k_dim {
+                    let flat = ((v_head * head_k_dim + k_idx) * head_v_dim) + v_idx;
+                    state[k_idx] = initial_state_data[flat] * g_exp;
+                }
+                let mut kv_mem = 0.0f32;
+                for k_idx in 0..head_k_dim {
+                    kv_mem += state[k_idx] * (k[k_idx] * k_inv);
+                }
+                let delta = (value_raw - kv_mem) * beta;
+                let mut out_value = 0.0f32;
+                for k_idx in 0..head_k_dim {
+                    state[k_idx] += (k[k_idx] * k_inv) * delta;
+                    out_value += state[k_idx] * (q[k_idx] * q_inv * q_scale);
+                    let flat = value_dim + ((v_head * head_k_dim + k_idx) * head_v_dim) + v_idx;
+                    expected[flat] = state[k_idx];
+                }
+                expected[v_head * head_v_dim + v_idx] = out_value;
+            }
+        }
+
+        Ok((
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            expected,
+        ))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let _guard = hip_test_guard();
@@ -11093,6 +11570,77 @@ mod tests {
         )?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(output.dtype(), mixed_qkv.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_decode_step_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let output = linear_decode_step_hip(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_vec2::<f32>()?;
+        assert_close(&output[0], &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_decode_step_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = linear_decode_step_hip(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), DType::F32);
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())

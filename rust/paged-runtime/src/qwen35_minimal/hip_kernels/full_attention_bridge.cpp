@@ -209,6 +209,92 @@ int linear_stateful_conv_value_decay_device(
 }
 
 template <typename T>
+int linear_decode_prepare_device(
+    int device_ordinal,
+    int batch_size,
+    int num_v_heads,
+    int head_k_dim,
+    int head_v_dim,
+    int state_len,
+    int kernel_size,
+    int head_repeat,
+    const void* mixed_qkv,
+    const void* prev_conv_state,
+    const void* weights,
+    const void* a_beta_raw,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    const unsigned int grid =
+        static_cast<unsigned int>(batch_size) * static_cast<unsigned int>(num_v_heads);
+    unsigned int block = 64;
+    while (block < static_cast<unsigned int>(head_k_dim > head_v_dim ? head_k_dim : head_v_dim) &&
+           block < 256) {
+        block <<= 1;
+    }
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_linear_decode_prepare_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_size,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        state_len,
+        kernel_size,
+        head_repeat,
+        static_cast<const T*>(mixed_qkv),
+        static_cast<const T*>(prev_conv_state),
+        static_cast<const T*>(weights),
+        static_cast<const T*>(a_beta_raw),
+        static_cast<const T*>(dt_bias),
+        static_cast<const T*>(a_log_exp),
+        static_cast<float*>(out));
+    if (hipGetLastError() != hipSuccess) return 69;
+    if (hipDeviceSynchronize() != hipSuccess) return 70;
+    return 0;
+}
+
+int linear_decode_apply_device(
+    int device_ordinal,
+    int batch_size,
+    int num_v_heads,
+    int head_k_dim,
+    int head_v_dim,
+    const void* packed,
+    const void* initial_state,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    const unsigned int grid =
+        static_cast<unsigned int>(batch_size) * static_cast<unsigned int>(num_v_heads);
+    unsigned int block = 64;
+    while (block < static_cast<unsigned int>(head_v_dim) && block < 256) {
+        block <<= 1;
+    }
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_linear_decode_apply_kernel<>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_size,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        static_cast<const float*>(packed),
+        static_cast<const float*>(initial_state),
+        static_cast<float*>(out));
+    if (hipGetLastError() != hipSuccess) return 71;
+    if (hipDeviceSynchronize() != hipSuccess) return 72;
+    return 0;
+}
+
+template <typename T>
 int delta_recurrent_prefill_device(
     int device_ordinal,
     int batch_heads,
@@ -1223,6 +1309,100 @@ extern "C" int dotcache_qwen35_hip_linear_stateful_conv_value_decay(
     default:
         return 67;
     }
+}
+
+extern "C" int dotcache_qwen35_hip_linear_decode_prepare(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_size,
+    size_t num_v_heads,
+    size_t head_k_dim,
+    size_t head_v_dim,
+    size_t state_len,
+    size_t kernel_size,
+    size_t head_repeat,
+    const void* mixed_qkv,
+    const void* prev_conv_state,
+    const void* weights,
+    const void* a_beta_raw,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return linear_decode_prepare_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(num_v_heads),
+            static_cast<int>(head_k_dim),
+            static_cast<int>(head_v_dim),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(head_repeat),
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 1:
+        return linear_decode_prepare_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(num_v_heads),
+            static_cast<int>(head_k_dim),
+            static_cast<int>(head_v_dim),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(head_repeat),
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 2:
+        return linear_decode_prepare_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(num_v_heads),
+            static_cast<int>(head_k_dim),
+            static_cast<int>(head_v_dim),
+            static_cast<int>(state_len),
+            static_cast<int>(kernel_size),
+            static_cast<int>(head_repeat),
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            out);
+    default:
+        return 73;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_linear_decode_apply(
+    size_t device_ordinal,
+    size_t batch_size,
+    size_t num_v_heads,
+    size_t head_k_dim,
+    size_t head_v_dim,
+    const void* packed,
+    const void* initial_state,
+    void* out) {
+    return linear_decode_apply_device(
+        static_cast<int>(device_ordinal),
+        static_cast<int>(batch_size),
+        static_cast<int>(num_v_heads),
+        static_cast<int>(head_k_dim),
+        static_cast<int>(head_v_dim),
+        packed,
+        initial_state,
+        out);
 }
 
 extern "C" int dotcache_qwen35_hip_delta_chunk_single_prefill(
