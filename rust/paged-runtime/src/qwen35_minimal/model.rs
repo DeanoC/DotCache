@@ -787,8 +787,92 @@ fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
 }
 
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
+    if xs.device().is_hip() {
+        return hip_l2norm(xs, eps);
+    }
     let norm = xs.sqr()?.sum_keepdim(D::Minus1)?;
     xs.broadcast_div(&(norm + eps)?.sqrt()?)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HipL2Norm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp1 for HipL2Norm {
+    fn name(&self) -> &'static str {
+        "dotcache-hip-l2norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("dotcache-hip-l2norm has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        storage: &candle::HipStorage,
+        layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !layout.is_contiguous() {
+            candle::bail!("dotcache-hip-l2norm requires contiguous input")
+        }
+        let dims = layout.shape().dims();
+        let n_cols = *dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+        let n_rows = layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows || n_cols != self.n_cols {
+            candle::bail!(
+                "dotcache-hip-l2norm shape mismatch input={:?} expected_rows={} expected_cols={}",
+                layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = storage.device().clone();
+        let out_shape = layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_l2norm(
+                hip::dtype_code(storage.dtype())?,
+                device.ordinal(),
+                self.n_rows,
+                self.n_cols,
+                self.eps,
+                storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let dims = xs.dims();
+    let n_cols = *dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op1_no_bwd(&HipL2Norm {
+        n_rows,
+        n_cols,
+        eps: eps as f32,
+    })
 }
 
 fn softplus(xs: &Tensor) -> Result<Tensor> {
@@ -8532,6 +8616,26 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_l2norm_sample(device: &Device) -> Result<(Tensor, Vec<f32>)> {
+        let xs_data = vec![
+            0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
+        ];
+        let shape = (1usize, 3usize, 4usize);
+        let eps = 1e-6f32;
+        let xs = Tensor::from_vec(xs_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+
+        let mut expected = Vec::with_capacity(xs_data.len());
+        for row in 0..3 {
+            let row_slice = &xs_data[row * 4..(row + 1) * 4];
+            let norm = (row_slice.iter().map(|x| x * x).sum::<f32>() + eps).sqrt();
+            for value in row_slice {
+                expected.push(*value / norm);
+            }
+        }
+        Ok((xs, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let device = Device::new_hip(0)?;
@@ -8850,6 +8954,33 @@ mod tests {
         let gated = hip_rms_norm_gated(&xs, &gate, &weight, 1e-6)?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(gated.dtype(), xs.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_l2norm_matches_reference() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (xs, expected) = hip_l2norm_sample(&device)?;
+        let output = l2norm(&xs, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_l2norm_avoids_host_staging() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (xs, _expected) = hip_l2norm_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = l2norm(&xs, 1e-6)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), xs.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())

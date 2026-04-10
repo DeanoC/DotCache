@@ -201,6 +201,53 @@ __global__ void dotcache_qwen35_linear_prefill_conv_pack_kernel(
     out[tid] = dotcache_qwen35_from_float<T>(silu);
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_l2norm_kernel(
+    int n_rows,
+    int n_cols,
+    float eps,
+    const T* xs,
+    T* out
+) {
+    const int row = blockIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+
+    const int tid = threadIdx.x;
+    const T* row_in = xs + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+    T* row_out = out + static_cast<size_t>(row) * static_cast<size_t>(n_cols);
+
+    float partial = 0.0f;
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        const float x = dotcache_qwen35_to_float(row_in[col]);
+        partial += x * x;
+    }
+
+    __shared__ float shared_sum[256];
+    shared_sum[tid] = partial;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float shared_inv_norm;
+    if (tid == 0) {
+        shared_inv_norm = rsqrtf(shared_sum[0] + eps);
+    }
+    __syncthreads();
+
+    for (int col = tid; col < n_cols; col += blockDim.x) {
+        row_out[col] = dotcache_qwen35_from_float<T>(
+            dotcache_qwen35_to_float(row_in[col]) * shared_inv_norm
+        );
+    }
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 __global__ void dotcache_qwen35_rms_norm_kernel(
     int n_rows,

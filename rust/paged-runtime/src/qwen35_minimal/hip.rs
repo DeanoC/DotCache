@@ -52,6 +52,16 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_l2norm(
+            dtype: c_int,
+            device_ordinal: usize,
+            n_rows: usize,
+            n_cols: usize,
+            eps: f32,
+            xs: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_rms_norm(
             dtype: c_int,
             device_ordinal: usize,

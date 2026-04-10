@@ -123,6 +123,33 @@ int linear_prefill_conv_pack_device(
     return 0;
 }
 
+template <typename T>
+int l2norm_device(
+    int device_ordinal,
+    int n_rows,
+    int n_cols,
+    float eps,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_l2norm_kernel<T>),
+        dim3(static_cast<unsigned int>(n_rows)),
+        dim3(block),
+        0,
+        0,
+        n_rows,
+        n_cols,
+        eps,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 90;
+    if (hipDeviceSynchronize() != hipSuccess) return 91;
+    return 0;
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 int rms_norm_device(
     int device_ordinal,
@@ -302,6 +329,44 @@ extern "C" int dotcache_qwen35_hip_linear_prefill_conv_pack(
             out);
     default:
         return 62;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_l2norm(
+    int dtype,
+    size_t device_ordinal,
+    size_t n_rows,
+    size_t n_cols,
+    float eps,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return l2norm_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            xs,
+            out);
+    case 1:
+        return l2norm_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            xs,
+            out);
+    case 2:
+        return l2norm_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(n_rows),
+            static_cast<int>(n_cols),
+            eps,
+            xs,
+            out);
+    default:
+        return 92;
     }
 }
 
