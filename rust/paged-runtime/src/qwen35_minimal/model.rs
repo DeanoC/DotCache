@@ -5439,6 +5439,262 @@ fn delta_full_scan(
 }
 
 #[derive(Debug, Clone, Copy)]
+struct DeltaLocalAttnScan;
+
+impl candle::CustomOp3 for DeltaLocalAttnScan {
+    fn name(&self) -> &'static str {
+        "delta-local-attn-scan"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-local-attn-scan has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        query_scan: &candle::HipStorage,
+        query_layout: &candle::Layout,
+        key_scan: &candle::HipStorage,
+        key_layout: &candle::Layout,
+        exp_g_scan: &candle::HipStorage,
+        exp_g_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(query_layout.is_contiguous()
+            && key_layout.is_contiguous()
+            && exp_g_layout.is_contiguous())
+        {
+            candle::bail!("delta-local-attn-scan requires contiguous inputs")
+        }
+
+        let (batch_heads, num_chunks, chunk_size, k_head_dim) = query_layout.shape().dims4()?;
+        let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+        let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+        if key_bh != batch_heads
+            || exp_bh != batch_heads
+            || key_chunks != num_chunks
+            || exp_chunks != num_chunks
+            || key_chunk_size != chunk_size
+            || exp_chunk_size != chunk_size
+            || key_k != k_head_dim
+        {
+            candle::bail!(
+                "delta-local-attn-scan shape mismatch: query={:?} key={:?} exp_g={:?}",
+                query_layout.shape().dims(),
+                key_layout.shape().dims(),
+                exp_g_layout.shape().dims()
+            )
+        }
+        if query_scan.dtype() != key_scan.dtype() || query_scan.dtype() != exp_g_scan.dtype() {
+            candle::bail!(
+                "delta-local-attn-scan requires matching dtypes, got query={:?} key={:?} exp_g={:?}",
+                query_scan.dtype(),
+                key_scan.dtype(),
+                exp_g_scan.dtype()
+            )
+        }
+
+        let device = query_scan.device().clone();
+        let storage_dtype = query_scan.dtype();
+        let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_local_attn_scan(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                query_scan.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_local_attn_scan(query_scan: &Tensor, key_scan: &Tensor, exp_g_scan: &Tensor) -> Result<Tensor> {
+    query_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaLocalAttnScan)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeltaBaseAttnScan;
+
+impl candle::CustomOp3 for DeltaBaseAttnScan {
+    fn name(&self) -> &'static str {
+        "delta-base-attn-scan"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-base-attn-scan has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        k_beta_scan: &candle::HipStorage,
+        k_beta_layout: &candle::Layout,
+        key_scan: &candle::HipStorage,
+        key_layout: &candle::Layout,
+        exp_g_scan: &candle::HipStorage,
+        exp_g_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(k_beta_layout.is_contiguous()
+            && key_layout.is_contiguous()
+            && exp_g_layout.is_contiguous())
+        {
+            candle::bail!("delta-base-attn-scan requires contiguous inputs")
+        }
+
+        let (batch_heads, num_chunks, chunk_size, k_head_dim) = k_beta_layout.shape().dims4()?;
+        let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+        let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+        if key_bh != batch_heads
+            || exp_bh != batch_heads
+            || key_chunks != num_chunks
+            || exp_chunks != num_chunks
+            || key_chunk_size != chunk_size
+            || exp_chunk_size != chunk_size
+            || key_k != k_head_dim
+        {
+            candle::bail!(
+                "delta-base-attn-scan shape mismatch: k_beta={:?} key={:?} exp_g={:?}",
+                k_beta_layout.shape().dims(),
+                key_layout.shape().dims(),
+                exp_g_layout.shape().dims()
+            )
+        }
+        if k_beta_scan.dtype() != key_scan.dtype() || k_beta_scan.dtype() != exp_g_scan.dtype() {
+            candle::bail!(
+                "delta-base-attn-scan requires matching dtypes, got k_beta={:?} key={:?} exp_g={:?}",
+                k_beta_scan.dtype(),
+                key_scan.dtype(),
+                exp_g_scan.dtype()
+            )
+        }
+
+        let device = k_beta_scan.device().clone();
+        let storage_dtype = k_beta_scan.dtype();
+        let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_base_attn_scan(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                k_beta_scan.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
+                key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_base_attn_scan(k_beta_scan: &Tensor, key_scan: &Tensor, exp_g_scan: &Tensor) -> Result<Tensor> {
+    k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaBaseAttnScan)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeltaAttnSolveScan;
+
+impl candle::CustomOp1 for DeltaAttnSolveScan {
+    fn name(&self) -> &'static str {
+        "delta-attn-solve-scan"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-attn-solve-scan has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        base_attn_scan: &candle::HipStorage,
+        base_attn_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !base_attn_layout.is_contiguous() {
+            candle::bail!("delta-attn-solve-scan requires contiguous input")
+        }
+
+        let (batch_heads, num_chunks, chunk_size, width) = base_attn_layout.shape().dims4()?;
+        if width != chunk_size {
+            candle::bail!(
+                "delta-attn-solve-scan shape mismatch: base_attn={:?}",
+                base_attn_layout.shape().dims()
+            )
+        }
+
+        let device = base_attn_scan.device().clone();
+        let storage_dtype = base_attn_scan.dtype();
+        let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_attn_solve_scan(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                base_attn_scan.raw_device_ptr_with_offset(base_attn_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_attn_solve_scan(base_attn_scan: &Tensor) -> Result<Tensor> {
+    base_attn_scan.apply_op1_no_bwd(&DeltaAttnSolveScan)
+}
+
+#[derive(Debug, Clone, Copy)]
 struct DeltaFullScanPack;
 
 impl candle::CustomOp4 for DeltaFullScanPack {
@@ -7366,36 +7622,69 @@ impl GatedDeltaNet {
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let g = g_raw.cumsum(D::Minus1)?;
         let exp_g = g.exp()?;
+        let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
 
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower = cache.lower;
         let eye = cache.eye;
         let strict_lower = cache.strict_lower;
+        let use_state_kernel = use_delta_state_kernel(query.device(), scan_mode, sequence_length);
+        let use_state_scan_kernel =
+            use_delta_state_scan_kernel(query.device(), scan_mode, sequence_length);
+        let use_chunk_fused_kernel =
+            use_delta_chunk_fused_kernel(query.device(), scan_mode, sequence_length);
+        let use_full_scan_kernel =
+            use_delta_full_scan_kernel(query.device(), scan_mode, sequence_length);
+        let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
 
-        let decay_deltas = g
-            .unsqueeze(4)?
-            .broadcast_sub(&g.unsqueeze(3)?)?
-            .broadcast_mul(&lower)?;
-        let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
-        let key_t = key.transpose(4, 3)?.contiguous()?;
         let solve_batch = batch_size * num_heads * num_chunks;
-        let k_beta_flat = k_beta
-            .reshape((solve_batch, chunk_size, k_head_dim))?
-            .contiguous()?;
-        let key_t_flat = key_t
-            .reshape((solve_batch, k_head_dim, chunk_size))?
-            .contiguous()?;
-        let decay_mask_flat = decay_mask.reshape((solve_batch, chunk_size, chunk_size))?;
-        let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
-        let base_attn = raw_attn
-            .broadcast_mul(&decay_mask_flat)?
-            .neg()?
-            .broadcast_mul(&strict_lower.reshape((1, chunk_size, chunk_size))?)?
-            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?;
+        let (base_attn, decay_scan) = if hip_full_scan_fast_path {
+            (
+                delta_base_attn_scan(
+                    &k_beta
+                        .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?
+                        .contiguous()?,
+                    &key_scan.contiguous()?,
+                    &exp_g_scan.contiguous()?,
+                )?
+                .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
+                None,
+            )
+        } else {
+            let decay_deltas = g
+                .unsqueeze(4)?
+                .broadcast_sub(&g.unsqueeze(3)?)?
+                .broadcast_mul(&lower)?;
+            let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
+            let key_t = key.transpose(4, 3)?.contiguous()?;
+            let k_beta_flat = k_beta
+                .reshape((solve_batch, chunk_size, k_head_dim))?
+                .contiguous()?;
+            let key_t_flat = key_t
+                .reshape((solve_batch, k_head_dim, chunk_size))?
+                .contiguous()?;
+            let decay_mask_flat = decay_mask.reshape((solve_batch, chunk_size, chunk_size))?;
+            let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
+            (
+                raw_attn
+                    .broadcast_mul(&decay_mask_flat)?
+                    .neg()?
+                    .broadcast_mul(&strict_lower.reshape((1, chunk_size, chunk_size))?)?
+                    .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
+                Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
+            )
+        };
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
         let solve_start = profile_start(device)?;
-        let attn = if scan_policy.use_flattened_solve {
+        let attn = if hip_full_scan_fast_path {
+            delta_attn_solve_scan(
+                &base_attn
+                    .reshape((batch_heads, num_chunks, chunk_size, chunk_size))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
+        } else if scan_policy.use_flattened_solve {
             let solve_batch = batch_size * num_heads * num_chunks;
             let base_attn_flat = base_attn.reshape((solve_batch, chunk_size, chunk_size))?;
             let mut rows = Vec::with_capacity(chunk_size);
@@ -7460,35 +7749,56 @@ impl GatedDeltaNet {
         profile.linear_chunk_solve_millis += profile_elapsed(solve_start, device)?;
 
         let lower_2d = cache.lower_2d;
-        let decay_scan = decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?;
-        let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
         let k_cumdecay_scan =
             k_cumdecay.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
-        let q_state_scan = query_scan.broadcast_mul(&exp_g_scan.unsqueeze(D::Minus1)?)?;
-        let (state_decay_scan, chunk_decay_scan) = match scan_mode {
-            DeltaNetScanMode::HoistedDecays | DeltaNetScanMode::PrebatchedLocal => {
-                let exp_g_last_scan = exp_g_scan.i((.., .., chunk_size - 1))?;
-                (
-                    Some(exp_g_last_scan.unsqueeze(D::Minus1)?.unsqueeze(D::Minus1)?),
-                    Some(
-                        exp_g_last_scan
-                            .unsqueeze(D::Minus1)?
-                            .broadcast_div(&exp_g_scan)?
-                            .unsqueeze(D::Minus1)?,
-                    ),
-                )
-            }
-            DeltaNetScanMode::Flat3d | DeltaNetScanMode::TorchLike => (None, None),
-        };
+        let lower_2d_scan = lower_2d.reshape((1, 1, chunk_size, chunk_size))?;
         let local_attn_scan = match scan_mode {
             DeltaNetScanMode::PrebatchedLocal => Some({
-                let key_scan_t = key_scan.transpose(3, 2)?.contiguous()?;
-                query_scan
-                    .matmul(&key_scan_t)?
-                    .broadcast_mul(&decay_scan)?
-                    .broadcast_mul(&lower_2d.reshape((1, 1, chunk_size, chunk_size))?)?
+                if hip_full_scan_fast_path {
+                    delta_local_attn_scan(
+                        &query_scan.contiguous()?,
+                        &key_scan.contiguous()?,
+                        &exp_g_scan.contiguous()?,
+                    )?
+                } else {
+                    let key_scan_t = key_scan.transpose(3, 2)?.contiguous()?;
+                    query_scan
+                        .matmul(&key_scan_t)?
+                        .broadcast_mul(decay_scan.as_ref().ok_or_else(|| {
+                            candle::Error::Msg(
+                                "prebatched-local attention requires decay scan".into(),
+                            )
+                        })?)?
+                        .broadcast_mul(&lower_2d_scan)?
+                }
             }),
             _ => None,
+        };
+        let needs_q_state_scan = !hip_full_scan_fast_path;
+        let needs_hoisted_decays =
+            !hip_full_scan_fast_path
+                && matches!(
+                    scan_mode,
+                    DeltaNetScanMode::HoistedDecays | DeltaNetScanMode::PrebatchedLocal
+                );
+        let q_state_scan = if needs_q_state_scan {
+            Some(query_scan.broadcast_mul(&exp_g_scan.unsqueeze(D::Minus1)?)?)
+        } else {
+            None
+        };
+        let (state_decay_scan, chunk_decay_scan) = if needs_hoisted_decays {
+            let exp_g_last_scan = exp_g_scan.i((.., .., chunk_size - 1))?;
+            (
+                Some(exp_g_last_scan.unsqueeze(D::Minus1)?.unsqueeze(D::Minus1)?),
+                Some(
+                    exp_g_last_scan
+                        .unsqueeze(D::Minus1)?
+                        .broadcast_div(&exp_g_scan)?
+                        .unsqueeze(D::Minus1)?,
+                ),
+            )
+        } else {
+            (None, None)
         };
         let lower_2d = lower_2d.reshape((1, chunk_size, chunk_size))?;
         let mut last_recurrent_state = Tensor::zeros(
@@ -7497,13 +7807,6 @@ impl GatedDeltaNet {
             query.device(),
         )?;
         let mut outputs = Vec::with_capacity(num_chunks);
-        let use_state_kernel = use_delta_state_kernel(query.device(), scan_mode, sequence_length);
-        let use_state_scan_kernel =
-            use_delta_state_scan_kernel(query.device(), scan_mode, sequence_length);
-        let use_chunk_fused_kernel =
-            use_delta_chunk_fused_kernel(query.device(), scan_mode, sequence_length);
-        let use_full_scan_kernel =
-            use_delta_full_scan_kernel(query.device(), scan_mode, sequence_length);
         let full_scan = if use_full_scan_kernel {
             let full_pack_start = profile_start(device)?;
             let local_attn_scan = local_attn_scan
@@ -7548,7 +7851,12 @@ impl GatedDeltaNet {
                     })?)?
                     .contiguous()?;
                 let k_cumdecay_scan = k_cumdecay_scan.contiguous()?;
-                let q_state_scan = q_state_scan.contiguous()?;
+                let q_state_scan = q_state_scan
+                    .as_ref()
+                    .ok_or_else(|| {
+                        candle::Error::Msg("delta-full-scan requires hoisted q-state".into())
+                    })?
+                    .contiguous()?;
                 let full_pack_elapsed = profile_elapsed(full_pack_start, device)?;
                 profile.linear_full_kernel_pack_millis += full_pack_elapsed;
                 profile.transfer_millis += full_pack_elapsed;
@@ -7638,7 +7946,12 @@ impl GatedDeltaNet {
             let attn = if let Some(local_attn_scan) = &local_attn_scan {
                 local_attn_scan.i((.., chunk_idx, .., ..))?
             } else {
-                let decay_i = decay_scan.i((.., chunk_idx, .., ..))?;
+                let decay_i = decay_scan
+                    .as_ref()
+                    .ok_or_else(|| {
+                        candle::Error::Msg("delta chunk fallback requires decay scan".into())
+                    })?
+                    .i((.., chunk_idx, .., ..))?;
                 let k_i_t = k_i.transpose(2, 1)?.contiguous()?;
                 q_i.matmul(&k_i_t)?
                     .broadcast_mul(&decay_i)?
@@ -7657,7 +7970,12 @@ impl GatedDeltaNet {
                     })?
                     .i((.., chunk_idx, .., ..))?
                     .broadcast_mul(&k_i)?;
-                let q_state = q_state_scan.i((.., chunk_idx, .., ..))?;
+                let q_state = q_state_scan
+                    .as_ref()
+                    .ok_or_else(|| {
+                        candle::Error::Msg("delta-chunk-fused requires hoisted q-state".into())
+                    })?
+                    .i((.., chunk_idx, .., ..))?;
                 let state_decay = state_decay_scan
                     .as_ref()
                     .ok_or_else(|| {
@@ -7691,6 +8009,10 @@ impl GatedDeltaNet {
                     .matmul(&prev_state_i)?;
                 let v_new = v_i.broadcast_sub(&v_prime)?;
                 let attn_inter = q_state_scan
+                    .as_ref()
+                    .ok_or_else(|| {
+                        candle::Error::Msg("delta-chunk loop requires hoisted q-state".into())
+                    })?
                     .i((.., chunk_idx, .., ..))?
                     .matmul(&prev_state_i)?;
                 (v_new, attn_inter, None)
@@ -11155,6 +11477,293 @@ mod tests {
         let counters = candle::hip::transfer_counters();
         assert_eq!(packed_scan.dtype(), query_scan.dtype());
         assert_eq!(output.dtype(), initial_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_local_attn_scan_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 3usize;
+        let k_head_dim = 2usize;
+
+        let query_scan_data = vec![
+            0.1f32, -0.2, 0.05, 0.3, -0.1, 0.25, 0.2, 0.15, -0.05, 0.4, 0.12, -0.18,
+        ];
+        let key_scan_data = vec![
+            0.05f32, 0.2, -0.1, 0.15, 0.25, -0.05, 0.3, 0.1, -0.2, 0.35, 0.08, -0.12,
+        ];
+        let exp_g_scan_data = vec![0.8f32, 1.0, 1.3, 0.9, 1.1, 1.4];
+
+        let query_scan = Tensor::from_vec(
+            query_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            key_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            exp_g_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        let output = delta_local_attn_scan(&query_scan, &key_scan, &exp_g_scan)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let mut expected = vec![0.0f32; batch_heads * num_chunks * chunk_size * chunk_size];
+        for bh in 0..batch_heads {
+            for chunk in 0..num_chunks {
+                let exp_base = (bh * num_chunks + chunk) * chunk_size;
+                let qk_base = exp_base * k_head_dim;
+                let out_base = (bh * num_chunks + chunk) * chunk_size * chunk_size;
+                for t in 0..chunk_size {
+                    let exp_t = exp_g_scan_data[exp_base + t];
+                    for s in 0..=t {
+                        let mut dot = 0.0f32;
+                        for k_idx in 0..k_head_dim {
+                            dot += query_scan_data[qk_base + t * k_head_dim + k_idx]
+                                * key_scan_data[qk_base + s * k_head_dim + k_idx];
+                        }
+                        expected[out_base + t * chunk_size + s] =
+                            dot * (exp_t / exp_g_scan_data[exp_base + s]);
+                    }
+                }
+            }
+        }
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_local_attn_scan_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 3usize;
+        let k_head_dim = 2usize;
+
+        let query_scan = Tensor::from_vec(
+            vec![0.1f32, -0.2, 0.05, 0.3, -0.1, 0.25, 0.2, 0.15, -0.05, 0.4, 0.12, -0.18],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            vec![0.05f32, 0.2, -0.1, 0.15, 0.25, -0.05, 0.3, 0.1, -0.2, 0.35, 0.08, -0.12],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            vec![0.8f32, 1.0, 1.3, 0.9, 1.1, 1.4],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_local_attn_scan(&query_scan, &key_scan, &exp_g_scan)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), query_scan.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_base_attn_scan_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 3usize;
+        let k_head_dim = 2usize;
+
+        let k_beta_data = vec![
+            0.08f32, -0.12, 0.05, 0.18, -0.09, 0.14, 0.16, 0.11, -0.04, 0.22, 0.1, -0.07,
+        ];
+        let key_scan_data = vec![
+            0.05f32, 0.2, -0.1, 0.15, 0.25, -0.05, 0.3, 0.1, -0.2, 0.35, 0.08, -0.12,
+        ];
+        let exp_g_scan_data = vec![0.8f32, 1.0, 1.3, 0.9, 1.1, 1.4];
+
+        let k_beta_scan = Tensor::from_vec(
+            k_beta_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            key_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            exp_g_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        let output = delta_base_attn_scan(&k_beta_scan, &key_scan, &exp_g_scan)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let mut expected = vec![0.0f32; batch_heads * num_chunks * chunk_size * chunk_size];
+        for bh in 0..batch_heads {
+            for chunk in 0..num_chunks {
+                let exp_base = (bh * num_chunks + chunk) * chunk_size;
+                let qk_base = exp_base * k_head_dim;
+                let out_base = (bh * num_chunks + chunk) * chunk_size * chunk_size;
+                for t in 0..chunk_size {
+                    let exp_t = exp_g_scan_data[exp_base + t];
+                    for s in 0..t {
+                        let mut dot = 0.0f32;
+                        for k_idx in 0..k_head_dim {
+                            dot += k_beta_data[qk_base + t * k_head_dim + k_idx]
+                                * key_scan_data[qk_base + s * k_head_dim + k_idx];
+                        }
+                        expected[out_base + t * chunk_size + s] =
+                            -dot * (exp_t / exp_g_scan_data[exp_base + s]);
+                    }
+                }
+            }
+        }
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_base_attn_scan_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 3usize;
+        let k_head_dim = 2usize;
+
+        let k_beta_scan = Tensor::from_vec(
+            vec![0.08f32, -0.12, 0.05, 0.18, -0.09, 0.14, 0.16, 0.11, -0.04, 0.22, 0.1, -0.07],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            vec![0.05f32, 0.2, -0.1, 0.15, 0.25, -0.05, 0.3, 0.1, -0.2, 0.35, 0.08, -0.12],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            vec![0.8f32, 1.0, 1.3, 0.9, 1.1, 1.4],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_base_attn_scan(&k_beta_scan, &key_scan, &exp_g_scan)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), k_beta_scan.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_attn_solve_scan_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 4usize;
+
+        let base_attn_data = vec![
+            0.0f32, 0.0, 0.0, 0.0,
+            -0.2, 0.0, 0.0, 0.0,
+            0.1, -0.05, 0.0, 0.0,
+            -0.08, 0.03, -0.02, 0.0,
+            0.0, 0.0, 0.0, 0.0,
+            -0.12, 0.0, 0.0, 0.0,
+            0.04, -0.03, 0.0, 0.0,
+            -0.02, 0.05, -0.01, 0.0,
+        ];
+        let base_attn_scan = Tensor::from_vec(
+            base_attn_data.clone(),
+            (batch_heads, num_chunks, chunk_size, chunk_size),
+            &device,
+        )?;
+
+        let output = delta_attn_solve_scan(&base_attn_scan)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let mut expected = vec![0.0f32; batch_heads * num_chunks * chunk_size * chunk_size];
+        for bh in 0..batch_heads {
+            for chunk in 0..num_chunks {
+                let base = (bh * num_chunks + chunk) * chunk_size * chunk_size;
+                let mut rows = vec![0.0f32; chunk_size * chunk_size];
+                for i in 1..chunk_size {
+                    for j in 0..i {
+                        let row_val = base_attn_data[base + i * chunk_size + j];
+                        let mut correction = 0.0f32;
+                        for k in 0..i {
+                            correction += base_attn_data[base + i * chunk_size + k]
+                                * rows[k * chunk_size + j];
+                        }
+                        rows[i * chunk_size + j] = row_val + correction;
+                    }
+                }
+                for i in 0..chunk_size {
+                    for j in 0..chunk_size {
+                        let mut value = rows[i * chunk_size + j];
+                        if i == j {
+                            value += 1.0;
+                        }
+                        expected[base + i * chunk_size + j] = value;
+                    }
+                }
+            }
+        }
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_attn_solve_scan_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 4usize;
+
+        let base_attn_scan = Tensor::from_vec(
+            vec![
+                0.0f32, 0.0, 0.0, 0.0,
+                -0.2, 0.0, 0.0, 0.0,
+                0.1, -0.05, 0.0, 0.0,
+                -0.08, 0.03, -0.02, 0.0,
+                0.0, 0.0, 0.0, 0.0,
+                -0.12, 0.0, 0.0, 0.0,
+                0.04, -0.03, 0.0, 0.0,
+                -0.02, 0.05, -0.01, 0.0,
+            ],
+            (batch_heads, num_chunks, chunk_size, chunk_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_attn_solve_scan(&base_attn_scan)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), base_attn_scan.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())

@@ -419,6 +419,112 @@ int delta_full_scan_device(
 }
 
 template <typename T>
+int delta_local_attn_scan_device(
+    int device_ordinal,
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    const void* query_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (k_head_dim > 256 || chunk_size > 64) return 112;
+    constexpr int block = 256;
+    const size_t total =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+        static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
+    const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        k_head_dim,
+        static_cast<const T*>(query_scan),
+        static_cast<const T*>(key_scan),
+        static_cast<const T*>(exp_g_scan),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 113;
+    if (hipDeviceSynchronize() != hipSuccess) return 114;
+    return 0;
+}
+
+template <typename T>
+int delta_base_attn_scan_device(
+    int device_ordinal,
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    const void* k_beta_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (k_head_dim > 256 || chunk_size > 64) return 115;
+    constexpr int block = 256;
+    const size_t total =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+        static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
+    const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_base_attn_scan_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        k_head_dim,
+        static_cast<const T*>(k_beta_scan),
+        static_cast<const T*>(key_scan),
+        static_cast<const T*>(exp_g_scan),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 116;
+    if (hipDeviceSynchronize() != hipSuccess) return 117;
+    return 0;
+}
+
+template <typename T>
+int delta_attn_solve_scan_device(
+    int device_ordinal,
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    const void* base_attn_scan,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (chunk_size > 64) return 118;
+    constexpr int block = 1;
+    const unsigned int grid =
+        static_cast<unsigned int>(batch_heads * num_chunks);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_attn_solve_scan_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        static_cast<const T*>(base_attn_scan),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 119;
+    if (hipDeviceSynchronize() != hipSuccess) return 120;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -1212,6 +1318,144 @@ extern "C" int dotcache_qwen35_hip_delta_full_scan_pack(
             out);
     default:
         return 112;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_local_attn_scan(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t num_chunks,
+    size_t chunk_size,
+    size_t k_head_dim,
+    const void* query_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_local_attn_scan_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            query_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 1:
+        return delta_local_attn_scan_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            query_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 2:
+        return delta_local_attn_scan_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            query_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    default:
+        return 114;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_base_attn_scan(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t num_chunks,
+    size_t chunk_size,
+    size_t k_head_dim,
+    const void* k_beta_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_base_attn_scan_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 1:
+        return delta_base_attn_scan_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 2:
+        return delta_base_attn_scan_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    default:
+        return 117;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_attn_solve_scan(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t num_chunks,
+    size_t chunk_size,
+    const void* base_attn_scan,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_attn_solve_scan_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            base_attn_scan,
+            out);
+    case 1:
+        return delta_attn_solve_scan_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            base_attn_scan,
+            out);
+    case 2:
+        return delta_attn_solve_scan_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            base_attn_scan,
+            out);
+    default:
+        return 120;
     }
 }
 
