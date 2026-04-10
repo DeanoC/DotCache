@@ -244,11 +244,11 @@ int linear_stateful_conv_value_decay_with_state_device(
     void* out
 ) {
     ScopedHipDevice scoped(device_ordinal);
-    constexpr int block = 256;
     const size_t out_width = static_cast<size_t>(conv_dim) + static_cast<size_t>(num_heads);
     const size_t total_per_batch = static_cast<size_t>(seq_len) * out_width +
         static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
     const size_t out_elems = static_cast<size_t>(batch_size) * total_per_batch;
+    const int block = (kernel_size == 4 && state_len == 3) ? 128 : 256;
     const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
     if (kernel_size == 4 && state_len == 3) {
         hipLaunchKernelGGL(
