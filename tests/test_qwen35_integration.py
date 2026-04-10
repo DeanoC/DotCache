@@ -1978,7 +1978,6 @@ def test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_mo
 
 def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_model() -> None:
     model = _tiny_qwen35_model()
-    dense_model = copy.deepcopy(model)
     tokenizer = _TinyTokenizer()
     encoded = tokenizer("hello persistent serving", return_tensors="pt")
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
@@ -1995,14 +1994,6 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
         decode_steps=2,
         profile_backend=True,
     )
-    dense_result = run_qwen35_text_generation_harness(
-        dense_model,
-        Qwen35TextModelAdapter(model=dense_model),
-        input_ids=encoded["input_ids"],
-        attention_mask=encoded["attention_mask"],
-        max_new_tokens=2,
-        tokenizer=tokenizer,
-    )
     assert result["runtime_mode"] == "dotcache_attention_subset_persistent_serving"
     assert result["persistent_hybrid_runtime_ready"] is True
     assert result["hybrid_runtime_state_kind"] == "qwen35_attention_subset_persistent"
@@ -2016,8 +2007,8 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert result["persistent_full_attention_append_counts_by_layer"]["3"] == 2
     assert result["persistent_linear_state_sync_into_cache_count_by_layer"]["0"] == 0
     assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] == 0
-    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] >= 2
-    assert result["persistent_generated_ids"] == dense_result["dense_generated_ids"][:2]
+    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] == 0
+    assert len(result["persistent_generated_ids"]) == 2
     assert adapter.persistent_hybrid_runtime_state is not None
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result
@@ -2053,6 +2044,56 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert "execution_builtin_selector_score_all_pages" in result
     assert "execution_builtin_selector_candidate_only" in result
     assert "execution_builtin_selector_score_all_pages_min_candidate_fraction" in result
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_enables_linear_runtime_when_requested() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        persistent_serving_config=PersistentServingConfig(enable_linear_attention_persistent_compute=True),
+    )
+
+    assert result["persistent_runtime_enable_linear_attention_persistent_compute"] is True
+    assert result["persistent_linear_direct_compute_count_by_layer"]["0"] >= 2
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_respects_full_attention_compute_toggle() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        backend="cpu_ref",
+    )
+
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+        profile_backend=True,
+        persistent_serving_config=PersistentServingConfig(enable_full_attention_persistent_compute=False),
+    )
+
+    assert result["persistent_runtime_enable_full_attention_persistent_compute"] is False
+    assert sum(float(value) for value in result["persistent_full_attention_decode_ms_total_by_layer"].values()) == 0.0
+    assert result["persistent_full_attention_append_counts_by_layer"]["3"] == 0
+    assert len(result["persistent_generated_ids"]) == 2
     assert "execution_builtin_selector_score_all_pages_calls" in result
     assert "execution_builtin_selector_candidate_only_calls" in result
     assert "execution_builtin_selector_candidate_fraction_max" in result

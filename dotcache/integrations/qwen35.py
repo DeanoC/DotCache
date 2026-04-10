@@ -2341,6 +2341,15 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 **kwargs,
             )
         if self.adapter.mode == "dotcache_attention_subset_persistent_experimental":
+            if not self.adapter.full_attention_persistent_compute_enabled():
+                return self._forward_dense_with_capture(
+                    hidden_states,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    cache_position=cache_position,
+                    **kwargs,
+                )
             return self._forward_persistent(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -2895,7 +2904,11 @@ class PersistentQwen35LinearAttentionBridge(nn.Module):
         cache_position: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
     ):
-        if self.adapter.mode != "dotcache_attention_subset_persistent_experimental" or cache_params is None:
+        if (
+            self.adapter.mode != "dotcache_attention_subset_persistent_experimental"
+            or cache_params is None
+            or not self.adapter.linear_attention_persistent_compute_enabled()
+        ):
             return self._forward_base_linear_attn(
                 hidden_states=hidden_states,
                 cache_params=cache_params,
@@ -3117,6 +3130,12 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             and tuple(self.dotcache_config.execution_relevance_top_k_context_overrides) == ("layer:23:min_ctx:8192=8",)
         )
         return bool(applied)
+
+    def full_attention_persistent_compute_enabled(self) -> bool:
+        return bool(self.persistent_serving_config.enable_full_attention_persistent_compute)
+
+    def linear_attention_persistent_compute_enabled(self) -> bool:
+        return bool(self.persistent_serving_config.enable_linear_attention_persistent_compute)
 
     def set_mode(self, mode: str) -> None:
         if mode not in {"dense", "dotcache_attention_subset", "dotcache_attention_subset_persistent_experimental"}:
