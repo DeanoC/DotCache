@@ -90,6 +90,13 @@ pub struct RuntimeStageMetrics {
     pub attention_softmax_millis: f64,
     pub attention_mix_millis: f64,
     pub output_projection_millis: f64,
+    pub full_attention_mask_prepare_millis: f64,
+    pub full_attention_input_layout_millis: f64,
+    pub full_attention_kv_materialize_millis: f64,
+    pub full_attention_output_collect_millis: f64,
+    pub full_attention_output_reshape_millis: f64,
+    pub full_attention_gate_millis: f64,
+    pub full_attention_kernel_execute_millis: f64,
     pub scheduler_planning_millis: f64,
     pub transfer_millis: f64,
     pub linear_attention_millis: f64,
@@ -120,6 +127,13 @@ impl RuntimeStageMetrics {
         self.attention_softmax_millis += other.attention_softmax_millis;
         self.attention_mix_millis += other.attention_mix_millis;
         self.output_projection_millis += other.output_projection_millis;
+        self.full_attention_mask_prepare_millis += other.full_attention_mask_prepare_millis;
+        self.full_attention_input_layout_millis += other.full_attention_input_layout_millis;
+        self.full_attention_kv_materialize_millis += other.full_attention_kv_materialize_millis;
+        self.full_attention_output_collect_millis += other.full_attention_output_collect_millis;
+        self.full_attention_output_reshape_millis += other.full_attention_output_reshape_millis;
+        self.full_attention_gate_millis += other.full_attention_gate_millis;
+        self.full_attention_kernel_execute_millis += other.full_attention_kernel_execute_millis;
         self.scheduler_planning_millis += other.scheduler_planning_millis;
         self.transfer_millis += other.transfer_millis;
         self.linear_attention_millis += other.linear_attention_millis;
@@ -201,6 +215,13 @@ mod tests {
             attention_softmax_millis: 6.0,
             attention_mix_millis: 7.0,
             output_projection_millis: 8.0,
+            full_attention_mask_prepare_millis: 0.0,
+            full_attention_input_layout_millis: 0.0,
+            full_attention_kv_materialize_millis: 0.0,
+            full_attention_output_collect_millis: 0.0,
+            full_attention_output_reshape_millis: 0.0,
+            full_attention_gate_millis: 0.0,
+            full_attention_kernel_execute_millis: 0.0,
             scheduler_planning_millis: 9.0,
             transfer_millis: 10.0,
             linear_attention_millis: 11.0,

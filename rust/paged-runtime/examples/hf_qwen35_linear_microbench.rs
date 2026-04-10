@@ -42,6 +42,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_attention_softmax_millis: f64,
         stage_attention_mix_millis: f64,
         stage_output_projection_millis: f64,
+        stage_full_attention_mask_prepare_millis: f64,
+        stage_full_attention_input_layout_millis: f64,
+        stage_full_attention_kv_materialize_millis: f64,
+        stage_full_attention_output_collect_millis: f64,
+        stage_full_attention_output_reshape_millis: f64,
+        stage_full_attention_gate_millis: f64,
+        stage_full_attention_kernel_execute_millis: f64,
         stage_scheduler_planning_millis: f64,
         stage_transfer_millis: f64,
         stage_linear_attention_millis: f64,
@@ -234,6 +241,25 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_attention_softmax_millis: result.mean_profile.attention_softmax_millis,
         stage_attention_mix_millis: result.mean_profile.attention_mix_millis,
         stage_output_projection_millis: result.mean_profile.output_projection_millis,
+        stage_full_attention_mask_prepare_millis: result
+            .mean_profile
+            .full_attention_mask_prepare_millis,
+        stage_full_attention_input_layout_millis: result
+            .mean_profile
+            .full_attention_input_layout_millis,
+        stage_full_attention_kv_materialize_millis: result
+            .mean_profile
+            .full_attention_kv_materialize_millis,
+        stage_full_attention_output_collect_millis: result
+            .mean_profile
+            .full_attention_output_collect_millis,
+        stage_full_attention_output_reshape_millis: result
+            .mean_profile
+            .full_attention_output_reshape_millis,
+        stage_full_attention_gate_millis: result.mean_profile.full_attention_gate_millis,
+        stage_full_attention_kernel_execute_millis: result
+            .mean_profile
+            .full_attention_kernel_execute_millis,
         stage_scheduler_planning_millis: result.mean_profile.scheduler_planning_millis,
         stage_transfer_millis: result.mean_profile.transfer_millis,
         stage_linear_attention_millis: result.mean_profile.linear_attention_millis,
