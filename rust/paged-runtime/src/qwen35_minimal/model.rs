@@ -1070,9 +1070,14 @@ fn use_delta_state_kernel(
     scan_mode: DeltaNetScanMode,
     sequence_length: usize,
 ) -> bool {
+    let min_sequence = std::env::var("DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4096);
     matches!(device.location(), DeviceLocation::Metal { .. })
         && matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal)
-        && sequence_length >= 4096
+        && sequence_length >= min_sequence
         && matches!(
             std::env::var("CANDLE_QWEN35_DELTA_STATE_KERNEL").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
@@ -1084,12 +1089,18 @@ fn use_delta_state_scan_kernel(
     scan_mode: DeltaNetScanMode,
     sequence_length: usize,
 ) -> bool {
-    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= 4096) {
+    let min_sequence = std::env::var("DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4096);
+    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= min_sequence)
+    {
         return false;
     }
 
     match device.location() {
-        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } => {
+        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } | DeviceLocation::Hip { .. } => {
             matches!(
                 std::env::var("CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL").as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
@@ -1104,12 +1115,18 @@ fn use_delta_chunk_fused_kernel(
     scan_mode: DeltaNetScanMode,
     sequence_length: usize,
 ) -> bool {
-    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= 4096) {
+    let min_sequence = std::env::var("DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4096);
+    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= min_sequence)
+    {
         return false;
     }
 
     match device.location() {
-        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } => {
+        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } | DeviceLocation::Hip { .. } => {
             matches!(
                 std::env::var("CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL").as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
@@ -1124,12 +1141,18 @@ fn use_delta_full_scan_kernel(
     scan_mode: DeltaNetScanMode,
     sequence_length: usize,
 ) -> bool {
-    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= 4096) {
+    let min_sequence = std::env::var("DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4096);
+    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal) && sequence_length >= min_sequence)
+    {
         return false;
     }
 
     match device.location() {
-        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } => {
+        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } | DeviceLocation::Hip { .. } => {
             matches!(
                 std::env::var("CANDLE_QWEN35_DELTA_FULL_KERNEL").as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
@@ -2434,7 +2457,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -2468,58 +2491,28 @@ impl candle::CustomOp3 for DeltaStateScan {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, num_chunks + 1, k_head_dim, v_head_dim]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let initial_state = initial_state.cpu_storage().as_slice::<$ty>()?;
-                let initial_state = match initial_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &initial_state[o1..o2],
-                    None => candle::bail!("delta-state-scan requires contiguous inputs"),
-                };
-                let packed_scan = packed_scan.cpu_storage().as_slice::<$ty>()?;
-                let packed_scan = match packed_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &packed_scan[o1..o2],
-                    None => candle::bail!("delta-state-scan requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-state-scan requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_state_scan(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        num_chunks,
-                        chunk_size,
-                        k_head_dim,
-                        v_head_dim,
-                        initial_state.as_ptr() as *const c_void,
-                        packed_scan.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_state_scan(
+                dtype_code,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                initial_state.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                    as *const c_void,
+                packed_scan.raw_device_ptr_with_offset(packed_layout.start_offset())?
+                    as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-state-scan unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -2728,7 +2721,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -2760,57 +2753,26 @@ impl candle::CustomOp3 for DeltaChunkFused {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, 2 * chunk_size + k_head_dim, v_head_dim]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let prev_state = prev_state.cpu_storage().as_slice::<$ty>()?;
-                let prev_state = match prev_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &prev_state[o1..o2],
-                    None => candle::bail!("delta-chunk-fused requires contiguous inputs"),
-                };
-                let packed_chunk = packed_chunk.cpu_storage().as_slice::<$ty>()?;
-                let packed_chunk = match packed_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &packed_chunk[o1..o2],
-                    None => candle::bail!("delta-chunk-fused requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-chunk-fused requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_chunk_fused(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        chunk_size,
-                        k_head_dim,
-                        v_head_dim,
-                        prev_state.as_ptr() as *const c_void,
-                        packed_chunk.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
+                dtype_code,
+                device.ordinal(),
+                batch_heads,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                prev_state.raw_device_ptr_with_offset(prev_layout.start_offset())? as *const c_void,
+                packed_chunk.raw_device_ptr_with_offset(packed_layout.start_offset())?
+                    as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-chunk-fused unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -5351,7 +5313,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -5418,82 +5380,36 @@ impl candle::CustomOp7 for DeltaFullScan {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let initial_state = initial_state.cpu_storage().as_slice::<$ty>()?;
-                let initial_state = match initial_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &initial_state[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let weighted_key_scan = weighted_key_scan.cpu_storage().as_slice::<$ty>()?;
-                let weighted_key_scan = match weighted_key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &weighted_key_scan[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let k_cumdecay_scan = k_cumdecay_scan.cpu_storage().as_slice::<$ty>()?;
-                let k_cumdecay_scan = match k_cumdecay_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &k_cumdecay_scan[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let q_state_scan = q_state_scan.cpu_storage().as_slice::<$ty>()?;
-                let q_state_scan = match q_state_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &q_state_scan[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let local_attn_scan = local_attn_scan.cpu_storage().as_slice::<$ty>()?;
-                let local_attn_scan = match local_attn_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &local_attn_scan[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let state_decay_scan = state_decay_scan.cpu_storage().as_slice::<$ty>()?;
-                let state_decay_scan = match state_decay_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &state_decay_scan[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-full-scan requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_full_scan(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        num_chunks,
-                        chunk_size,
-                        k_head_dim,
-                        v_head_dim,
-                        initial_state.as_ptr() as *const c_void,
-                        weighted_key_scan.as_ptr() as *const c_void,
-                        k_cumdecay_scan.as_ptr() as *const c_void,
-                        q_state_scan.as_ptr() as *const c_void,
-                        local_attn_scan.as_ptr() as *const c_void,
-                        state_decay_scan.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_full_scan(
+                dtype_code,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                initial_state.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                    as *const c_void,
+                weighted_key_scan.raw_device_ptr_with_offset(weighted_key_layout.start_offset())?
+                    as *const c_void,
+                k_cumdecay_scan.raw_device_ptr_with_offset(k_cumdecay_layout.start_offset())?
+                    as *const c_void,
+                q_state_scan.raw_device_ptr_with_offset(q_state_layout.start_offset())?
+                    as *const c_void,
+                local_attn_scan.raw_device_ptr_with_offset(local_attn_layout.start_offset())?
+                    as *const c_void,
+                state_decay_scan.raw_device_ptr_with_offset(state_decay_layout.start_offset())?
+                    as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-full-scan unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -8650,6 +8566,161 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    struct DeltaScanModeEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl DeltaScanModeEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_DELTA_SCAN_MODE";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for DeltaScanModeEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct DeltaKernelMinSequenceEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl DeltaKernelMinSequenceEnvGuard {
+        const KEY: &'static str = "DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for DeltaKernelMinSequenceEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct DeltaStateScanKernelEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl DeltaStateScanKernelEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for DeltaStateScanKernelEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct DeltaChunkFusedKernelEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl DeltaChunkFusedKernelEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for DeltaChunkFusedKernelEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct DeltaFullKernelEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl DeltaFullKernelEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_DELTA_FULL_KERNEL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for DeltaFullKernelEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn tiny_linear_text_config() -> TextConfig {
         TextConfig {
             vocab_size: 32,
@@ -9804,6 +9875,123 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
+    fn hip_prebatched_local_state_scan_and_chunk_fused_match_baseline_and_reduce_host_staging(
+    ) -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let _chunk_size = LinearChunkSizeEnvGuard::set("8");
+        let _scan_mode = DeltaScanModeEnvGuard::set("prebatched-local");
+        let _min_seq = DeltaKernelMinSequenceEnvGuard::set("1");
+        let _single_chunk = HipChunkSinglePrefillEnvGuard::set("0");
+        let _multi_chunk = HipMultiChunkScanPrefillEnvGuard::set("0");
+        let cfg = tiny_linear_text_config();
+        let varmap = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = GatedDeltaNet::new(&cfg, vb)?;
+        let hidden_data: Vec<f32> = (0..(12usize * cfg.hidden_size))
+            .map(|idx| (((idx % 17) as f32) - 8.0) * 0.04)
+            .collect();
+        let hidden_states =
+            Tensor::from_vec(hidden_data, (1usize, 12usize, cfg.hidden_size), &device)?;
+
+        let _state_scan_off = DeltaStateScanKernelEnvGuard::set("0");
+        let _chunk_fused_off = DeltaChunkFusedKernelEnvGuard::set("0");
+        let _full_off = DeltaFullKernelEnvGuard::set("0");
+        let mut baseline_model = model.clone();
+        candle::hip::reset_transfer_counters();
+        let (baseline_out, _baseline_state, _baseline_profile) =
+            baseline_model.trace_profiled(&hidden_states, None)?;
+        let baseline_counters = candle::hip::transfer_counters();
+        drop(_full_off);
+        drop(_chunk_fused_off);
+        drop(_state_scan_off);
+
+        let _state_scan_on = DeltaStateScanKernelEnvGuard::set("1");
+        let _chunk_fused_on = DeltaChunkFusedKernelEnvGuard::set("1");
+        let _full_off = DeltaFullKernelEnvGuard::set("0");
+        let mut gated_model = model.clone();
+        candle::hip::reset_transfer_counters();
+        let (gated_out, _gated_state, _gated_profile) =
+            gated_model.trace_profiled(&hidden_states, None)?;
+        let gated_counters = candle::hip::transfer_counters();
+
+        let baseline_out = baseline_out
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let gated_out = gated_out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        assert_close(&gated_out, &baseline_out, 1e-4);
+        assert!(
+            gated_counters.host_to_device_bytes < baseline_counters.host_to_device_bytes,
+            "expected state-scan/chunk-fused path to reduce H2D traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
+        assert!(
+            gated_counters.device_to_host_bytes < baseline_counters.device_to_host_bytes,
+            "expected state-scan/chunk-fused path to reduce D2H traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_prebatched_local_full_scan_matches_baseline_and_reduces_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let _chunk_size = LinearChunkSizeEnvGuard::set("8");
+        let _scan_mode = DeltaScanModeEnvGuard::set("prebatched-local");
+        let _min_seq = DeltaKernelMinSequenceEnvGuard::set("1");
+        let _single_chunk = HipChunkSinglePrefillEnvGuard::set("0");
+        let _multi_chunk = HipMultiChunkScanPrefillEnvGuard::set("0");
+        let cfg = tiny_linear_text_config();
+        let varmap = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = GatedDeltaNet::new(&cfg, vb)?;
+        let hidden_data: Vec<f32> = (0..(12usize * cfg.hidden_size))
+            .map(|idx| (((idx % 19) as f32) - 9.0) * 0.03)
+            .collect();
+        let hidden_states =
+            Tensor::from_vec(hidden_data, (1usize, 12usize, cfg.hidden_size), &device)?;
+
+        let _state_scan_off = DeltaStateScanKernelEnvGuard::set("0");
+        let _chunk_fused_off = DeltaChunkFusedKernelEnvGuard::set("0");
+        let _full_off = DeltaFullKernelEnvGuard::set("0");
+        let mut baseline_model = model.clone();
+        candle::hip::reset_transfer_counters();
+        let (baseline_out, _baseline_state, _baseline_profile) =
+            baseline_model.trace_profiled(&hidden_states, None)?;
+        let baseline_counters = candle::hip::transfer_counters();
+        drop(_full_off);
+        drop(_chunk_fused_off);
+        drop(_state_scan_off);
+
+        let _state_scan_off = DeltaStateScanKernelEnvGuard::set("0");
+        let _chunk_fused_off = DeltaChunkFusedKernelEnvGuard::set("0");
+        let _full_on = DeltaFullKernelEnvGuard::set("1");
+        let mut gated_model = model.clone();
+        candle::hip::reset_transfer_counters();
+        let (gated_out, _gated_state, _gated_profile) =
+            gated_model.trace_profiled(&hidden_states, None)?;
+        let gated_counters = candle::hip::transfer_counters();
+
+        let baseline_out = baseline_out
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let gated_out = gated_out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        assert_close(&gated_out, &baseline_out, 1e-4);
+        assert!(
+            gated_counters.host_to_device_bytes < baseline_counters.host_to_device_bytes,
+            "expected full-scan path to reduce H2D traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
+        assert!(
+            gated_counters.device_to_host_bytes < baseline_counters.device_to_host_bytes,
+            "expected full-scan path to reduce D2H traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
     fn hip_chunk_single_prefill_gate_defaults_on() -> Result<()> {
         let _guard = hip_test_guard();
         let _env = HipChunkSinglePrefillEnvGuard::clear();
@@ -10178,6 +10366,46 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
+    fn hip_delta_state_scan_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 2usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+        let packed_width = 2 * k_head_dim + 1;
+
+        let initial_state = Tensor::from_vec(
+            vec![0.1f32, -0.2, 0.05, 0.15],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let packed_scan = Tensor::from_vec(
+            vec![
+                0.2f32, -0.1, 0.05, 0.3, 0.9, -0.2, 0.4, 0.1, -0.05, 0.9, 0.3, 0.1, -0.15, 0.2,
+                0.8, 0.05, -0.25, 0.2, 0.1, 0.8,
+            ],
+            (batch_heads, num_chunks, chunk_size, packed_width),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            vec![0.4f32, 0.1, -0.2, 0.3, 0.05, -0.1, 0.2, 0.25],
+            (batch_heads, num_chunks, chunk_size, v_head_dim),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_state_scan(&initial_state, &packed_scan, &value)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), initial_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
     fn hip_delta_chunk_fused_matches_reference() -> Result<()> {
         let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
@@ -10254,6 +10482,45 @@ mod tests {
         }
 
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_chunk_fused_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let chunk_size = 2usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+        let packed_width = 3 * k_head_dim + 1;
+
+        let prev_state = Tensor::from_vec(
+            vec![0.1f32, 0.2, -0.05, 0.15],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let packed_chunk = Tensor::from_vec(
+            vec![
+                0.2f32, -0.1, 0.05, 0.3, 0.1, -0.2, 0.85, -0.15, 0.25, 0.2, -0.05, -0.1, 0.15,
+                0.85,
+            ],
+            (batch_heads, chunk_size, packed_width),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            vec![0.35f32, -0.1, 0.05, 0.4],
+            (batch_heads, chunk_size, v_head_dim),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_chunk_fused(&prev_state, &packed_chunk, &value)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), prev_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
     }
 
@@ -10378,6 +10645,67 @@ mod tests {
         }
 
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_full_scan_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 2usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state = Tensor::from_vec(
+            vec![0.15f32, -0.05, 0.2, 0.1],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let weighted_key_scan = Tensor::from_vec(
+            vec![0.2f32, -0.1, 0.05, 0.3, -0.2, 0.15, 0.25, -0.05],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let k_cumdecay_scan = Tensor::from_vec(
+            vec![0.1f32, 0.25, -0.2, 0.05, 0.15, -0.1, 0.05, 0.2],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let q_state_scan = Tensor::from_vec(
+            vec![0.05f32, -0.15, 0.2, 0.1, -0.1, 0.3, 0.15, -0.05],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let local_attn_scan = Tensor::from_vec(
+            vec![0.2f32, 0.1, -0.1, 0.3, 0.05, -0.2, 0.25, 0.15],
+            (batch_heads, num_chunks, chunk_size, chunk_size),
+            &device,
+        )?;
+        let state_decay_scan =
+            Tensor::from_vec(vec![0.85f32, 0.9], (batch_heads, num_chunks), &device)?;
+        let value = Tensor::from_vec(
+            vec![0.3f32, 0.1, -0.2, 0.4, 0.05, -0.1, 0.2, 0.35],
+            (batch_heads, num_chunks, chunk_size, v_head_dim),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_full_scan(
+            &initial_state,
+            &weighted_key_scan,
+            &k_cumdecay_scan,
+            &q_state_scan,
+            &local_attn_scan,
+            &state_decay_scan,
+            &value,
+        )?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), initial_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
     }
 

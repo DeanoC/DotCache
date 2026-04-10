@@ -116,6 +116,51 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_delta_state_scan(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            initial_state: *const c_void,
+            packed_scan: *const c_void,
+            value: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_delta_chunk_fused(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            prev_state: *const c_void,
+            packed_chunk: *const c_void,
+            value: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_delta_full_scan(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            initial_state: *const c_void,
+            weighted_key_scan: *const c_void,
+            k_cumdecay_scan: *const c_void,
+            q_state_scan: *const c_void,
+            local_attn_scan: *const c_void,
+            state_decay_scan: *const c_void,
+            value: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_l2norm(
             dtype: c_int,
             device_ordinal: usize,
