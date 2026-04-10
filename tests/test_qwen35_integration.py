@@ -2272,6 +2272,103 @@ def test_qwen35_attention_subset_persistent_serving_harness_stage8_compression_p
     assert compressed["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
 
 
+def test_qwen35_attention_subset_persistent_serving_harness_stage8_mixed_execution_preserves_ids() -> None:
+    baseline_model = _tiny_qwen35_model()
+    mixed_model = copy.deepcopy(baseline_model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("short", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+        ),
+        backend="cpu_ref",
+    )
+    mixed_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=mixed_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+            enable_full_attention_mixed_mode_execution=True,
+            full_attention_mixed_mode_execution_allow_value_m0=True,
+            full_attention_mixed_mode_execution_max_k_comp_error=1.0,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    mixed = run_qwen35_attention_subset_persistent_serving_harness(
+        mixed_model,
+        mixed_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert mixed["persistent_runtime_enable_full_attention_mixed_mode_execution"] is True
+    assert mixed["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert mixed["persistent_full_attention_executed_m0_block_count_total_by_layer"]["3"] >= 1
+    assert mixed["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_stage8_direct_m0_preserves_ids() -> None:
+    baseline_model = _tiny_qwen35_model()
+    mixed_model = copy.deepcopy(baseline_model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("short", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=8, bits_v=8, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+        ),
+        backend="cpu_ref",
+    )
+    direct_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=mixed_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=8, bits_v=8, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+            enable_full_attention_mixed_mode_execution=True,
+            full_attention_mixed_mode_execution_strategy="direct_m0",
+            full_attention_mixed_mode_execution_allow_value_m0=False,
+            full_attention_mixed_mode_execution_max_k_comp_error=0.20,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    direct = run_qwen35_attention_subset_persistent_serving_harness(
+        mixed_model,
+        direct_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert direct["persistent_runtime_enable_full_attention_mixed_mode_execution"] is True
+    assert direct["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert direct["persistent_full_attention_executed_m0_block_count_total_by_layer"]["3"] >= 1
+    assert direct["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
 def test_qwen35_build_persistent_prefill_block_metadata_uses_real_page_modes_and_comp_error() -> None:
     prefill_tensors = {
         3: (

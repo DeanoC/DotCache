@@ -47,9 +47,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--decode-steps", type=int, default=8)
+    parser.add_argument("--enable-full-attention-mixed-mode-execution", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--enable-full-attention-mixed-mode-execution-allow-value-m0", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--full-attention-mixed-mode-execution-strategy",
+        choices=["cached_reconstruct", "blockwise_qdq", "direct_m0"],
+        default="cached_reconstruct",
+    )
+    parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error", default="0.10")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
     return parser.parse_args()
+
+
+def _parse_optional_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"", "none", "null"}:
+        return None
+    return float(text)
 
 
 def _build_prompt_text_inputs(
@@ -136,10 +153,22 @@ def _resolve_snapshot_records_from_corpus_manifest(corpus_manifest_path: str) ->
     )
 
 
-def _persistent_base_config(*, enable_compression: bool, policy_path: str | None) -> PersistentServingConfig:
+def _persistent_base_config(
+    *,
+    enable_compression: bool,
+    policy_path: str | None,
+    enable_mixed_execution: bool = False,
+    mixed_execution_strategy: str = "cached_reconstruct",
+    allow_value_m0: bool = False,
+    max_k_comp_error: float | None = 0.10,
+) -> PersistentServingConfig:
     return PersistentServingConfig(
         enable_priority=True,
         enable_compression=bool(enable_compression),
+        enable_full_attention_mixed_mode_execution=bool(enable_mixed_execution),
+        full_attention_mixed_mode_execution_strategy=str(mixed_execution_strategy),
+        full_attention_mixed_mode_execution_allow_value_m0=bool(allow_value_m0),
+        full_attention_mixed_mode_execution_max_k_comp_error=max_k_comp_error,
         full_attention_sink_block_count=1,
         full_attention_recent_block_count=64,
         full_attention_mandatory_recent_block_count=16,
@@ -220,6 +249,9 @@ def _summarize_replay_pair_records(records: list[dict[str, Any]]) -> dict[str, A
         "stage8_avg_selected_m0_metadata_block_count": float(
             sum(float(record["stage8_selected_m0_metadata_block_count"]) for record in records) / count
         ),
+        "stage8_avg_executed_m0_block_count": float(
+            sum(float(record.get("stage8_executed_m0_block_count", 0.0)) for record in records) / count
+        ),
         "stage8_avg_compression_invalid_block_count": float(
             sum(float(record["stage8_compression_invalid_block_count"]) for record in records) / count
         ),
@@ -267,6 +299,9 @@ def _summarize_serving_pair_records(records: list[dict[str, Any]]) -> dict[str, 
         "stage8_avg_selected_m0_metadata_block_count": float(
             sum(float(record["stage8_selected_m0_metadata_block_count_total"]) for record in records) / count
         ),
+        "stage8_avg_executed_m0_block_count": float(
+            sum(float(record.get("stage8_executed_m0_block_count_total", 0.0)) for record in records) / count
+        ),
         "stage8_avg_dense_fallback_count": float(
             sum(float(record["stage8_dense_fallback_count_total"]) for record in records) / count
         ),
@@ -292,6 +327,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- stage8 avg selected M0-metadata blocks: {float(replay_summary['stage8_avg_selected_m0_metadata_block_count']):.3f}"
     )
     lines.append(
+        f"- stage8 avg executed M0 blocks: {float(replay_summary['stage8_avg_executed_m0_block_count']):.3f}"
+    )
+    lines.append(
         f"- stage8 avg compression-invalid blocks: {float(replay_summary['stage8_avg_compression_invalid_block_count']):.3f}"
     )
     lines.append("\n## Serving Summary\n")
@@ -310,6 +348,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append(
         f"- stage8 avg selected M0-metadata blocks: {float(serving_summary['stage8_avg_selected_m0_metadata_block_count']):.3f}"
+    )
+    lines.append(
+        f"- stage8 avg executed M0 blocks: {float(serving_summary['stage8_avg_executed_m0_block_count']):.3f}"
     )
     lines.append(f"- stage8 avg dense fallback count: {float(serving_summary['stage8_avg_dense_fallback_count']):.3f}")
     lines.append("\n## Read\n")
@@ -335,11 +376,22 @@ def main() -> None:
         raise SystemExit("bench_qwen35_persistent_stage8_compare.py requires the optional transformers dependencies")
 
     replay_records: list[dict[str, Any]] = []
+    mixed_enabled = bool(args.enable_full_attention_mixed_mode_execution)
+    allow_value_m0 = bool(args.enable_full_attention_mixed_mode_execution_allow_value_m0)
+    mixed_execution_strategy = str(args.full_attention_mixed_mode_execution_strategy)
+    max_k_comp_error = _parse_optional_float(args.full_attention_mixed_mode_execution_max_k_comp_error)
     for snapshot_record in snapshot_records:
         snapshot_path = str(snapshot_record["snapshot_path"])
         baseline = run_qwen35_persistent_full_attention_snapshot_comparison(
             snapshot_path,
-            persistent_serving_config=_persistent_base_config(enable_compression=False, policy_path=None),
+            persistent_serving_config=_persistent_base_config(
+                enable_compression=False,
+                policy_path=None,
+                enable_mixed_execution=False,
+                mixed_execution_strategy=mixed_execution_strategy,
+                allow_value_m0=False,
+                max_k_comp_error=None,
+            ),
             dotcache_config=_build_stage8_dotcache_config(
                 head_dim=256,
                 group_size=int(args.group_size),
@@ -352,7 +404,14 @@ def main() -> None:
         )
         stage8 = run_qwen35_persistent_full_attention_snapshot_comparison(
             snapshot_path,
-            persistent_serving_config=_persistent_base_config(enable_compression=True, policy_path=None),
+            persistent_serving_config=_persistent_base_config(
+                enable_compression=True,
+                policy_path=None,
+                enable_mixed_execution=mixed_enabled,
+                mixed_execution_strategy=mixed_execution_strategy,
+                allow_value_m0=allow_value_m0,
+                max_k_comp_error=max_k_comp_error,
+            ),
             dotcache_config=_build_stage8_dotcache_config(
                 head_dim=256,
                 group_size=int(args.group_size),
@@ -376,6 +435,8 @@ def main() -> None:
             "stage8_max_abs_error": float(stage8["max_abs_error"]),
             "stage8_selected_m0_metadata_block_count": int(stage8["selected_m0_metadata_block_count"]),
             "stage8_selected_m3_metadata_block_count": int(stage8["selected_m3_metadata_block_count"]),
+            "stage8_executed_m0_block_count": int(stage8.get("executed_m0_block_count", 0)),
+            "stage8_executed_m3_block_count": int(stage8.get("executed_m3_block_count", 0)),
             "stage8_compression_invalid_block_count": int(stage8["compression_invalid_block_count"]),
             "stage8_metadata_m0_block_count": int(stage8["persistent_full_attention_m0_metadata_block_count"]),
             "stage8_metadata_m3_block_count": int(stage8["persistent_full_attention_m3_metadata_block_count"]),
@@ -416,6 +477,10 @@ def main() -> None:
         persistent_serving_config=_persistent_base_config(
             enable_compression=False,
             policy_path=str(args.shortlist_policy_path),
+            enable_mixed_execution=False,
+            mixed_execution_strategy=mixed_execution_strategy,
+            allow_value_m0=False,
+            max_k_comp_error=None,
         ),
         backend=str(args.backend),
     )
@@ -432,6 +497,10 @@ def main() -> None:
         persistent_serving_config=_persistent_base_config(
             enable_compression=True,
             policy_path=str(args.shortlist_policy_path),
+            enable_mixed_execution=mixed_enabled,
+            mixed_execution_strategy=mixed_execution_strategy,
+            allow_value_m0=allow_value_m0,
+            max_k_comp_error=max_k_comp_error,
         ),
         backend=str(args.backend),
     )
@@ -514,6 +583,10 @@ def main() -> None:
                 stage8_result,
                 "persistent_full_attention_selected_m0_metadata_block_count_total_by_layer",
             ),
+            "stage8_executed_m0_block_count_total": _sum_metric_by_layer(
+                stage8_result,
+                "persistent_full_attention_executed_m0_block_count_total_by_layer",
+            ),
             "baseline_dense_fallback_count_total": _sum_metric_by_layer(
                 baseline_result,
                 "persistent_full_attention_dense_fallback_count_by_layer",
@@ -548,6 +621,10 @@ def main() -> None:
             "bits_v": int(args.bits_v),
             "decode_steps": int(args.decode_steps),
             "shortlist_policy_path": str(args.shortlist_policy_path),
+            "enable_full_attention_mixed_mode_execution": bool(mixed_enabled),
+            "full_attention_mixed_mode_execution_strategy": mixed_execution_strategy,
+            "enable_full_attention_mixed_mode_execution_allow_value_m0": bool(allow_value_m0),
+            "full_attention_mixed_mode_execution_max_k_comp_error": max_k_comp_error,
         },
         "replay": {
             "records": replay_records,

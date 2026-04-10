@@ -10,6 +10,10 @@ class PersistentServingConfig:
     dense_only: bool = True
     enable_full_attention_persistent_compute: bool = True
     enable_linear_attention_persistent_compute: bool = False
+    enable_full_attention_mixed_mode_execution: bool = False
+    full_attention_mixed_mode_execution_strategy: str = "cached_reconstruct"
+    full_attention_mixed_mode_execution_allow_value_m0: bool = False
+    full_attention_mixed_mode_execution_max_k_comp_error: float | None = 0.10
     enable_priority: bool = False
     enable_early_exit: bool = False
     enable_compression: bool = False
@@ -78,8 +82,16 @@ class PersistentLayerTelemetry:
     diverse_selection_ms_total: float = 0.0
     compression_selection_ms_total: float = 0.0
     policy_bias_ms_total: float = 0.0
+    mixed_execution_prepare_ms_total: float = 0.0
+    mixed_execution_cache_refresh_ms_total: float = 0.0
+    mixed_execution_direct_m0_assembly_ms_total: float = 0.0
+    mixed_execution_direct_m0_score_ms_total: float = 0.0
+    mixed_execution_exact_m3_score_ms_total: float = 0.0
+    mixed_execution_final_mix_ms_total: float = 0.0
     selected_m0_metadata_block_count_total: int = 0
     selected_m3_metadata_block_count_total: int = 0
+    executed_m0_block_count_total: int = 0
+    executed_m3_block_count_total: int = 0
     fallback_process_more_count: int = 0
     fallback_widen_count: int = 0
     fallback_disable_compression_count: int = 0
@@ -114,6 +126,12 @@ class PersistentFullAttentionLayerState:
     layer_id: int
     key_cache: Any
     value_cache: Any
+    mixed_key_cache: Any | None
+    mixed_value_cache: Any | None
+    mixed_key_fused_scaled_cache: Any | None
+    mixed_key_bias_cache: Any | None
+    mixed_value_fused_scaled_cache: Any | None
+    mixed_value_bias_cache: Any | None
     block_token_starts: Any
     block_token_counts: Any
     block_k_center: Any

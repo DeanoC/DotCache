@@ -1119,7 +1119,7 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
         and (
             (
                 header.mode_default == "M0"
-                and header.bits in (2, 3, 4)
+                and header.bits in (2, 3, 4, 8)
                 and header.quant_scheme == "affine"
                 and source_page.scales is not None
                 and source_page.bias is not None
