@@ -3856,3 +3856,22 @@ def test_qwen35_statecache_serving_paired_repeat_summary_aggregates_measurements
     assert summary["paired_decode_ms_per_step_delta"] == -2.0
     assert summary["baseline_recurrent_compression_ratio"] == 3.2
     assert summary["candidate_recurrent_compression_ratio"] == 2.57
+
+
+def test_qwen35_text_workload_rejects_non_positive_wave_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import benchmarks.bench_qwen35_text_workload as workload_bench
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_qwen35_text_workload.py",
+            "--shared-prompt-length",
+            "128",
+            "--wave-size",
+            "0",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        workload_bench.parse_args()
