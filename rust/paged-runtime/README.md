@@ -129,6 +129,23 @@ Qwen3.5 now has native Rust dense and paged lanes. The current support is:
 - `qwen35` + `paged_control`: supported
 - `qwen35` + `dotcache_experimental`: not implemented yet
 
+Paged Qwen3.5 also has an explicit experimental compressed-page serving preset:
+
+- `--serving-preset m3-int8`
+
+That preset is currently intended for paged serving runs only. It applies:
+
+- `--attention-path paged`
+- `--default-key-page-mode M3/affine/4/int8`
+- `--default-value-page-mode M3/affine/4/int8`
+
+and it rejects incompatible combinations such as:
+
+- `--runtime-mode dense_control`
+- `--runtime-mode torch_control`
+- `--attention-path fused`
+- any explicit page-mode overrides on the same command line
+
 For a real Qwen3.5 dense-control smoke run on Metal:
 
 ```bash
@@ -201,6 +218,43 @@ This pass is benchmark-first only. The current default prompt-policy table in
 `Qwen/Qwen3.5-0.8B` and contexts up to `16384`, and it is intentionally left
 unchanged here so larger-model measurements can be compared without silently
 changing runtime policy defaults.
+
+For the focused compressed-page comparison on the current `0.8B` paged runtime,
+use the page-mode compare harness:
+
+```bash
+python benchmarks/bench_qwen35_page_mode_compare.py
+```
+
+By default that runner compares:
+
+- `exact`
+- `M3/affine/4/int8`
+
+across:
+
+- single-session contexts `2048` and `8192`
+- workload context `2048`
+- resident page budgets `32` and `128`
+
+It writes one dated directory under `benchmarks/results/` containing:
+
+- one subdirectory per run with stdout/stderr logs
+- the raw Rust `.summary.json` and `.trace.jsonl` artifacts
+- `manifest.json`
+- `report.json`
+- `report.md`
+
+The current benchmark readout on CUDA is:
+
+- `M3/int8` is slightly better than `exact` on `2048` single-session at budget `32`
+- `M3/int8` is slightly worse than `exact` on `2048` single-session at budget `128`
+- `M3/int8` is near-tied but still slightly worse than `exact` on `8192` single-session
+- `M3/int8` is clearly better than `exact` on the `2048` workload runs at budgets `32` and `128`
+- in every measured case, `M3/int8` cuts spilled bytes to about half of `exact`
+
+So `M3/int8` is currently treated as an experimental paged serving/workload mode,
+not a blanket replacement for exact pages.
 
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 
