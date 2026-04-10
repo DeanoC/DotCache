@@ -991,6 +991,72 @@ def _select_optional_block_ids(
     return selected
 
 
+def _approximate_preferred_optional_block_ids(
+    *,
+    candidate_block_ids: list[int],
+    region_ids: Any,
+    priority_scores: Any,
+    upper_bounds: Any,
+    top_k: int,
+    upper_bound_quota: int,
+    far_quota: int,
+    mid_quota: int,
+    near_quota: int,
+) -> list[int]:
+    if top_k <= 0 or not candidate_block_ids:
+        return []
+    ranked_by_upper = _rank_optional_block_ids(
+        candidate_block_ids=candidate_block_ids,
+        priority_scores=priority_scores,
+        upper_bounds=upper_bounds,
+        use_upper_bounds_first=True,
+    )
+    ranked_by_priority = _rank_optional_block_ids(
+        candidate_block_ids=candidate_block_ids,
+        priority_scores=priority_scores,
+        upper_bounds=upper_bounds,
+        use_upper_bounds_first=False,
+    )
+    selected: list[int] = []
+    selected_set: set[int] = set()
+
+    reserved = max(0, min(int(upper_bound_quota), int(top_k), len(ranked_by_upper)))
+    for block_id in ranked_by_upper[:reserved]:
+        selected.append(int(block_id))
+        selected_set.add(int(block_id))
+        if len(selected) >= int(top_k):
+            return selected[: int(top_k)]
+
+    region_quotas = {
+        0: max(0, int(far_quota)),
+        1: max(0, int(mid_quota)),
+        2: max(0, int(near_quota)),
+    }
+    for region_id in (0, 1, 2):
+        quota = min(region_quotas[region_id], max(int(top_k) - len(selected), 0))
+        if quota <= 0:
+            continue
+        taken = 0
+        for block_id in ranked_by_priority:
+            if int(block_id) in selected_set or int(region_ids[int(block_id)]) != int(region_id):
+                continue
+            selected.append(int(block_id))
+            selected_set.add(int(block_id))
+            taken += 1
+            if taken >= quota or len(selected) >= int(top_k):
+                break
+        if len(selected) >= int(top_k):
+            return selected[: int(top_k)]
+
+    for block_id in ranked_by_priority:
+        if int(block_id) in selected_set:
+            continue
+        selected.append(int(block_id))
+        if len(selected) >= int(top_k):
+            break
+    return selected[: int(top_k)]
+
+
 def _resolve_policy_bias_preferred_optional_ids(
     *,
     state: PersistentFullAttentionLayerState,
@@ -1000,6 +1066,16 @@ def _resolve_policy_bias_preferred_optional_ids(
     upper_bounds: Any,
 ) -> tuple[set[int], float]:
     if policy_choice is None or not policy_choice.get("config_overrides"):
+        return set(), 0.0
+    if float(policy_choice.get("chosen_safe_rate", 0.0)) < float(
+        resolved_config.full_attention_shortlist_policy_min_safe_rate
+    ):
+        return set(), 0.0
+    if float(policy_choice.get("matched_oracle_rate", 0.0)) < float(
+        resolved_config.full_attention_shortlist_policy_min_matched_oracle_rate
+    ):
+        return set(), 0.0
+    if int(policy_choice.get("vote_count", 0)) < int(resolved_config.full_attention_shortlist_policy_min_vote_count):
         return set(), 0.0
     policy_config = replace(resolved_config, **dict(policy_choice.get("config_overrides", {})))
     num_blocks = int(len(state.block_token_starts))
@@ -1031,23 +1107,16 @@ def _resolve_policy_bias_preferred_optional_ids(
         for block_id in remaining_ids
         if block_id not in selected_ids and block_id not in soft_recent_set
     )
-    preferred_ids = _select_optional_block_ids(
+    preferred_ids = _approximate_preferred_optional_block_ids(
         candidate_block_ids=optional_candidates,
         region_ids=state.block_region_ids,
         priority_scores=priority_scores,
         upper_bounds=upper_bounds,
         top_k=int(policy_config.full_attention_optional_top_k),
-        use_upper_bounds_first=bool(policy_config.full_attention_optional_use_upper_bounds_first),
         upper_bound_quota=int(policy_config.full_attention_optional_upper_bound_quota),
-        far_anchor_quota=int(policy_config.full_attention_optional_far_anchor_quota),
-        far_anchor_priority_margin=float(policy_config.full_attention_optional_far_anchor_priority_margin),
-        far_anchor_upper_bound_margin=float(policy_config.full_attention_optional_far_anchor_upper_bound_margin),
         far_quota=int(policy_config.full_attention_optional_far_quota),
         mid_quota=int(policy_config.full_attention_optional_mid_quota),
         near_quota=int(policy_config.full_attention_optional_near_quota),
-        seed_block_ids=sorted(selected_ids),
-        diversity_weight=float(policy_config.full_attention_optional_diversity_weight),
-        diversity_radius=int(policy_config.full_attention_optional_diversity_radius),
     )
     confidence = max(
         float(policy_choice.get("chosen_safe_rate", 0.0)),
@@ -1265,6 +1334,7 @@ class PersistentFullAttentionState:
         query_scale: float,
         config_override: PersistentServingConfig | None = None,
     ) -> dict[str, Any]:
+        start = time.perf_counter()
         state = self.layers[int(layer_id)]
         resolved_config = config_override or self.config
         priority_scores, upper_bounds = _resolve_block_score_inputs(
@@ -1274,6 +1344,8 @@ class PersistentFullAttentionState:
             q_head_to_kv_head=self.q_head_to_kv_head,
             query_scale=float(query_scale),
         )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.telemetry.require_layer(int(layer_id)).score_ms_total += elapsed_ms
         return {
             "priority_scores": priority_scores,
             "upper_bounds": upper_bounds,
@@ -1288,6 +1360,7 @@ class PersistentFullAttentionState:
         config_override: PersistentServingConfig | None = None,
         policy_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        selection_start = time.perf_counter()
         state = self.layers[int(layer_id)]
         resolved_config = config_override or self.config
         num_blocks = int(len(state.block_token_starts))
@@ -1322,6 +1395,7 @@ class PersistentFullAttentionState:
         policy_preferred_optional_ids: set[int] = set()
         policy_preferred_bias_weight = 0.0
         if str(resolved_config.full_attention_shortlist_policy_mode or "replace").strip().lower() == "bias":
+            policy_bias_start = time.perf_counter()
             (
                 policy_preferred_optional_ids,
                 policy_preferred_bias_weight,
@@ -1331,6 +1405,9 @@ class PersistentFullAttentionState:
                 policy_choice=policy_choice,
                 priority_scores=priority_scores,
                 upper_bounds=upper_bounds,
+            )
+            self.telemetry.require_layer(int(layer_id)).policy_bias_ms_total += (
+                (time.perf_counter() - policy_bias_start) * 1000.0
             )
         if bool(resolved_config.enable_priority) and int(resolved_config.full_attention_optional_top_k) > 0:
             soft_recent_set = set(soft_recent_ids)
@@ -1375,6 +1452,9 @@ class PersistentFullAttentionState:
                 processing_block_ids.append(int(block_id))
                 seen_processing_ids.add(int(block_id))
         selected_block_ids = sorted(selected_ids)
+        self.telemetry.require_layer(int(layer_id)).selection_ms_total += (
+            (time.perf_counter() - selection_start) * 1000.0
+        )
         return {
             "selected_block_ids": selected_block_ids,
             "processing_block_ids": processing_block_ids,
@@ -1670,6 +1750,22 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).decode_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_score_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).score_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_selection_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).selection_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_policy_bias_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).policy_bias_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_shortlist_policy_load_ms_total": float(self.telemetry.shortlist_policy_load_ms_total),
+            "persistent_shortlist_policy_resolve_ms_total": float(self.telemetry.shortlist_policy_resolve_ms_total),
+            "persistent_shortlist_policy_load_count": int(self.telemetry.shortlist_policy_load_count),
+            "persistent_shortlist_policy_resolve_count": int(self.telemetry.shortlist_policy_resolve_count),
             "persistent_full_attention_last_beta_upper_by_layer": {
                 str(layer_id): (
                     None

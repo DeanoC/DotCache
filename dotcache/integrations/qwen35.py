@@ -7,6 +7,7 @@ import math
 import numpy as np
 import os
 import sys
+import time
 import tracemalloc
 from pathlib import Path
 from dataclasses import dataclass, field, replace
@@ -2669,6 +2670,10 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
     persistent_shortlist_policy_last_config_key_by_layer: dict[int, str] = field(default_factory=dict, init=False, repr=False)
     persistent_shortlist_policy_last_bucket_by_layer: dict[int, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     persistent_shortlist_policy_prefill_prompt_length: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_load_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_shortlist_policy_resolve_ms_total: float = field(default=0.0, init=False, repr=False)
+    persistent_shortlist_policy_load_count: int = field(default=0, init=False, repr=False)
+    persistent_shortlist_policy_resolve_count: int = field(default=0, init=False, repr=False)
     _linear_wrappers: list[PersistentQwen35LinearAttentionBridge] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -2753,6 +2758,10 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         self.persistent_shortlist_policy_loaded_path = None
         self.persistent_shortlist_policy_payload = None
         self.persistent_shortlist_policy_prefill_prompt_length = 0
+        self.persistent_shortlist_policy_load_ms_total = 0.0
+        self.persistent_shortlist_policy_resolve_ms_total = 0.0
+        self.persistent_shortlist_policy_load_count = 0
+        self.persistent_shortlist_policy_resolve_count = 0
         self.decode_call_count_by_layer = {}
         self.native_hybrid_runtime_state = None
         self.hybrid_dotcache_runtime_state = None
@@ -2773,6 +2782,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             self.persistent_shortlist_policy_loaded_path = None
             self.persistent_shortlist_policy_payload = None
             return None
+        start = time.perf_counter()
         resolved_path = str(Path(policy_path).expanduser().resolve())
         if (
             self.persistent_shortlist_policy_payload is not None
@@ -2781,6 +2791,12 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             return self.persistent_shortlist_policy_payload
         self.persistent_shortlist_policy_payload = load_persistent_shortlist_policy(resolved_path)
         self.persistent_shortlist_policy_loaded_path = resolved_path
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.persistent_shortlist_policy_load_ms_total += elapsed_ms
+        self.persistent_shortlist_policy_load_count += 1
+        if self.persistent_hybrid_runtime_state is not None:
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_load_ms_total += elapsed_ms
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_load_count += 1
         return self.persistent_shortlist_policy_payload
 
     def resolve_persistent_serving_config_for_layer(
@@ -2789,6 +2805,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
         layer_id: int,
         step_index: int,
     ) -> tuple[PersistentServingConfig, dict[str, Any] | None]:
+        start = time.perf_counter()
         base_config = self.persistent_serving_config
         prompt_family = self.persistent_shortlist_policy_prompt_family
         policy_payload = self._load_persistent_shortlist_policy_payload()
@@ -2807,6 +2824,12 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             prompt_family=str(prompt_family),
             step_index=int(step_index),
         )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        self.persistent_shortlist_policy_resolve_ms_total += elapsed_ms
+        self.persistent_shortlist_policy_resolve_count += 1
+        if self.persistent_hybrid_runtime_state is not None:
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_resolve_ms_total += elapsed_ms
+            self.persistent_hybrid_runtime_state.full_attention.telemetry.shortlist_policy_resolve_count += 1
         return _apply_persistent_shortlist_config_overrides(base_config, choice), choice
 
     def record_persistent_shortlist_policy_application(
@@ -2884,6 +2907,10 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
                 str(layer_id): str(config_key)
                 for layer_id, config_key in sorted(self.persistent_shortlist_policy_last_config_key_by_layer.items())
             },
+            "persistent_shortlist_policy_load_ms_total": float(self.persistent_shortlist_policy_load_ms_total),
+            "persistent_shortlist_policy_resolve_ms_total": float(self.persistent_shortlist_policy_resolve_ms_total),
+            "persistent_shortlist_policy_load_count": int(self.persistent_shortlist_policy_load_count),
+            "persistent_shortlist_policy_resolve_count": int(self.persistent_shortlist_policy_resolve_count),
         }
 
     def _install_linear_wrappers(self) -> None:
@@ -9269,6 +9296,15 @@ def run_qwen35_attention_subset_persistent_serving_harness(
         ),
         "persistent_runtime_shortlist_policy_bias_weight": float(
             adapter.persistent_serving_config.full_attention_shortlist_policy_bias_weight
+        ),
+        "persistent_runtime_shortlist_policy_min_safe_rate": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_safe_rate
+        ),
+        "persistent_runtime_shortlist_policy_min_matched_oracle_rate": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_matched_oracle_rate
+        ),
+        "persistent_runtime_shortlist_policy_min_vote_count": int(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_min_vote_count
         ),
         "persistent_runtime_shortlist_policy_min_step_index": (
             None

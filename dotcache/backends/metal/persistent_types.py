@@ -17,6 +17,9 @@ class PersistentServingConfig:
     full_attention_shortlist_policy_path: str | None = None
     full_attention_shortlist_policy_mode: str = "bias"
     full_attention_shortlist_policy_bias_weight: float = 0.10
+    full_attention_shortlist_policy_min_safe_rate: float = 0.80
+    full_attention_shortlist_policy_min_matched_oracle_rate: float = 1.0
+    full_attention_shortlist_policy_min_vote_count: int = 3
     full_attention_shortlist_policy_min_step_index: int | None = None
     full_attention_shortlist_policy_max_step_index: int | None = None
     full_attention_check_interval: int = 1
@@ -64,6 +67,9 @@ class PersistentLayerTelemetry:
     append_ms_total: float = 0.0
     linear_ms_total: float = 0.0
     update_ms_total: float = 0.0
+    score_ms_total: float = 0.0
+    selection_ms_total: float = 0.0
+    policy_bias_ms_total: float = 0.0
     mutation_count: int = 0
 
 
@@ -74,6 +80,10 @@ class PersistentStepTelemetry:
     full_attention_step_ms_total: float = 0.0
     linear_attention_step_ms_total: float = 0.0
     append_update_ms_total: float = 0.0
+    shortlist_policy_load_ms_total: float = 0.0
+    shortlist_policy_resolve_ms_total: float = 0.0
+    shortlist_policy_load_count: int = 0
+    shortlist_policy_resolve_count: int = 0
     layer_telemetry: dict[int, PersistentLayerTelemetry] = field(default_factory=dict)
 
     def require_layer(self, layer_id: int) -> PersistentLayerTelemetry:
