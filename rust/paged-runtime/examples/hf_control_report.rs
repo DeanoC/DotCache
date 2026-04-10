@@ -499,10 +499,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "output_projection",
                         ),
                         stage_linear_conv_millis: python_stage_sum(&value, "linear_conv"),
-                        stage_linear_attention_millis: python_stage_sum(
-                            &value,
-                            "linear_attention",
-                        ),
+                        stage_linear_attention_millis: python_stage_sum(&value, "linear_attention"),
                         stage_full_attention_millis: python_stage_sum(&value, "full_attention"),
                         stage_mlp_millis: python_stage_sum(&value, "mlp"),
                     }
@@ -544,15 +541,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     total_tokens_per_second: f64_field(&value, "total_tokens_per_second")?,
                     stage_qkv_projection_millis: python_stage_sum(&value, "qkv_projection"),
                     stage_kv_append_write_millis: python_stage_sum(&value, "kv_append_write"),
-                    stage_output_projection_millis: python_stage_sum(
-                        &value,
-                        "output_projection",
-                    ),
+                    stage_output_projection_millis: python_stage_sum(&value, "output_projection"),
                     stage_linear_conv_millis: python_stage_sum(&value, "linear_conv"),
-                    stage_linear_attention_millis: python_stage_sum(
-                        &value,
-                        "linear_attention",
-                    ),
+                    stage_linear_attention_millis: python_stage_sum(&value, "linear_attention"),
                     stage_full_attention_millis: python_stage_sum(&value, "full_attention"),
                     stage_mlp_millis: python_stage_sum(&value, "mlp"),
                 },
