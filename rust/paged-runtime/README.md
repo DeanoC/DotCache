@@ -123,10 +123,10 @@ cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle
   --max-new-tokens 1
 ```
 
-Qwen3.5 now has a native text-only Rust dense-control lane as well. The current support is:
+Qwen3.5 now has native Rust dense and paged lanes. The current support is:
 
 - `qwen35` + `dense_control`: supported
-- `qwen35` + `paged_control`: not implemented yet
+- `qwen35` + `paged_control`: supported
 - `qwen35` + `dotcache_experimental`: not implemented yet
 
 For a real Qwen3.5 dense-control smoke run on Metal:
@@ -171,6 +171,36 @@ cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle
   --max-new-tokens 4 \
   --shared-prompt-token-target 512
 ```
+
+For the large-model CUDA paged-vs-dense matrix on `Qwen/Qwen3.5-9B` and
+`Qwen/Qwen3.5-27B`, use the benchmark runner in `benchmarks/`:
+
+```bash
+python benchmarks/bench_qwen35_paged_dense_matrix.py
+```
+
+By default that runner executes:
+
+- single-session runs at `8192` and `32768` prompt tokens
+- workload runs at `8192` prompt tokens
+- dense baselines via `dense_control`
+- paged runs via `paged_control --attention-path fused`
+- resident page budgets `32`, `128`, and `512`
+- `bf16` first, with per-model fallback to `f16` only if the first run fails for dtype support
+
+It writes one dated output directory under `benchmarks/results/` containing:
+
+- one subdirectory per run with stdout/stderr logs
+- the raw Rust `.summary.json` and `.trace.jsonl` artifacts
+- `manifest.json`
+- `report.json`
+- `report.md`
+
+This pass is benchmark-first only. The current default prompt-policy table in
+`rust/paged-runtime/policies/default_prompt_policies.json` is still tuned around
+`Qwen/Qwen3.5-0.8B` and contexts up to `16384`, and it is intentionally left
+unchanged here so larger-model measurements can be compared without silently
+changing runtime policy defaults.
 
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 

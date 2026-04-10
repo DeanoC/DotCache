@@ -1,0 +1,100 @@
+{
+  "cargo_features": "candle-cuda",
+  "device": "cuda:0",
+  "fallback_dtype": "f16",
+  "generated_at": "2026-04-10T13:09:12.377575+00:00",
+  "gpu_snapshot": {
+    "memory_free_mib": 55423,
+    "memory_total_mib": 97887,
+    "memory_used_mib": 41826,
+    "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"
+  },
+  "models": [
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.5-27B"
+  ],
+  "output_dir": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix",
+  "paged_budgets": [
+    32,
+    128,
+    512
+  ],
+  "records": [
+    {
+      "attention_path": null,
+      "command": [
+        "cargo",
+        "run",
+        "--features",
+        "candle-cuda",
+        "--example",
+        "hf_bench",
+        "--",
+        "qwen35",
+        "Qwen/Qwen3.5-9B",
+        "Cache locality matters for fast decoding.",
+        "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix/qwen3-5-9b-bench-ctx8192-dense_control-bf16/run",
+        "--device",
+        "cuda:0",
+        "--dtype",
+        "bf16",
+        "--runtime-mode",
+        "dense_control",
+        "--warmup-runs",
+        "0",
+        "--max-new-tokens",
+        "4",
+        "--sync-stage-profile",
+        "--prompt-token-target",
+        "8192"
+      ],
+      "completed_at": "2026-04-10T13:09:12.378528+00:00",
+      "device": "cuda:0",
+      "dtype": "bf16",
+      "exit_status": 0,
+      "kind": "bench",
+      "max_new_tokens": 4,
+      "model_id": "Qwen/Qwen3.5-9B",
+      "prompt_token_count": 8192,
+      "resident_page_budget": null,
+      "run_id": "qwen3-5-9b-bench-ctx8192-dense_control-bf16",
+      "runtime_mode": "dense_control",
+      "started_at": "2026-04-10T13:09:12.378332+00:00",
+      "status": "reused_existing",
+      "stderr_path": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix/qwen3-5-9b-bench-ctx8192-dense_control-bf16/stderr.log",
+      "stdout_path": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix/qwen3-5-9b-bench-ctx8192-dense_control-bf16/stdout.log",
+      "summary_metrics": {
+        "decode_millis": 360.212619,
+        "generated_token_count": 4,
+        "prefill_millis": 7103.196256,
+        "prompt_token_count": 8192,
+        "prompt_token_target": 8192,
+        "stage_page_restore_millis": 0.0,
+        "stage_page_spill_millis": 0.0,
+        "total_millis": 7481.627783000001,
+        "total_tokens_per_second": 1095.4835281465378
+      },
+      "summary_path": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix/qwen3-5-9b-bench-ctx8192-dense_control-bf16/run.summary.json",
+      "trace_jsonl_path": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix/qwen3-5-9b-bench-ctx8192-dense_control-bf16/run.trace.jsonl",
+      "warmup_runs": 0,
+      "workload_shape": null
+    }
+  ],
+  "requested_dtype": "bf16",
+  "resolved_model_dtypes": {
+    "Qwen/Qwen3.5-9B": "bf16"
+  },
+  "single_contexts": [
+    8192,
+    32768
+  ],
+  "workload_contexts": [
+    8192
+  ],
+  "workload_shape": {
+    "decode_rounds_per_wave": 1,
+    "max_new_tokens": 4,
+    "total_sessions": 4,
+    "wave_size": 2
+  }
+}
