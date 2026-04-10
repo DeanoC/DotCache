@@ -115,3 +115,22 @@ def test_build_report_label_includes_history_and_diversity_schedule(tmp_path: Pa
     report = _build_report([payload])
 
     assert report["cases"][0]["label"] == "priority_recent64_topk128_sink1_explore1_histema_div0.5_r4_histgate_h1to2"
+
+
+def test_build_report_label_uses_shortlist_policy_group_count(tmp_path: Path) -> None:
+    payload = tmp_path / "policy.json"
+    _write_payload(
+        payload,
+        enable_priority=True,
+        recent=64,
+        topk=128,
+        selected_tokens=240.0,
+        max_abs=0.1,
+    )
+    body = json.loads(payload.read_text())
+    body["config"]["shortlist_policy_group_count"] = 108
+    payload.write_text(json.dumps(body), encoding="utf-8")
+
+    report = _build_report([payload])
+
+    assert report["cases"][0]["label"] == "shortlist_policy_g108"

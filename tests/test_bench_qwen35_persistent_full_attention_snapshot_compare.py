@@ -8,9 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.bench_qwen35_persistent_full_attention_snapshot_compare import (
     _build_sequence_metrics,
+    _resolve_policy_driven_config,
     _build_summary,
     _resolve_snapshot_records,
 )
+from dotcache.integrations.qwen35 import PersistentServingConfig
 
 
 def test_resolve_snapshot_records_collects_manifest_and_explicit_paths(tmp_path) -> None:
@@ -120,3 +122,70 @@ def test_build_sequence_metrics_groups_by_case_layer_head_and_step() -> None:
     assert sequence_summary["terminal"]["max_abs_error"] == 0.15
     assert sequence_summary["by_step_index"]["0"]["count"] == 2
     assert sequence_summary["by_step_index"]["1"]["avg_history_snapshot_count"] == 1.0
+
+
+def test_resolve_policy_driven_config_applies_matching_bucket() -> None:
+    base_config = PersistentServingConfig(
+        enable_priority=True,
+        full_attention_optional_top_k=128,
+        full_attention_optional_far_anchor_quota=0,
+        full_attention_optional_far_anchor_priority_margin=0.0,
+    )
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "paper",
+                    "step_bucket": "bootstrap",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_recent_block_count": 64,
+                                "persistent_runtime_mandatory_recent_block_count": 16,
+                                "persistent_runtime_optional_top_k": 128,
+                                "persistent_runtime_optional_upper_bound_quota": 16,
+                                "persistent_runtime_optional_far_quota": 32,
+                                "persistent_runtime_optional_mid_quota": 48,
+                                "persistent_runtime_optional_near_quota": 32,
+                                "persistent_runtime_optional_far_anchor_quota": 4,
+                                "persistent_runtime_optional_far_anchor_priority_margin": 0.25,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                                "persistent_runtime_optional_diversity_radius": 0,
+                                "persistent_runtime_optional_diversity_min_history_count": 1,
+                                "persistent_runtime_key_centroid_count": None,
+                                "persistent_runtime_probe_refine_top_k": None,
+                                "persistent_runtime_probe_sample_count": None,
+                                "persistent_runtime_region_residual_caps": None,
+                                "persistent_runtime_residual_cluster_count": None,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            }
+        ],
+    }
+    effective_config, choice = _resolve_policy_driven_config(
+        base_config=base_config,
+        shortlist_policy_payload=policy_payload,
+        case_tag="paper",
+        layer_id=3,
+        kv_head_id=1,
+        step_index=0,
+    )
+    assert choice is not None
+    assert effective_config.full_attention_optional_far_anchor_quota == 4
+    assert effective_config.full_attention_optional_far_anchor_priority_margin == 0.25

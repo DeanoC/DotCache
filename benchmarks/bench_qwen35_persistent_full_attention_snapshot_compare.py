@@ -4,6 +4,7 @@ import argparse
 import glob
 import json
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -13,6 +14,10 @@ from dotcache.integrations.qwen35 import (
     PersistentServingConfig,
     run_qwen35_persistent_full_attention_snapshot_comparison,
 )
+from dotcache.persistent_predictor import (
+    load_persistent_shortlist_policy,
+    resolve_persistent_shortlist_policy_choice,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +26,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot-glob", default=None)
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--block-size", type=int, default=16)
+    parser.add_argument("--key-centroid-count", type=int, default=1)
+    parser.add_argument("--region-residual-caps", action="store_true")
+    parser.add_argument("--residual-cluster-count", type=int, default=0)
+    parser.add_argument("--refine-top-k", type=int, default=0)
+    parser.add_argument("--probe-refine-top-k", type=int, default=0)
+    parser.add_argument("--probe-sample-count", type=int, default=4)
     parser.add_argument("--enable-priority", action="store_true")
     parser.add_argument("--sink-block-count", type=int, default=1)
     parser.add_argument("--recent-block-count", type=int, default=1)
@@ -54,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prev-attention-floor", type=float, default=1e-6)
     parser.add_argument("--history-mode", default="none", choices=["none", "mean", "ema"])
     parser.add_argument("--history-decay", type=float, default=0.5)
+    parser.add_argument("--shortlist-policy-path", default=None)
     parser.add_argument("--output-json", default=None)
     return parser.parse_args()
 
@@ -130,6 +142,29 @@ def _build_summary(records: list[dict[str, object]]) -> dict[str, object]:
         "max_rel_error": float(max(float(record["max_rel_error"]) for record in records)),
         "avg_max_abs_error": _avg("max_abs_error"),
         "avg_max_rel_error": _avg("max_rel_error"),
+        "max_beta_upper": float(max(float(record.get("beta_upper", 0.0)) for record in records)),
+        "max_delta_upper": float(max(float(record.get("delta_upper", 0.0)) for record in records)),
+        "avg_beta_upper": _avg("beta_upper") if "beta_upper" in records[0] else 0.0,
+        "avg_delta_upper": _avg("delta_upper") if "delta_upper" in records[0] else 0.0,
+        "fallback_recommended_rate": float(
+            sum(1.0 for record in records if bool(record.get("fallback_recommended", False))) / len(records)
+        ),
+        "certified_stop_rate": float(
+            sum(1.0 for record in records if bool(record.get("certified_can_stop", False))) / len(records)
+        ),
+        "streaming_certified_stop_rate": float(
+            sum(1.0 for record in records if record.get("streaming_first_certified_stop_block_count") is not None)
+            / len(records)
+        ),
+        "avg_streaming_checkpoint_count": _avg("streaming_checkpoint_count")
+        if "streaming_checkpoint_count" in records[0]
+        else 0.0,
+        "avg_streaming_max_abs_error": _avg("streaming_max_abs_error")
+        if "streaming_max_abs_error" in records[0]
+        else 0.0,
+        "instability_rate": float(
+            sum(1.0 for record in records if bool(record.get("instability_flag", False))) / len(records)
+        ),
         "avg_selected_block_count": _avg("selected_block_count"),
         "avg_selected_token_count": _avg("selected_token_count"),
         "avg_full_block_count": _avg("full_block_count"),
@@ -137,6 +172,26 @@ def _build_summary(records: list[dict[str, object]]) -> dict[str, object]:
         "avg_selected_fraction": float(
             sum(float(record["selected_token_count"]) / max(float(record["full_token_count"]), 1.0) for record in records)
             / len(records)
+        ),
+        "avg_streaming_first_stop_fraction": float(
+            sum(
+                (
+                    float(record["streaming_first_certified_stop_token_count"])
+                    / max(float(record["full_token_count"]), 1.0)
+                )
+                for record in records
+                if record.get("streaming_first_certified_stop_token_count") is not None
+            )
+            / max(
+                sum(1 for record in records if record.get("streaming_first_certified_stop_token_count") is not None),
+                1,
+            )
+        ),
+        "shortlist_policy_applied_rate": float(
+            sum(1.0 for record in records if bool(record.get("shortlist_policy_applied", False))) / len(records)
+        ),
+        "shortlist_policy_bucket_found_rate": float(
+            sum(1.0 for record in records if bool(record.get("shortlist_policy_bucket_found", False))) / len(records)
         ),
     }
 
@@ -164,6 +219,10 @@ def _build_sequence_metrics(records: list[dict[str, object]]) -> dict[str, objec
                 sum(float(item["selected_token_count"]) / max(float(item["full_token_count"]), 1.0) for item in items) / len(items)
             ),
             "avg_history_snapshot_count": float(sum(float(item.get("history_snapshot_count", 0)) for item in items) / len(items)),
+            "streaming_certified_stop_rate": float(
+                sum(1.0 for item in items if item.get("streaming_first_certified_stop_block_count") is not None)
+                / len(items)
+            ),
         }
 
     return {
@@ -176,6 +235,29 @@ def _build_sequence_metrics(records: list[dict[str, object]]) -> dict[str, objec
     }
 
 
+def _resolve_policy_driven_config(
+    *,
+    base_config: PersistentServingConfig,
+    shortlist_policy_payload: dict[str, object] | None,
+    case_tag: str,
+    layer_id: int,
+    kv_head_id: int,
+    step_index: int,
+) -> tuple[PersistentServingConfig, dict[str, object] | None]:
+    if shortlist_policy_payload is None:
+        return base_config, None
+    choice = resolve_persistent_shortlist_policy_choice(
+        shortlist_policy_payload,
+        layer_id=int(layer_id),
+        kv_head_ids=[int(kv_head_id)],
+        prompt_family=str(case_tag),
+        step_index=int(step_index),
+    )
+    if choice is None or not choice.get("config_overrides"):
+        return base_config, choice
+    return replace(base_config, **choice["config_overrides"]), choice
+
+
 def main() -> None:
     args = parse_args()
     snapshot_records = _resolve_snapshot_records(
@@ -185,6 +267,12 @@ def main() -> None:
     )
     config = PersistentServingConfig(
         block_size=int(args.block_size),
+        full_attention_region_residual_caps=bool(args.region_residual_caps),
+        full_attention_residual_cluster_count=int(args.residual_cluster_count),
+        full_attention_key_centroid_count=int(args.key_centroid_count),
+        full_attention_refine_top_k=int(args.refine_top_k),
+        full_attention_probe_refine_top_k=int(args.probe_refine_top_k),
+        full_attention_probe_sample_count=int(args.probe_sample_count),
         enable_priority=bool(args.enable_priority),
         full_attention_sink_block_count=int(args.sink_block_count),
         full_attention_recent_block_count=int(args.recent_block_count),
@@ -225,17 +313,31 @@ def main() -> None:
         full_attention_priority_recency_decay_blocks=float(args.priority_recency_decay_blocks),
         full_attention_priority_value_norm_weight=float(args.priority_value_norm_weight),
     )
+    shortlist_policy_payload = (
+        load_persistent_shortlist_policy(args.shortlist_policy_path)
+        if args.shortlist_policy_path
+        else None
+    )
     grouped_history: dict[tuple[str, int, int], list[dict[str, object]]] = defaultdict(list)
     records = []
     for snapshot_record in snapshot_records:
         case_tag = str(snapshot_record.get("case_tag", Path(str(snapshot_record["snapshot_path"])).parent.name))
         layer_id = int(snapshot_record.get("layer_id", 0))
         kv_head_id = int(snapshot_record.get("kv_head_id", 0))
+        step_index = int(snapshot_record.get("step_index", 0))
+        effective_config, policy_choice = _resolve_policy_driven_config(
+            base_config=config,
+            shortlist_policy_payload=shortlist_policy_payload,
+            case_tag=case_tag,
+            layer_id=layer_id,
+            kv_head_id=kv_head_id,
+            step_index=step_index,
+        )
         group_key = (case_tag, layer_id, kv_head_id)
         history_records = grouped_history[group_key] if str(args.history_mode) != "none" else []
         result = run_qwen35_persistent_full_attention_snapshot_comparison(
             snapshot_record["snapshot_path"],
-            persistent_serving_config=config,
+            persistent_serving_config=effective_config,
             history_snapshots_or_paths=[item["snapshot_path"] for item in history_records],
             history_mode=str(args.history_mode),
             history_decay=float(args.history_decay),
@@ -249,13 +351,25 @@ def main() -> None:
             "case_tag": case_tag,
             "layer_id": layer_id,
             "kv_head_id": kv_head_id,
-            "step_index": int(snapshot_record.get("step_index", 0)),
+            "step_index": step_index,
+            "shortlist_policy_applied": bool(policy_choice is not None and bool(policy_choice.get("config_overrides"))),
+            "shortlist_policy_bucket_found": bool(policy_choice is not None),
+            "shortlist_policy_config_key": None if policy_choice is None else str(policy_choice.get("config_key", "")),
+            "shortlist_policy_bucket_match_count": 0 if policy_choice is None else int(policy_choice.get("bucket_match_count", 0)),
+            "shortlist_policy_step_bucket": None if policy_choice is None else str(policy_choice.get("step_bucket", "")),
+            "shortlist_policy_prompt_family": case_tag,
         }
         records.append(enriched)
         grouped_history[group_key].append(snapshot_record)
     payload = {
         "config": {
             "block_size": int(config.block_size),
+            "region_residual_caps": bool(config.full_attention_region_residual_caps),
+            "residual_cluster_count": int(config.full_attention_residual_cluster_count),
+            "key_centroid_count": int(config.full_attention_key_centroid_count),
+            "refine_top_k": int(config.full_attention_refine_top_k),
+            "probe_refine_top_k": int(config.full_attention_probe_refine_top_k),
+            "probe_sample_count": int(config.full_attention_probe_sample_count),
             "enable_priority": bool(config.enable_priority),
             "sink_block_count": int(config.full_attention_sink_block_count),
             "recent_block_count": int(config.full_attention_recent_block_count),
@@ -317,6 +431,10 @@ def main() -> None:
             "prev_attention_floor": float(args.prev_attention_floor),
             "history_mode": str(args.history_mode),
             "history_decay": float(args.history_decay),
+            "shortlist_policy_path": None if args.shortlist_policy_path is None else str(Path(args.shortlist_policy_path).resolve()),
+            "shortlist_policy_group_count": (
+                0 if shortlist_policy_payload is None else int(shortlist_policy_payload.get("group_count", 0))
+            ),
         },
         "records": records,
         "summary": _build_summary(records),

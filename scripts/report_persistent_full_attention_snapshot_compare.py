@@ -37,6 +37,9 @@ def _markdown_table(rows: list[list[str]]) -> str:
 
 
 def _config_label(config: dict[str, Any]) -> str:
+    policy_group_count = int(config.get("shortlist_policy_group_count", 0) or 0)
+    if policy_group_count > 0:
+        return f"shortlist_policy_g{policy_group_count}"
     if not bool(config.get("enable_priority", False)):
         return "full_coverage"
     label = (
