@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-04-10T13:09:19.529566+00:00",
+  "group_count": 1,
+  "groups": [
+    {
+      "best_paged_by_total_millis": null,
+      "best_paged_by_total_tokens_per_second": null,
+      "dense_baseline": {
+        "dtype": "bf16",
+        "run_id": "qwen3-5-9b-bench-ctx8192-dense_control-bf16",
+        "status": "reused_existing",
+        "summary_metrics": {
+          "decode_millis": 360.212619,
+          "generated_token_count": 4,
+          "prefill_millis": 7103.196256,
+          "prompt_token_count": 8192,
+          "prompt_token_target": 8192,
+          "stage_page_restore_millis": 0.0,
+          "stage_page_spill_millis": 0.0,
+          "total_millis": 7481.627783000001,
+          "total_tokens_per_second": 1095.4835281465378
+        }
+      },
+      "kind": "bench",
+      "model_id": "Qwen/Qwen3.5-9B",
+      "paged_variants": [],
+      "prompt_token_count": 8192,
+      "workload_shape": null
+    }
+  ],
+  "output_dir": "/workspace/qwen35-paged-cuda/DotCache/benchmarks/results/qwen35_paged_dense_large_20260410_cuda_large_matrix"
+}
