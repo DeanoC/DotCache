@@ -366,7 +366,7 @@ struct M3PageData {
 
 impl M3PageData {
     fn encode(
-        values: &[f16],
+        values: Vec<f16>,
         token_count: usize,
         head_dim: usize,
         spec: &PageModeSpec,
@@ -376,25 +376,29 @@ impl M3PageData {
             .unwrap_or(crate::page_mode::PageEscapeDType::Float16)
         {
             crate::page_mode::PageEscapeDType::Float16 => Ok(Self {
-                payload: M3Payload::F16(values.to_vec()),
+                payload: M3Payload::F16(values),
             }),
             crate::page_mode::PageEscapeDType::Int8 => {
-                let mut quantized = Vec::with_capacity(values.len());
+                let mut quantized = vec![0i8; values.len()];
                 let mut scales = Vec::with_capacity(token_count);
                 let eps = 1e-8f32;
-                for token_index in 0..token_count {
-                    let row_start = token_index * head_dim;
-                    let row = &values[row_start..row_start + head_dim];
+                for (token_index, row) in
+                    values.chunks_exact(head_dim).enumerate().take(token_count)
+                {
                     let max_abs = row
                         .iter()
                         .map(|value| value.to_f32().abs())
                         .fold(0.0f32, f32::max);
                     let scale = (max_abs / 127.0).max(eps);
                     scales.push(f16::from_f32(scale));
-                    quantized.extend(row.iter().map(|value| {
+                    let row_start = token_index * head_dim;
+                    for (out, value) in quantized[row_start..row_start + head_dim]
+                        .iter_mut()
+                        .zip(row.iter())
+                    {
                         let scaled = (value.to_f32() / scale).round().clamp(-127.0, 127.0);
-                        scaled as i8
-                    }));
+                        *out = scaled as i8;
+                    }
                 }
                 Ok(Self {
                     payload: M3Payload::I8 {
@@ -1359,10 +1363,14 @@ impl PageSide {
 
     fn seal(&mut self, token_count: usize, head_dim: usize, side: PageSideKind) -> Result<()> {
         self.mode.validate_for_side(side)?;
-        let PageSideStorage::LiveDense(data) = &self.storage else {
+        let storage = std::mem::replace(
+            &mut self.storage,
+            PageSideStorage::LiveDense(DensePageData { values: Vec::new() }),
+        );
+        let PageSideStorage::LiveDense(dense) = storage else {
+            self.storage = storage;
             return Ok(());
         };
-        let dense = data.clone();
         self.storage = match self.mode.tag() {
             PageModeTag::Exact => PageSideStorage::Exact(dense),
             PageModeTag::M0 => PageSideStorage::M0(M0PageData::encode(
@@ -1378,7 +1386,7 @@ impl PageSide {
                 &self.mode,
             )?),
             PageModeTag::M3 => PageSideStorage::M3(M3PageData::encode(
-                &dense.values,
+                dense.values,
                 token_count,
                 head_dim,
                 &self.mode,
