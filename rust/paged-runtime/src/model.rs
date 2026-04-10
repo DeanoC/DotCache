@@ -102,6 +102,18 @@ pub struct RuntimeStageMetrics {
     pub linear_attention_millis: f64,
     pub full_attention_millis: f64,
     pub mlp_millis: f64,
+    pub linear_conv_millis: f64,
+    pub linear_chunk_prepare_millis: f64,
+    pub linear_chunk_solve_millis: f64,
+    pub linear_chunk_scan_millis: f64,
+    pub linear_chunk_index_millis: f64,
+    pub linear_chunk_local_attn_millis: f64,
+    pub linear_chunk_recurrent_read_millis: f64,
+    pub linear_chunk_state_update_millis: f64,
+    pub linear_recurrent_loop_millis: f64,
+    pub linear_full_kernel_pack_millis: f64,
+    pub linear_full_kernel_execute_millis: f64,
+    pub linear_full_kernel_unpack_millis: f64,
 }
 
 impl RuntimeStageMetrics {
@@ -139,6 +151,18 @@ impl RuntimeStageMetrics {
         self.linear_attention_millis += other.linear_attention_millis;
         self.full_attention_millis += other.full_attention_millis;
         self.mlp_millis += other.mlp_millis;
+        self.linear_conv_millis += other.linear_conv_millis;
+        self.linear_chunk_prepare_millis += other.linear_chunk_prepare_millis;
+        self.linear_chunk_solve_millis += other.linear_chunk_solve_millis;
+        self.linear_chunk_scan_millis += other.linear_chunk_scan_millis;
+        self.linear_chunk_index_millis += other.linear_chunk_index_millis;
+        self.linear_chunk_local_attn_millis += other.linear_chunk_local_attn_millis;
+        self.linear_chunk_recurrent_read_millis += other.linear_chunk_recurrent_read_millis;
+        self.linear_chunk_state_update_millis += other.linear_chunk_state_update_millis;
+        self.linear_recurrent_loop_millis += other.linear_recurrent_loop_millis;
+        self.linear_full_kernel_pack_millis += other.linear_full_kernel_pack_millis;
+        self.linear_full_kernel_execute_millis += other.linear_full_kernel_execute_millis;
+        self.linear_full_kernel_unpack_millis += other.linear_full_kernel_unpack_millis;
     }
 }
 

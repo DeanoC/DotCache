@@ -44,6 +44,18 @@ fn qwen35_runtime_stage_metrics(
         linear_attention_millis: profile.linear_attention_millis,
         full_attention_millis: profile.full_attention_millis,
         mlp_millis: profile.mlp_millis,
+        linear_conv_millis: profile.linear_conv_millis,
+        linear_chunk_prepare_millis: profile.linear_chunk_prepare_millis,
+        linear_chunk_solve_millis: profile.linear_chunk_solve_millis,
+        linear_chunk_scan_millis: profile.linear_chunk_scan_millis,
+        linear_chunk_index_millis: profile.linear_chunk_index_millis,
+        linear_chunk_local_attn_millis: profile.linear_chunk_local_attn_millis,
+        linear_chunk_recurrent_read_millis: profile.linear_chunk_recurrent_read_millis,
+        linear_chunk_state_update_millis: profile.linear_chunk_state_update_millis,
+        linear_recurrent_loop_millis: profile.linear_recurrent_loop_millis,
+        linear_full_kernel_pack_millis: profile.linear_full_kernel_pack_millis,
+        linear_full_kernel_execute_millis: profile.linear_full_kernel_execute_millis,
+        linear_full_kernel_unpack_millis: profile.linear_full_kernel_unpack_millis,
         ..RuntimeStageMetrics::default()
     }
 }
