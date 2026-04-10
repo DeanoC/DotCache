@@ -2358,6 +2358,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             query_step,
             query_scale=float(self.base_attention.scaling),
             config_override=effective_persistent_config,
+            policy_choice=policy_choice,
         )
         certificate = runtime_state.certify_full_attention_selected_blocks(
             self.layer_idx,
@@ -2623,6 +2624,8 @@ def _apply_persistent_shortlist_config_overrides(
         }
         if not config_overrides:
             return base_config
+    elif mode == "bias":
+        return base_config
     return replace(base_config, **config_overrides)
 
 
@@ -7774,6 +7777,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     snapshot_or_path: Any,
     *,
     persistent_serving_config: PersistentServingConfig | None = None,
+    shortlist_policy_choice: dict[str, Any] | None = None,
     query_scale: float | None = None,
     history_snapshots_or_paths: Sequence[Any] | None = None,
     history_mode: str = "none",
@@ -7814,7 +7818,12 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
             prev_attention_floor=prev_attention_floor,
         )
     )
-    selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    selection = runtime.select_blocks(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        policy_choice=shortlist_policy_choice,
+    )
     selected_block_ids = selection["selected_block_ids"]
     certificate = runtime.certify_selected_blocks(
         0,
@@ -7829,6 +7838,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         query_scale=resolved_query_scale,
         check_interval=int(effective_config.full_attention_check_interval),
         stop_on_certificate=False,
+        policy_choice=shortlist_policy_choice,
     )
     selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
     full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
@@ -7859,6 +7869,10 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "soft_recent_block_ids": [int(block_id) for block_id in selection.get("soft_recent_block_ids", [])],
         "exploration_block_ids": [int(block_id) for block_id in selection["exploration_block_ids"]],
         "optional_block_ids": [int(block_id) for block_id in selection["optional_block_ids"]],
+        "policy_preferred_optional_block_ids": [
+            int(block_id) for block_id in selection.get("policy_preferred_optional_block_ids", [])
+        ],
+        "policy_preferred_bias_weight": float(selection.get("policy_preferred_bias_weight", 0.0)),
         "selected_block_count": int(len(selected_block_ids)),
         "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
         "full_block_count": int(len(runtime.layers[0].block_token_starts)),
@@ -7900,6 +7914,10 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
             None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
         ),
         "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
+        "persistent_runtime_shortlist_policy_mode": str(effective_config.full_attention_shortlist_policy_mode),
+        "persistent_runtime_shortlist_policy_bias_weight": float(
+            effective_config.full_attention_shortlist_policy_bias_weight
+        ),
         "persistent_runtime_region_residual_caps": bool(effective_config.full_attention_region_residual_caps),
         "persistent_runtime_residual_cluster_count": int(effective_config.full_attention_residual_cluster_count),
         "persistent_runtime_key_centroid_count": int(effective_config.full_attention_key_centroid_count),
@@ -9248,6 +9266,9 @@ def run_qwen35_attention_subset_persistent_serving_harness(
         ),
         "persistent_runtime_shortlist_policy_mode": str(
             adapter.persistent_serving_config.full_attention_shortlist_policy_mode
+        ),
+        "persistent_runtime_shortlist_policy_bias_weight": float(
+            adapter.persistent_serving_config.full_attention_shortlist_policy_bias_weight
         ),
         "persistent_runtime_shortlist_policy_min_step_index": (
             None

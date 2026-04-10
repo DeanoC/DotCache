@@ -67,7 +67,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history-mode", default="none", choices=["none", "mean", "ema"])
     parser.add_argument("--history-decay", type=float, default=0.5)
     parser.add_argument("--shortlist-policy-path", default=None)
-    parser.add_argument("--persistent-shortlist-policy-mode", default="replace", choices=["replace", "assist"])
+    parser.add_argument("--persistent-shortlist-policy-mode", default="bias", choices=["replace", "assist", "bias"])
+    parser.add_argument("--persistent-shortlist-policy-bias-weight", type=float, default=0.10)
     parser.add_argument("--persistent-shortlist-policy-min-step-index", type=int, default=None)
     parser.add_argument("--persistent-shortlist-policy-max-step-index", type=int, default=None)
     parser.add_argument("--output-json", default=None)
@@ -323,6 +324,7 @@ def main() -> None:
         full_attention_priority_recency_decay_blocks=float(args.priority_recency_decay_blocks),
         full_attention_priority_value_norm_weight=float(args.priority_value_norm_weight),
         full_attention_shortlist_policy_mode=str(args.persistent_shortlist_policy_mode),
+        full_attention_shortlist_policy_bias_weight=float(args.persistent_shortlist_policy_bias_weight),
         full_attention_shortlist_policy_min_step_index=(
             None
             if args.persistent_shortlist_policy_min_step_index is None
@@ -359,6 +361,7 @@ def main() -> None:
         result = run_qwen35_persistent_full_attention_snapshot_comparison(
             snapshot_record["snapshot_path"],
             persistent_serving_config=effective_config,
+            shortlist_policy_choice=policy_choice,
             history_snapshots_or_paths=[item["snapshot_path"] for item in history_records],
             history_mode=str(args.history_mode),
             history_decay=float(args.history_decay),
@@ -453,6 +456,7 @@ def main() -> None:
             "history_mode": str(args.history_mode),
             "history_decay": float(args.history_decay),
             "shortlist_policy_mode": str(config.full_attention_shortlist_policy_mode),
+            "shortlist_policy_bias_weight": float(config.full_attention_shortlist_policy_bias_weight),
             "shortlist_policy_min_step_index": (
                 None
                 if config.full_attention_shortlist_policy_min_step_index is None

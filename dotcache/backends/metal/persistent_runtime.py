@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import time
 from pathlib import Path
@@ -755,6 +755,27 @@ def _rank_optional_block_ids(
     )
 
 
+def _policy_preference_bonus(
+    *,
+    score_tensor: Any,
+    candidate_block_ids: list[int],
+    preferred_block_ids: set[int],
+    bias_weight: float,
+) -> float:
+    if float(bias_weight) <= 0.0 or not candidate_block_ids or not preferred_block_ids:
+        return 0.0
+    score_values = np.asarray(
+        [float(score_tensor[int(block_id)].item()) for block_id in candidate_block_ids],
+        dtype=np.float32,
+    )
+    if score_values.size == 0:
+        return 0.0
+    scale = float(np.std(score_values))
+    if scale < 1e-6:
+        scale = max(float(np.max(np.abs(score_values))), 1.0)
+    return max(float(bias_weight) * scale, 1e-6)
+
+
 def _select_diverse_block_ids(
     *,
     ranked_candidate_ids: list[int],
@@ -764,6 +785,8 @@ def _select_diverse_block_ids(
     seed_block_ids: list[int],
     diversity_weight: float,
     diversity_radius: int,
+    preferred_block_ids: set[int] | None = None,
+    preferred_bias_weight: float = 0.0,
 ) -> list[int]:
     if count <= 0 or not ranked_candidate_ids:
         return []
@@ -773,6 +796,13 @@ def _select_diverse_block_ids(
     selected_anchor_ids = [int(block_id) for block_id in seed_block_ids]
     remaining = [int(block_id) for block_id in ranked_candidate_ids]
     radius = max(int(diversity_radius), 1)
+    preferred_ids = {int(block_id) for block_id in (preferred_block_ids or set())}
+    preferred_bonus = _policy_preference_bonus(
+        score_tensor=primary_scores,
+        candidate_block_ids=remaining,
+        preferred_block_ids=preferred_ids,
+        bias_weight=float(preferred_bias_weight),
+    )
 
     def _distance_penalty(block_id: int, anchor_ids: list[int]) -> float:
         if not anchor_ids:
@@ -787,6 +817,11 @@ def _select_diverse_block_ids(
             remaining,
             key=lambda block_id: (
                 float(primary_scores[int(block_id)].item())
+                + (
+                    float(preferred_bonus)
+                    if int(block_id) in preferred_ids
+                    else 0.0
+                )
                 - float(diversity_weight) * _distance_penalty(int(block_id), selected_anchor_ids + selected),
                 float(primary_scores[int(block_id)].item()),
                 float(secondary_scores[int(block_id)].item()),
@@ -815,6 +850,8 @@ def _select_optional_block_ids(
     seed_block_ids: list[int],
     diversity_weight: float,
     diversity_radius: int,
+    preferred_block_ids: set[int] | None = None,
+    preferred_bias_weight: float = 0.0,
 ) -> list[int]:
     if top_k <= 0 or not candidate_block_ids:
         return []
@@ -842,6 +879,8 @@ def _select_optional_block_ids(
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
                 diversity_radius=int(diversity_radius),
+                preferred_block_ids=preferred_block_ids,
+                preferred_bias_weight=float(preferred_bias_weight),
             )
         )
     else:
@@ -854,6 +893,8 @@ def _select_optional_block_ids(
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
             diversity_radius=int(diversity_radius),
+            preferred_block_ids=preferred_block_ids,
+            preferred_bias_weight=float(preferred_bias_weight),
         )
         selected.extend(int(block_id) for block_id in upper_selected)
         selected_set.update(int(block_id) for block_id in upper_selected)
@@ -879,6 +920,8 @@ def _select_optional_block_ids(
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
                 diversity_radius=int(diversity_radius),
+                preferred_block_ids=preferred_block_ids,
+                preferred_bias_weight=float(preferred_bias_weight),
             )
             for block_id in region_selected:
                 selected.append(block_id)
@@ -894,6 +937,8 @@ def _select_optional_block_ids(
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
             diversity_radius=int(diversity_radius),
+            preferred_block_ids=preferred_block_ids,
+            preferred_bias_weight=float(preferred_bias_weight),
         )
         for block_id in spill_selected:
             selected.append(int(block_id))
@@ -944,6 +989,73 @@ def _select_optional_block_ids(
         selected_set.add(int(candidate_id))
         replacements += 1
     return selected
+
+
+def _resolve_policy_bias_preferred_optional_ids(
+    *,
+    state: PersistentFullAttentionLayerState,
+    resolved_config: PersistentServingConfig,
+    policy_choice: dict[str, Any] | None,
+    priority_scores: Any,
+    upper_bounds: Any,
+) -> tuple[set[int], float]:
+    if policy_choice is None or not policy_choice.get("config_overrides"):
+        return set(), 0.0
+    policy_config = replace(resolved_config, **dict(policy_choice.get("config_overrides", {})))
+    num_blocks = int(len(state.block_token_starts))
+    recent_ids, mandatory_recent_ids = _resolve_recent_policy(
+        num_blocks=num_blocks,
+        recent_blocks=int(policy_config.full_attention_recent_block_count),
+        mandatory_recent_blocks=policy_config.full_attention_mandatory_recent_block_count,
+    )
+    mandatory_ids = _mandatory_block_ids(
+        num_blocks=num_blocks,
+        sink_blocks=int(policy_config.full_attention_sink_block_count),
+        mandatory_recent_blocks=mandatory_recent_ids,
+    )
+    selected_ids: set[int] = set(mandatory_ids)
+    soft_recent_ids = [block_id for block_id in recent_ids if block_id not in selected_ids]
+    remaining_ids = [block_id for block_id in range(num_blocks) if block_id not in selected_ids]
+    exploration_ids = _exploration_block_ids(
+        candidate_block_ids=remaining_ids,
+        priority_scores=priority_scores,
+        per_region=int(policy_config.full_attention_exploration_blocks_per_region),
+    )
+    selected_ids.update(exploration_ids)
+    if not bool(policy_config.enable_priority) or int(policy_config.full_attention_optional_top_k) <= 0:
+        return set(), 0.0
+    soft_recent_set = set(soft_recent_ids)
+    optional_candidates = [block_id for block_id in soft_recent_ids if block_id not in selected_ids]
+    optional_candidates.extend(
+        block_id
+        for block_id in remaining_ids
+        if block_id not in selected_ids and block_id not in soft_recent_set
+    )
+    preferred_ids = _select_optional_block_ids(
+        candidate_block_ids=optional_candidates,
+        region_ids=state.block_region_ids,
+        priority_scores=priority_scores,
+        upper_bounds=upper_bounds,
+        top_k=int(policy_config.full_attention_optional_top_k),
+        use_upper_bounds_first=bool(policy_config.full_attention_optional_use_upper_bounds_first),
+        upper_bound_quota=int(policy_config.full_attention_optional_upper_bound_quota),
+        far_anchor_quota=int(policy_config.full_attention_optional_far_anchor_quota),
+        far_anchor_priority_margin=float(policy_config.full_attention_optional_far_anchor_priority_margin),
+        far_anchor_upper_bound_margin=float(policy_config.full_attention_optional_far_anchor_upper_bound_margin),
+        far_quota=int(policy_config.full_attention_optional_far_quota),
+        mid_quota=int(policy_config.full_attention_optional_mid_quota),
+        near_quota=int(policy_config.full_attention_optional_near_quota),
+        seed_block_ids=sorted(selected_ids),
+        diversity_weight=float(policy_config.full_attention_optional_diversity_weight),
+        diversity_radius=int(policy_config.full_attention_optional_diversity_radius),
+    )
+    confidence = max(
+        float(policy_choice.get("chosen_safe_rate", 0.0)),
+        float(policy_choice.get("matched_oracle_rate", 0.0)),
+        0.0,
+    )
+    bias_weight = float(resolved_config.full_attention_shortlist_policy_bias_weight) * max(confidence, 0.25)
+    return {int(block_id) for block_id in preferred_ids}, float(bias_weight)
 
 
 def _gather_selected_block_tensors(
@@ -1174,6 +1286,7 @@ class PersistentFullAttentionState:
         *,
         query_scale: float,
         config_override: PersistentServingConfig | None = None,
+        policy_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         state = self.layers[int(layer_id)]
         resolved_config = config_override or self.config
@@ -1206,6 +1319,19 @@ class PersistentFullAttentionState:
         )
         selected_ids.update(exploration_ids)
         optional_ids: list[int] = []
+        policy_preferred_optional_ids: set[int] = set()
+        policy_preferred_bias_weight = 0.0
+        if str(resolved_config.full_attention_shortlist_policy_mode or "replace").strip().lower() == "bias":
+            (
+                policy_preferred_optional_ids,
+                policy_preferred_bias_weight,
+            ) = _resolve_policy_bias_preferred_optional_ids(
+                state=state,
+                resolved_config=resolved_config,
+                policy_choice=policy_choice,
+                priority_scores=priority_scores,
+                upper_bounds=upper_bounds,
+            )
         if bool(resolved_config.enable_priority) and int(resolved_config.full_attention_optional_top_k) > 0:
             soft_recent_set = set(soft_recent_ids)
             optional_candidates = [block_id for block_id in soft_recent_ids if block_id not in selected_ids]
@@ -1233,6 +1359,8 @@ class PersistentFullAttentionState:
                 seed_block_ids=sorted(selected_ids),
                 diversity_weight=float(resolved_config.full_attention_optional_diversity_weight),
                 diversity_radius=int(resolved_config.full_attention_optional_diversity_radius),
+                preferred_block_ids=policy_preferred_optional_ids,
+                preferred_bias_weight=float(policy_preferred_bias_weight),
             )
             selected_ids.update(optional_ids)
         else:
@@ -1256,6 +1384,8 @@ class PersistentFullAttentionState:
             "optional_block_ids": optional_ids,
             "priority_scores": priority_scores,
             "upper_bounds": upper_bounds,
+            "policy_preferred_optional_block_ids": sorted(int(block_id) for block_id in policy_preferred_optional_ids),
+            "policy_preferred_bias_weight": float(policy_preferred_bias_weight),
         }
 
     def gather_selected_blocks(self, layer_id: int, block_ids: list[int]):
@@ -1291,10 +1421,16 @@ class PersistentFullAttentionState:
         query_scale: float,
         check_interval: int | None = None,
         stop_on_certificate: bool = False,
+        policy_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         torch = _load_torch()
         state = self.layers[int(layer_id)]
-        selection = self.select_blocks(layer_id, query, query_scale=query_scale)
+        selection = self.select_blocks(
+            layer_id,
+            query,
+            query_scale=query_scale,
+            policy_choice=policy_choice,
+        )
         priority_scores = selection["priority_scores"]
         upper_bounds = selection["upper_bounds"]
         selected_processing_ids = [int(block_id) for block_id in selection.get("processing_block_ids", [])]
@@ -1850,12 +1986,14 @@ class PersistentHybridRuntimeState:
         *,
         query_scale: float,
         config_override: PersistentServingConfig | None = None,
+        policy_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.full_attention.select_blocks(
             layer_id,
             query,
             query_scale=query_scale,
             config_override=config_override,
+            policy_choice=policy_choice,
         )
 
     def gather_full_attention_selected_blocks(self, layer_id: int, block_ids: list[int]):

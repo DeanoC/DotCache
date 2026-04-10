@@ -2324,6 +2324,23 @@ def test_apply_persistent_shortlist_config_overrides_assist_preserves_heuristics
     assert effective_config.full_attention_optional_diversity_min_history_count == 1
 
 
+def test_apply_persistent_shortlist_config_overrides_bias_keeps_base_config() -> None:
+    base_config = PersistentServingConfig(
+        full_attention_shortlist_policy_mode="bias",
+        full_attention_optional_top_k=128,
+        full_attention_optional_diversity_weight=0.5,
+    )
+    choice = {
+        "config_overrides": {
+            "full_attention_optional_top_k": 96,
+            "full_attention_optional_diversity_weight": 0.0,
+        }
+    }
+    effective_config = _apply_persistent_shortlist_config_overrides(base_config, choice)
+    assert effective_config.full_attention_optional_top_k == 128
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
+
+
 def test_decode_input_id_sequence_flattens_decode_steps() -> None:
     decode_inputs = [
         torch.tensor([[11]], dtype=torch.long),

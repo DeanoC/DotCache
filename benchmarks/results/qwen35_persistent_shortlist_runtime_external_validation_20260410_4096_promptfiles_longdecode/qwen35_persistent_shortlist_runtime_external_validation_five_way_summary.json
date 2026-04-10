@@ -1,0 +1,45 @@
+{
+  "variants": {
+    "hand_tuned": {
+      "label": "Hand-tuned",
+      "avg_max_abs_error": 0.002590143328739537,
+      "max_abs_error": 0.03253358602523804,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.0,
+      "shortlist_policy_bucket_found_rate": 0.0
+    },
+    "policy_all_steps": {
+      "label": "Policy all-steps",
+      "avg_max_abs_error": 0.0025984778896802002,
+      "max_abs_error": 0.03253358602523804,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "shortlist_policy_bucket_found_rate": 1.0
+    },
+    "policy_mid_late": {
+      "label": "Policy mid/late-only",
+      "avg_max_abs_error": 0.0025984778896802002,
+      "max_abs_error": 0.03253358602523804,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 0.75,
+      "shortlist_policy_bucket_found_rate": 0.75
+    },
+    "policy_assist": {
+      "label": "Policy assist",
+      "avg_max_abs_error": 0.002590143328739537,
+      "max_abs_error": 0.03253358602523804,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "shortlist_policy_bucket_found_rate": 1.0
+    },
+    "policy_bias": {
+      "label": "Policy bias",
+      "avg_max_abs_error": 0.0018027409290273984,
+      "max_abs_error": 0.02691859006881714,
+      "avg_selected_token_count": 1556.75,
+      "shortlist_policy_applied_rate": 1.0,
+      "shortlist_policy_bucket_found_rate": 1.0
+    }
+  },
+  "best_variant_by_avg_abs_error": "policy_bias"
+}

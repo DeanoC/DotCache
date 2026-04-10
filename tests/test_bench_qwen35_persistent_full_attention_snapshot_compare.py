@@ -127,6 +127,7 @@ def test_build_sequence_metrics_groups_by_case_layer_head_and_step() -> None:
 def test_resolve_policy_driven_config_applies_matching_bucket() -> None:
     base_config = PersistentServingConfig(
         enable_priority=True,
+        full_attention_shortlist_policy_mode="replace",
         full_attention_optional_top_k=128,
         full_attention_optional_far_anchor_quota=0,
         full_attention_optional_far_anchor_priority_margin=0.0,
@@ -217,6 +218,7 @@ def test_resolve_policy_driven_config_applies_matching_bucket() -> None:
 def test_resolve_policy_driven_config_respects_shortlist_policy_step_gate() -> None:
     base_config = PersistentServingConfig(
         enable_priority=True,
+        full_attention_shortlist_policy_mode="replace",
         full_attention_optional_top_k=128,
         full_attention_shortlist_policy_min_step_index=1,
     )
@@ -324,3 +326,55 @@ def test_resolve_policy_driven_config_assist_mode_preserves_diversity() -> None:
     assert effective_config.full_attention_optional_top_k == 96
     assert effective_config.full_attention_optional_diversity_weight == 0.5
     assert effective_config.full_attention_optional_diversity_radius == 4
+
+
+def test_resolve_policy_driven_config_bias_mode_keeps_base_selector() -> None:
+    base_config = PersistentServingConfig(
+        enable_priority=True,
+        full_attention_shortlist_policy_mode="bias",
+        full_attention_optional_top_k=128,
+        full_attention_optional_diversity_weight=0.5,
+    )
+    policy_payload = {
+        "group_by": ["layer_id", "kv_head_id", "prompt_family", "step_bucket"],
+        "group_count": 1,
+        "groups": [
+            {
+                "bucket": {
+                    "layer_id": 3,
+                    "kv_head_id": 1,
+                    "prompt_family": "paper",
+                    "step_bucket": "mid",
+                },
+                "snapshot_count": 1,
+                "ranked_configs": [
+                    {
+                        "config_key": json.dumps(
+                            {
+                                "persistent_runtime_optional_top_k": 96,
+                                "persistent_runtime_optional_diversity_weight": 0.0,
+                            },
+                            sort_keys=True,
+                        ),
+                        "source_compare_json": "compare.json",
+                        "vote_count": 3,
+                        "matched_oracle_rate": 1.0,
+                        "chosen_safe_rate": 1.0,
+                        "avg_selected_token_count": 2300.0,
+                        "avg_max_abs_error": 0.03,
+                    }
+                ],
+            }
+        ],
+    }
+    effective_config, choice = _resolve_policy_driven_config(
+        base_config=base_config,
+        shortlist_policy_payload=policy_payload,
+        case_tag="paper",
+        layer_id=3,
+        kv_head_id=1,
+        step_index=1,
+    )
+    assert choice is not None
+    assert effective_config.full_attention_optional_top_k == 128
+    assert effective_config.full_attention_optional_diversity_weight == 0.5
