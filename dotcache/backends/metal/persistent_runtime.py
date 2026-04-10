@@ -2044,7 +2044,10 @@ def _decode_selected_blocks_direct_m0_torch(
             assert direct_padded_head_dim is not None
             _synchronize_torch_device(q_slice)
             direct_m0_score_start = time.perf_counter()
-            q_slice_score = q_slice.to(dtype=score_dtype)
+            if score_dtype == query_tensor.dtype:
+                q_slice_score = q_slice
+            else:
+                q_slice_score = q_slice.to(dtype=score_dtype)
             query_padded, query_group_sums = _pad_queries_for_direct_m0(
                 query_slice=q_slice_score,
                 padded_head_dim=direct_padded_head_dim,
@@ -2084,7 +2087,10 @@ def _decode_selected_blocks_direct_m0_torch(
         if m3_global_indices_np.size > 0:
             _synchronize_torch_device(q_slice)
             exact_m3_score_start = time.perf_counter()
-            q_slice_score = q_slice.to(dtype=score_dtype)
+            if score_dtype == query_tensor.dtype:
+                q_slice_score = q_slice
+            else:
+                q_slice_score = q_slice.to(dtype=score_dtype)
             m3_global_indices = torch.as_tensor(
                 m3_global_indices_np,
                 dtype=torch.int64,
