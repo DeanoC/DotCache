@@ -1,0 +1,7 @@
+{
+  "classes": [
+    "M0/affine/4",
+    "M3/affine/4/float16"
+  ],
+  "model_type": "linear_selector_model"
+}

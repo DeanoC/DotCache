@@ -1,0 +1,54 @@
+{
+  "operating_points": [
+    {
+      "floor": "-",
+      "mean_predicted_total_bytes": 3489.1083984375,
+      "mean_safe_bytes_regret": 0.0,
+      "min_family_safe_prediction_rate": 1.0,
+      "min_family_target_accuracy": 1.0,
+      "pareto_optimal": true,
+      "quality": {
+        "decode_ms_per_step": 844.9953781560499,
+        "dense_match_rate": 0.8333333333333334,
+        "mean_v_m0_pages": 312.5,
+        "mean_v_m3_pages": 391.5,
+        "success_rate": 0.6666666666666666,
+        "task_count": 6
+      },
+      "strategy_id": "linear_softmax_compression_weighted",
+      "systems": {
+        "decode_ms_per_step": 537.2406338801133,
+        "dense_match_rate": 0.8333333333333334,
+        "mean_v_m0_pages": 148.0,
+        "mean_v_m3_pages": 556.0,
+        "success_rate": 0.6666666666666666,
+        "task_count": 6
+      }
+    },
+    {
+      "floor": "0.85",
+      "mean_predicted_total_bytes": 3419.279541015625,
+      "mean_safe_bytes_regret": 83.98992919921875,
+      "min_family_safe_prediction_rate": 0.9403408765792847,
+      "min_family_target_accuracy": 0.9014204740524292,
+      "pareto_optimal": true,
+      "quality": {
+        "decode_ms_per_step": 896.7398036811593,
+        "dense_match_rate": 0.8333333333333334,
+        "mean_v_m0_pages": 363.0,
+        "mean_v_m3_pages": 341.0,
+        "success_rate": 0.6666666666666666,
+        "task_count": 6
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p85",
+      "systems": {
+        "decode_ms_per_step": 568.3930959609635,
+        "dense_match_rate": 0.8333333333333334,
+        "mean_v_m0_pages": 224.0,
+        "mean_v_m3_pages": 480.0,
+        "success_rate": 0.6666666666666666,
+        "task_count": 6
+      }
+    }
+  ]
+}
