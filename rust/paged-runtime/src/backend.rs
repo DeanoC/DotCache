@@ -745,28 +745,27 @@ impl CandlePageBackend {
         let mut value_tensors = Vec::with_capacity(page_ids.len());
 
         for &page_id in page_ids {
-            let page = store.page(page_id)?;
-            if !page.is_exact_fused_compatible() {
-                return Err(RuntimeError::FusedAttentionRequiresExactPages {
-                    page_id,
-                    key_mode: page.key_mode().describe(),
-                    value_mode: page.value_mode().describe(),
-                });
-            }
-            let prepared =
-                if let Some(prepared) = self.prepare_cached(page_id, expected_head_dim)? {
-                    prepared
-                } else {
-                    page.validate_layout(page_id)?;
-                    if page.head_dim_usize() != expected_head_dim {
-                        return Err(RuntimeError::DimensionMismatch {
-                            context: "fused query",
-                            expected: page.head_dim_usize(),
-                            got: expected_head_dim,
-                        });
-                    }
-                    self.prepare(page_id, page)?
-                };
+            let prepared = if let Some(prepared) = self.prepare_cached(page_id, expected_head_dim)? {
+                prepared
+            } else {
+                let page = store.page(page_id)?;
+                if !page.is_exact_fused_compatible() {
+                    return Err(RuntimeError::FusedAttentionRequiresExactPages {
+                        page_id,
+                        key_mode: page.key_mode().describe(),
+                        value_mode: page.value_mode().describe(),
+                    });
+                }
+                page.validate_layout(page_id)?;
+                if page.head_dim_usize() != expected_head_dim {
+                    return Err(RuntimeError::DimensionMismatch {
+                        context: "fused query",
+                        expected: page.head_dim_usize(),
+                        got: expected_head_dim,
+                    });
+                }
+                self.prepare(page_id, page)?
+            };
             key_tensors.push(prepared.key);
             value_tensors.push(prepared.value);
         }
