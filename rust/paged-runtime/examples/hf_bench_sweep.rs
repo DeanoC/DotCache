@@ -170,7 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<SweepArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_bench_sweep <family> <model_id> <prompt> <out_dir> [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--batch-size N] [--tokens-per-page N] [--resident-page-budgets LIST] [--resident-byte-budgets LIST] [--restore-cooldowns LIST]".to_string()
+            "usage: hf_bench_sweep <family> <model_id> <prompt> <out_dir> [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--batch-size N] [--tokens-per-page N] [--resident-page-budgets LIST] [--resident-byte-budgets LIST] [--restore-cooldowns LIST]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let prompt = args.next().ok_or_else(|| "missing prompt".to_string())?;

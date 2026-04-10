@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -13,6 +14,7 @@ use crate::backend::{
 use crate::hf::{HfHubModelSource, HfModelArtifacts};
 use crate::instrumented_llama::{InstrumentedLlama, LlamaCache};
 use crate::instrumented_qwen2::InstrumentedQwen2;
+use crate::instrumented_qwen35::InstrumentedQwen35;
 use crate::model::{CausalLm, ModelArchitecture, ModelFamily, RuntimeMode, RuntimeStageMetrics};
 use crate::policy::{default_prompt_policy_table, PromptBucketPolicy};
 use crate::session::{
@@ -44,18 +46,6 @@ fn qwen35_runtime_stage_metrics(
         linear_attention_millis: profile.linear_attention_millis,
         full_attention_millis: profile.full_attention_millis,
         mlp_millis: profile.mlp_millis,
-        linear_conv_millis: profile.linear_conv_millis,
-        linear_chunk_prepare_millis: profile.linear_chunk_prepare_millis,
-        linear_chunk_solve_millis: profile.linear_chunk_solve_millis,
-        linear_chunk_scan_millis: profile.linear_chunk_scan_millis,
-        linear_chunk_index_millis: profile.linear_chunk_index_millis,
-        linear_chunk_local_attn_millis: profile.linear_chunk_local_attn_millis,
-        linear_chunk_recurrent_read_millis: profile.linear_chunk_recurrent_read_millis,
-        linear_chunk_state_update_millis: profile.linear_chunk_state_update_millis,
-        linear_recurrent_loop_millis: profile.linear_recurrent_loop_millis,
-        linear_full_kernel_pack_millis: profile.linear_full_kernel_pack_millis,
-        linear_full_kernel_execute_millis: profile.linear_full_kernel_execute_millis,
-        linear_full_kernel_unpack_millis: profile.linear_full_kernel_unpack_millis,
         ..RuntimeStageMetrics::default()
     }
 }
@@ -196,6 +186,12 @@ enum CandleModelInner {
     },
     Qwen2Paged {
         model: InstrumentedQwen2,
+        sessions: SessionRuntime,
+        session_id: SessionId,
+        page_backend: CandlePageBackend,
+    },
+    Qwen35Paged {
+        model: InstrumentedQwen35,
         sessions: SessionRuntime,
         session_id: SessionId,
         page_backend: CandlePageBackend,
@@ -490,7 +486,10 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        let page_backend = CandlePageBackend::new(device_selector.clone())?;
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
                         let cache = LlamaCache::new(true, dtype, &runtime_config, &device)?;
                         let model = InstrumentedLlama::load(var_builder, &runtime_config)?;
                         let mut sessions = SessionRuntime::new(
@@ -563,7 +562,10 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        let page_backend = CandlePageBackend::new(device_selector.clone())?;
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
                         let model = InstrumentedQwen2::load(var_builder, &runtime_config)?;
                         let mut sessions = SessionRuntime::new(
                             runtime_config.num_hidden_layers,
@@ -640,10 +642,24 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        return Err(RuntimeError::External {
-                            context: "candle_model",
-                            message: "Qwen3.5 currently supports DenseControl only; paged and DotCache runtime modes are not implemented yet".to_string(),
-                        });
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
+                        let model = InstrumentedQwen35::load(var_builder, &runtime_config)?;
+                        let mut sessions = SessionRuntime::new(
+                            text_config.num_hidden_layers,
+                            text_config.num_key_value_heads,
+                            tokens_per_page,
+                            text_config.head_dim,
+                        );
+                        let session_id = sessions.create_session();
+                        CandleModelInner::Qwen35Paged {
+                            model,
+                            sessions,
+                            session_id,
+                            page_backend,
+                        }
                     }
                     RuntimeMode::TorchControl => {
                         return Err(RuntimeError::External {
@@ -831,10 +847,192 @@ impl CandleCausalLm {
             .find_map(|(session_id, session)| session.as_ref().map(|_| session_id))
     }
 
+    fn qwen35_paged_direct_full_attention_enabled(
+        token_count: usize,
+        batched_decode: bool,
+        attention_path: AttentionPathMode,
+    ) -> bool {
+        if attention_path != AttentionPathMode::Fused {
+            return false;
+        }
+        let env_force_enable = matches!(
+            std::env::var("DOTCACHE_QWEN35_PAGED_DIRECT_FULL_ATTN").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        );
+        let env_force_disable = matches!(
+            std::env::var("DOTCACHE_QWEN35_PAGED_DIRECT_FULL_ATTN").as_deref(),
+            Ok("0" | "false" | "FALSE" | "no" | "NO")
+        );
+        if env_force_disable {
+            return false;
+        }
+        let allow_prefill = matches!(
+            std::env::var("DOTCACHE_QWEN35_PAGED_DIRECT_FULL_ATTN_PREFILL").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        );
+        if allow_prefill {
+            return true;
+        }
+        if env_force_enable {
+            return token_count == 1;
+        }
+        let _ = batched_decode;
+        token_count == 1
+    }
+
+    fn qwen35_restore_full_attention_pages(
+        sessions: &SessionRuntime,
+        session_id: SessionId,
+        full_layer_ids: &[usize],
+        dtype: DType,
+        device: &Device,
+        mut cache_state: candle_transformers::models::qwen3_5::CacheState,
+        kv_head_count: usize,
+        head_dim: usize,
+    ) -> Result<candle_transformers::models::qwen3_5::CacheState> {
+        for &layer_id in full_layer_ids {
+            let mut key_rows = Vec::new();
+            let mut value_rows = Vec::new();
+            let mut token_count = None::<usize>;
+            for kv_head in 0..kv_head_count {
+                let page_ids = sessions.resolve_physical_page_ids(session_id, layer_id, kv_head)?;
+                let mut key_head = Vec::new();
+                let mut value_head = Vec::new();
+                for page_id in page_ids {
+                    let page = sessions.cache().physical().store().page(page_id)?;
+                    for token_idx in 0..page.token_len() {
+                        key_head.extend(page.key_row(token_idx).iter().map(|v| v.to_f32()));
+                        value_head.extend(page.value_row(token_idx).iter().map(|v| v.to_f32()));
+                    }
+                }
+                let head_tokens = key_head.len() / head_dim;
+                if let Some(existing) = token_count {
+                    if existing != head_tokens {
+                        return Err(RuntimeError::DimensionMismatch {
+                            context: "qwen35 full-attention paged cache token count",
+                            expected: existing,
+                            got: head_tokens,
+                        });
+                    }
+                } else {
+                    token_count = Some(head_tokens);
+                }
+                key_rows.push(key_head);
+                value_rows.push(value_head);
+            }
+
+            let token_count = token_count.unwrap_or(0);
+            let kv_cache = if token_count == 0 {
+                None
+            } else {
+                let mut keys = Vec::with_capacity(kv_head_count * token_count * head_dim);
+                let mut values = Vec::with_capacity(kv_head_count * token_count * head_dim);
+                for kv_head in 0..kv_head_count {
+                    keys.extend_from_slice(&key_rows[kv_head]);
+                    values.extend_from_slice(&value_rows[kv_head]);
+                }
+                let key =
+                    Tensor::from_slice(&keys, (1, kv_head_count, token_count, head_dim), device)?
+                        .to_dtype(dtype)?;
+                let value =
+                    Tensor::from_slice(&values, (1, kv_head_count, token_count, head_dim), device)?
+                        .to_dtype(dtype)?;
+                Some((key, value))
+            };
+
+            match cache_state.layers.get_mut(layer_id) {
+                Some(candle_transformers::models::qwen3_5::LayerCacheState::Full(layer_state)) => {
+                    layer_state.kv_cache = kv_cache;
+                }
+                Some(_) => {
+                    return Err(RuntimeError::External {
+                        context: "candle_model",
+                        message: format!(
+                            "qwen35 layer {layer_id} was expected to be full-attention when restoring page-backed cache"
+                        ),
+                    });
+                }
+                None => {
+                    return Err(RuntimeError::InvalidLayer {
+                        layer: layer_id,
+                        layer_count: cache_state.layers.len(),
+                    });
+                }
+            }
+        }
+        Ok(cache_state)
+    }
+
+    fn qwen35_store_full_attention_pages(
+        sessions: &mut SessionRuntime,
+        session_id: SessionId,
+        full_layer_ids: &[usize],
+        cache_state: &mut candle_transformers::models::qwen3_5::CacheState,
+        start_position: usize,
+        token_count: usize,
+        head_dim: usize,
+    ) -> Result<()> {
+        if token_count == 0 {
+            return Ok(());
+        }
+        for &layer_id in full_layer_ids {
+            let layer_count = cache_state.layers.len();
+            let layer_state =
+                cache_state
+                    .layers
+                    .get_mut(layer_id)
+                    .ok_or(RuntimeError::InvalidLayer {
+                        layer: layer_id,
+                        layer_count,
+                    })?;
+            match layer_state {
+                candle_transformers::models::qwen3_5::LayerCacheState::Full(layer_state) => {
+                    if let Some((key, value)) = layer_state.kv_cache.as_ref() {
+                        let (_, kv_head_count, total_tokens, _) = key.dims4()?;
+                        if total_tokens < start_position + token_count {
+                            return Err(RuntimeError::DimensionMismatch {
+                                context: "qwen35 full-attention cache append window",
+                                expected: start_position + token_count,
+                                got: total_tokens,
+                            });
+                        }
+                        let key = key.narrow(2, start_position, token_count)?.contiguous()?;
+                        let value = value.narrow(2, start_position, token_count)?.contiguous()?;
+                        let key_values =
+                            key.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                        let value_values = value
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?;
+                        for token_idx in 0..token_count {
+                            let absolute_pos = (start_position + token_idx) as u32;
+                            for kv_head in 0..kv_head_count {
+                                let row_offset = (kv_head * token_count + token_idx) * head_dim;
+                                let row_end = row_offset + head_dim;
+                                sessions.append_kv_row_at(
+                                    session_id,
+                                    layer_id,
+                                    kv_head,
+                                    absolute_pos,
+                                    &key_values[row_offset..row_end],
+                                    &value_values[row_offset..row_end],
+                                )?;
+                            }
+                        }
+                    }
+                    layer_state.kv_cache = None;
+                }
+                candle_transformers::models::qwen3_5::LayerCacheState::Linear(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn paged_cache(&self) -> Option<&VirtualPagedKvCache> {
         match &self.inner {
             CandleModelInner::LlamaPaged { sessions, .. } => Some(sessions.cache()),
-            CandleModelInner::Qwen2Paged { sessions, .. } => Some(sessions.cache()),
+            CandleModelInner::Qwen2Paged { sessions, .. }
+            | CandleModelInner::Qwen35Paged { sessions, .. } => Some(sessions.cache()),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => None,
@@ -844,7 +1042,8 @@ impl CandleCausalLm {
     pub fn paged_cache_mut(&mut self) -> Option<&mut VirtualPagedKvCache> {
         match &mut self.inner {
             CandleModelInner::LlamaPaged { sessions, .. } => Some(sessions.cache_mut()),
-            CandleModelInner::Qwen2Paged { sessions, .. } => Some(sessions.cache_mut()),
+            CandleModelInner::Qwen2Paged { sessions, .. }
+            | CandleModelInner::Qwen35Paged { sessions, .. } => Some(sessions.cache_mut()),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => None,
@@ -858,7 +1057,8 @@ impl CandleCausalLm {
     pub fn backend_descriptor(&self) -> BackendDescriptor {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. }
-            | CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.descriptor(),
+            | CandleModelInner::Qwen2Paged { page_backend, .. }
+            | CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.descriptor(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => BackendDescriptor {
@@ -874,7 +1074,8 @@ impl CandleCausalLm {
     pub fn attention_path(&self) -> AttentionPathMode {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. }
-            | CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.attention_path(),
+            | CandleModelInner::Qwen2Paged { page_backend, .. }
+            | CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.attention_path(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => AttentionPathMode::Fused,
@@ -884,7 +1085,8 @@ impl CandleCausalLm {
     pub fn set_attention_path(&self, path: AttentionPathMode) {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. }
-            | CandleModelInner::Qwen2Paged { page_backend, .. } => {
+            | CandleModelInner::Qwen2Paged { page_backend, .. }
+            | CandleModelInner::Qwen35Paged { page_backend, .. } => {
                 page_backend.set_attention_path(path)
             }
             CandleModelInner::LlamaDense { .. }
@@ -899,6 +1101,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { session_id, .. }
             | CandleModelInner::Qwen2Paged { session_id, .. }
+            | CandleModelInner::Qwen35Paged { session_id, .. }
             | CandleModelInner::LlamaDense { session_id, .. }
             | CandleModelInner::Qwen2Dense { session_id, .. }
             | CandleModelInner::Qwen35Dense { session_id, .. } => Some(*session_id),
@@ -908,7 +1111,8 @@ impl CandleCausalLm {
     pub fn session_count(&self) -> Option<usize> {
         match &self.inner {
             CandleModelInner::LlamaPaged { sessions, .. }
-            | CandleModelInner::Qwen2Paged { sessions, .. } => Some(sessions.session_count()),
+            | CandleModelInner::Qwen2Paged { sessions, .. }
+            | CandleModelInner::Qwen35Paged { sessions, .. } => Some(sessions.session_count()),
             CandleModelInner::LlamaDense { sessions, .. } => {
                 Some(sessions.iter().filter(|session| session.is_some()).count())
             }
@@ -924,7 +1128,8 @@ impl CandleCausalLm {
     pub fn session_state(&self, session_id: SessionId) -> Result<&SessionState> {
         match &self.inner {
             CandleModelInner::LlamaPaged { sessions, .. }
-            | CandleModelInner::Qwen2Paged { sessions, .. } => sessions.session(session_id),
+            | CandleModelInner::Qwen2Paged { sessions, .. }
+            | CandleModelInner::Qwen35Paged { sessions, .. } => sessions.session(session_id),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => Err(RuntimeError::External {
@@ -944,6 +1149,9 @@ impl CandleCausalLm {
                 Ok(sessions.create_session_with_prompt_len(prompt_len))
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                Ok(sessions.create_session_with_prompt_len(prompt_len))
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 Ok(sessions.create_session_with_prompt_len(prompt_len))
             }
             CandleModelInner::LlamaDense {
@@ -999,6 +1207,17 @@ impl CandleCausalLm {
                 page_backend.pin_pages(&sealed_page_ids);
                 Ok(prefix)
             }
+            CandleModelInner::Qwen35Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let prefix = sessions.capture_prefix(session_id)?;
+                let sealed_page_ids = sessions.sealed_physical_page_ids_for_prefix(&prefix)?;
+                sessions.cache_mut().pin_physical_pages(&sealed_page_ids);
+                page_backend.pin_pages(&sealed_page_ids);
+                Ok(prefix)
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1019,6 +1238,7 @@ impl CandleCausalLm {
         match &mut self.inner {
             CandleModelInner::LlamaPaged { sessions, .. } => sessions.attach_prefix(prefix),
             CandleModelInner::Qwen2Paged { sessions, .. } => sessions.attach_prefix(prefix),
+            CandleModelInner::Qwen35Paged { sessions, .. } => sessions.attach_prefix(prefix),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1084,6 +1304,33 @@ impl CandleCausalLm {
                 page_backend.release_pages(&reclaimed_page_ids);
                 Ok(())
             }
+            CandleModelInner::Qwen35Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let sealed_page_ids = sessions.sealed_physical_page_ids_for_prefix(prefix)?;
+                let pinned_physical_page_ids = sealed_page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| sessions.cache().is_physical_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                let pinned_page_ids = sealed_page_ids
+                    .into_iter()
+                    .filter(|&page_id| page_backend.is_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                if !pinned_physical_page_ids.is_empty() {
+                    sessions
+                        .cache_mut()
+                        .unpin_physical_pages(&pinned_physical_page_ids)?;
+                }
+                if !pinned_page_ids.is_empty() {
+                    page_backend.unpin_pages(&pinned_page_ids)?;
+                }
+                let reclaimed_page_ids = sessions.release_prefix(prefix)?;
+                page_backend.release_pages(&reclaimed_page_ids);
+                Ok(())
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1107,6 +1354,17 @@ impl CandleCausalLm {
                 Ok(pinned_count)
             }
             CandleModelInner::Qwen2Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let sealed_page_ids = sessions.sealed_physical_page_ids(session_id)?;
+                let pinned_count = sealed_page_ids.len();
+                sessions.cache_mut().pin_physical_pages(&sealed_page_ids);
+                page_backend.pin_pages(&sealed_page_ids);
+                Ok(pinned_count)
+            }
+            CandleModelInner::Qwen35Paged {
                 sessions,
                 page_backend,
                 ..
@@ -1147,6 +1405,24 @@ impl CandleCausalLm {
                 page_backend.unpin_pages(&sealed_page_ids)
             }
             CandleModelInner::Qwen2Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let sealed_page_ids = sessions.sealed_physical_page_ids(session_id)?;
+                let pinned_physical_page_ids = sealed_page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| sessions.cache().is_physical_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                if !pinned_physical_page_ids.is_empty() {
+                    sessions
+                        .cache_mut()
+                        .unpin_physical_pages(&pinned_physical_page_ids)?;
+                }
+                page_backend.unpin_pages(&sealed_page_ids)
+            }
+            CandleModelInner::Qwen35Paged {
                 sessions,
                 page_backend,
                 ..
@@ -1208,6 +1484,38 @@ impl CandleCausalLm {
                 Ok(())
             }
             CandleModelInner::Qwen2Paged {
+                sessions,
+                session_id: active_session_id,
+                page_backend,
+                ..
+            } => {
+                let sealed_page_ids = sessions.sealed_physical_page_ids(session_id)?;
+                let pinned_physical_page_ids = sealed_page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| sessions.cache().is_physical_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                let pinned_backend_page_ids = sealed_page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| page_backend.is_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                if !pinned_physical_page_ids.is_empty() {
+                    sessions
+                        .cache_mut()
+                        .unpin_physical_pages(&pinned_physical_page_ids)?;
+                }
+                if !pinned_backend_page_ids.is_empty() {
+                    page_backend.unpin_pages(&pinned_backend_page_ids)?;
+                }
+                let reclaimed_page_ids = sessions.close_session(session_id)?;
+                page_backend.release_pages(&reclaimed_page_ids);
+                if *active_session_id == session_id {
+                    *active_session_id = sessions.create_session();
+                }
+                Ok(())
+            }
+            CandleModelInner::Qwen35Paged {
                 sessions,
                 session_id: active_session_id,
                 page_backend,
@@ -1343,6 +1651,9 @@ impl CandleCausalLm {
             CandleModelInner::Qwen2Paged { page_backend, .. } => {
                 page_backend.set_prepare_cache_page_budget(budget)
             }
+            CandleModelInner::Qwen35Paged { page_backend, .. } => {
+                page_backend.set_prepare_cache_page_budget(budget)
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1357,6 +1668,9 @@ impl CandleCausalLm {
                 sessions.cache_mut().set_resident_page_budget(budget)
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                sessions.cache_mut().set_resident_page_budget(budget)
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 sessions.cache_mut().set_resident_page_budget(budget)
             }
             CandleModelInner::LlamaDense { .. }
@@ -1378,6 +1692,9 @@ impl CandleCausalLm {
             CandleModelInner::Qwen2Paged { sessions, .. } => {
                 sessions.cache_mut().set_resident_byte_budget(budget)
             }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
+                sessions.cache_mut().set_resident_byte_budget(budget)
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => Ok(()),
@@ -1395,6 +1712,9 @@ impl CandleCausalLm {
                 sessions.cache_mut().set_restore_cooldown_window(window)
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                sessions.cache_mut().set_restore_cooldown_window(window)
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 sessions.cache_mut().set_restore_cooldown_window(window)
             }
             CandleModelInner::LlamaDense { .. }
@@ -1502,6 +1822,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { sessions, .. } => sessions.session_metrics(session_id),
             CandleModelInner::Qwen2Paged { sessions, .. } => sessions.session_metrics(session_id),
+            CandleModelInner::Qwen35Paged { sessions, .. } => sessions.session_metrics(session_id),
             CandleModelInner::LlamaDense { sessions, .. } => {
                 Ok(&Self::dense_session_ref(sessions, session_id)?.state.metrics)
             }
@@ -1520,6 +1841,9 @@ impl CandleCausalLm {
                 sessions.reset_session_metrics(session_id)
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                sessions.reset_session_metrics(session_id)
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 sessions.reset_session_metrics(session_id)
             }
             CandleModelInner::LlamaDense { sessions, .. } => {
@@ -1548,6 +1872,9 @@ impl CandleCausalLm {
             CandleModelInner::Qwen2Paged { page_backend, .. } => {
                 page_backend.prepare_cache_page_budget()
             }
+            CandleModelInner::Qwen35Paged { page_backend, .. } => {
+                page_backend.prepare_cache_page_budget()
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => None,
@@ -1558,6 +1885,9 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. } => page_backend.prepared_page_count(),
             CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.prepared_page_count(),
+            CandleModelInner::Qwen35Paged { page_backend, .. } => {
+                page_backend.prepared_page_count()
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => 0,
@@ -1568,6 +1898,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. } => page_backend.cache_hits(),
             CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.cache_hits(),
+            CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.cache_hits(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => 0,
@@ -1578,6 +1909,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. } => page_backend.cache_misses(),
             CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.cache_misses(),
+            CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.cache_misses(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => 0,
@@ -1588,6 +1920,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. } => page_backend.cache_evictions(),
             CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.cache_evictions(),
+            CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.cache_evictions(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => 0,
@@ -1598,6 +1931,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { page_backend, .. } => page_backend.pinned_page_count(),
             CandleModelInner::Qwen2Paged { page_backend, .. } => page_backend.pinned_page_count(),
+            CandleModelInner::Qwen35Paged { page_backend, .. } => page_backend.pinned_page_count(),
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => 0,
@@ -1690,6 +2024,33 @@ impl CandleCausalLm {
                 let spilled = sessions.cache_mut().spill_physical_pages(&page_ids)?;
                 Ok(spilled.len())
             }
+            CandleModelInner::Qwen35Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let page_ids = sessions.sealed_physical_page_ids(session_id)?;
+                let pinned_physical_page_ids = page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| sessions.cache().is_physical_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                let pinned_backend_page_ids = page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| page_backend.is_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                if !pinned_physical_page_ids.is_empty() {
+                    sessions
+                        .cache_mut()
+                        .unpin_physical_pages(&pinned_physical_page_ids)?;
+                }
+                if !pinned_backend_page_ids.is_empty() {
+                    page_backend.unpin_pages(&pinned_backend_page_ids)?;
+                }
+                let spilled = sessions.cache_mut().spill_physical_pages(&page_ids)?;
+                Ok(spilled.len())
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1755,6 +2116,33 @@ impl CandleCausalLm {
                 let spilled = sessions.cache_mut().spill_physical_pages(&page_ids)?;
                 Ok(spilled.len())
             }
+            CandleModelInner::Qwen35Paged {
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let page_ids = sessions.sealed_physical_page_ids_for_prefix(prefix)?;
+                let pinned_physical_page_ids = page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| sessions.cache().is_physical_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                let pinned_backend_page_ids = page_ids
+                    .iter()
+                    .copied()
+                    .filter(|&page_id| page_backend.is_page_pinned(page_id))
+                    .collect::<Vec<_>>();
+                if !pinned_physical_page_ids.is_empty() {
+                    sessions
+                        .cache_mut()
+                        .unpin_physical_pages(&pinned_physical_page_ids)?;
+                }
+                if !pinned_backend_page_ids.is_empty() {
+                    page_backend.unpin_pages(&pinned_backend_page_ids)?;
+                }
+                let spilled = sessions.cache_mut().spill_physical_pages(&page_ids)?;
+                Ok(spilled.len())
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1776,6 +2164,11 @@ impl CandleCausalLm {
                 let restored = sessions.cache_mut().restore_physical_pages(&page_ids)?;
                 Ok(restored.len())
             }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
+                let page_ids = sessions.physical_page_ids(session_id)?;
+                let restored = sessions.cache_mut().restore_physical_pages(&page_ids)?;
+                Ok(restored.len())
+            }
             CandleModelInner::LlamaDense { .. }
             | CandleModelInner::Qwen2Dense { .. }
             | CandleModelInner::Qwen35Dense { .. } => {
@@ -1791,6 +2184,9 @@ impl CandleCausalLm {
                 sessions.fork_session(source_session_id)
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                sessions.fork_session(source_session_id)
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 sessions.fork_session(source_session_id)
             }
             CandleModelInner::LlamaDense { sessions, .. } => {
@@ -1842,6 +2238,15 @@ impl CandleCausalLm {
                 *active_session_id = session_id;
                 Ok(())
             }
+            CandleModelInner::Qwen35Paged {
+                sessions,
+                session_id: active_session_id,
+                ..
+            } => {
+                sessions.session(session_id)?;
+                *active_session_id = session_id;
+                Ok(())
+            }
             CandleModelInner::LlamaDense {
                 sessions,
                 session_id: active_session_id,
@@ -1876,6 +2281,7 @@ impl CandleCausalLm {
         match &self.inner {
             CandleModelInner::LlamaPaged { sessions, .. } => sessions.current_position(session_id),
             CandleModelInner::Qwen2Paged { sessions, .. } => sessions.current_position(session_id),
+            CandleModelInner::Qwen35Paged { sessions, .. } => sessions.current_position(session_id),
             CandleModelInner::LlamaDense { sessions, .. } => {
                 Ok(Self::dense_session_ref(sessions, session_id)?
                     .state
@@ -1905,6 +2311,9 @@ impl CandleCausalLm {
                 sessions.resolve_physical_page_ids(session_id, layer, kv_head)
             }
             CandleModelInner::Qwen2Paged { sessions, .. } => {
+                sessions.resolve_physical_page_ids(session_id, layer, kv_head)
+            }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
                 sessions.resolve_physical_page_ids(session_id, layer, kv_head)
             }
             CandleModelInner::LlamaDense { .. }
@@ -1963,9 +2372,11 @@ impl CandleCausalLm {
                     .flatten()
                     .filter(|&page_id| !page_backend.is_page_prepared(page_id))
                     .collect::<Vec<_>>();
+                let restore_started = Instant::now();
                 let _ = sessions
                     .cache_mut()
                     .restore_physical_pages(&restore_page_ids)?;
+                stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
                 sessions
                     .cache_mut()
                     .touch_physical_pages(&restore_page_ids)?;
@@ -1990,7 +2401,9 @@ impl CandleCausalLm {
                     &session_ids,
                     page_backend,
                 )?;
+                let spill_started = Instant::now();
                 let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
                 logits.to_dtype(DType::F32)?.to_vec2::<f32>()?
             }
             CandleModelInner::Qwen2Paged {
@@ -2008,9 +2421,11 @@ impl CandleCausalLm {
                     .flatten()
                     .filter(|&page_id| !page_backend.is_page_prepared(page_id))
                     .collect::<Vec<_>>();
+                let restore_started = Instant::now();
                 let _ = sessions
                     .cache_mut()
                     .restore_physical_pages(&restore_page_ids)?;
+                stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
                 sessions
                     .cache_mut()
                     .touch_physical_pages(&restore_page_ids)?;
@@ -2034,8 +2449,107 @@ impl CandleCausalLm {
                     &session_ids,
                     page_backend,
                 )?;
+                let spill_started = Instant::now();
                 let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
                 logits.to_dtype(DType::F32)?.to_vec2::<f32>()?
+            }
+            CandleModelInner::Qwen35Paged {
+                model,
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let mut outputs = Vec::with_capacity(requests.len());
+                for &(session_id, token_id) in requests {
+                    let index_pos = sessions.current_position(session_id)? as usize;
+                    let page_ids = sessions.physical_page_ids(session_id)?;
+                    let restore_started = Instant::now();
+                    let _ = sessions.cache_mut().restore_physical_pages(&page_ids)?;
+                    stage_metrics.page_restore_millis +=
+                        restore_started.elapsed().as_secs_f64() * 1e3;
+                    sessions.cache_mut().touch_physical_pages(&page_ids)?;
+                    let cache_state = sessions
+                        .hybrid_cache_state(session_id)?
+                        .cloned()
+                        .and_then(|state| match state {
+                            crate::session::HybridCacheState::Qwen35(state) => Some(state),
+                        })
+                        .unwrap_or_else(|| model.empty_cache_state());
+                    let hybrid_restore_started = Instant::now();
+                    let input = Tensor::from_slice(&[token_id], (1, 1), &self.device)?;
+                    let (logits, next_state, profile) =
+                        if Self::qwen35_paged_direct_full_attention_enabled(
+                            1,
+                            true,
+                            page_backend.attention_path(),
+                        ) {
+                            let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
+                            stage_metrics.hybrid_cache_restore_millis +=
+                                hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
+                            model.forward_profiled_paged_full_attention(
+                                &input,
+                                index_pos,
+                                Some(&cache_state),
+                                sessions,
+                                session_id,
+                                page_backend,
+                            )?
+                        } else {
+                            let full_layer_ids = model.full_attention_layer_ids();
+                            let cache_state = Self::qwen35_restore_full_attention_pages(
+                                sessions,
+                                session_id,
+                                &full_layer_ids,
+                                self.dtype,
+                                &self.device,
+                                cache_state,
+                                self.architecture.num_key_value_heads,
+                                self.architecture.head_dim,
+                            )?;
+                            stage_metrics.hybrid_cache_restore_millis +=
+                                hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
+                            let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
+                            model.forward_profiled(&input, index_pos, Some(&cache_state))?
+                        };
+                    let hybrid_store_started = Instant::now();
+                    let next_state = match next_state {
+                        crate::session::HybridCacheState::Qwen35(mut state) => {
+                            if !Self::qwen35_paged_direct_full_attention_enabled(
+                                1,
+                                true,
+                                page_backend.attention_path(),
+                            ) {
+                                let full_layer_ids = model.full_attention_layer_ids();
+                                Self::qwen35_store_full_attention_pages(
+                                    sessions,
+                                    session_id,
+                                    &full_layer_ids,
+                                    &mut state,
+                                    index_pos,
+                                    1,
+                                    self.architecture.head_dim,
+                                )?;
+                            }
+                            crate::session::HybridCacheState::Qwen35(state)
+                        }
+                    };
+                    sessions.set_hybrid_cache_state(session_id, Some(next_state))?;
+                    stage_metrics.hybrid_cache_store_millis +=
+                        hybrid_store_started.elapsed().as_secs_f64() * 1e3;
+                    sessions.commit_positions(session_id, index_pos as u32, 1)?;
+                    stage_metrics.add_assign(&qwen35_runtime_stage_metrics(&profile));
+                    outputs.push(
+                        logits
+                            .flatten_all()?
+                            .to_dtype(DType::F32)?
+                            .to_vec1::<f32>()?,
+                    );
+                }
+                let spill_started = Instant::now();
+                let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
+                outputs
             }
             CandleModelInner::LlamaDense {
                 model, sessions, ..
@@ -2171,6 +2685,10 @@ impl CandleCausalLm {
                 sessions.record_session_request(session_ids, kind, input_token_counts, &delta)?;
                 collect_request_session_metrics(sessions, session_ids)?
             }
+            CandleModelInner::Qwen35Paged { sessions, .. } => {
+                sessions.record_session_request(session_ids, kind, input_token_counts, &delta)?;
+                collect_request_session_metrics(sessions, session_ids)?
+            }
             CandleModelInner::LlamaDense { sessions, .. } => {
                 if session_ids.len() != input_token_counts.len() {
                     return Err(RuntimeError::External {
@@ -2294,14 +2812,18 @@ impl CandleCausalLm {
                     .copied()
                     .filter(|&page_id| !page_backend.is_page_prepared(page_id))
                     .collect::<Vec<_>>();
+                let restore_started = Instant::now();
                 let _ = sessions
                     .cache_mut()
                     .restore_physical_pages(&restore_page_ids)?;
+                stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
                 sessions.cache_mut().touch_physical_pages(&page_ids)?;
                 let index_pos = sessions.current_position(session_id)? as usize;
                 let logits =
                     model.forward(&input, index_pos, cache, sessions, session_id, page_backend)?;
+                let spill_started = Instant::now();
                 let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
                 logits
             }
             CandleModelInner::Qwen2Paged {
@@ -2316,14 +2838,104 @@ impl CandleCausalLm {
                     .copied()
                     .filter(|&page_id| !page_backend.is_page_prepared(page_id))
                     .collect::<Vec<_>>();
+                let restore_started = Instant::now();
                 let _ = sessions
                     .cache_mut()
                     .restore_physical_pages(&restore_page_ids)?;
+                stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
                 sessions.cache_mut().touch_physical_pages(&page_ids)?;
                 let index_pos = sessions.current_position(session_id)? as usize;
                 let logits =
                     model.forward(&input, index_pos, sessions, session_id, page_backend)?;
+                let spill_started = Instant::now();
                 let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
+                logits
+            }
+            CandleModelInner::Qwen35Paged {
+                model,
+                sessions,
+                page_backend,
+                ..
+            } => {
+                let index_pos = sessions.current_position(session_id)? as usize;
+                let page_ids = sessions.physical_page_ids(session_id)?;
+                let restore_started = Instant::now();
+                let _ = sessions.cache_mut().restore_physical_pages(&page_ids)?;
+                stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
+                sessions.cache_mut().touch_physical_pages(&page_ids)?;
+                let cache_state = sessions
+                    .hybrid_cache_state(session_id)?
+                    .cloned()
+                    .and_then(|state| match state {
+                        crate::session::HybridCacheState::Qwen35(state) => Some(state),
+                    })
+                    .unwrap_or_else(|| model.empty_cache_state());
+                let hybrid_restore_started = Instant::now();
+                let (logits, next_state, profile) =
+                    if Self::qwen35_paged_direct_full_attention_enabled(
+                        input_ids.len(),
+                        false,
+                        page_backend.attention_path(),
+                    ) {
+                        let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
+                        stage_metrics.hybrid_cache_restore_millis +=
+                            hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
+                        model.forward_profiled_paged_full_attention(
+                            &input,
+                            index_pos,
+                            Some(&cache_state),
+                            sessions,
+                            session_id,
+                            page_backend,
+                        )?
+                    } else {
+                        let full_layer_ids = model.full_attention_layer_ids();
+                        let cache_state = Self::qwen35_restore_full_attention_pages(
+                            sessions,
+                            session_id,
+                            &full_layer_ids,
+                            self.dtype,
+                            &self.device,
+                            cache_state,
+                            self.architecture.num_key_value_heads,
+                            self.architecture.head_dim,
+                        )?;
+                        stage_metrics.hybrid_cache_restore_millis +=
+                            hybrid_restore_started.elapsed().as_secs_f64() * 1e3;
+                        let cache_state = crate::session::HybridCacheState::Qwen35(cache_state);
+                        model.forward_profiled(&input, index_pos, Some(&cache_state))?
+                    };
+                let hybrid_store_started = Instant::now();
+                let next_state = match next_state {
+                    crate::session::HybridCacheState::Qwen35(mut state) => {
+                        if !Self::qwen35_paged_direct_full_attention_enabled(
+                            input_ids.len(),
+                            false,
+                            page_backend.attention_path(),
+                        ) {
+                            let full_layer_ids = model.full_attention_layer_ids();
+                            Self::qwen35_store_full_attention_pages(
+                                sessions,
+                                session_id,
+                                &full_layer_ids,
+                                &mut state,
+                                index_pos,
+                                input_ids.len(),
+                                self.architecture.head_dim,
+                            )?;
+                        }
+                        crate::session::HybridCacheState::Qwen35(state)
+                    }
+                };
+                sessions.set_hybrid_cache_state(session_id, Some(next_state))?;
+                stage_metrics.hybrid_cache_store_millis +=
+                    hybrid_store_started.elapsed().as_secs_f64() * 1e3;
+                sessions.commit_positions(session_id, index_pos as u32, input_ids.len())?;
+                stage_metrics.add_assign(&qwen35_runtime_stage_metrics(&profile));
+                let spill_started = Instant::now();
+                let _ = sessions.cache_mut().spill_to_budget()?;
+                stage_metrics.page_spill_millis += spill_started.elapsed().as_secs_f64() * 1e3;
                 logits
             }
             CandleModelInner::LlamaDense {
@@ -2418,6 +3030,29 @@ impl CausalLm for CandleCausalLm {
                 *session_id = sessions.create_session();
             }
             CandleModelInner::Qwen2Paged {
+                sessions,
+                session_id,
+                page_backend,
+                ..
+            } => {
+                let resident_page_budget = sessions.cache().resident_page_budget();
+                let resident_byte_budget = sessions.cache().resident_byte_budget();
+                page_backend.reset_page_state();
+                *sessions = SessionRuntime::new(
+                    self.architecture.num_hidden_layers,
+                    self.architecture.num_key_value_heads,
+                    self.tokens_per_page,
+                    self.architecture.head_dim,
+                );
+                sessions
+                    .cache_mut()
+                    .set_resident_page_budget(resident_page_budget)?;
+                sessions
+                    .cache_mut()
+                    .set_resident_byte_budget(resident_byte_budget)?;
+                *session_id = sessions.create_session();
+            }
+            CandleModelInner::Qwen35Paged {
                 sessions,
                 session_id,
                 page_backend,

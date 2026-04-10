@@ -85,6 +85,10 @@ pub struct RuntimeStageMetrics {
     pub tokenization_millis: f64,
     pub qkv_projection_millis: f64,
     pub kv_append_write_millis: f64,
+    pub page_restore_millis: f64,
+    pub page_spill_millis: f64,
+    pub hybrid_cache_restore_millis: f64,
+    pub hybrid_cache_store_millis: f64,
     pub layout_prepare_millis: f64,
     pub attention_score_millis: f64,
     pub attention_softmax_millis: f64,
@@ -102,18 +106,6 @@ pub struct RuntimeStageMetrics {
     pub linear_attention_millis: f64,
     pub full_attention_millis: f64,
     pub mlp_millis: f64,
-    pub linear_conv_millis: f64,
-    pub linear_chunk_prepare_millis: f64,
-    pub linear_chunk_solve_millis: f64,
-    pub linear_chunk_scan_millis: f64,
-    pub linear_chunk_index_millis: f64,
-    pub linear_chunk_local_attn_millis: f64,
-    pub linear_chunk_recurrent_read_millis: f64,
-    pub linear_chunk_state_update_millis: f64,
-    pub linear_recurrent_loop_millis: f64,
-    pub linear_full_kernel_pack_millis: f64,
-    pub linear_full_kernel_execute_millis: f64,
-    pub linear_full_kernel_unpack_millis: f64,
 }
 
 impl RuntimeStageMetrics {
@@ -121,6 +113,10 @@ impl RuntimeStageMetrics {
         self.tokenization_millis
             + self.qkv_projection_millis
             + self.kv_append_write_millis
+            + self.page_restore_millis
+            + self.page_spill_millis
+            + self.hybrid_cache_restore_millis
+            + self.hybrid_cache_store_millis
             + self.layout_prepare_millis
             + self.attention_score_millis
             + self.attention_softmax_millis
@@ -134,6 +130,10 @@ impl RuntimeStageMetrics {
         self.tokenization_millis += other.tokenization_millis;
         self.qkv_projection_millis += other.qkv_projection_millis;
         self.kv_append_write_millis += other.kv_append_write_millis;
+        self.page_restore_millis += other.page_restore_millis;
+        self.page_spill_millis += other.page_spill_millis;
+        self.hybrid_cache_restore_millis += other.hybrid_cache_restore_millis;
+        self.hybrid_cache_store_millis += other.hybrid_cache_store_millis;
         self.layout_prepare_millis += other.layout_prepare_millis;
         self.attention_score_millis += other.attention_score_millis;
         self.attention_softmax_millis += other.attention_softmax_millis;
@@ -151,18 +151,6 @@ impl RuntimeStageMetrics {
         self.linear_attention_millis += other.linear_attention_millis;
         self.full_attention_millis += other.full_attention_millis;
         self.mlp_millis += other.mlp_millis;
-        self.linear_conv_millis += other.linear_conv_millis;
-        self.linear_chunk_prepare_millis += other.linear_chunk_prepare_millis;
-        self.linear_chunk_solve_millis += other.linear_chunk_solve_millis;
-        self.linear_chunk_scan_millis += other.linear_chunk_scan_millis;
-        self.linear_chunk_index_millis += other.linear_chunk_index_millis;
-        self.linear_chunk_local_attn_millis += other.linear_chunk_local_attn_millis;
-        self.linear_chunk_recurrent_read_millis += other.linear_chunk_recurrent_read_millis;
-        self.linear_chunk_state_update_millis += other.linear_chunk_state_update_millis;
-        self.linear_recurrent_loop_millis += other.linear_recurrent_loop_millis;
-        self.linear_full_kernel_pack_millis += other.linear_full_kernel_pack_millis;
-        self.linear_full_kernel_execute_millis += other.linear_full_kernel_execute_millis;
-        self.linear_full_kernel_unpack_millis += other.linear_full_kernel_unpack_millis;
     }
 }
 
@@ -234,11 +222,15 @@ mod tests {
             tokenization_millis: 1.0,
             qkv_projection_millis: 2.0,
             kv_append_write_millis: 3.0,
-            layout_prepare_millis: 4.0,
-            attention_score_millis: 5.0,
-            attention_softmax_millis: 6.0,
-            attention_mix_millis: 7.0,
-            output_projection_millis: 8.0,
+            page_restore_millis: 4.0,
+            page_spill_millis: 5.0,
+            hybrid_cache_restore_millis: 6.0,
+            hybrid_cache_store_millis: 7.0,
+            layout_prepare_millis: 8.0,
+            attention_score_millis: 9.0,
+            attention_softmax_millis: 10.0,
+            attention_mix_millis: 11.0,
+            output_projection_millis: 12.0,
             full_attention_mask_prepare_millis: 0.0,
             full_attention_input_layout_millis: 0.0,
             full_attention_kv_materialize_millis: 0.0,
@@ -246,14 +238,14 @@ mod tests {
             full_attention_output_reshape_millis: 0.0,
             full_attention_gate_millis: 0.0,
             full_attention_kernel_execute_millis: 0.0,
-            scheduler_planning_millis: 9.0,
-            transfer_millis: 10.0,
-            linear_attention_millis: 11.0,
-            full_attention_millis: 12.0,
-            mlp_millis: 13.0,
+            scheduler_planning_millis: 13.0,
+            transfer_millis: 14.0,
+            linear_attention_millis: 15.0,
+            full_attention_millis: 16.0,
+            mlp_millis: 17.0,
         };
 
-        assert_eq!(metrics.total_millis(), 55.0);
+        assert_eq!(metrics.total_millis(), 105.0);
     }
 }
 

@@ -9,6 +9,8 @@ pub mod hf;
 mod instrumented_llama;
 #[cfg(feature = "candle")]
 mod instrumented_qwen2;
+#[cfg(feature = "candle")]
+mod instrumented_qwen35;
 pub mod model;
 pub mod page;
 #[cfg(feature = "candle")]
@@ -37,6 +39,8 @@ pub use model::{RuntimeMode, RuntimeStageMetrics};
 pub use page::{KvPage, PageId};
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
+#[cfg(feature = "candle")]
+pub use session::HybridCacheState;
 pub use session::{
     KvRow, LayerDecodePlan, SessionDecodePlan, SessionId, SessionMetrics, SessionPrefix,
     SessionRequestKind, SessionRuntime, SessionState, SessionTokenRows,

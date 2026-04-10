@@ -4,6 +4,12 @@ use crate::virtual_page::{
 };
 use crate::{Result, RuntimeError};
 
+#[cfg(feature = "candle")]
+#[derive(Clone, Debug)]
+pub enum HybridCacheState {
+    Qwen35(candle_transformers::models::qwen3_5::CacheState),
+}
+
 pub type SessionId = usize;
 
 #[cfg_attr(feature = "hf", derive(serde::Serialize, serde::Deserialize))]
@@ -57,6 +63,8 @@ pub struct SessionPrefix {
     token_count: usize,
     next_position: u32,
     seq: VirtualSeqCache,
+    #[cfg(feature = "candle")]
+    hybrid_cache_state: Option<HybridCacheState>,
 }
 
 impl SessionPrefix {
@@ -71,6 +79,8 @@ impl SessionPrefix {
             token_count,
             next_position,
             seq,
+            #[cfg(feature = "candle")]
+            hybrid_cache_state: None,
         }
     }
 
@@ -88,6 +98,16 @@ impl SessionPrefix {
 
     pub fn virtual_seq(&self) -> &VirtualSeqCache {
         &self.seq
+    }
+
+    #[cfg(feature = "candle")]
+    pub fn hybrid_cache_state(&self) -> Option<&HybridCacheState> {
+        self.hybrid_cache_state.as_ref()
+    }
+
+    #[cfg(feature = "candle")]
+    pub fn set_hybrid_cache_state(&mut self, state: Option<HybridCacheState>) {
+        self.hybrid_cache_state = state;
     }
 }
 
@@ -225,6 +245,8 @@ pub struct SessionState {
     next_position: u32,
     seq: VirtualSeqCache,
     metrics: SessionMetrics,
+    #[cfg(feature = "candle")]
+    hybrid_cache_state: Option<HybridCacheState>,
 }
 
 impl SessionState {
@@ -236,6 +258,8 @@ impl SessionState {
             next_position: 0,
             seq,
             metrics: SessionMetrics::default(),
+            #[cfg(feature = "candle")]
+            hybrid_cache_state: None,
         }
     }
 
@@ -261,6 +285,11 @@ impl SessionState {
 
     pub fn metrics(&self) -> &SessionMetrics {
         &self.metrics
+    }
+
+    #[cfg(feature = "candle")]
+    pub fn hybrid_cache_state(&self) -> Option<&HybridCacheState> {
+        self.hybrid_cache_state.as_ref()
     }
 }
 
@@ -321,6 +350,8 @@ impl SessionRuntime {
             next_position: source.next_position,
             seq,
             metrics: SessionMetrics::default(),
+            #[cfg(feature = "candle")]
+            hybrid_cache_state: source.hybrid_cache_state.clone(),
         }));
         Ok(session_id)
     }
@@ -328,12 +359,17 @@ impl SessionRuntime {
     pub fn capture_prefix(&mut self, session_id: SessionId) -> Result<SessionPrefix> {
         let source = self.session(session_id)?.clone();
         let seq = self.cache.fork_seq(source.virtual_seq())?;
-        Ok(SessionPrefix::new(
+        let mut prefix = SessionPrefix::new(
             source.token_count,
             source.token_count,
             source.next_position,
             seq,
-        ))
+        );
+        #[cfg(feature = "candle")]
+        {
+            prefix.hybrid_cache_state = source.hybrid_cache_state.clone();
+        }
+        Ok(prefix)
     }
 
     pub fn attach_prefix(&mut self, prefix: &SessionPrefix) -> Result<SessionId> {
@@ -352,6 +388,8 @@ impl SessionRuntime {
             next_position: prefix.next_position,
             seq,
             metrics: SessionMetrics::default(),
+            #[cfg(feature = "candle")]
+            hybrid_cache_state: prefix.hybrid_cache_state.clone(),
         }));
         Ok(session_id)
     }
@@ -407,6 +445,30 @@ impl SessionRuntime {
             })?;
         session.metrics = SessionMetrics::default();
         Ok(())
+    }
+
+    #[cfg(feature = "candle")]
+    pub fn set_hybrid_cache_state(
+        &mut self,
+        session_id: SessionId,
+        state: Option<HybridCacheState>,
+    ) -> Result<()> {
+        let session_count = self.sessions.len();
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .and_then(|session| session.as_mut())
+            .ok_or(RuntimeError::InvalidSessionId {
+                session_id,
+                session_count,
+            })?;
+        session.hybrid_cache_state = state;
+        Ok(())
+    }
+
+    #[cfg(feature = "candle")]
+    pub fn hybrid_cache_state(&self, session_id: SessionId) -> Result<Option<&HybridCacheState>> {
+        Ok(self.session(session_id)?.hybrid_cache_state.as_ref())
     }
 
     pub fn record_session_request(

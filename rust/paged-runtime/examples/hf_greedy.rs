@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args().skip(1);
     let family = args.next().ok_or(
-        "usage: hf_greedy <family> <model_id> <prompt> [max_new_tokens] [tokens_per_page] [trace_jsonl_path] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused]",
+        "usage: hf_greedy <family> <model_id> <prompt> [max_new_tokens] [tokens_per_page] [trace_jsonl_path] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--runtime-mode dense_control|paged_control|dotcache_experimental] [--attention-path paged|fused]",
     )?;
     let model_id = args.next().ok_or("missing model_id")?;
     let prompt = args.next().ok_or("missing prompt")?;

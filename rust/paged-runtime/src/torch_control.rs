@@ -44,6 +44,14 @@ fn torch_backend_and_device(selector: &CandleDeviceSelector) -> (&'static str, S
             };
             ("torch_cuda", device)
         }
+        BackendDevice::Hip { ordinal } => {
+            let device = if ordinal == 0 {
+                "cuda".to_string()
+            } else {
+                format!("cuda:{ordinal}")
+            };
+            ("torch_cuda", device)
+        }
     }
 }
 

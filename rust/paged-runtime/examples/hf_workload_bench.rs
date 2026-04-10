@@ -113,6 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_tokenization_millis: f64,
         stage_qkv_projection_millis: f64,
         stage_kv_append_write_millis: f64,
+        stage_page_restore_millis: f64,
+        stage_page_spill_millis: f64,
+        stage_hybrid_cache_restore_millis: f64,
+        stage_hybrid_cache_store_millis: f64,
         stage_layout_prepare_millis: f64,
         stage_attention_score_millis: f64,
         stage_attention_softmax_millis: f64,
@@ -130,18 +134,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_linear_attention_millis: f64,
         stage_full_attention_millis: f64,
         stage_mlp_millis: f64,
-        stage_linear_conv_millis: f64,
-        stage_linear_chunk_prepare_millis: f64,
-        stage_linear_chunk_solve_millis: f64,
-        stage_linear_chunk_scan_millis: f64,
-        stage_linear_chunk_index_millis: f64,
-        stage_linear_chunk_local_attn_millis: f64,
-        stage_linear_chunk_recurrent_read_millis: f64,
-        stage_linear_chunk_state_update_millis: f64,
-        stage_linear_recurrent_loop_millis: f64,
-        stage_linear_full_kernel_pack_millis: f64,
-        stage_linear_full_kernel_execute_millis: f64,
-        stage_linear_full_kernel_unpack_millis: f64,
         stage_total_millis: f64,
         stage_profile_sync_enabled: bool,
         cold_prefix_prefill_millis: f64,
@@ -164,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<WorkloadArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
+            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let shared_prompt = args
@@ -367,7 +359,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if !std::env::args().any(|arg| arg == "--dtype") {
             parsed.dtype = match parsed.device.backend_device() {
-                BackendDevice::Metal { .. } | BackendDevice::Cuda { .. } => DType::F16,
+                BackendDevice::Metal { .. }
+                | BackendDevice::Cuda { .. }
+                | BackendDevice::Hip { .. } => DType::F16,
                 BackendDevice::Cpu => DType::F32,
             };
         }
@@ -875,6 +869,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stage_tokenization_millis: 0.0,
             stage_qkv_projection_millis,
             stage_kv_append_write_millis,
+            stage_page_restore_millis: 0.0,
+            stage_page_spill_millis: 0.0,
+            stage_hybrid_cache_restore_millis: 0.0,
+            stage_hybrid_cache_store_millis: 0.0,
             stage_layout_prepare_millis: 0.0,
             stage_attention_score_millis: 0.0,
             stage_attention_softmax_millis: 0.0,
@@ -892,18 +890,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stage_linear_attention_millis,
             stage_full_attention_millis,
             stage_mlp_millis,
-            stage_linear_conv_millis: 0.0,
-            stage_linear_chunk_prepare_millis: 0.0,
-            stage_linear_chunk_solve_millis: 0.0,
-            stage_linear_chunk_scan_millis: 0.0,
-            stage_linear_chunk_index_millis: 0.0,
-            stage_linear_chunk_local_attn_millis: 0.0,
-            stage_linear_chunk_recurrent_read_millis: 0.0,
-            stage_linear_chunk_state_update_millis: 0.0,
-            stage_linear_recurrent_loop_millis: 0.0,
-            stage_linear_full_kernel_pack_millis: 0.0,
-            stage_linear_full_kernel_execute_millis: 0.0,
-            stage_linear_full_kernel_unpack_millis: 0.0,
             stage_total_millis,
             stage_profile_sync_enabled: sync_stage_profile,
             cold_prefix_prefill_millis,
@@ -973,6 +959,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (shared_prompt_token_ids, mut tokenization_elapsed) =
         build_prompt_token_ids(&model, &args.shared_prompt, args.shared_prompt_token_target)?;
+    if matches!(
+        args.runtime_mode,
+        RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental
+    ) && args.resident_page_budget.is_none()
+        && args.resident_byte_budget.is_none()
+        && args.restore_cooldown_window.is_none()
+    {
+        if let Some(policy) =
+            model.recommended_prompt_policy_for_token_count(shared_prompt_token_ids.len())?
+        {
+            model.apply_prompt_policy(&policy)?;
+        }
+    }
 
     let warmup_start = Instant::now();
     for warmup_index in 0..args.warmup_runs {
@@ -1316,8 +1315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         suffix_prefix: args.suffix_prefix.clone(),
         stress_mode: args.stress_mode,
         stress_suffix_repeats: args.stress_suffix_repeats,
-        resident_page_budget: args.resident_page_budget,
-        resident_byte_budget: args.resident_byte_budget,
+        resident_page_budget: model.resident_physical_page_budget(),
+        resident_byte_budget: model.resident_physical_byte_budget(),
         restore_cooldown_window: args
             .restore_cooldown_window
             .or_else(|| model.restore_cooldown_window()),
@@ -1353,6 +1352,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_tokenization_millis: stage_metrics.tokenization_millis,
         stage_qkv_projection_millis: stage_metrics.qkv_projection_millis,
         stage_kv_append_write_millis: stage_metrics.kv_append_write_millis,
+        stage_page_restore_millis: stage_metrics.page_restore_millis,
+        stage_page_spill_millis: stage_metrics.page_spill_millis,
+        stage_hybrid_cache_restore_millis: stage_metrics.hybrid_cache_restore_millis,
+        stage_hybrid_cache_store_millis: stage_metrics.hybrid_cache_store_millis,
         stage_layout_prepare_millis: stage_metrics.layout_prepare_millis,
         stage_attention_score_millis: stage_metrics.attention_score_millis,
         stage_attention_softmax_millis: stage_metrics.attention_softmax_millis,
@@ -1374,18 +1377,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage_linear_attention_millis: stage_metrics.linear_attention_millis,
         stage_full_attention_millis: stage_metrics.full_attention_millis,
         stage_mlp_millis: stage_metrics.mlp_millis,
-        stage_linear_conv_millis: stage_metrics.linear_conv_millis,
-        stage_linear_chunk_prepare_millis: stage_metrics.linear_chunk_prepare_millis,
-        stage_linear_chunk_solve_millis: stage_metrics.linear_chunk_solve_millis,
-        stage_linear_chunk_scan_millis: stage_metrics.linear_chunk_scan_millis,
-        stage_linear_chunk_index_millis: stage_metrics.linear_chunk_index_millis,
-        stage_linear_chunk_local_attn_millis: stage_metrics.linear_chunk_local_attn_millis,
-        stage_linear_chunk_recurrent_read_millis: stage_metrics.linear_chunk_recurrent_read_millis,
-        stage_linear_chunk_state_update_millis: stage_metrics.linear_chunk_state_update_millis,
-        stage_linear_recurrent_loop_millis: stage_metrics.linear_recurrent_loop_millis,
-        stage_linear_full_kernel_pack_millis: stage_metrics.linear_full_kernel_pack_millis,
-        stage_linear_full_kernel_execute_millis: stage_metrics.linear_full_kernel_execute_millis,
-        stage_linear_full_kernel_unpack_millis: stage_metrics.linear_full_kernel_unpack_millis,
         stage_total_millis: stage_metrics.total_millis(),
         stage_profile_sync_enabled: sync_stage_profile,
         cold_prefix_prefill_millis: millis(cold_prefix_prefill_elapsed),
