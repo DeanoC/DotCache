@@ -6418,10 +6418,16 @@ impl GatedDeltaNet {
     }
 
     fn run_depthwise_conv(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
+        if mixed_qkv.device().is_hip() {
+            return self.run_depthwise_conv_packed_prefill(mixed_qkv)?.transpose(1, 2);
+        }
         self.depthwise_conv_from_state(mixed_qkv)
     }
 
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
+        if mixed_qkv.device().is_hip() {
+            return self.run_depthwise_conv_packed_prefill(mixed_qkv)?.transpose(1, 2);
+        }
         self.depthwise_conv_from_state(mixed_qkv)
     }
 
@@ -8586,6 +8592,36 @@ mod tests {
             vec![
                 0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3,
             ],
+            (batch_size, conv_dim, total_len),
+            &device,
+        )?;
+        let weights = Tensor::from_vec(
+            vec![0.5f32, -0.25, 0.75, -0.4, 0.3, 0.2],
+            (conv_dim, kernel_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = linear_prefill_conv_pack(&mixed_qkv, &weights, seq_len, kernel_size)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), mixed_qkv.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_prefill_conv_pack_single_step_avoids_host_staging() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let batch_size = 1usize;
+        let conv_dim = 2usize;
+        let total_len = 3usize;
+        let seq_len = 1usize;
+        let kernel_size = 3usize;
+
+        let mixed_qkv = Tensor::from_vec(
+            vec![0.1f32, 0.2, 0.3, -0.1, 0.0, 0.2],
             (batch_size, conv_dim, total_len),
             &device,
         )?;
