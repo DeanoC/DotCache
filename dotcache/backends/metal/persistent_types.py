@@ -14,6 +14,10 @@ class PersistentServingConfig:
     enable_early_exit: bool = False
     enable_compression: bool = False
     fp32_accumulation: bool = True
+    full_attention_mode_cost_weight: float = 0.10
+    full_attention_fallback_widen_step: int = 16
+    full_attention_fallback_max_optional_top_k: int = 0
+    full_attention_dense_fallback_on_invalid_compression_metadata: bool = True
     full_attention_shortlist_policy_path: str | None = None
     full_attention_shortlist_policy_mode: str = "bias"
     full_attention_shortlist_policy_bias_weight: float = 0.10
@@ -70,6 +74,15 @@ class PersistentLayerTelemetry:
     score_ms_total: float = 0.0
     selection_ms_total: float = 0.0
     policy_bias_ms_total: float = 0.0
+    selected_m0_metadata_block_count_total: int = 0
+    selected_m3_metadata_block_count_total: int = 0
+    fallback_process_more_count: int = 0
+    fallback_widen_count: int = 0
+    fallback_disable_compression_count: int = 0
+    fallback_disable_pruning_count: int = 0
+    dense_fallback_count: int = 0
+    compression_rerank_count: int = 0
+    last_fallback_rung: int = 0
     mutation_count: int = 0
 
 
@@ -108,7 +121,10 @@ class PersistentFullAttentionLayerState:
     block_v_norm_max: Any
     block_prev_attention_ema: Any
     block_region_ids: Any
+    block_k_mode: Any
+    block_v_mode: Any
     block_k_comp_error: Any
+    block_compression_metadata_valid: Any
     metadata_valid: Any
     last_residual_certificate: dict[str, Any] | None = None
     append_count: int = 0

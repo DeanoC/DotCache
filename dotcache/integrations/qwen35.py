@@ -2354,32 +2354,189 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             effective_persistent_config,
             history_snapshot_count=persistent_step_index,
         )
-        selection = runtime_state.select_full_attention_blocks(
-            self.layer_idx,
-            query_step,
-            query_scale=float(self.base_attention.scaling),
-            config_override=effective_persistent_config,
-            policy_choice=policy_choice,
-        )
-        certificate = runtime_state.certify_full_attention_selected_blocks(
-            self.layer_idx,
-            query=query_step,
-            query_scale=float(self.base_attention.scaling),
-            selected_block_ids=selection["selected_block_ids"],
-            upper_bounds=selection["upper_bounds"],
-            config_override=effective_persistent_config,
-        )
+        full_attention_layer_state = runtime_state.full_attention.layers[self.layer_idx]
+        full_block_count = int(len(full_attention_layer_state.block_token_starts))
+
+        def _select_and_cert(current_config: PersistentServingConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+            current_selection = runtime_state.select_full_attention_blocks(
+                self.layer_idx,
+                query_step,
+                query_scale=float(self.base_attention.scaling),
+                config_override=current_config,
+                policy_choice=policy_choice,
+            )
+            current_certificate = runtime_state.certify_full_attention_selected_blocks(
+                self.layer_idx,
+                query=query_step,
+                query_scale=float(self.base_attention.scaling),
+                selected_block_ids=current_selection["selected_block_ids"],
+                upper_bounds=current_selection["upper_bounds"],
+                config_override=current_config,
+            )
+            return current_selection, current_certificate
+
+        def _should_enter_fallback(
+            current_config: PersistentServingConfig,
+            current_selection: dict[str, Any],
+            current_certificate: dict[str, Any],
+        ) -> bool:
+            if bool(current_config.enable_compression) and current_selection.get("compression_invalid_block_ids"):
+                return True
+            if bool(current_certificate.get("instability_flag", False)):
+                return True
+            if bool(current_config.enable_early_exit) and bool(current_certificate.get("fallback_recommended", False)):
+                return True
+            return False
+
+        def _extend_selection_with_next_optional_tranche(
+            current_selection: dict[str, Any],
+            *,
+            tranche_size: int,
+        ) -> dict[str, Any] | None:
+            selected_ids = [int(block_id) for block_id in current_selection["selected_block_ids"]]
+            ranked_optional_candidates = [int(block_id) for block_id in current_selection.get("ranked_optional_candidate_ids", [])]
+            selected_set = set(selected_ids)
+            extra_ids: list[int] = []
+            for block_id in ranked_optional_candidates:
+                if int(block_id) in selected_set:
+                    continue
+                extra_ids.append(int(block_id))
+                if len(extra_ids) >= max(int(tranche_size), 0):
+                    break
+            if not extra_ids:
+                return None
+            next_selection = dict(current_selection)
+            next_selection["selected_block_ids"] = sorted(selected_set | set(int(block_id) for block_id in extra_ids))
+            next_processing_ids = [int(block_id) for block_id in current_selection.get("processing_block_ids", [])]
+            next_selection["processing_block_ids"] = next_processing_ids + [
+                int(block_id) for block_id in extra_ids if int(block_id) not in set(next_processing_ids)
+            ]
+            next_selection["optional_block_ids"] = [
+                int(block_id) for block_id in current_selection.get("optional_block_ids", [])
+            ] + extra_ids
+            return next_selection
+
+        selection, certificate = _select_and_cert(effective_persistent_config)
+        final_config = effective_persistent_config
+        final_selection = selection
+        final_certificate = certificate
+        fallback_rung = 0
+        compression_rerank = False
+        dense_fallback = False
+        if _should_enter_fallback(effective_persistent_config, selection, certificate):
+            fallback_step = max(int(effective_persistent_config.full_attention_fallback_widen_step), 1)
+            fallback_max_optional_top_k = int(effective_persistent_config.full_attention_fallback_max_optional_top_k)
+            if fallback_max_optional_top_k <= 0:
+                fallback_max_optional_top_k = int(full_block_count)
+
+            expanded_selection = _extend_selection_with_next_optional_tranche(
+                selection,
+                tranche_size=fallback_step,
+            )
+            if expanded_selection is not None:
+                fallback_rung = 1
+                final_selection = expanded_selection
+                final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                    self.layer_idx,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    selected_block_ids=final_selection["selected_block_ids"],
+                    upper_bounds=selection["upper_bounds"],
+                    config_override=final_config,
+                )
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                current_top_k = int(final_config.full_attention_optional_top_k)
+                widened_top_k = min(
+                    int(fallback_max_optional_top_k),
+                    max(int(current_top_k), 0) + int(fallback_step),
+                )
+                if bool(final_config.enable_priority) and int(current_top_k) > 0 and int(widened_top_k) > int(current_top_k):
+                    fallback_rung = 2
+                    final_config = replace(final_config, full_attention_optional_top_k=int(widened_top_k))
+                    final_selection, final_certificate = _select_and_cert(final_config)
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate) and bool(final_config.enable_compression):
+                fallback_rung = 3
+                compression_rerank = True
+                final_config = replace(final_config, enable_compression=False)
+                final_selection, final_certificate = _select_and_cert(final_config)
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                fallback_rung = 4
+                final_config = replace(
+                    final_config,
+                    enable_compression=False,
+                    enable_priority=False,
+                    full_attention_optional_top_k=0,
+                )
+                all_block_ids = [int(block_id) for block_id in range(int(full_block_count))]
+                full_score_result = runtime_state.score_full_attention_blocks(
+                    self.layer_idx,
+                    query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    config_override=final_config,
+                )
+                final_selection = {
+                    "selected_block_ids": all_block_ids,
+                    "processing_block_ids": all_block_ids,
+                    "mandatory_block_ids": all_block_ids,
+                    "soft_recent_block_ids": [],
+                    "exploration_block_ids": [],
+                    "optional_block_ids": [],
+                    "ranked_optional_candidate_ids": [],
+                    "priority_scores": full_score_result["priority_scores"],
+                    "upper_bounds": full_score_result["upper_bounds"],
+                    "compression_candidate_block_ids": all_block_ids,
+                    "compression_invalid_block_ids": [],
+                    "selected_k_mode_counts": {},
+                    "policy_preferred_optional_block_ids": [],
+                    "policy_preferred_bias_weight": 0.0,
+                }
+                final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                    self.layer_idx,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    selected_block_ids=all_block_ids,
+                    upper_bounds=full_score_result["upper_bounds"],
+                    config_override=final_config,
+                )
+
+            if _should_enter_fallback(final_config, final_selection, final_certificate):
+                fallback_rung = 5
+                dense_fallback = True
+                final_config = replace(final_config, enable_compression=False, enable_priority=False)
+
         self.adapter.record_persistent_shortlist_policy_application(
             layer_id=self.layer_idx,
             choice=policy_choice,
         )
-        selected_block_ids = selection["selected_block_ids"]
-        selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
+        selected_block_ids = [int(block_id) for block_id in final_selection["selected_block_ids"]]
+        runtime_state.record_full_attention_selection_outcome(
             self.layer_idx,
-            selected_block_ids,
+            selected_block_ids=selected_block_ids,
+            fallback_rung=fallback_rung,
+            compression_rerank=compression_rerank,
+            dense_fallback=dense_fallback,
         )
-        selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
-        full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
+        if bool(dense_fallback) or len(selected_block_ids) >= int(full_block_count):
+            layer_key_cache, layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
+                self.layer_idx
+            )
+            selected_key_states = layer_key_cache
+            selected_value_states = layer_value_cache
+            selected_block_token_counts = [
+                int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in full_block_ids
+            ]
+            selected_block_ids = full_block_ids
+            selected_token_count = int(full_token_count)
+        else:
+            selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
+                self.layer_idx,
+                selected_block_ids,
+            )
+            selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
+            full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
         full_key_states = selected_key_states.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
         full_value_states = selected_value_states.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
         selected_attention_mask = attention_mask if selected_token_count == full_token_count else None
@@ -2414,12 +2571,12 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         self.adapter._record_layer_timing(
             self.adapter.persistent_full_attention_beta_upper_by_layer,
             self.layer_idx,
-            float(certificate["beta_upper"]),
+            float(final_certificate["beta_upper"]),
         )
         self.adapter._record_layer_timing(
             self.adapter.persistent_full_attention_delta_upper_by_layer,
             self.layer_idx,
-            float(certificate["delta_upper"]),
+            float(final_certificate["delta_upper"]),
         )
         self.adapter._record_layer_timing(
             self.adapter.persistent_full_attention_decode_ms_total_by_layer,
@@ -2995,6 +3152,7 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             q_head_to_kv_head=self.q_head_to_kv_head,
             device=self.device,
             config=self.persistent_serving_config,
+            dotcache_config=self.dotcache_config,
         )
 
     def refresh_native_hybrid_runtime_state(self, past_key_values: Any) -> None:
@@ -9285,6 +9443,15 @@ def run_qwen35_attention_subset_persistent_serving_harness(
         ),
         "persistent_runtime_enable_linear_attention_persistent_compute": bool(
             adapter.persistent_serving_config.enable_linear_attention_persistent_compute
+        ),
+        "persistent_runtime_enable_compression": bool(adapter.persistent_serving_config.enable_compression),
+        "persistent_runtime_mode_cost_weight": float(adapter.persistent_serving_config.full_attention_mode_cost_weight),
+        "persistent_runtime_fallback_widen_step": int(adapter.persistent_serving_config.full_attention_fallback_widen_step),
+        "persistent_runtime_fallback_max_optional_top_k": int(
+            adapter.persistent_serving_config.full_attention_fallback_max_optional_top_k
+        ),
+        "persistent_runtime_dense_fallback_on_invalid_compression_metadata": bool(
+            adapter.persistent_serving_config.full_attention_dense_fallback_on_invalid_compression_metadata
         ),
         "persistent_runtime_shortlist_policy_path": (
             None

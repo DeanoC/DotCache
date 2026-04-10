@@ -2082,6 +2082,147 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
 
 
+def test_qwen35_attention_subset_persistent_serving_harness_stage8_compression_preserves_ids() -> None:
+    model = _tiny_qwen35_model()
+    baseline_model = copy.deepcopy(model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent serving compression", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=False,
+        ),
+        backend="cpu_ref",
+    )
+    compressed_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=False,
+            enable_compression=True,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    compressed = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        compressed_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert compressed["persistent_runtime_enable_compression"] is True
+    assert compressed["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert compressed["persistent_full_attention_m0_metadata_blocks_by_layer"]["3"] >= 1
+    assert compressed["persistent_full_attention_selected_m0_metadata_block_count_total_by_layer"]["3"] >= 1
+    assert compressed["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_disables_compression_for_unsupported_modes() -> None:
+    model = _tiny_qwen35_model()
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent unsupported compression", return_tensors="pt")
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(
+            head_dim=16,
+            group_size=16,
+            bits_k=4,
+            bits_v=4,
+            tokens_per_page=2,
+            default_mode_k="M1",
+            default_mode_v="M3",
+        ),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            enable_compression=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["persistent_runtime_enable_compression"] is True
+    assert result["persistent_full_attention_compression_rerank_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_fallback_disable_compression_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_falls_back_to_dense_for_invalid_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _tiny_qwen35_model()
+    baseline_model = copy.deepcopy(model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent invalid metadata", return_tensors="pt")
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(enable_priority=False, enable_compression=False),
+        backend="cpu_ref",
+    )
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=PersistentServingConfig(
+            enable_priority=True,
+            enable_compression=True,
+            full_attention_sink_block_count=1,
+            full_attention_recent_block_count=1,
+            full_attention_exploration_blocks_per_region=1,
+            full_attention_optional_top_k=1,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    from dotcache.backends.metal.persistent_runtime import PersistentHybridRuntimeState
+
+    original_append = PersistentHybridRuntimeState.append_full_attention_step
+
+    def _patched_append(self, layer_id: int, key_step, value_step, token_index: int) -> None:
+        original_append(self, layer_id, key_step, value_step, token_index)
+        self.full_attention.layers[int(layer_id)].metadata_valid[:] = 0.0
+
+    monkeypatch.setattr(PersistentHybridRuntimeState, "append_full_attention_step", _patched_append)
+    result = run_qwen35_attention_subset_persistent_serving_harness(
+        model,
+        adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert result["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert result["persistent_full_attention_dense_fallback_count_by_layer"]["3"] >= 1
+    assert result["persistent_full_attention_last_fallback_rung_by_layer"]["3"] == 5
+
+
 def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_replay_metrics() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(

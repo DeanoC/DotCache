@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from ...modes.m0_affine import dequantize_groups, quantize_tensor
 from .persistent_types import (
     PersistentFullAttentionLayerState,
     PersistentLayerTelemetry,
@@ -61,6 +62,86 @@ def _nbytes_tensor_like(value: Any) -> int:
         return int(value.nelement() * value.element_size())
     array = np.asarray(value)
     return int(array.nbytes)
+
+
+def _normalize_stage8_mode_name(mode: Any) -> str:
+    resolved = str(mode).strip().upper()
+    if resolved == "M0":
+        return "M0"
+    return "M3"
+
+
+def _mode_cost_penalty_from_name(mode: Any) -> float:
+    return 1.0 if _normalize_stage8_mode_name(mode) == "M0" else 0.0
+
+
+def _resolve_full_attention_block_modes(
+    *,
+    num_blocks: int,
+    kv_heads: int,
+    layer_id: int,
+    dotcache_config: Any | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    block_k_mode = np.full((num_blocks, kv_heads), "M3", dtype="<U2")
+    block_v_mode = np.full((num_blocks, kv_heads), "M3", dtype="<U2")
+    block_compression_metadata_valid = np.ones((num_blocks, kv_heads), dtype=np.float32)
+    if dotcache_config is None or not hasattr(dotcache_config, "resolve_page_mode"):
+        block_compression_metadata_valid.fill(0.0)
+        return block_k_mode, block_v_mode, block_compression_metadata_valid
+    for kv_head_idx in range(int(kv_heads)):
+        try:
+            resolved_k_mode = dotcache_config.resolve_page_mode(kind="K", layer_id=int(layer_id), kv_head_id=int(kv_head_idx))
+            resolved_v_mode = dotcache_config.resolve_page_mode(kind="V", layer_id=int(layer_id), kv_head_id=int(kv_head_idx))
+        except Exception:
+            block_compression_metadata_valid[:, int(kv_head_idx)] = 0.0
+            continue
+        normalized_k_mode = _normalize_stage8_mode_name(resolved_k_mode)
+        normalized_v_mode = _normalize_stage8_mode_name(resolved_v_mode)
+        block_k_mode[:, int(kv_head_idx)] = normalized_k_mode
+        block_v_mode[:, int(kv_head_idx)] = normalized_v_mode
+        if str(resolved_k_mode).strip().upper() not in {"M0", "M3"} or str(resolved_v_mode).strip().upper() not in {
+            "M0",
+            "M3",
+        }:
+            block_compression_metadata_valid[:, int(kv_head_idx)] = 0.0
+    return block_k_mode, block_v_mode, block_compression_metadata_valid
+
+
+def _estimate_m0_key_comp_error(
+    *,
+    key_slice: Any,
+    dotcache_config: Any | None,
+) -> float | None:
+    if dotcache_config is None:
+        return None
+    group_size = int(getattr(dotcache_config, "group_size", 0))
+    bits_k = int(getattr(dotcache_config, "bits_k", 0))
+    quant_scheme_k = str(getattr(dotcache_config, "quant_scheme_k", "affine")).strip().lower()
+    if group_size <= 0 or bits_k <= 0 or quant_scheme_k not in {"affine", "symmetric"}:
+        return None
+    values = np.asarray(key_slice.detach().cpu().numpy(), dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] <= 0:
+        return 0.0
+    try:
+        codes, scales, bias, _padded_head_dim = quantize_tensor(
+            values,
+            group_size=group_size,
+            bits=bits_k,
+            scheme=quant_scheme_k,
+        )
+        reconstructed = dequantize_groups(
+            codes,
+            scales=scales,
+            bias=bias,
+            bits=bits_k,
+            scheme=quant_scheme_k,
+        ).reshape(values.shape[0], -1)[:, : values.shape[1]]
+    except Exception:
+        return None
+    residual = values - np.asarray(reconstructed, dtype=np.float32)
+    if residual.size <= 0:
+        return 0.0
+    return float(np.max(np.linalg.norm(residual, axis=1)))
 
 
 def _sequence_value_or_none(container: Any, index: int) -> Any | None:
@@ -331,6 +412,7 @@ def _allocate_full_attention_block_metadata(
     block_v_norm_max = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
     block_prev_attention_ema = torch.zeros((num_blocks,), dtype=torch.float32, device=device)
     block_k_comp_error = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_compression_metadata_valid = np.ones((num_blocks, kv_heads), dtype=np.float32)
     return (
         block_k_center,
         block_k_radius,
@@ -341,6 +423,7 @@ def _allocate_full_attention_block_metadata(
         block_v_norm_max,
         block_prev_attention_ema,
         block_k_comp_error,
+        block_compression_metadata_valid,
     )
 
 
@@ -348,6 +431,7 @@ def _recompute_full_attention_block_metadata(
     *,
     state: PersistentFullAttentionLayerState,
     block_indices: list[int] | np.ndarray,
+    dotcache_config: Any | None = None,
 ) -> None:
     torch = _load_torch()
     if len(block_indices) == 0:
@@ -365,6 +449,7 @@ def _recompute_full_attention_block_metadata(
             state.block_v_radius[block_idx].zero_()
             state.block_v_norm_max[block_idx].zero_()
             state.block_k_comp_error[block_idx].zero_()
+            state.block_compression_metadata_valid[block_idx] = 0.0
             continue
         key_slice = state.key_cache[:, token_start : token_start + token_count, :].to(dtype=torch.float32)
         value_slice = state.value_cache[:, token_start : token_start + token_count, :].to(dtype=torch.float32)
@@ -393,6 +478,24 @@ def _recompute_full_attention_block_metadata(
         state.block_v_radius[block_idx].copy_(value_distances.max(dim=1).values)
         state.block_v_norm_max[block_idx].copy_(value_norms.max(dim=1).values)
         state.block_k_comp_error[block_idx].zero_()
+        for kv_head_idx in range(int(key_slice.shape[0])):
+            key_mode = _normalize_stage8_mode_name(state.block_k_mode[block_idx, kv_head_idx])
+            value_mode = _normalize_stage8_mode_name(state.block_v_mode[block_idx, kv_head_idx])
+            compression_valid = float(state.block_compression_metadata_valid[block_idx, int(kv_head_idx)])
+            if key_mode == "M0":
+                estimated_comp_error = _estimate_m0_key_comp_error(
+                    key_slice=key_slice[int(kv_head_idx)],
+                    dotcache_config=dotcache_config,
+                )
+                if estimated_comp_error is None:
+                    compression_valid = 0.0
+                    estimated_comp_error = 0.0
+                state.block_k_comp_error[block_idx, int(kv_head_idx)] = float(estimated_comp_error)
+            else:
+                state.block_k_comp_error[block_idx, int(kv_head_idx)] = 0.0
+            if key_mode not in {"M0", "M3"} or value_mode not in {"M0", "M3"}:
+                compression_valid = 0.0
+            state.block_compression_metadata_valid[block_idx, int(kv_head_idx)] = float(compression_valid)
         state.metadata_valid[block_idx] = 1.0
 
 
@@ -451,7 +554,9 @@ def _sample_probe_refined_upper_bound(
             candidate_upper += float(query_norm[int(q_head_idx)].item()) * float(nearest_sample_radius.item()) * abs(
                 float(query_scale)
             )
-            candidate_upper += kv_comp_error
+            candidate_upper += (
+                float(query_norm[int(q_head_idx)].item()) * float(kv_comp_error) * abs(float(query_scale))
+            )
             probe_bound = max(probe_bound, candidate_upper)
     if not math.isfinite(probe_bound):
         return None
@@ -612,6 +717,7 @@ def _resolve_block_score_inputs(
     prev_weight = float(config.full_attention_priority_prev_attention_weight)
     recency_weight = float(config.full_attention_priority_recency_weight)
     value_weight = float(config.full_attention_priority_value_norm_weight)
+    mode_cost_weight = float(getattr(config, "full_attention_mode_cost_weight", 0.0))
     for q_head_idx in range(int(query_tensor.shape[0])):
         kv_head_idx = int(q_to_kv[q_head_idx])
         center = state.block_k_center[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
@@ -619,18 +725,34 @@ def _resolve_block_score_inputs(
         subcenters = state.block_k_subcenters[:, kv_head_idx, :, :].to(device=query_tensor.device, dtype=torch.float32)
         subradii = state.block_k_subradii[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
         value_norm = state.block_v_norm_max[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
-        comp_error = state.block_k_comp_error[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+        if bool(config.enable_compression):
+            comp_error = state.block_k_comp_error[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+            mode_penalty = torch.as_tensor(
+                [
+                    _mode_cost_penalty_from_name(state.block_k_mode[int(block_id), int(kv_head_idx)])
+                    for block_id in range(num_blocks)
+                ],
+                dtype=torch.float32,
+                device=query_tensor.device,
+            )
+        else:
+            comp_error = torch.zeros((num_blocks,), dtype=torch.float32, device=query_tensor.device)
+            mode_penalty = torch.zeros((num_blocks,), dtype=torch.float32, device=query_tensor.device)
         center_sim = torch.matmul(center, query_tensor[q_head_idx]) * float(query_scale)
-        upper = center_sim + query_norm[q_head_idx] * radius * abs(float(query_scale)) + comp_error
+        upper = center_sim + query_norm[q_head_idx] * (radius + comp_error) * abs(float(query_scale))
         if int(subcenters.shape[1]) > 1:
             subcenter_sim = torch.einsum("bkd,d->bk", subcenters, query_tensor[q_head_idx]) * float(query_scale)
-            sub_upper = subcenter_sim + query_norm[q_head_idx] * subradii * abs(float(query_scale)) + comp_error[:, None]
+            sub_upper = subcenter_sim + query_norm[q_head_idx] * (subradii + comp_error[:, None]) * abs(
+                float(query_scale)
+            )
             upper = torch.minimum(upper, sub_upper.max(dim=1).values)
         normalized_value_norm = value_norm / value_norm.max().clamp_min(1e-6)
         priority = center_sim
         priority = priority + prev_weight * state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
         priority = priority + recency_weight * local_recency
         priority = priority + value_weight * normalized_value_norm
+        if bool(config.enable_compression) and float(mode_cost_weight) > 0.0:
+            priority = priority - float(mode_cost_weight) * mode_penalty
         priority_scores = torch.maximum(priority_scores, priority)
         upper_bounds = torch.maximum(upper_bounds, upper)
     probe_refine_top_k = max(int(getattr(config, "full_attention_probe_refine_top_k", 0)), 0)
@@ -1127,6 +1249,40 @@ def _resolve_policy_bias_preferred_optional_ids(
     return {int(block_id) for block_id in preferred_ids}, float(bias_weight)
 
 
+def _selected_block_mode_counts(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+) -> dict[str, int]:
+    m0_count = 0
+    m3_count = 0
+    for block_id in [int(value) for value in block_ids]:
+        block_modes = np.asarray(state.block_k_mode[int(block_id)]).tolist()
+        if any(_normalize_stage8_mode_name(mode) == "M0" for mode in block_modes):
+            m0_count += 1
+        else:
+            m3_count += 1
+    return {
+        "M0": int(m0_count),
+        "M3": int(m3_count),
+    }
+
+
+def _compression_invalid_block_ids(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+) -> list[int]:
+    invalid: list[int] = []
+    for block_id in [int(value) for value in block_ids]:
+        valid_row = np.asarray(state.block_compression_metadata_valid[int(block_id)], dtype=np.float32)
+        for kv_head_idx in range(int(valid_row.shape[0])):
+            if kv_head_idx >= int(valid_row.shape[0]) or float(valid_row[int(kv_head_idx)]) <= 0.0:
+                invalid.append(int(block_id))
+                break
+    return sorted(set(int(block_id) for block_id in invalid))
+
+
 def _gather_selected_block_tensors(
     *,
     state: PersistentFullAttentionLayerState,
@@ -1186,6 +1342,7 @@ class PersistentFullAttentionState:
     layers: dict[int, PersistentFullAttentionLayerState]
     telemetry: PersistentStepTelemetry
     executor: _MetalKernelExecutor
+    dotcache_config: Any | None = None
 
     @classmethod
     def from_prefill_tensors(
@@ -1195,6 +1352,7 @@ class PersistentFullAttentionState:
         device: Any,
         q_head_to_kv_head: np.ndarray,
         config: PersistentServingConfig,
+        dotcache_config: Any | None = None,
     ) -> "PersistentFullAttentionState":
         torch = _load_torch()
         resolved_device = device
@@ -1227,6 +1385,7 @@ class PersistentFullAttentionState:
                 block_v_norm_max,
                 block_prev_attention_ema,
                 block_k_comp_error,
+                block_compression_metadata_valid,
             ) = (
                 _allocate_full_attention_block_metadata(
                     key_cache=kv_keys,
@@ -1236,6 +1395,13 @@ class PersistentFullAttentionState:
                     key_centroid_count=int(config.full_attention_key_centroid_count),
                 )
             )
+            block_k_mode, block_v_mode, initial_compression_valid = _resolve_full_attention_block_modes(
+                num_blocks=num_blocks,
+                kv_heads=int(kv_keys.shape[0]),
+                layer_id=int(layer_id),
+                dotcache_config=dotcache_config,
+            )
+            block_compression_metadata_valid[...] = initial_compression_valid
             layers[int(layer_id)] = PersistentFullAttentionLayerState(
                 layer_id=int(layer_id),
                 key_cache=kv_keys,
@@ -1251,12 +1417,16 @@ class PersistentFullAttentionState:
                 block_v_norm_max=block_v_norm_max,
                 block_prev_attention_ema=block_prev_attention_ema,
                 block_region_ids=_build_block_region_ids(num_blocks=num_blocks),
+                block_k_mode=block_k_mode,
+                block_v_mode=block_v_mode,
                 block_k_comp_error=block_k_comp_error,
+                block_compression_metadata_valid=block_compression_metadata_valid,
                 metadata_valid=metadata_valid,
             )
             _recompute_full_attention_block_metadata(
                 state=layers[int(layer_id)],
                 block_indices=np.arange(num_blocks, dtype=np.int64),
+                dotcache_config=dotcache_config,
             )
         return cls(
             device=resolved_device,
@@ -1265,6 +1435,7 @@ class PersistentFullAttentionState:
             layers=layers,
             telemetry=telemetry,
             executor=executor,
+            dotcache_config=dotcache_config,
         )
 
     def append_step(self, layer_id: int, key_step: Any, value_step: Any, token_index: int) -> None:
@@ -1303,6 +1474,7 @@ class PersistentFullAttentionState:
                 state.block_v_norm_max,
                 state.block_prev_attention_ema,
                 state.block_k_comp_error,
+                state.block_compression_metadata_valid,
             ) = _allocate_full_attention_block_metadata(
                 key_cache=state.key_cache,
                 value_cache=state.value_cache,
@@ -1311,6 +1483,17 @@ class PersistentFullAttentionState:
                 key_centroid_count=int(self.config.full_attention_key_centroid_count),
             )
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
+            (
+                state.block_k_mode,
+                state.block_v_mode,
+                initial_compression_valid,
+            ) = _resolve_full_attention_block_modes(
+                num_blocks=new_num_blocks,
+                kv_heads=int(state.key_cache.shape[0]),
+                layer_id=int(layer_id),
+                dotcache_config=self.dotcache_config,
+            )
+            state.block_compression_metadata_valid[...] = initial_compression_valid
             recompute_block_indices = np.arange(new_num_blocks, dtype=np.int64)
         else:
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
@@ -1318,6 +1501,7 @@ class PersistentFullAttentionState:
         _recompute_full_attention_block_metadata(
             state=state,
             block_indices=recompute_block_indices,
+            dotcache_config=self.dotcache_config,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self.telemetry.append_update_ms_total += elapsed_ms
@@ -1394,6 +1578,7 @@ class PersistentFullAttentionState:
         optional_ids: list[int] = []
         policy_preferred_optional_ids: set[int] = set()
         policy_preferred_bias_weight = 0.0
+        ranked_optional_candidate_ids: list[int] = []
         if str(resolved_config.full_attention_shortlist_policy_mode or "replace").strip().lower() == "bias":
             policy_bias_start = time.perf_counter()
             (
@@ -1416,6 +1601,12 @@ class PersistentFullAttentionState:
                 block_id
                 for block_id in remaining_ids
                 if block_id not in selected_ids and block_id not in soft_recent_set
+            )
+            ranked_optional_candidate_ids = _rank_optional_block_ids(
+                candidate_block_ids=optional_candidates,
+                priority_scores=priority_scores,
+                upper_bounds=upper_bounds,
+                use_upper_bounds_first=bool(resolved_config.full_attention_optional_use_upper_bounds_first),
             )
             optional_ids = _select_optional_block_ids(
                 candidate_block_ids=optional_candidates,
@@ -1442,6 +1633,7 @@ class PersistentFullAttentionState:
             selected_ids.update(optional_ids)
         else:
             optional_ids = [block_id for block_id in remaining_ids if block_id not in selected_ids]
+            ranked_optional_candidate_ids = [int(block_id) for block_id in optional_ids]
             selected_ids.update(optional_ids)
         processing_block_ids: list[int] = []
         seen_processing_ids: set[int] = set()
@@ -1452,6 +1644,19 @@ class PersistentFullAttentionState:
                 processing_block_ids.append(int(block_id))
                 seen_processing_ids.add(int(block_id))
         selected_block_ids = sorted(selected_ids)
+        compression_candidate_block_ids = sorted(set(int(block_id) for block_id in selected_block_ids + ranked_optional_candidate_ids))
+        compression_invalid_block_ids = (
+            _compression_invalid_block_ids(
+                state=state,
+                block_ids=compression_candidate_block_ids,
+            )
+            if bool(resolved_config.enable_compression)
+            else []
+        )
+        selected_mode_counts = _selected_block_mode_counts(
+            state=state,
+            block_ids=selected_block_ids,
+        )
         self.telemetry.require_layer(int(layer_id)).selection_ms_total += (
             (time.perf_counter() - selection_start) * 1000.0
         )
@@ -1462,8 +1667,12 @@ class PersistentFullAttentionState:
             "soft_recent_block_ids": soft_recent_ids,
             "exploration_block_ids": exploration_ids,
             "optional_block_ids": optional_ids,
+            "ranked_optional_candidate_ids": ranked_optional_candidate_ids,
             "priority_scores": priority_scores,
             "upper_bounds": upper_bounds,
+            "compression_candidate_block_ids": compression_candidate_block_ids,
+            "compression_invalid_block_ids": compression_invalid_block_ids,
+            "selected_k_mode_counts": selected_mode_counts,
             "policy_preferred_optional_block_ids": sorted(int(block_id) for block_id in policy_preferred_optional_ids),
             "policy_preferred_bias_weight": float(policy_preferred_bias_weight),
         }
@@ -1471,6 +1680,42 @@ class PersistentFullAttentionState:
     def gather_selected_blocks(self, layer_id: int, block_ids: list[int]):
         state = self.layers[int(layer_id)]
         return _gather_selected_block_tensors(state=state, block_ids=block_ids)
+
+    def full_layer_tensors(self, layer_id: int):
+        state = self.layers[int(layer_id)]
+        token_count = int(state.key_cache.shape[1])
+        block_ids = [int(block_id) for block_id in range(int(len(state.block_token_starts)))]
+        return state.key_cache, state.value_cache, token_count, block_ids
+
+    def record_selection_outcome(
+        self,
+        layer_id: int,
+        *,
+        selected_block_ids: list[int],
+        fallback_rung: int,
+        compression_rerank: bool,
+        dense_fallback: bool,
+    ) -> None:
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        selected_mode_counts = _selected_block_mode_counts(
+            state=self.layers[int(layer_id)],
+            block_ids=selected_block_ids,
+        )
+        layer_telemetry.selected_m0_metadata_block_count_total += int(selected_mode_counts["M0"])
+        layer_telemetry.selected_m3_metadata_block_count_total += int(selected_mode_counts["M3"])
+        layer_telemetry.last_fallback_rung = int(fallback_rung)
+        if int(fallback_rung) >= 1:
+            layer_telemetry.fallback_process_more_count += 1
+        if int(fallback_rung) >= 2:
+            layer_telemetry.fallback_widen_count += 1
+        if int(fallback_rung) >= 3:
+            layer_telemetry.fallback_disable_compression_count += 1
+        if int(fallback_rung) >= 4:
+            layer_telemetry.fallback_disable_pruning_count += 1
+        if bool(compression_rerank):
+            layer_telemetry.compression_rerank_count += 1
+        if bool(dense_fallback):
+            layer_telemetry.dense_fallback_count += 1
 
     def certify_selected_blocks(
         self,
@@ -1746,6 +1991,32 @@ class PersistentFullAttentionState:
             "persistent_full_attention_metadata_valid_blocks_by_layer": {
                 str(layer_id): int(np.count_nonzero(state.metadata_valid)) for layer_id, state in sorted(self.layers.items())
             },
+            "persistent_full_attention_m0_metadata_blocks_by_layer": {
+                str(layer_id): int(
+                    sum(
+                        1
+                        for block_id in range(int(len(state.block_token_starts)))
+                        if any(
+                            _normalize_stage8_mode_name(mode) == "M0"
+                            for mode in np.asarray(state.block_k_mode[int(block_id)]).tolist()
+                        )
+                    )
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_m3_metadata_blocks_by_layer": {
+                str(layer_id): int(
+                    sum(
+                        1
+                        for block_id in range(int(len(state.block_token_starts)))
+                        if all(
+                            _normalize_stage8_mode_name(mode) == "M3"
+                            for mode in np.asarray(state.block_k_mode[int(block_id)]).tolist()
+                        )
+                    )
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
             "persistent_full_attention_decode_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).decode_ms_total)
                 for layer_id in sorted(self.layers)
@@ -1760,6 +2031,42 @@ class PersistentFullAttentionState:
             },
             "persistent_full_attention_policy_bias_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).policy_bias_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_selected_m0_metadata_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).selected_m0_metadata_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_selected_m3_metadata_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).selected_m3_metadata_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_last_fallback_rung_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).last_fallback_rung)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_fallback_process_more_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).fallback_process_more_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_fallback_widen_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).fallback_widen_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_fallback_disable_compression_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).fallback_disable_compression_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_fallback_disable_pruning_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).fallback_disable_pruning_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_compression_rerank_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).compression_rerank_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_dense_fallback_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).dense_fallback_count)
                 for layer_id in sorted(self.layers)
             },
             "persistent_shortlist_policy_load_ms_total": float(self.telemetry.shortlist_policy_load_ms_total),
@@ -2016,6 +2323,7 @@ class PersistentHybridRuntimeState:
         q_head_to_kv_head: np.ndarray,
         device: Any,
         config: PersistentServingConfig,
+        dotcache_config: Any | None = None,
     ) -> "PersistentHybridRuntimeState":
         telemetry = PersistentStepTelemetry()
         full_attention = PersistentFullAttentionState.from_prefill_tensors(
@@ -2023,6 +2331,7 @@ class PersistentHybridRuntimeState:
             device=device,
             q_head_to_kv_head=q_head_to_kv_head,
             config=config,
+            dotcache_config=dotcache_config,
         )
         telemetry.backend_kind = full_attention.telemetry.backend_kind
         telemetry.host_to_device_bytes_after_prefill = full_attention.telemetry.host_to_device_bytes_after_prefill
@@ -2095,6 +2404,9 @@ class PersistentHybridRuntimeState:
     def gather_full_attention_selected_blocks(self, layer_id: int, block_ids: list[int]):
         return self.full_attention.gather_selected_blocks(layer_id, block_ids)
 
+    def gather_full_attention_layer_tensors(self, layer_id: int):
+        return self.full_attention.full_layer_tensors(layer_id)
+
     def update_full_attention_block_attention_ema(
         self,
         layer_id: int,
@@ -2127,6 +2439,23 @@ class PersistentHybridRuntimeState:
             selected_block_ids=selected_block_ids,
             upper_bounds=upper_bounds,
             config_override=config_override,
+        )
+
+    def record_full_attention_selection_outcome(
+        self,
+        layer_id: int,
+        *,
+        selected_block_ids: list[int],
+        fallback_rung: int,
+        compression_rerank: bool,
+        dense_fallback: bool,
+    ) -> None:
+        self.full_attention.record_selection_outcome(
+            layer_id,
+            selected_block_ids=selected_block_ids,
+            fallback_rung=fallback_rung,
+            compression_rerank=compression_rerank,
+            dense_fallback=dense_fallback,
         )
 
     def sync_linear_layer_into_cache(self, cache_params: Any, layer_id: int) -> None:
