@@ -14,6 +14,7 @@ class PersistentServingConfig:
     full_attention_mixed_mode_execution_strategy: str = "cached_reconstruct"
     full_attention_mixed_mode_execution_allow_value_m0: bool = False
     full_attention_mixed_mode_execution_max_k_comp_error: float | None = 0.10
+    full_attention_mixed_mode_score_dtype: str = "auto"
     enable_priority: bool = False
     enable_early_exit: bool = False
     enable_compression: bool = False
@@ -128,8 +129,11 @@ class PersistentFullAttentionLayerState:
     value_cache: Any
     mixed_key_cache: Any | None
     mixed_value_cache: Any | None
+    mixed_key_score_cache: Any | None
     mixed_key_fused_scaled_cache: Any | None
     mixed_key_bias_cache: Any | None
+    mixed_key_fused_scaled_score_cache: Any | None
+    mixed_key_bias_score_cache: Any | None
     mixed_value_fused_scaled_cache: Any | None
     mixed_value_bias_cache: Any | None
     block_token_starts: Any

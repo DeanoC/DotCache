@@ -6,6 +6,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from dotcache.backends.metal import PersistentFullAttentionState, PersistentServingConfig
+from dotcache.backends.metal.persistent_runtime import _resolve_mixed_score_dtype
 from dotcache.config import DotCacheConfig
 
 
@@ -310,6 +311,18 @@ def test_stage8_persistent_full_attention_mixed_execution_only_reconstructs_m0_b
     assert summary["persistent_full_attention_executed_m0_block_count_total_by_layer"]["3"] == 2
     assert summary["persistent_full_attention_executed_m3_block_count_total_by_layer"]["3"] == 2
     assert summary["persistent_full_attention_mixed_execution_cache_refresh_ms_total_by_layer"]["3"] >= 0.0
+
+
+def test_stage8_mixed_score_dtype_auto_prefers_accelerator_dtype() -> None:
+    config = PersistentServingConfig(
+        enable_compression=True,
+        enable_full_attention_mixed_mode_execution=True,
+        full_attention_mixed_mode_execution_strategy="direct_m0",
+        full_attention_mixed_mode_score_dtype="auto",
+    )
+
+    assert _resolve_mixed_score_dtype(config=config, device=torch.device("mps")) == torch.float16
+    assert _resolve_mixed_score_dtype(config=config, device=torch.device("cpu")) == torch.float32
 
 
 def test_stage8_persistent_full_attention_mixed_execution_is_conservative_by_default() -> None:

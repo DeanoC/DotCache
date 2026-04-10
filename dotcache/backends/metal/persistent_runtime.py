@@ -70,6 +70,23 @@ def _clone_tensor_like(value: Any, *, dtype=None, device=None):
     return target.clone()
 
 
+def _resolve_mixed_score_dtype(*, config: PersistentServingConfig, device: Any):
+    torch = _load_torch()
+    requested = str(getattr(config, "full_attention_mixed_mode_score_dtype", "auto") or "auto").strip().lower()
+    device_type = str(getattr(device, "type", device))
+    if requested in {"float32", "fp32"}:
+        return torch.float32
+    if requested in {"float16", "fp16", "half"}:
+        if device_type in {"mps", "cuda"}:
+            return torch.float16
+        return torch.float32
+    if requested != "auto":
+        raise ValueError(f"unsupported full_attention_mixed_mode_score_dtype: {requested}")
+    if device_type in {"mps", "cuda"}:
+        return torch.float16
+    return torch.float32
+
+
 def _nbytes_tensor_like(value: Any) -> int:
     torch = _load_torch()
     if value is None:
@@ -1576,7 +1593,9 @@ def _pad_queries_for_direct_m0(
     group_size: int,
 ):
     torch = _load_torch()
-    q_slice = query_slice.to(dtype=torch.float32)
+    q_slice = query_slice if torch.is_tensor(query_slice) else torch.as_tensor(query_slice)
+    if not torch.is_floating_point(q_slice):
+        q_slice = q_slice.to(dtype=torch.float32)
     if int(padded_head_dim) <= int(q_slice.shape[-1]):
         padded = q_slice[:, : int(padded_head_dim)]
     else:
@@ -1661,12 +1680,16 @@ def _refresh_cached_mixed_execution_blocks(
     if (
         state.mixed_key_cache is None
         or state.mixed_value_cache is None
+        or state.mixed_key_score_cache is None
         or state.mixed_key_fused_scaled_cache is None
         or state.mixed_key_bias_cache is None
+        or state.mixed_key_fused_scaled_score_cache is None
+        or state.mixed_key_bias_score_cache is None
         or state.mixed_value_fused_scaled_cache is None
         or state.mixed_value_bias_cache is None
     ):
         return 0.0
+    score_dtype = _resolve_mixed_score_dtype(config=config, device=state.key_cache.device)
     start = time.perf_counter()
     kv_head_count = int(state.key_cache.shape[0])
     for block_idx in [int(value) for value in block_indices]:
@@ -1707,8 +1730,13 @@ def _refresh_cached_mixed_execution_blocks(
             state.mixed_value_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                 prepared_value_slice.to(dtype=torch.float32, device=state.value_cache.device)
             )
+            state.mixed_key_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                key_slice.to(dtype=score_dtype, device=state.key_cache.device)
+            )
             state.mixed_key_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             direct_key_slice, direct_key_bias, direct_key_valid = _prepare_direct_m0_execution_slice(
@@ -1729,6 +1757,12 @@ def _refresh_cached_mixed_execution_blocks(
                 )
                 state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                     direct_key_bias.to(dtype=torch.float32, device=state.key_cache.device)
+                )
+                state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_slice.to(dtype=score_dtype, device=state.key_cache.device)
+                )
+                state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device)
                 )
             if direct_value_valid and direct_value_slice is not None and direct_value_bias is not None:
                 state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
@@ -1924,7 +1958,18 @@ def _decode_selected_blocks_direct_m0_torch(
         dtype=torch.float32,
     )
     total_tokens = int(gathered_values.shape[1])
-    output = torch.empty((query_tensor.shape[0], gathered_values.shape[-1]), dtype=torch.float32, device=query_tensor.device)
+    score_dtype = _resolve_mixed_score_dtype(config=config, device=query_tensor.device)
+    use_fast_score_cache = (
+        state.mixed_key_score_cache is not None
+        and state.mixed_key_fused_scaled_score_cache is not None
+        and state.mixed_key_bias_score_cache is not None
+        and score_dtype == state.mixed_key_score_cache.dtype
+    )
+    output = torch.empty(
+        (query_tensor.shape[0], gathered_values.shape[-1]),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
     attn_weights = torch.zeros(
         (1, int(query_tensor.shape[0]), 1, total_tokens),
         dtype=torch.float32,
@@ -1999,23 +2044,32 @@ def _decode_selected_blocks_direct_m0_torch(
             assert direct_padded_head_dim is not None
             _synchronize_torch_device(q_slice)
             direct_m0_score_start = time.perf_counter()
+            q_slice_score = q_slice.to(dtype=score_dtype)
             query_padded, query_group_sums = _pad_queries_for_direct_m0(
-                query_slice=q_slice,
+                query_slice=q_slice_score,
                 padded_head_dim=direct_padded_head_dim,
                 group_size=direct_group_size,
             )
             m0_global_indices = torch.as_tensor(
                 m0_global_indices_np,
                 dtype=torch.int64,
-                device=state.mixed_key_fused_scaled_cache.device,
+                device=(
+                    state.mixed_key_fused_scaled_score_cache.device
+                    if use_fast_score_cache
+                    else state.mixed_key_fused_scaled_cache.device
+                ),
             )
             m0_local_indices = torch.as_tensor(
                 m0_local_indices_np,
                 dtype=torch.int64,
                 device=query_tensor.device,
             )
-            fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
-            bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
+            if use_fast_score_cache:
+                fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+            else:
+                fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
             m0_logits = score_m0_logits_fused_torch(
                 fused_concat,
                 query_padded,
@@ -2026,25 +2080,32 @@ def _decode_selected_blocks_direct_m0_torch(
                 m0_logits = m0_logits.squeeze(0)
             _synchronize_torch_device(q_slice)
             timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
-            logits.index_copy_(1, m0_local_indices, m0_logits)
+            logits.index_copy_(1, m0_local_indices, m0_logits.to(dtype=torch.float32))
         if m3_global_indices_np.size > 0:
             _synchronize_torch_device(q_slice)
             exact_m3_score_start = time.perf_counter()
+            q_slice_score = q_slice.to(dtype=score_dtype)
             m3_global_indices = torch.as_tensor(
                 m3_global_indices_np,
                 dtype=torch.int64,
-                device=state.key_cache.device,
+                device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
             )
             m3_local_indices = torch.as_tensor(
                 m3_local_indices_np,
                 dtype=torch.int64,
                 device=query_tensor.device,
             )
-            m3_keys = state.key_cache[int(kv_head)].index_select(0, m3_global_indices).to(
-                device=query_tensor.device,
-                dtype=torch.float32,
-            )
-            m3_logits = torch.matmul(q_slice, m3_keys.transpose(0, 1))
+            if use_fast_score_cache:
+                m3_keys = state.mixed_key_score_cache[int(kv_head)].index_select(0, m3_global_indices).to(
+                    device=query_tensor.device,
+                    dtype=score_dtype,
+                )
+            else:
+                m3_keys = state.key_cache[int(kv_head)].index_select(0, m3_global_indices).to(
+                    device=query_tensor.device,
+                    dtype=score_dtype,
+                )
+            m3_logits = torch.matmul(q_slice_score, m3_keys.transpose(0, 1)).to(dtype=torch.float32)
             _synchronize_torch_device(q_slice)
             timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
             logits.index_copy_(1, m3_local_indices, m3_logits)
@@ -2188,6 +2249,11 @@ class PersistentFullAttentionState:
                 value_cache=kv_values,
                 mixed_key_cache=(kv_keys.clone() if bool(config.enable_full_attention_mixed_mode_execution) else None),
                 mixed_value_cache=(kv_values.clone() if bool(config.enable_full_attention_mixed_mode_execution) else None),
+                mixed_key_score_cache=(
+                    kv_keys.to(dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device))
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
                 mixed_key_fused_scaled_cache=(
                     torch.zeros(
                         (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim),
@@ -2201,6 +2267,24 @@ class PersistentFullAttentionState:
                     torch.zeros(
                         (int(kv_keys.shape[0]), int(kv_keys.shape[1]), num_groups),
                         dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_fused_scaled_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_bias_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), num_groups),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
                         device=resolved_device,
                     )
                     if bool(config.enable_full_attention_mixed_mode_execution)
@@ -2289,6 +2373,17 @@ class PersistentFullAttentionState:
         if state.mixed_key_cache is not None and state.mixed_value_cache is not None:
             state.mixed_key_cache = torch.cat([state.mixed_key_cache, key_tensor.to(dtype=torch.float32)], dim=1)
             state.mixed_value_cache = torch.cat([state.mixed_value_cache, value_tensor.to(dtype=torch.float32)], dim=1)
+        if state.mixed_key_score_cache is not None:
+            state.mixed_key_score_cache = torch.cat(
+                [
+                    state.mixed_key_score_cache,
+                    key_tensor.to(
+                        dtype=_resolve_mixed_score_dtype(config=self.config, device=self.device),
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
         if state.mixed_key_fused_scaled_cache is not None and state.mixed_key_bias_cache is not None:
             state.mixed_key_fused_scaled_cache = torch.cat(
                 [
@@ -2315,6 +2410,37 @@ class PersistentFullAttentionState:
                             int(state.mixed_key_bias_cache.shape[-1]),
                         ),
                         dtype=torch.float32,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+        if state.mixed_key_fused_scaled_score_cache is not None and state.mixed_key_bias_score_cache is not None:
+            state.mixed_key_fused_scaled_score_cache = torch.cat(
+                [
+                    state.mixed_key_fused_scaled_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_fused_scaled_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_fused_scaled_score_cache.dtype,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_bias_score_cache = torch.cat(
+                [
+                    state.mixed_key_bias_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_bias_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_bias_score_cache.dtype,
                         device=self.device,
                     ),
                 ],
