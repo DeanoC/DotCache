@@ -146,10 +146,11 @@ bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root \
 ## Reference docs
 
 - [dotcache_full.tex](./dotcache_full.tex)
-- [dotcache_software_implementation_guide.md](./dotcache_software_implementation_guide.md)
-- [dotcache_no_cuda_bootstrap_m4_amd.md](./dotcache_no_cuda_bootstrap_m4_amd.md)
+- [DotCacheArXiv.tex](./DotCacheArXiv.tex)
+- [references.bib](./references.bib)
 - [scripts/bootstrap_amd_rocm_dev.sh](./scripts/bootstrap_amd_rocm_dev.sh)
-- [dotcache_nvidia_llama_bootstrap.md](./dotcache_nvidia_llama_bootstrap.md)
+- [scripts/bootstrap_nvidia_llama_dev.sh](./scripts/bootstrap_nvidia_llama_dev.sh)
+- [scripts/env_cuda.sh](./scripts/env_cuda.sh)
 - [docs/benchmark_report.md](./docs/benchmark_report.md)
 - [docs/performance_journal.md](./docs/performance_journal.md)
 - [docs/model_roadmap.md](./docs/model_roadmap.md)
