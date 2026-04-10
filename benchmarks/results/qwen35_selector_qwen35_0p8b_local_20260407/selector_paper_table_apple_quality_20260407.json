@@ -1,0 +1,177 @@
+{
+  "profiles": [
+    "quality"
+  ],
+  "rows": [
+    {
+      "artifact_cluster": "cedc364945d1",
+      "floor": "weighted",
+      "live_source_strategy_id": "linear_softmax_compression_weighted",
+      "offline_error_rate": 0.0,
+      "offline_predicted_bytes": 3489.1083984375,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 844.9953781560499,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 11643733.333333334,
+          "resident_mib": 11.104329427083334,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        },
+        "systems": {
+          "decode_ms_per_step": 537.2406338801133,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 14824448.0,
+          "resident_mib": 14.1376953125,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_weighted"
+    },
+    {
+      "artifact_cluster": "4c65c7f7f880",
+      "floor": "0.70",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p95",
+      "offline_error_rate": 0.23806822299957275,
+      "offline_predicted_bytes": 2853.7939453125,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 1146.929298385582,
+          "dense_error_rate": 0.33333333333333337,
+          "dense_match_rate": 0.6666666666666666,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 9922048.0,
+          "resident_mib": 9.46240234375,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p70"
+    },
+    {
+      "artifact_cluster": "4c65c7f7f880",
+      "floor": "0.75",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p95",
+      "offline_error_rate": 0.15198862552642822,
+      "offline_predicted_bytes": 3051.317626953125,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 1146.929298385582,
+          "dense_error_rate": 0.33333333333333337,
+          "dense_match_rate": 0.6666666666666666,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 9922048.0,
+          "resident_mib": 9.46240234375,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p75"
+    },
+    {
+      "artifact_cluster": "425146ef3c55",
+      "floor": "0.80",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p85",
+      "offline_error_rate": 0.13948863744735718,
+      "offline_predicted_bytes": 3101.184326171875,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 896.7398036811593,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 10660181.333333334,
+          "resident_mib": 10.166341145833334,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        },
+        "systems": {
+          "decode_ms_per_step": 568.3930959609635,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 13641386.666666666,
+          "resident_mib": 13.009440104166666,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p80"
+    },
+    {
+      "artifact_cluster": "425146ef3c55",
+      "floor": "0.85",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p85",
+      "offline_error_rate": 0.0985795259475708,
+      "offline_predicted_bytes": 3419.279541015625,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 896.7398036811593,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 10660181.333333334,
+          "resident_mib": 10.166341145833334,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        },
+        "systems": {
+          "decode_ms_per_step": 568.3930959609635,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 13641386.666666666,
+          "resident_mib": 13.009440104166666,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p85"
+    },
+    {
+      "artifact_cluster": "abe148fdc19e",
+      "floor": "0.90",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p90",
+      "offline_error_rate": 0.23806822299957275,
+      "offline_predicted_bytes": 3038.175048828125,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 662.5372775211816,
+          "dense_error_rate": 0.16666666666666663,
+          "dense_match_rate": 0.8333333333333334,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 11682133.333333334,
+          "resident_mib": 11.140950520833334,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p90"
+    },
+    {
+      "artifact_cluster": "4c65c7f7f880",
+      "floor": "0.95",
+      "live_source_strategy_id": "linear_softmax_compression_floor_0p95",
+      "offline_error_rate": 0.23806822299957275,
+      "offline_predicted_bytes": 2853.7939453125,
+      "profiles": {
+        "quality": {
+          "decode_ms_per_step": 1146.929298385582,
+          "dense_error_rate": 0.33333333333333337,
+          "dense_match_rate": 0.6666666666666666,
+          "error_rate": 0.33333333333333337,
+          "resident_bytes": 9922048.0,
+          "resident_mib": 9.46240234375,
+          "success_rate": 0.6666666666666666,
+          "task_count": 6
+        }
+      },
+      "strategy_id": "linear_softmax_compression_floor_0p95"
+    }
+  ]
+}
