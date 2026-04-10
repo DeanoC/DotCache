@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<BenchArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
+            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let prompt = args.next().ok_or_else(|| "missing prompt".to_string())?;
@@ -238,7 +238,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !std::env::args().any(|arg| arg == "--dtype") {
             parsed.dtype = match parsed.device.backend_device() {
-                BackendDevice::Metal { .. } | BackendDevice::Cuda { .. } => DType::F16,
+                BackendDevice::Metal { .. }
+                | BackendDevice::Cuda { .. }
+                | BackendDevice::Hip { .. } => DType::F16,
                 BackendDevice::Cpu => DType::F32,
             };
         }

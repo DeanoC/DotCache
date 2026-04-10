@@ -9,6 +9,7 @@ pub enum BackendDevice {
     Cpu,
     Metal { ordinal: usize },
     Cuda { ordinal: usize },
+    Hip { ordinal: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +31,9 @@ impl AttentionPathMode {
     pub fn default_for_backend_device(device: &BackendDevice) -> Self {
         match device {
             BackendDevice::Metal { .. } => Self::Fused,
-            BackendDevice::Cpu | BackendDevice::Cuda { .. } => Self::Paged,
+            BackendDevice::Cpu | BackendDevice::Cuda { .. } | BackendDevice::Hip { .. } => {
+                Self::Paged
+            }
         }
     }
 
@@ -199,6 +202,7 @@ pub enum CandleDeviceSelector {
     Cpu,
     Metal { ordinal: usize },
     Cuda { ordinal: usize },
+    Hip { ordinal: usize },
 }
 
 #[cfg(feature = "candle")]
@@ -208,6 +212,7 @@ impl CandleDeviceSelector {
             Self::Cpu => "cpu".to_string(),
             Self::Metal { ordinal } => format!("metal-{ordinal}"),
             Self::Cuda { ordinal } => format!("cuda-{ordinal}"),
+            Self::Hip { ordinal } => format!("hip-{ordinal}"),
         }
     }
 
@@ -216,6 +221,7 @@ impl CandleDeviceSelector {
             Self::Cpu => Ok(candle_core::Device::Cpu),
             Self::Metal { ordinal } => candle_core::Device::new_metal(*ordinal).map_err(Into::into),
             Self::Cuda { ordinal } => candle_core::Device::new_cuda(*ordinal).map_err(Into::into),
+            Self::Hip { ordinal } => candle_core::Device::new_hip(*ordinal).map_err(Into::into),
         }
     }
 
@@ -224,6 +230,7 @@ impl CandleDeviceSelector {
             Self::Cpu => BackendDevice::Cpu,
             Self::Metal { ordinal } => BackendDevice::Metal { ordinal: *ordinal },
             Self::Cuda { ordinal } => BackendDevice::Cuda { ordinal: *ordinal },
+            Self::Hip { ordinal } => BackendDevice::Hip { ordinal: *ordinal },
         }
     }
 }
@@ -245,6 +252,13 @@ impl std::fmt::Display for CandleDeviceSelector {
                     write!(f, "cuda")
                 } else {
                     write!(f, "cuda:{ordinal}")
+                }
+            }
+            Self::Hip { ordinal } => {
+                if *ordinal == 0 {
+                    write!(f, "hip")
+                } else {
+                    write!(f, "hip:{ordinal}")
                 }
             }
         }
@@ -271,8 +285,9 @@ impl std::str::FromStr for CandleDeviceSelector {
             "cpu" => Ok(Self::Cpu),
             "metal" => Ok(Self::Metal { ordinal }),
             "cuda" => Ok(Self::Cuda { ordinal }),
+            "hip" => Ok(Self::Hip { ordinal }),
             _ => Err(format!(
-                "invalid device `{value}`, expected `cpu`, `metal[:ordinal]`, or `cuda[:ordinal]`"
+                "invalid device `{value}`, expected `cpu`, `metal[:ordinal]`, `cuda[:ordinal]`, or `hip[:ordinal]`"
             )),
         }
     }
