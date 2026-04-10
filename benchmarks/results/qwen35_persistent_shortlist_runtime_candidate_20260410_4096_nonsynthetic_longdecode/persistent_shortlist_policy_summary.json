@@ -1,0 +1,31 @@
+{
+  "abs_threshold": 0.05,
+  "compare_input_count": 6,
+  "compare_inputs": [
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/baseline_none_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor0_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_div_sched12_anchor4_trigger_p025_u0_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_gated_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_diversity_sched12_longdecode.json",
+    "/private/tmp/persistent_full_attention_replay_sweep_longdecode/history_ema05_longdecode.json"
+  ],
+  "evaluation_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_runtime_candidate_20260410_4096_nonsynthetic_longdecode/persistent_shortlist_policy_evaluation.json",
+  "evaluation_summary": {
+    "avg_oracle_selected_token_count": 2339.75,
+    "avg_selected_token_count": 2339.75,
+    "chosen_safe_rate": 0.75,
+    "fallback_rate": 0.0,
+    "missing_bucket_rate": 0.0,
+    "snapshot_group_count": 144,
+    "top1_accuracy": 0.7638888888888888
+  },
+  "group_by": [
+    "layer_id",
+    "kv_head_id",
+    "step_bucket"
+  ],
+  "policy_group_count": 36,
+  "policy_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_runtime_candidate_20260410_4096_nonsynthetic_longdecode/persistent_shortlist_policy.json",
+  "recommendations_json": "/private/tmp/persistent_shortlist_current_longdecode_best/persistent_shortlist_full_recommendations.json",
+  "recommender_summary_json": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_shortlist_policy_20260410_4096_nonsynthetic_longdecode/persistent_shortlist_recommender_summary.json"
+}
