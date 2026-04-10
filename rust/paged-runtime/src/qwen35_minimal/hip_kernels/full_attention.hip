@@ -163,6 +163,44 @@ __global__ void dotcache_qwen35_full_attention_prefill_kernel(
     }
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_linear_prefill_conv_pack_kernel(
+    int batch_size,
+    int conv_dim,
+    int total_len,
+    int seq_len,
+    int kernel_size,
+    const T* mixed_qkv,
+    const T* weights,
+    T* out
+) {
+    const size_t tid = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
+    const size_t output_elems =
+        static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim);
+    if (tid >= output_elems) {
+        return;
+    }
+
+    const size_t b = tid / (static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim));
+    const size_t rem = tid - b * static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim);
+    const size_t t = rem / static_cast<size_t>(conv_dim);
+    const size_t c = rem - t * static_cast<size_t>(conv_dim);
+
+    const size_t input_b_offset =
+        b * static_cast<size_t>(conv_dim) * static_cast<size_t>(total_len);
+    const size_t input_c_offset = input_b_offset + c * static_cast<size_t>(total_len);
+    const size_t weight_offset = c * static_cast<size_t>(kernel_size);
+
+    float acc = 0.0f;
+    for (int tap = 0; tap < kernel_size; ++tap) {
+        acc += dotcache_qwen35_to_float(mixed_qkv[input_c_offset + t + static_cast<size_t>(tap)]) *
+            dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
+    }
+
+    const float silu = acc / (1.0f + expf(-acc));
+    out[tid] = dotcache_qwen35_from_float<T>(silu);
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 __global__ void dotcache_qwen35_rms_norm_kernel(
     int n_rows,

@@ -39,6 +39,19 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_linear_prefill_conv_pack(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_size: usize,
+            conv_dim: usize,
+            total_len: usize,
+            seq_len: usize,
+            kernel_size: usize,
+            mixed_qkv: *const c_void,
+            weights: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_rms_norm(
             dtype: c_int,
             device_ordinal: usize,

@@ -87,6 +87,42 @@ int full_attention_prefill_device(
     return 0;
 }
 
+template <typename T>
+int linear_prefill_conv_pack_device(
+    int device_ordinal,
+    int batch_size,
+    int conv_dim,
+    int total_len,
+    int seq_len,
+    int kernel_size,
+    const void* mixed_qkv,
+    const void* weights,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const size_t out_elems = static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) *
+        static_cast<size_t>(conv_dim);
+    const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_linear_prefill_conv_pack_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_size,
+        conv_dim,
+        total_len,
+        seq_len,
+        kernel_size,
+        static_cast<const T*>(mixed_qkv),
+        static_cast<const T*>(weights),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 60;
+    if (hipDeviceSynchronize() != hipSuccess) return 61;
+    return 0;
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 int rms_norm_device(
     int device_ordinal,
@@ -216,6 +252,56 @@ extern "C" int dotcache_qwen35_hip_full_attention_prefill(
             out);
     default:
         return 64;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_linear_prefill_conv_pack(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_size,
+    size_t conv_dim,
+    size_t total_len,
+    size_t seq_len,
+    size_t kernel_size,
+    const void* mixed_qkv,
+    const void* weights,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return linear_prefill_conv_pack_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(total_len),
+            static_cast<int>(seq_len),
+            static_cast<int>(kernel_size),
+            mixed_qkv,
+            weights,
+            out);
+    case 1:
+        return linear_prefill_conv_pack_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(total_len),
+            static_cast<int>(seq_len),
+            static_cast<int>(kernel_size),
+            mixed_qkv,
+            weights,
+            out);
+    case 2:
+        return linear_prefill_conv_pack_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_size),
+            static_cast<int>(conv_dim),
+            static_cast<int>(total_len),
+            static_cast<int>(seq_len),
+            static_cast<int>(kernel_size),
+            mixed_qkv,
+            weights,
+            out);
+    default:
+        return 62;
     }
 }
 

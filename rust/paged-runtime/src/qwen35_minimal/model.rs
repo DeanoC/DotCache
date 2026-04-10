@@ -1345,7 +1345,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
@@ -1383,52 +1383,26 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         let storage_dtype = mixed_qkv.dtype();
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let elem_count = output_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let mixed_qkv = mixed_qkv.cpu_storage().as_slice::<$ty>()?;
-                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &mixed_qkv[o1..o2],
-                    None => candle::bail!("linear-prefill-conv-pack requires contiguous inputs"),
-                };
-                let weights = weights.cpu_storage().as_slice::<$ty>()?;
-                let weights = match weights_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &weights[o1..o2],
-                    None => candle::bail!("linear-prefill-conv-pack requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_linear_prefill_conv_pack(
-                        dtype_code,
-                        device.ordinal(),
-                        self.batch_size,
-                        self.conv_dim,
-                        self.total_len,
-                        self.seq_len,
-                        self.kernel_size,
-                        mixed_qkv.as_ptr() as *const c_void,
-                        weights.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    output_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&output_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
+                dtype_code,
+                device.ordinal(),
+                self.batch_size,
+                self.conv_dim,
+                self.total_len,
+                self.seq_len,
+                self.kernel_size,
+                mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                    as *const c_void,
+                weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("linear-prefill-conv-pack unsupported dtype {other:?}"),
-        }
+        Ok((output, output_shape))
     }
 }
 
@@ -8595,6 +8569,38 @@ mod tests {
         }
 
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_prefill_conv_pack_avoids_host_staging() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let batch_size = 1usize;
+        let conv_dim = 2usize;
+        let total_len = 6usize;
+        let seq_len = 4usize;
+        let kernel_size = 3usize;
+
+        let mixed_qkv = Tensor::from_vec(
+            vec![
+                0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3,
+            ],
+            (batch_size, conv_dim, total_len),
+            &device,
+        )?;
+        let weights = Tensor::from_vec(
+            vec![0.5f32, -0.25, 0.75, -0.4, 0.3, 0.2],
+            (conv_dim, kernel_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = linear_prefill_conv_pack(&mixed_qkv, &weights, seq_len, kernel_size)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), mixed_qkv.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
     }
 
