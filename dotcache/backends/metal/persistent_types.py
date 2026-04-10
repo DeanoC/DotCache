@@ -17,9 +17,9 @@ class PersistentServingConfig:
     full_attention_shortlist_policy_path: str | None = None
     full_attention_shortlist_policy_mode: str = "bias"
     full_attention_shortlist_policy_bias_weight: float = 0.10
-    full_attention_shortlist_policy_min_safe_rate: float = 0.80
+    full_attention_shortlist_policy_min_safe_rate: float = 1.0
     full_attention_shortlist_policy_min_matched_oracle_rate: float = 1.0
-    full_attention_shortlist_policy_min_vote_count: int = 3
+    full_attention_shortlist_policy_min_vote_count: int = 4
     full_attention_shortlist_policy_min_step_index: int | None = None
     full_attention_shortlist_policy_max_step_index: int | None = None
     full_attention_check_interval: int = 1
