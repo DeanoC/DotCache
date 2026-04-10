@@ -10,6 +10,12 @@ struct DensePageData {
     values: Vec<f16>,
 }
 
+impl DensePageData {
+    fn dense_storage_f32(&self) -> Vec<f32> {
+        self.values.iter().map(|value| value.to_f32()).collect()
+    }
+}
+
 fn lower_bound(values: &[f32], target: f32) -> usize {
     values.partition_point(|value| *value < target)
 }
@@ -366,7 +372,7 @@ struct M3PageData {
 
 impl M3PageData {
     fn encode(
-        values: &[f16],
+        values: Vec<f16>,
         token_count: usize,
         head_dim: usize,
         spec: &PageModeSpec,
@@ -376,25 +382,29 @@ impl M3PageData {
             .unwrap_or(crate::page_mode::PageEscapeDType::Float16)
         {
             crate::page_mode::PageEscapeDType::Float16 => Ok(Self {
-                payload: M3Payload::F16(values.to_vec()),
+                payload: M3Payload::F16(values),
             }),
             crate::page_mode::PageEscapeDType::Int8 => {
-                let mut quantized = Vec::with_capacity(values.len());
+                let mut quantized = vec![0i8; values.len()];
                 let mut scales = Vec::with_capacity(token_count);
                 let eps = 1e-8f32;
-                for token_index in 0..token_count {
-                    let row_start = token_index * head_dim;
-                    let row = &values[row_start..row_start + head_dim];
+                for (token_index, row) in
+                    values.chunks_exact(head_dim).enumerate().take(token_count)
+                {
                     let max_abs = row
                         .iter()
                         .map(|value| value.to_f32().abs())
                         .fold(0.0f32, f32::max);
                     let scale = (max_abs / 127.0).max(eps);
                     scales.push(f16::from_f32(scale));
-                    quantized.extend(row.iter().map(|value| {
+                    let row_start = token_index * head_dim;
+                    for (out, value) in quantized[row_start..row_start + head_dim]
+                        .iter_mut()
+                        .zip(row.iter())
+                    {
                         let scaled = (value.to_f32() / scale).round().clamp(-127.0, 127.0);
-                        scaled as i8
-                    }));
+                        *out = scaled as i8;
+                    }
                 }
                 Ok(Self {
                     payload: M3Payload::I8 {
@@ -469,6 +479,26 @@ impl M3PageData {
                         .iter()
                         .map(|value| *value as f32 * scale),
                 );
+            }
+        }
+    }
+
+    fn dense_storage_f32(&self, token_count: usize, head_dim: usize) -> Vec<f32> {
+        let total = token_count * head_dim;
+        match &self.payload {
+            M3Payload::F16(values) => values.iter().map(|value| value.to_f32()).collect(),
+            M3Payload::I8 { values, scales } => {
+                let mut out = vec![0.0f32; total];
+                for token_index in 0..token_count {
+                    let scale = scales[token_index].to_f32();
+                    let start = token_index * head_dim;
+                    let end = start + head_dim;
+                    for (out_value, value) in out[start..end].iter_mut().zip(values[start..end].iter())
+                    {
+                        *out_value = *value as f32 * scale;
+                    }
+                }
+                out
             }
         }
     }
@@ -1359,48 +1389,39 @@ impl PageSide {
 
     fn seal(&mut self, token_count: usize, head_dim: usize, side: PageSideKind) -> Result<()> {
         self.mode.validate_for_side(side)?;
-        let PageSideStorage::LiveDense(data) = &self.storage else {
+        let storage = std::mem::replace(
+            &mut self.storage,
+            PageSideStorage::LiveDense(DensePageData { values: Vec::new() }),
+        );
+        let PageSideStorage::LiveDense(dense) = storage else {
+            self.storage = storage;
             return Ok(());
         };
-        let dense = data.clone();
-        self.storage = match self.mode.tag() {
-            PageModeTag::Exact => PageSideStorage::Exact(dense),
-            PageModeTag::M0 => PageSideStorage::M0(M0PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M1 => PageSideStorage::M1(M1PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M3 => PageSideStorage::M3(M3PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::T3 => PageSideStorage::T3(T3PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M2 => PageSideStorage::M2(M2PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
-            PageModeTag::M4 => PageSideStorage::M4(M4PageData::encode(
-                &dense.values,
-                token_count,
-                head_dim,
-                &self.mode,
-            )?),
+        if self.mode.tag() == PageModeTag::Exact {
+            self.storage = PageSideStorage::Exact(dense);
+            return Ok(());
+        }
+        let sealed_storage = match self.mode.tag() {
+            PageModeTag::M0 => M0PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M0),
+            PageModeTag::M1 => M1PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M1),
+            PageModeTag::M3 => M3PageData::encode(dense.values.clone(), token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M3),
+            PageModeTag::T3 => T3PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::T3),
+            PageModeTag::M2 => M2PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M2),
+            PageModeTag::M4 => M4PageData::encode(&dense.values, token_count, head_dim, &self.mode)
+                .map(PageSideStorage::M4),
+            PageModeTag::Exact => unreachable!("exact pages return early before encoding"),
+        };
+        self.storage = match sealed_storage {
+            Ok(storage) => storage,
+            Err(err) => {
+                self.storage = PageSideStorage::LiveDense(dense);
+                return Err(err);
+            }
         };
         Ok(())
     }
@@ -1427,11 +1448,17 @@ impl PageSide {
     }
 
     fn dense_storage_f32(&self, token_count: usize, head_dim: usize) -> Vec<f32> {
-        let mut out = Vec::with_capacity(token_count * head_dim);
-        for token_index in 0..token_count {
-            out.extend(self.row_f32(token_index, head_dim));
+        match &self.storage {
+            PageSideStorage::LiveDense(data) | PageSideStorage::Exact(data) => data.dense_storage_f32(),
+            PageSideStorage::M3(data) => data.dense_storage_f32(token_count, head_dim),
+            _ => {
+                let mut out = Vec::with_capacity(token_count * head_dim);
+                for token_index in 0..token_count {
+                    out.extend(self.row_f32(token_index, head_dim));
+                }
+                out
+            }
         }
-        out
     }
 
     fn score_rows(

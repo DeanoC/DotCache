@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        serving_preset: Option<String>,
         default_key_page_mode: Option<PageModeSpec>,
         default_value_page_mode: Option<PageModeSpec>,
         key_layer_page_modes: Option<String>,
@@ -54,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resident_page_budget: Option<usize>,
         resident_byte_budget: Option<usize>,
         restore_cooldown_window: Option<u64>,
+        serving_preset: Option<String>,
         default_key_page_mode: String,
         default_value_page_mode: String,
         key_layer_page_mode_overrides: Vec<String>,
@@ -177,10 +179,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
 
+    fn validate_serving_preset_name(preset: &str) -> Result<(), String> {
+        match preset {
+            "m3-int8" => Ok(()),
+            other => Err(format!(
+                "invalid --serving-preset: {other} (expected m3-int8)"
+            )),
+        }
+    }
+
+    fn finalize_serving_preset(parsed: &mut BenchArgs) -> Result<(), String> {
+        let Some(preset) = parsed.serving_preset.as_deref() else {
+            return Ok(());
+        };
+        match preset {
+            "m3-int8" => {
+                if matches!(
+                    parsed.runtime_mode,
+                    RuntimeMode::DenseControl | RuntimeMode::TorchControl
+                ) {
+                    return Err("--serving-preset m3-int8 requires paged_control or dotcache_experimental".to_string());
+                }
+                if !matches!(parsed.attention_path, None | Some(AttentionPathMode::Paged)) {
+                    return Err("--serving-preset m3-int8 is incompatible with --attention-path fused".to_string());
+                }
+                if parsed.default_key_page_mode.is_some()
+                    || parsed.default_value_page_mode.is_some()
+                    || parsed.key_layer_page_modes.is_some()
+                    || parsed.value_layer_page_modes.is_some()
+                {
+                    return Err("--serving-preset m3-int8 cannot be combined with explicit page mode overrides".to_string());
+                }
+                parsed.attention_path = Some(AttentionPathMode::Paged);
+                parsed.default_key_page_mode = Some(
+                    "M3/affine/4/int8"
+                        .parse::<PageModeSpec>()
+                        .map_err(|err| err.to_string())?,
+                );
+                parsed.default_value_page_mode = Some(
+                    "M3/affine/4/int8"
+                        .parse::<PageModeSpec>()
+                        .map_err(|err| err.to_string())?,
+                );
+                Ok(())
+            }
+            other => Err(format!(
+                "invalid --serving-preset: {other} (expected m3-int8)"
+            )),
+        }
+    }
+
     fn parse_args() -> Result<BenchArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
+            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--serving-preset m3-int8] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let prompt = args.next().ok_or_else(|| "missing prompt".to_string())?;
@@ -204,6 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            serving_preset: None,
             default_key_page_mode: None,
             default_value_page_mode: None,
             key_layer_page_modes: None,
@@ -315,6 +368,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map_err(|err| format!("invalid --restore-cooldown: {err}"))?,
                     );
                 }
+                "--serving-preset" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
+                    validate_serving_preset_name(&value)?;
+                    parsed.serving_preset = Some(value);
+                }
                 "--default-key-page-mode" => {
                     let value = args
                         .next()
@@ -359,6 +419,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BackendDevice::Cpu => DType::F32,
             };
         }
+
+        finalize_serving_preset(&mut parsed)?;
 
         Ok(parsed)
     }
@@ -602,6 +664,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resident_page_budget: None,
             resident_byte_budget: None,
             restore_cooldown_window: None,
+            serving_preset: None,
             default_key_page_mode: "exact".to_string(),
             default_value_page_mode: "exact".to_string(),
             key_layer_page_mode_overrides: Vec::new(),
@@ -792,6 +855,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         restore_cooldown_window: args
             .restore_cooldown_window
             .or_else(|| model.restore_cooldown_window()),
+        serving_preset: args.serving_preset.clone(),
         default_key_page_mode,
         default_value_page_mode,
         key_layer_page_mode_overrides,
