@@ -7874,7 +7874,7 @@ def run_qwen35_attention_subset_dotcache_serving_quality_harness(
             if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) is not None
             else None
         ),
-        stop_sequences=(),
+        stop_sequences=stop_sequences,
     )
 
     prepared = _prepare_qwen35_attention_subset_dotcache_runtime(

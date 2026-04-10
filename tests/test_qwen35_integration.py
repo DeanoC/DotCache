@@ -2138,6 +2138,8 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_reports_dotcac
 def test_qwen35_attention_subset_dotcache_serving_quality_harness_stops_on_visible_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    dense_capture_stop_sequences: tuple[str, ...] | None = None
+
     class _FakeRuntimeState:
         model_past_key_values = None
 
@@ -2239,9 +2241,10 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_stops_on_visib
         "dotcache.integrations.qwen35._normalize_text_inputs",
         lambda adapter, **kwargs: (kwargs["input_ids"], kwargs["attention_mask"]),
     )
-    monkeypatch.setattr(
-        "dotcache.integrations.qwen35._run_qwen35_attention_subset_dense_capture",
-        lambda *args, **kwargs: {
+    def _fake_dense_capture(*args, **kwargs):
+        nonlocal dense_capture_stop_sequences
+        dense_capture_stop_sequences = tuple(kwargs.get("stop_sequences", ()))
+        return {
             "prefill_ms": 1.0,
             "decode_ms_total": 2.0,
             "decode_inputs": [
@@ -2254,7 +2257,11 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_stops_on_visib
                 np.array([[[0.0, 0.0, 0.0, 0.1, 0.9, 0.0]]], dtype=np.float32),
             ],
             "capture_records": [[], []],
-        },
+        }
+
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._run_qwen35_attention_subset_dense_capture",
+        _fake_dense_capture,
     )
     monkeypatch.setattr(
         "dotcache.integrations.qwen35._prepare_qwen35_attention_subset_dotcache_runtime",
@@ -2317,6 +2324,7 @@ def test_qwen35_attention_subset_dotcache_serving_quality_harness_stops_on_visib
     assert result["dotcache_stopped_early"] is True
     assert result["dotcache_stop_reason"] == "text:5"
     assert result["teacher_forced_overlap_steps"] == 0
+    assert dense_capture_stop_sequences == ("5",)
 
 
 def test_qwen35_attention_subset_dotcache_serving_recall_analysis_reports_shortlist_metrics() -> None:
