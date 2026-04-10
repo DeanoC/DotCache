@@ -2016,16 +2016,14 @@ def _decode_selected_blocks_direct_m0_torch(
             )
             fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
             bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
-            bias_groups = tuple(
-                bias_concat[:, group_index].reshape(1, -1)
-                for group_index in range(int(bias_concat.shape[-1]))
-            )
             m0_logits = score_m0_logits_fused_torch(
                 fused_concat,
                 query_padded,
-                bias_groups,
+                bias_concat.transpose(0, 1).unsqueeze(0),
                 query_group_sums,
             )
+            if int(getattr(m0_logits, "ndim", 0)) == 3 and int(m0_logits.shape[0]) == 1:
+                m0_logits = m0_logits.squeeze(0)
             _synchronize_torch_device(q_slice)
             timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
             logits.index_copy_(1, m0_local_indices, m0_logits)

@@ -47,6 +47,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-iters", type=int, default=10)
     parser.add_argument("--bench-iters", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--runtime-shaped-profile",
+        choices=[
+            "none",
+            "qwen35_bias_broad",
+            "qwen35_hand_broad",
+            "qwen35_bias_large",
+            "qwen35_hand_large",
+        ],
+        default="none",
+    )
+    parser.add_argument("--runtime-m0-pages", type=int, default=0)
+    parser.add_argument("--runtime-m3-pages", type=int, default=0)
     parser.add_argument("--output-format", choices=["pretty", "json"], default="pretty")
     return parser.parse_args()
 
@@ -284,6 +297,214 @@ def _max_abs_error(lhs: torch.Tensor, rhs: torch.Tensor) -> float:
     return float((lhs - rhs).abs().max().item())
 
 
+def _runtime_shaped_profile_pages(profile: str) -> tuple[int, int]:
+    resolved = str(profile or "none").strip().lower()
+    if resolved == "qwen35_bias_broad":
+        return 16, 16
+    if resolved == "qwen35_hand_broad":
+        return 64, 64
+    if resolved == "qwen35_bias_large":
+        return 24, 24
+    if resolved == "qwen35_hand_large":
+        return 96, 96
+    return 0, 0
+
+
+def _mix_exact_flat_torch(weights: torch.Tensor, values_flat: torch.Tensor) -> torch.Tensor:
+    return torch.bmm(weights.to(dtype=torch.float32), values_flat.to(dtype=torch.float32)).to(torch.float32)
+
+
+def _runtime_score_breakdown_result(
+    *,
+    device: str,
+    head_dim: int,
+    num_key_value_heads: int,
+    query_count: int,
+    tokens_per_page: int,
+    group_size: int,
+    bits_k: int,
+    quant_scheme_k: str,
+    warmup_iters: int,
+    bench_iters: int,
+    m0_pages: int,
+    m3_pages: int,
+) -> dict[str, Any] | None:
+    if int(m0_pages) <= 0 and int(m3_pages) <= 0:
+        return None
+    total_pages = max(int(m0_pages), 0) + max(int(m3_pages), 0)
+    if total_pages <= 0:
+        return None
+
+    queries = torch.randn((num_key_value_heads, query_count, head_dim), dtype=torch.float32, device=device)
+    value_pages = torch.randn(
+        (num_key_value_heads, total_pages, int(tokens_per_page), head_dim),
+        dtype=torch.float32,
+        device=device,
+    )
+    value_flat = value_pages.reshape(num_key_value_heads, total_pages * int(tokens_per_page), head_dim)
+
+    m0_logits_reference = None
+    direct_variant = "none"
+    direct_score_ms = 0.0
+    direct_score_logits = None
+    m0_page_tensor = None
+    if int(m0_pages) > 0:
+        m0_key_pages = torch.randn(
+            (num_key_value_heads, int(m0_pages), int(tokens_per_page), head_dim),
+            dtype=torch.float32,
+            device=device,
+        )
+        m0_logits_reference = _score_exact_torch(m0_key_pages, queries)
+        key_codes_np, key_scales_np, key_bias_np = _quantize_grouped_blocks_to_numpy(
+            values=m0_key_pages,
+            group_size=int(group_size),
+            bits=int(bits_k),
+            scheme=str(quant_scheme_k),
+        )
+        key_fused_scaled_codes, key_bias_groups = _prepare_fused_m0_inputs(
+            codes_np=key_codes_np,
+            scales_np=key_scales_np,
+            bias_np=key_bias_np,
+            device=device,
+        )
+        queries_grouped = queries.reshape(num_key_value_heads, query_count, head_dim // int(group_size), int(group_size))
+        query_group_sums = queries_grouped.sum(dim=-1)
+        direct_variant, _ = _direct_score(
+            fused_scaled_codes=key_fused_scaled_codes,
+            queries=queries,
+            bias_groups=key_bias_groups,
+            query_group_sums=query_group_sums,
+            group_size=int(group_size),
+        )
+        direct_score_ms, direct_score_logits = _bench(
+            device,
+            lambda: _direct_score(
+                fused_scaled_codes=key_fused_scaled_codes,
+                queries=queries,
+                bias_groups=key_bias_groups,
+                query_group_sums=query_group_sums,
+                group_size=int(group_size),
+            )[1],
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        m0_page_tensor = m0_key_pages
+
+    exact_m3_score_ms = 0.0
+    exact_m3_logits = None
+    m3_page_tensor = None
+    if int(m3_pages) > 0:
+        m3_key_pages = torch.randn(
+            (num_key_value_heads, int(m3_pages), int(tokens_per_page), head_dim),
+            dtype=torch.float32,
+            device=device,
+        )
+        exact_m3_score_ms, exact_m3_logits = _bench(
+            device,
+            lambda: _score_exact_torch(m3_key_pages, queries),
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        m3_page_tensor = m3_key_pages
+
+    def _combined_logits_from_parts() -> torch.Tensor:
+        parts = []
+        if direct_score_logits is not None:
+            parts.append(direct_score_logits)
+        if exact_m3_logits is not None:
+            parts.append(exact_m3_logits)
+        return torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
+
+    combined_logits = _combined_logits_from_parts()
+    total_selected_tokens = int(combined_logits.shape[-1])
+    mix_weights = torch.softmax(combined_logits, dim=-1)
+    final_mix_ms, final_mix_output = _bench(
+        device,
+        lambda: _mix_exact_flat_torch(mix_weights, value_flat),
+        warmup_iters=warmup_iters,
+        bench_iters=bench_iters,
+    )
+
+    def _combined_runtime_path() -> torch.Tensor:
+        parts = []
+        if int(m0_pages) > 0:
+            assert m0_page_tensor is not None
+            key_codes_np, key_scales_np, key_bias_np = _quantize_grouped_blocks_to_numpy(
+                values=m0_page_tensor,
+                group_size=int(group_size),
+                bits=int(bits_k),
+                scheme=str(quant_scheme_k),
+            )
+            key_fused_scaled_codes, key_bias_groups = _prepare_fused_m0_inputs(
+                codes_np=key_codes_np,
+                scales_np=key_scales_np,
+                bias_np=key_bias_np,
+                device=device,
+            )
+            queries_grouped = queries.reshape(
+                num_key_value_heads,
+                query_count,
+                head_dim // int(group_size),
+                int(group_size),
+            )
+            query_group_sums = queries_grouped.sum(dim=-1)
+            parts.append(
+                _direct_score(
+                    fused_scaled_codes=key_fused_scaled_codes,
+                    queries=queries,
+                    bias_groups=key_bias_groups,
+                    query_group_sums=query_group_sums,
+                    group_size=int(group_size),
+                )[1]
+            )
+        if int(m3_pages) > 0:
+            assert m3_page_tensor is not None
+            parts.append(_score_exact_torch(m3_page_tensor, queries))
+        logits = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
+        weights = torch.softmax(logits, dim=-1)
+        return _mix_exact_flat_torch(weights, value_flat)
+
+    combined_ms, combined_output = _bench(
+        device,
+        _combined_runtime_path,
+        warmup_iters=warmup_iters,
+        bench_iters=bench_iters,
+    )
+
+    dense_reference_keys = []
+    if m0_page_tensor is not None:
+        dense_reference_keys.append(m0_page_tensor)
+    if m3_page_tensor is not None:
+        dense_reference_keys.append(m3_page_tensor)
+    dense_reference_keys_tensor = (
+        torch.cat(dense_reference_keys, dim=1) if len(dense_reference_keys) > 1 else dense_reference_keys[0]
+    )
+    dense_reference_logits = _score_exact_torch(dense_reference_keys_tensor, queries)
+    dense_reference_weights = torch.softmax(dense_reference_logits, dim=-1)
+    dense_reference_output = _mix_exact_flat_torch(dense_reference_weights, value_flat)
+
+    result = {
+        "enabled": True,
+        "m0_pages": int(m0_pages),
+        "m3_pages": int(m3_pages),
+        "m0_selected_tokens": int(max(int(m0_pages), 0) * int(tokens_per_page)),
+        "m3_selected_tokens": int(max(int(m3_pages), 0) * int(tokens_per_page)),
+        "total_selected_tokens": int(total_selected_tokens),
+        "direct_m0_variant": str(direct_variant),
+        "direct_m0_score_ms": float(direct_score_ms),
+        "exact_m3_score_ms": float(exact_m3_score_ms),
+        "final_mix_ms": float(final_mix_ms),
+        "combined_ms": float(combined_ms),
+        "direct_vs_dense_score_max_abs_error": (
+            0.0
+            if direct_score_logits is None or m0_logits_reference is None
+            else _max_abs_error(direct_score_logits, m0_logits_reference)
+        ),
+        "combined_vs_dense_mix_max_abs_error": _max_abs_error(combined_output, dense_reference_output),
+    }
+    return result
+
+
 def main() -> None:
     args = parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -302,6 +523,10 @@ def main() -> None:
     page_count = int(math.ceil(args.prompt_length / args.tokens_per_page))
     token_count = int(args.tokens_per_page)
     num_groups = head_dim // int(args.group_size)
+    runtime_profile = str(args.runtime_shaped_profile or "none").strip().lower()
+    profile_m0_pages, profile_m3_pages = _runtime_shaped_profile_pages(runtime_profile)
+    runtime_m0_pages = int(args.runtime_m0_pages) if int(args.runtime_m0_pages) > 0 else int(profile_m0_pages)
+    runtime_m3_pages = int(args.runtime_m3_pages) if int(args.runtime_m3_pages) > 0 else int(profile_m3_pages)
 
     keys = torch.randn((num_key_value_heads, page_count, token_count, head_dim), dtype=torch.float32, device=device)
     values = torch.randn((num_key_value_heads, page_count, token_count, head_dim), dtype=torch.float32, device=device)
@@ -582,6 +807,7 @@ def main() -> None:
         "quant_scheme_v": args.quant_scheme_v,
         "warmup_iters": args.warmup_iters,
         "bench_iters": args.bench_iters,
+        "runtime_shaped_profile": runtime_profile,
         "direct_m0_variant": direct_variant,
         "dense_exact_score_ms": dense_exact_score_ms,
         "dense_exact_mix_ms": dense_exact_mix_ms,
@@ -610,6 +836,22 @@ def main() -> None:
         "cached_vs_dense_mix_max_abs_error": _max_abs_error(cached_combined_output, dense_combined_output),
         "blockwise_vs_dense_mix_max_abs_error": _max_abs_error(blockwise_combined_output, dense_combined_output),
     }
+    runtime_score_breakdown = _runtime_score_breakdown_result(
+        device=device,
+        head_dim=head_dim,
+        num_key_value_heads=num_key_value_heads,
+        query_count=query_count,
+        tokens_per_page=token_count,
+        group_size=int(args.group_size),
+        bits_k=int(args.bits_k),
+        quant_scheme_k=str(args.quant_scheme_k),
+        warmup_iters=int(args.warmup_iters),
+        bench_iters=int(args.bench_iters),
+        m0_pages=runtime_m0_pages,
+        m3_pages=runtime_m3_pages,
+    )
+    if runtime_score_breakdown is not None:
+        result["runtime_score_breakdown"] = runtime_score_breakdown
 
     if args.output_format == "json":
         print(json.dumps(result, sort_keys=True), flush=True)
