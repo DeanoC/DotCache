@@ -13,6 +13,7 @@ mod instrumented_qwen2;
 mod instrumented_qwen35;
 pub mod model;
 pub mod page;
+pub mod page_mode;
 #[cfg(feature = "candle")]
 pub mod policy;
 pub mod session;
@@ -37,6 +38,9 @@ pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 pub use model::{greedy_generate, CausalLm, GreedyGeneration, ModelArchitecture, ModelFamily};
 pub use model::{RuntimeMode, RuntimeStageMetrics};
 pub use page::{KvPage, PageId};
+pub use page_mode::{
+    PageEscapeDType, PageModePolicy, PageModeSpec, PageModeTag, PageQuantScheme, PageSideKind,
+};
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
 #[cfg(feature = "candle")]
@@ -100,6 +104,18 @@ pub enum RuntimeError {
     },
     EmptyInput {
         context: &'static str,
+    },
+    UnsupportedPageModeForValue {
+        mode: String,
+    },
+    UnsupportedPageMode {
+        mode: String,
+        context: &'static str,
+    },
+    FusedAttentionRequiresExactPages {
+        page_id: usize,
+        key_mode: String,
+        value_mode: String,
     },
     MissingAsset {
         model_id: String,
@@ -195,6 +211,22 @@ impl std::fmt::Display for RuntimeError {
                 )
             }
             Self::EmptyInput { context } => write!(f, "{context} requires at least one token"),
+            Self::UnsupportedPageModeForValue { mode } => {
+                write!(f, "page mode {mode} is not supported for value pages")
+            }
+            Self::UnsupportedPageMode { mode, context } => {
+                write!(f, "{context} does not support page mode {mode} yet")
+            }
+            Self::FusedAttentionRequiresExactPages {
+                page_id,
+                key_mode,
+                value_mode,
+            } => {
+                write!(
+                    f,
+                    "fused attention requires exact pages, but page {page_id} uses key_mode={key_mode} value_mode={value_mode}"
+                )
+            }
             Self::MissingAsset { model_id, filename } => {
                 write!(f, "model {model_id} is missing required asset {filename}")
             }

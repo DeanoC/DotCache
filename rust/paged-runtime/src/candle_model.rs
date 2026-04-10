@@ -16,12 +16,40 @@ use crate::instrumented_llama::{InstrumentedLlama, LlamaCache};
 use crate::instrumented_qwen2::InstrumentedQwen2;
 use crate::instrumented_qwen35::InstrumentedQwen35;
 use crate::model::{CausalLm, ModelArchitecture, ModelFamily, RuntimeMode, RuntimeStageMetrics};
+use crate::page_mode::PageModePolicy;
 use crate::policy::{default_prompt_policy_table, PromptBucketPolicy};
 use crate::session::{
     SessionId, SessionMetrics, SessionPrefix, SessionRequestKind, SessionRuntime, SessionState,
 };
 use crate::virtual_page::{VirtualCacheMetrics, VirtualPagedKvCache};
 use crate::{Result, RuntimeError};
+
+fn describe_page_mode_policy(
+    policy: Option<&PageModePolicy>,
+) -> (String, String, Vec<String>, Vec<String>) {
+    let Some(policy) = policy else {
+        return (
+            "exact".to_string(),
+            "exact".to_string(),
+            Vec::new(),
+            Vec::new(),
+        );
+    };
+    (
+        policy.default_key().describe(),
+        policy.default_value().describe(),
+        policy
+            .key_overrides()
+            .iter()
+            .map(|(layer, mode)| format!("{layer}={}", mode.describe()))
+            .collect(),
+        policy
+            .value_overrides()
+            .iter()
+            .map(|(layer, mode)| format!("{layer}={}", mode.describe()))
+            .collect(),
+    )
+}
 
 fn qwen35_runtime_stage_metrics(
     profile: &candle_transformers::models::qwen3_5::RuntimeProfile,
@@ -81,6 +109,10 @@ pub struct RequestMetrics {
     kind: SessionRequestKind,
     runtime_mode: RuntimeMode,
     input_token_count: usize,
+    default_key_page_mode: String,
+    default_value_page_mode: String,
+    key_layer_page_mode_overrides: Vec<String>,
+    value_layer_page_mode_overrides: Vec<String>,
     cache_delta: VirtualCacheMetrics,
     stage_metrics: RuntimeStageMetrics,
     session_metrics: Vec<RequestSessionMetrics>,
@@ -92,6 +124,10 @@ impl RequestMetrics {
         kind: SessionRequestKind,
         runtime_mode: RuntimeMode,
         input_token_count: usize,
+        default_key_page_mode: String,
+        default_value_page_mode: String,
+        key_layer_page_mode_overrides: Vec<String>,
+        value_layer_page_mode_overrides: Vec<String>,
         cache_delta: VirtualCacheMetrics,
         stage_metrics: RuntimeStageMetrics,
         session_metrics: Vec<RequestSessionMetrics>,
@@ -101,6 +137,10 @@ impl RequestMetrics {
             kind,
             runtime_mode,
             input_token_count,
+            default_key_page_mode,
+            default_value_page_mode,
+            key_layer_page_mode_overrides,
+            value_layer_page_mode_overrides,
             cache_delta,
             stage_metrics,
             session_metrics,
@@ -117,6 +157,22 @@ impl RequestMetrics {
 
     pub fn runtime_mode(&self) -> RuntimeMode {
         self.runtime_mode
+    }
+
+    pub fn default_key_page_mode(&self) -> &str {
+        &self.default_key_page_mode
+    }
+
+    pub fn default_value_page_mode(&self) -> &str {
+        &self.default_value_page_mode
+    }
+
+    pub fn key_layer_page_mode_overrides(&self) -> &[String] {
+        &self.key_layer_page_mode_overrides
+    }
+
+    pub fn value_layer_page_mode_overrides(&self) -> &[String] {
+        &self.value_layer_page_mode_overrides
     }
 
     pub fn input_token_count(&self) -> usize {
@@ -901,8 +957,8 @@ impl CandleCausalLm {
                 for page_id in page_ids {
                     let page = sessions.cache().physical().store().page(page_id)?;
                     for token_idx in 0..page.token_len() {
-                        key_head.extend(page.key_row(token_idx).iter().map(|v| v.to_f32()));
-                        value_head.extend(page.value_row(token_idx).iter().map(|v| v.to_f32()));
+                        key_head.extend(page.key_row_f32(token_idx));
+                        value_head.extend(page.value_row_f32(token_idx));
                     }
                 }
                 let head_tokens = key_head.len() / head_dim;
@@ -1728,6 +1784,24 @@ impl CandleCausalLm {
     pub fn restore_cooldown_window(&self) -> Option<u64> {
         self.paged_cache()
             .map(VirtualPagedKvCache::restore_cooldown_window)
+    }
+
+    pub fn set_page_mode_policy(&mut self, policy: PageModePolicy) {
+        match &mut self.inner {
+            CandleModelInner::LlamaPaged { sessions, .. }
+            | CandleModelInner::Qwen2Paged { sessions, .. }
+            | CandleModelInner::Qwen35Paged { sessions, .. } => {
+                sessions.set_page_mode_policy(policy);
+            }
+            CandleModelInner::LlamaDense { .. }
+            | CandleModelInner::Qwen2Dense { .. }
+            | CandleModelInner::Qwen35Dense { .. } => {}
+        }
+    }
+
+    pub fn page_mode_policy(&self) -> Option<&PageModePolicy> {
+        self.paged_cache()
+            .map(VirtualPagedKvCache::page_mode_policy)
     }
 
     pub fn prompt_token_count(&self, text: &str, add_special_tokens: bool) -> Result<usize> {
@@ -2771,11 +2845,21 @@ impl CandleCausalLm {
                 snapshots
             }
         };
+        let (
+            default_key_page_mode,
+            default_value_page_mode,
+            key_layer_page_mode_overrides,
+            value_layer_page_mode_overrides,
+        ) = describe_page_mode_policy(self.page_mode_policy());
         self.request_log.push(RequestMetrics::new(
             session_ids.to_vec(),
             kind,
             self.runtime_mode,
             input_token_counts.iter().sum(),
+            default_key_page_mode,
+            default_value_page_mode,
+            key_layer_page_mode_overrides,
+            value_layer_page_mode_overrides,
             delta,
             stage_metrics,
             session_metric_snapshots,
@@ -3013,13 +3097,15 @@ impl CausalLm for CandleCausalLm {
             } => {
                 let resident_page_budget = sessions.cache().resident_page_budget();
                 let resident_byte_budget = sessions.cache().resident_byte_budget();
+                let page_mode_policy = sessions.page_mode_policy().clone();
                 page_backend.reset_page_state();
                 *cache = LlamaCache::new(true, self.dtype, config, &self.device)?;
-                *sessions = SessionRuntime::new(
+                *sessions = SessionRuntime::new_with_page_mode_policy(
                     self.architecture.num_hidden_layers,
                     self.architecture.num_key_value_heads,
                     self.tokens_per_page,
                     self.architecture.head_dim,
+                    page_mode_policy,
                 );
                 sessions
                     .cache_mut()
@@ -3037,12 +3123,14 @@ impl CausalLm for CandleCausalLm {
             } => {
                 let resident_page_budget = sessions.cache().resident_page_budget();
                 let resident_byte_budget = sessions.cache().resident_byte_budget();
+                let page_mode_policy = sessions.page_mode_policy().clone();
                 page_backend.reset_page_state();
-                *sessions = SessionRuntime::new(
+                *sessions = SessionRuntime::new_with_page_mode_policy(
                     self.architecture.num_hidden_layers,
                     self.architecture.num_key_value_heads,
                     self.tokens_per_page,
                     self.architecture.head_dim,
+                    page_mode_policy,
                 );
                 sessions
                     .cache_mut()
@@ -3060,12 +3148,14 @@ impl CausalLm for CandleCausalLm {
             } => {
                 let resident_page_budget = sessions.cache().resident_page_budget();
                 let resident_byte_budget = sessions.cache().resident_byte_budget();
+                let page_mode_policy = sessions.page_mode_policy().clone();
                 page_backend.reset_page_state();
-                *sessions = SessionRuntime::new(
+                *sessions = SessionRuntime::new_with_page_mode_policy(
                     self.architecture.num_hidden_layers,
                     self.architecture.num_key_value_heads,
                     self.tokens_per_page,
                     self.architecture.head_dim,
+                    page_mode_policy,
                 );
                 sessions
                     .cache_mut()

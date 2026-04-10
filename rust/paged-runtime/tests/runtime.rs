@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use dotcache_paged_runtime::{
     decode_one_head_owned, decode_query_batch_owned, decode_virtual_one_head_owned,
     greedy_generate, softmax_in_place, CausalLm, CpuReferenceBackend, KvRow, ModelArchitecture,
-    ModelFamily, PageBackend, PageId, PagedKvCache, RuntimeError, SessionRequestKind,
-    SessionRuntime, SessionTokenRows, VirtualCacheMetrics, VirtualPagedKvCache,
+    ModelFamily, PageBackend, PageId, PageModePolicy, PageModeSpec, PagedKvCache, RuntimeError,
+    SessionRequestKind, SessionRuntime, SessionTokenRows, VirtualCacheMetrics, VirtualPagedKvCache,
 };
 #[cfg(feature = "candle")]
 use dotcache_paged_runtime::{AttentionPathMode, CandleDeviceSelector, CandlePageBackend};
@@ -98,15 +98,7 @@ impl PageBackend for CountingPrepareBackend {
     ) -> dotcache_paged_runtime::Result<()> {
         let prepared_pages = self.prepared_pages.borrow();
         let page = prepared_pages.get(&page.page_id).unwrap();
-        for token_index in 0..page.token_len() {
-            let logit = q
-                .iter()
-                .zip(page.key_row(token_index).iter())
-                .map(|(lhs, rhs)| lhs * rhs.to_f32())
-                .sum();
-            logits_out.push(logit);
-        }
-        Ok(())
+        page.score_keys(q, logits_out)
     }
 
     fn mix(
@@ -117,12 +109,7 @@ impl PageBackend for CountingPrepareBackend {
     ) -> dotcache_paged_runtime::Result<()> {
         let prepared_pages = self.prepared_pages.borrow();
         let page = prepared_pages.get(&page.page_id).unwrap();
-        for (token_index, weight) in weights.iter().copied().enumerate() {
-            for (out_value, value) in out.iter_mut().zip(page.value_row(token_index).iter()) {
-                *out_value += weight * value.to_f32();
-            }
-        }
-        Ok(())
+        page.mix_values(weights, out)
     }
 }
 
@@ -197,6 +184,372 @@ fn decode_matches_reference_softmax_across_multiple_pages() {
 
     assert_eq!(page_ids, vec![0, 1]);
     assert_close(&output, &expected);
+}
+
+#[test]
+fn m0_pages_decode_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 2, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+
+    let query = [0.8, -0.3];
+    let page_ids = cache.page_ids(0, 0).unwrap().to_vec();
+    let backend = CpuReferenceBackend::default();
+    let output = decode_one_head_owned(&backend, cache.store(), &page_ids, &query).unwrap();
+
+    let dense_keys = [[1.0, -0.5], [-0.25, 0.75], [0.9, 0.4]];
+    let dense_values = [[1.0, 10.0], [2.0, 20.0], [4.0, 40.0]];
+    let mut logits = dense_keys
+        .iter()
+        .map(|row| row[0] * query[0] + row[1] * query[1])
+        .collect::<Vec<_>>();
+    scaled_softmax(&mut logits, query.len());
+    let expected = vec![
+        logits[0] * dense_values[0][0]
+            + logits[1] * dense_values[1][0]
+            + logits[2] * dense_values[2][0],
+        logits[0] * dense_values[0][1]
+            + logits[1] * dense_values[1][1]
+            + logits[2] * dense_values[2][1],
+    ];
+
+    assert_eq!(cache.page(0).unwrap().key_mode().describe(), "M0/affine/4");
+    assert_eq!(
+        cache.page(0).unwrap().value_mode().describe(),
+        "M0/affine/4"
+    );
+    assert_eq!(page_ids, vec![0, 1]);
+    for (actual, expected) in output.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 0.35,
+            "M0 decode drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn spilled_m0_pages_restore_and_decode() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = VirtualPagedKvCache::new_with_page_mode_policy(1, 1, 1, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, 0.0], &[10.0, 100.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[0.0, 1.0], &[20.0, 200.0])
+        .unwrap();
+    let page_ids = cache.resolve_physical_page_ids(0, 0).unwrap();
+    assert!(cache.spill_physical_page(page_ids[0]).unwrap());
+    assert!(cache.restore_physical_page(page_ids[0]).unwrap());
+    let output = decode_one_head_owned(
+        &CpuReferenceBackend::default(),
+        cache.physical().store(),
+        &page_ids,
+        &[1.0, 0.5],
+    )
+    .unwrap();
+    assert_eq!(output.len(), 2);
+    assert!(output[0].is_finite());
+    assert!(output[1].is_finite());
+}
+
+#[test]
+fn m3_float16_pages_decode_match_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M3/affine/4/float16".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M3/affine/4/float16".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 2, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+
+    let query = [0.8, -0.3];
+    let page_ids = cache.page_ids(0, 0).unwrap().to_vec();
+    let backend = CpuReferenceBackend::default();
+    let output = decode_one_head_owned(&backend, cache.store(), &page_ids, &query).unwrap();
+
+    let mut logits = vec![
+        1.0 * query[0] + -0.5 * query[1],
+        -0.25 * query[0] + 0.75 * query[1],
+        0.9 * query[0] + 0.4 * query[1],
+    ];
+    scaled_softmax(&mut logits, query.len());
+    let expected = vec![
+        logits[0] * 1.0 + logits[1] * 2.0 + logits[2] * 4.0,
+        logits[0] * 10.0 + logits[1] * 20.0 + logits[2] * 40.0,
+    ];
+
+    assert_eq!(
+        cache.page(0).unwrap().key_mode().describe(),
+        "M3/affine/4/float16"
+    );
+    for (actual, expected) in output.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 5e-4,
+            "M3 float16 decode drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn m3_int8_pages_decode_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M3/affine/4/int8".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M3/affine/4/int8".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 2, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+
+    let query = [0.8, -0.3];
+    let page_ids = cache.page_ids(0, 0).unwrap().to_vec();
+    let backend = CpuReferenceBackend::default();
+    let output = decode_one_head_owned(&backend, cache.store(), &page_ids, &query).unwrap();
+
+    let mut logits = vec![
+        1.0 * query[0] + -0.5 * query[1],
+        -0.25 * query[0] + 0.75 * query[1],
+        0.9 * query[0] + 0.4 * query[1],
+    ];
+    scaled_softmax(&mut logits, query.len());
+    let expected = vec![
+        logits[0] * 1.0 + logits[1] * 2.0 + logits[2] * 4.0,
+        logits[0] * 10.0 + logits[1] * 20.0 + logits[2] * 40.0,
+    ];
+
+    for (actual, expected) in output.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 0.2,
+            "M3 int8 decode drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn m1_pages_decode_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M1/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M1/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 2, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+
+    let query = [0.8, -0.3];
+    let page_ids = cache.page_ids(0, 0).unwrap().to_vec();
+    let backend = CpuReferenceBackend::default();
+    let output = decode_one_head_owned(&backend, cache.store(), &page_ids, &query).unwrap();
+
+    let mut logits = vec![
+        1.0 * query[0] + -0.5 * query[1],
+        -0.25 * query[0] + 0.75 * query[1],
+        0.9 * query[0] + 0.4 * query[1],
+    ];
+    scaled_softmax(&mut logits, query.len());
+    let expected = vec![
+        logits[0] * 1.0 + logits[1] * 2.0 + logits[2] * 4.0,
+        logits[0] * 10.0 + logits[1] * 20.0 + logits[2] * 40.0,
+    ];
+
+    for (actual, expected) in output.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 0.8,
+            "M1 decode drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn t3_pages_decode_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("T3/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("T3/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let head_dim = 48usize;
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 4, head_dim, policy);
+    for token_index in 0..6usize {
+        let key = (0..head_dim)
+            .map(|dim| (((token_index * 7 + dim * 3) % 23) as f32 - 11.0) / 5.0)
+            .collect::<Vec<_>>();
+        let value = (0..head_dim)
+            .map(|dim| (((token_index * 5 + dim * 2) % 29) as f32 - 14.0) / 3.0)
+            .collect::<Vec<_>>();
+        cache
+            .append_token(0, 0, token_index as u32, &key, &value)
+            .unwrap();
+    }
+
+    let query = (0..head_dim)
+        .map(|dim| (((dim * 11) % 31) as f32 - 15.0) / 7.0)
+        .collect::<Vec<_>>();
+    let page_ids = cache.page_ids(0, 0).unwrap().to_vec();
+    let output = decode_one_head_owned(
+        &CpuReferenceBackend::default(),
+        cache.store(),
+        &page_ids,
+        &query,
+    )
+    .unwrap();
+
+    let mut logits = Vec::new();
+    let mut rows = Vec::new();
+    for page_id in &page_ids {
+        let page = cache.page(*page_id).unwrap();
+        for token_index in 0..page.token_count as usize {
+            let key_row = page.key_row_f32(token_index);
+            let value_row = page.value_row_f32(token_index);
+            logits.push(
+                key_row
+                    .iter()
+                    .zip(query.iter())
+                    .map(|(lhs, rhs)| lhs * rhs)
+                    .sum::<f32>(),
+            );
+            rows.push(value_row);
+        }
+    }
+    scaled_softmax(&mut logits, query.len());
+    let mut expected = vec![0.0f32; head_dim];
+    for (weight, row) in logits.iter().zip(rows.iter()) {
+        for (out, value) in expected.iter_mut().zip(row.iter()) {
+            *out += weight * value;
+        }
+    }
+
+    for (actual, expected) in output.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "T3 decode drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn m2_key_pages_score_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M2/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 4, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 3, &[0.2, -0.7], &[8.0, 80.0])
+        .unwrap();
+
+    let page = cache.page(0).unwrap();
+    let query = [0.8, -0.3];
+    let mut logits = Vec::new();
+    page.score_keys(&query, &mut logits).unwrap();
+    let expected = vec![
+        1.0 * query[0] + -0.5 * query[1],
+        -0.25 * query[0] + 0.75 * query[1],
+        0.9 * query[0] + 0.4 * query[1],
+        0.2 * query[0] + -0.7 * query[1],
+    ];
+    for (actual, expected) in logits.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 0.5,
+            "M2 score drift too high: actual={actual}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn m4_key_pages_score_close_to_dense_reference() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M4/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 4, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, -0.5], &[1.0, 10.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 1, &[-0.25, 0.75], &[2.0, 20.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 2, &[0.9, 0.4], &[4.0, 40.0])
+        .unwrap();
+    cache
+        .append_token(0, 0, 3, &[0.2, -0.7], &[8.0, 80.0])
+        .unwrap();
+
+    let page = cache.page(0).unwrap();
+    let query = [0.8, -0.3];
+    let mut logits = Vec::new();
+    page.score_keys(&query, &mut logits).unwrap();
+    let expected = vec![
+        1.0 * query[0] + -0.5 * query[1],
+        -0.25 * query[0] + 0.75 * query[1],
+        0.9 * query[0] + 0.4 * query[1],
+        0.2 * query[0] + -0.7 * query[1],
+    ];
+    for (actual, expected) in logits.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 0.6,
+            "M4 score drift too high: actual={actual}, expected={expected}"
+        );
+    }
 }
 
 #[test]
@@ -280,6 +633,34 @@ fn candle_prepare_cache_evicts_unpinned_pages_to_fit_budget() {
     assert_eq!(backend.prepare_cache_page_budget(), Some(2));
     assert_eq!(backend.prepared_page_count(), 2);
     assert!(backend.cache_evictions() > 0);
+}
+
+#[cfg(feature = "candle")]
+#[test]
+fn candle_fused_decode_rejects_compressed_pages() {
+    let mut policy = PageModePolicy::exact();
+    policy
+        .set_default_key("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    policy
+        .set_default_value("M0/affine/4".parse::<PageModeSpec>().unwrap())
+        .unwrap();
+    let mut cache = PagedKvCache::new_with_page_mode_policy(1, 1, 1, 2, policy);
+    cache
+        .append_token(0, 0, 0, &[1.0, 0.0], &[10.0, 100.0])
+        .unwrap();
+
+    let backend = CandlePageBackend::new(CandleDeviceSelector::Cpu).unwrap();
+    backend.set_attention_path(AttentionPathMode::Fused);
+    let error = decode_one_head_owned(&backend, cache.store(), &[0], &[1.0, 0.0]).unwrap_err();
+    assert_eq!(
+        error,
+        RuntimeError::FusedAttentionRequiresExactPages {
+            page_id: 0,
+            key_mode: "M0/affine/4".to_string(),
+            value_mode: "M0/affine/4".to_string(),
+        }
+    );
 }
 
 #[cfg(feature = "candle")]
