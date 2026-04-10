@@ -201,6 +201,130 @@ __global__ void dotcache_qwen35_linear_prefill_conv_pack_kernel(
     out[tid] = dotcache_qwen35_from_float<T>(silu);
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_linear_stateful_conv_kernel(
+    int batch_size,
+    int conv_dim,
+    int seq_len,
+    int state_len,
+    int kernel_size,
+    const T* mixed_qkv,
+    const T* prev_state,
+    const T* weights,
+    T* out
+) {
+    const size_t tid = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
+    const size_t output_elems =
+        static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim);
+    if (tid >= output_elems) {
+        return;
+    }
+
+    const size_t b = tid / (static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim));
+    const size_t rem = tid - b * static_cast<size_t>(seq_len) * static_cast<size_t>(conv_dim);
+    const size_t t = rem / static_cast<size_t>(conv_dim);
+    const size_t c = rem - t * static_cast<size_t>(conv_dim);
+
+    const size_t mixed_b_offset =
+        b * static_cast<size_t>(conv_dim) * static_cast<size_t>(seq_len);
+    const size_t mixed_c_offset = mixed_b_offset + c * static_cast<size_t>(seq_len);
+    const size_t state_b_offset =
+        b * static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
+    const size_t state_c_offset = state_b_offset + c * static_cast<size_t>(state_len);
+    const size_t weight_offset = c * static_cast<size_t>(kernel_size);
+
+    float acc = 0.0f;
+    const int history = kernel_size - 1;
+    for (int tap = 0; tap < kernel_size; ++tap) {
+        const int src = static_cast<int>(t) + tap - history;
+        float x = 0.0f;
+        if (src >= 0) {
+            x = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + static_cast<size_t>(src)]);
+        } else {
+            const int state_idx = state_len + src;
+            if (state_idx >= 0) {
+                x = dotcache_qwen35_to_float(prev_state[state_c_offset + static_cast<size_t>(state_idx)]);
+            }
+        }
+        acc += x * dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
+    }
+
+    const float silu = acc / (1.0f + expf(-acc));
+    out[tid] = dotcache_qwen35_from_float<T>(silu);
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel(
+    int batch_size,
+    int conv_dim,
+    int seq_len,
+    int state_len,
+    int kernel_size,
+    int num_heads,
+    const T* mixed_qkv,
+    const T* prev_state,
+    const T* weights,
+    const T* a,
+    const T* dt_bias,
+    const T* a_log_exp,
+    T* out
+) {
+    const size_t out_width = static_cast<size_t>(conv_dim) + static_cast<size_t>(num_heads);
+    const size_t tid = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
+    const size_t output_elems =
+        static_cast<size_t>(batch_size) * static_cast<size_t>(seq_len) * out_width;
+    if (tid >= output_elems) {
+        return;
+    }
+
+    const size_t b = tid / (static_cast<size_t>(seq_len) * out_width);
+    const size_t rem = tid - b * static_cast<size_t>(seq_len) * out_width;
+    const size_t t = rem / out_width;
+    const size_t c = rem - t * out_width;
+
+    if (c < static_cast<size_t>(conv_dim)) {
+        const size_t mixed_b_offset =
+            b * static_cast<size_t>(conv_dim) * static_cast<size_t>(seq_len);
+        const size_t mixed_c_offset = mixed_b_offset + c * static_cast<size_t>(seq_len);
+        const size_t state_b_offset =
+            b * static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
+        const size_t state_c_offset = state_b_offset + c * static_cast<size_t>(state_len);
+        const size_t weight_offset = c * static_cast<size_t>(kernel_size);
+
+        float acc = 0.0f;
+        const int history = kernel_size - 1;
+        for (int tap = 0; tap < kernel_size; ++tap) {
+            const int src = static_cast<int>(t) + tap - history;
+            float x = 0.0f;
+            if (src >= 0) {
+                x = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + static_cast<size_t>(src)]);
+            } else {
+                const int state_idx = state_len + src;
+                if (state_idx >= 0) {
+                    x = dotcache_qwen35_to_float(
+                        prev_state[state_c_offset + static_cast<size_t>(state_idx)]
+                    );
+                }
+            }
+            acc += x * dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
+        }
+
+        const float silu = acc / (1.0f + expf(-acc));
+        out[tid] = dotcache_qwen35_from_float<T>(silu);
+        return;
+    }
+
+    const size_t head = c - static_cast<size_t>(conv_dim);
+    const size_t a_base =
+        b * static_cast<size_t>(seq_len) * static_cast<size_t>(num_heads) +
+        t * static_cast<size_t>(num_heads);
+    const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
+    const float bias = dotcache_qwen35_to_float(dt_bias[head]);
+    const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
+    const float softplus = log1pf(expf(a_val + bias));
+    out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
+}
+
 template <typename T, int MAX_K = 256>
 __device__ inline void dotcache_qwen35_delta_recurrent_prefill_impl(
     int batch_heads,

@@ -1639,6 +1639,15 @@ fn use_hip_short_linear_prefill_recurrent(device: &Device, sequence_length: usiz
         )
 }
 
+fn use_hip_combined_linear_prefill(device: &Device, sequence_length: usize) -> bool {
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && sequence_length > 1
+        && !matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_PREFILL").as_deref(),
+            Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO")
+        )
+}
+
 fn use_hip_chunk_single_prefill_kernel(
     device: &Device,
     sequence_length: usize,
@@ -2052,6 +2061,343 @@ fn linear_prefill_conv_pack(
             total_len,
             seq_len,
             kernel_size,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinearStatefulConv {
+    batch_size: usize,
+    conv_dim: usize,
+    seq_len: usize,
+    state_len: usize,
+    kernel_size: usize,
+}
+
+impl candle::CustomOp3 for LinearStatefulConv {
+    fn name(&self) -> &'static str {
+        "linear-stateful-conv"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("linear-stateful-conv has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        mixed_qkv: &candle::HipStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_state: &candle::HipStorage,
+        prev_state_layout: &candle::Layout,
+        weights: &candle::HipStorage,
+        weights_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_state_layout.is_contiguous()
+            && weights_layout.is_contiguous())
+        {
+            candle::bail!("linear-stateful-conv requires contiguous inputs")
+        }
+
+        let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+        let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+        let (weights_conv_dim, kernel_size) = weights_layout.shape().dims2()?;
+        if batch_size != self.batch_size
+            || conv_dim != self.conv_dim
+            || seq_len != self.seq_len
+            || state_batch != self.batch_size
+            || state_conv_dim != self.conv_dim
+            || state_len != self.state_len
+            || weights_conv_dim != self.conv_dim
+            || kernel_size != self.kernel_size
+        {
+            candle::bail!(
+                "linear-stateful-conv shape mismatch: mixed_qkv={:?} prev_state={:?} weights={:?} expected=({}, {}, {}, {}, {})",
+                mixed_qkv_layout.shape().dims(),
+                prev_state_layout.shape().dims(),
+                weights_layout.shape().dims(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size
+            )
+        }
+        if mixed_qkv.dtype() != prev_state.dtype() || mixed_qkv.dtype() != weights.dtype() {
+            candle::bail!(
+                "linear-stateful-conv requires matching dtypes, got mixed_qkv={:?} prev_state={:?} weights={:?}",
+                mixed_qkv.dtype(),
+                prev_state.dtype(),
+                weights.dtype()
+            )
+        }
+
+        let device = mixed_qkv.device().clone();
+        let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
+        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
+                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                device.ordinal(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size,
+                mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                    as *const c_void,
+                prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                    as *const c_void,
+                weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, output_shape))
+    }
+}
+
+fn linear_stateful_conv_hip(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    kernel_size: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
+    if state_batch != batch_size || state_conv_dim != conv_dim {
+        candle::bail!(
+            "linear-stateful-conv state mismatch: mixed_qkv={:?} prev_state={:?}",
+            mixed_qkv.dims(),
+            prev_state.dims()
+        )
+    }
+    mixed_qkv.apply_op3_no_bwd(
+        &prev_state,
+        &weights,
+        &LinearStatefulConv {
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinearStatefulConvValueDecay {
+    batch_size: usize,
+    conv_dim: usize,
+    seq_len: usize,
+    state_len: usize,
+    kernel_size: usize,
+    num_heads: usize,
+}
+
+impl candle::CustomOp6 for LinearStatefulConvValueDecay {
+    fn name(&self) -> &'static str {
+        "linear-stateful-conv-value-decay"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("linear-stateful-conv-value-decay has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        mixed_qkv: &candle::HipStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_state: &candle::HipStorage,
+        prev_state_layout: &candle::Layout,
+        weights: &candle::HipStorage,
+        weights_layout: &candle::Layout,
+        a: &candle::HipStorage,
+        a_layout: &candle::Layout,
+        dt_bias: &candle::HipStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::HipStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("linear-stateful-conv-value-decay requires contiguous inputs")
+        }
+
+        let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+        let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+        let (weights_conv_dim, kernel_size) = weights_layout.shape().dims2()?;
+        let (a_batch, a_seq_len, a_heads) = a_layout.shape().dims3()?;
+        let dt_bias_elems = dt_bias_layout.shape().elem_count();
+        let a_log_exp_elems = a_log_exp_layout.shape().elem_count();
+        if batch_size != self.batch_size
+            || conv_dim != self.conv_dim
+            || seq_len != self.seq_len
+            || state_batch != self.batch_size
+            || state_conv_dim != self.conv_dim
+            || state_len != self.state_len
+            || weights_conv_dim != self.conv_dim
+            || kernel_size != self.kernel_size
+            || a_batch != self.batch_size
+            || a_seq_len != self.seq_len
+            || a_heads != self.num_heads
+            || dt_bias_elems != self.num_heads
+            || a_log_exp_elems != self.num_heads
+        {
+            candle::bail!(
+                "linear-stateful-conv-value-decay shape mismatch mixed_qkv={:?} prev_state={:?} weights={:?} a={:?} dt_bias={:?} a_log_exp={:?} expected=({}, {}, {}, {}, {}, {})",
+                mixed_qkv_layout.shape().dims(),
+                prev_state_layout.shape().dims(),
+                weights_layout.shape().dims(),
+                a_layout.shape().dims(),
+                dt_bias_layout.shape().dims(),
+                a_log_exp_layout.shape().dims(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size,
+                self.num_heads
+            )
+        }
+        if mixed_qkv.dtype() != prev_state.dtype()
+            || mixed_qkv.dtype() != weights.dtype()
+            || mixed_qkv.dtype() != a.dtype()
+            || mixed_qkv.dtype() != dt_bias.dtype()
+            || mixed_qkv.dtype() != a_log_exp.dtype()
+        {
+            candle::bail!(
+                "linear-stateful-conv-value-decay requires matching dtypes, got mixed_qkv={:?} prev_state={:?} weights={:?} a={:?} dt_bias={:?} a_log_exp={:?}",
+                mixed_qkv.dtype(),
+                prev_state.dtype(),
+                weights.dtype(),
+                a.dtype(),
+                dt_bias.dtype(),
+                a_log_exp.dtype()
+            )
+        }
+
+        let device = mixed_qkv.device().clone();
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            self.seq_len,
+            self.conv_dim + self.num_heads,
+        ));
+        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay(
+                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                device.ordinal(),
+                self.batch_size,
+                self.conv_dim,
+                self.seq_len,
+                self.state_len,
+                self.kernel_size,
+                self.num_heads,
+                mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                    as *const c_void,
+                prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                    as *const c_void,
+                weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+                a.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+                dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
+                a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, output_shape))
+    }
+}
+
+fn linear_stateful_conv_value_decay_hip(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a = a.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
+    let (a_batch, a_seq_len, num_heads) = a.dims3()?;
+    if state_batch != batch_size || state_conv_dim != conv_dim {
+        candle::bail!(
+            "linear-stateful-conv-value-decay state mismatch: mixed_qkv={:?} prev_state={:?}",
+            mixed_qkv.dims(),
+            prev_state.dims()
+        )
+    }
+    if a_batch != batch_size || a_seq_len != seq_len {
+        candle::bail!(
+            "linear-stateful-conv-value-decay a mismatch: mixed_qkv={:?} a={:?}",
+            mixed_qkv.dims(),
+            a.dims()
+        )
+    }
+    mixed_qkv.apply_op6_no_bwd(
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        &LinearStatefulConvValueDecay {
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
         },
     )
 }
@@ -7407,6 +7753,42 @@ impl GatedDeltaNet {
         Ok(mixed_qkv)
     }
 
+    fn update_depthwise_conv_state_from_raw(&mut self, mixed_qkv: &Tensor) -> Result<()> {
+        let state_len = self.conv_kernel_size.saturating_sub(1);
+        if state_len == 0 {
+            self.conv_state = None;
+            return Ok(());
+        }
+
+        let seq_len = mixed_qkv.dim(2)?;
+        let state = if seq_len >= state_len {
+            mixed_qkv.narrow(2, seq_len - state_len, state_len)?.contiguous()?
+        } else {
+            match &self.conv_state {
+                Some(prev_state) => {
+                    let prev_state = if prev_state.dtype() == mixed_qkv.dtype() {
+                        prev_state.clone()
+                    } else {
+                        prev_state.to_dtype(mixed_qkv.dtype())?
+                    };
+                    let keep = state_len - seq_len;
+                    let prev_tail = prev_state.narrow(2, prev_state.dim(2)? - keep, keep)?;
+                    Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
+                }
+                None => {
+                    let zeros = Tensor::zeros(
+                        (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len - seq_len),
+                        mixed_qkv.dtype(),
+                        mixed_qkv.device(),
+                    )?;
+                    Tensor::cat(&[&zeros, mixed_qkv], 2)?.contiguous()?
+                }
+            }
+        };
+        self.conv_state = Some(state);
+        Ok(())
+    }
+
     fn depthwise_conv_from_state(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         let kernel = self.conv_kernel_size;
         let seq_len = mixed_qkv.dim(2)?;
@@ -7439,17 +7821,48 @@ impl GatedDeltaNet {
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         if mixed_qkv.device().is_hip() {
             return self
-                .run_depthwise_conv_packed_prefill(mixed_qkv)?
+                .run_depthwise_conv_materialized_pack(mixed_qkv)?
                 .transpose(1, 2);
         }
         self.depthwise_conv_from_state(mixed_qkv)
     }
 
-    fn run_depthwise_conv_packed_prefill(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
+    fn run_depthwise_conv_materialized_pack(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         let seq_len = mixed_qkv.dim(2)?;
         let mixed_qkv = self.prepare_depthwise_conv_input(mixed_qkv)?.contiguous()?;
         let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
         linear_prefill_conv_pack(&mixed_qkv, &weights, seq_len, self.conv_kernel_size)
+    }
+
+    fn run_depthwise_conv_packed_prefill(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
+        let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+        if mixed_qkv.device().is_hip() {
+            let state_len = self.conv_kernel_size.saturating_sub(1);
+            let prev_state = match &self.conv_state {
+                Some(prev_state) => {
+                    if prev_state.dtype() == mixed_qkv.dtype() {
+                        prev_state.clone()
+                    } else {
+                        prev_state.to_dtype(mixed_qkv.dtype())?
+                    }
+                }
+                None => Tensor::zeros(
+                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    mixed_qkv.dtype(),
+                    mixed_qkv.device(),
+                )?,
+            };
+            let output = linear_stateful_conv_hip(
+                &mixed_qkv.contiguous()?,
+                &prev_state,
+                &weights,
+                self.conv_kernel_size,
+            )?;
+            self.update_depthwise_conv_state_from_raw(mixed_qkv)?;
+            return Ok(output);
+        }
+
+        self.run_depthwise_conv_materialized_pack(mixed_qkv)
     }
 
     fn conv_dim(&self) -> usize {
@@ -8447,28 +8860,76 @@ impl GatedDeltaNet {
             self.head_v_dim,
         ))?;
         let beta = ops::sigmoid(&self.in_proj_b.forward(&hidden_states)?)?;
-        let a = self
-            .in_proj_a
-            .forward(&hidden_states)?
-            .to_dtype(compute_dtype)?;
+        let a = self.in_proj_a.forward(&hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let kv_append_start = profile_start(device)?;
-        let mixed_qkv = if seq_len == 1 {
-            self.run_depthwise_conv_update(&mixed_qkv)?
-                .transpose(1, 2)?
-        } else if use_linear_prefill_packed_kernel(device, seq_len) {
-            self.run_depthwise_conv_packed_prefill(&mixed_qkv)?
+        let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
+            let target_dtype = mixed_qkv.dtype();
+            let a = if a.dtype() == target_dtype {
+                a.clone()
+            } else {
+                a.to_dtype(target_dtype)?
+            };
+            let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+            let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+            let state_len = self.conv_kernel_size.saturating_sub(1);
+            let prev_state = match &self.conv_state {
+                Some(prev_state) => {
+                    if prev_state.dtype() == target_dtype {
+                        prev_state.clone()
+                    } else {
+                        prev_state.to_dtype(target_dtype)?
+                    }
+                }
+                None => Tensor::zeros(
+                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    target_dtype,
+                    mixed_qkv.device(),
+                )?,
+            };
+            let packed = linear_stateful_conv_value_decay_hip(
+                &mixed_qkv.contiguous()?,
+                &prev_state,
+                &weights,
+                &a,
+                &dt_bias,
+                &a_log_exp,
+                self.conv_kernel_size,
+            )?;
+            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
+            let conv_dim = self.conv_dim();
+            let mixed_qkv = packed.narrow(D::Minus1, 0, conv_dim)?;
+            let g = packed.narrow(D::Minus1, conv_dim, self.num_v_heads)?;
+            let g = if g.dtype() == compute_dtype {
+                g
+            } else {
+                g.to_dtype(compute_dtype)?
+            };
+            (mixed_qkv, g)
         } else {
-            self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
-        };
-        let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
-        let g = if device.is_hip() {
-            hip_value_decay(&a, &dt_bias, &a_log_exp)?
-        } else {
-            softplus(&a.broadcast_add(&dt_bias)?)?
-                .broadcast_mul(&a_log_exp)?
-                .neg()?
+            let mixed_qkv = if seq_len == 1 {
+                self.run_depthwise_conv_update(&mixed_qkv)?
+                    .transpose(1, 2)?
+            } else if use_linear_prefill_packed_kernel(device, seq_len) {
+                self.run_depthwise_conv_packed_prefill(&mixed_qkv)?
+            } else {
+                self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
+            };
+            let a = if a.dtype() == compute_dtype {
+                a
+            } else {
+                a.to_dtype(compute_dtype)?
+            };
+            let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
+            let g = if device.is_hip() {
+                hip_value_decay(&a, &dt_bias, &a_log_exp)?
+            } else {
+                softplus(&a.broadcast_add(&dt_bias)?)?
+                    .broadcast_mul(&a_log_exp)?
+                    .neg()?
+            };
+            (mixed_qkv, g)
         };
         let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
         profile.linear_conv_millis += kv_append_elapsed;
@@ -10183,6 +10644,98 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_linear_stateful_conv_sample(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, Vec<f32>)> {
+        let batch_size = 1usize;
+        let conv_dim = 2usize;
+        let seq_len = 4usize;
+        let state_len = 2usize;
+        let kernel_size = 3usize;
+        let mixed_qkv_data = vec![
+            0.3f32, 0.4, 0.5, 0.6, //
+            -0.1, 0.0, 0.1, 0.2,
+        ];
+        let prev_state_data = vec![
+            0.1f32, 0.2, //
+            -0.3, -0.2,
+        ];
+        let weight_data = vec![
+            0.5f32, -0.25, 0.75, //
+            -0.4, 0.3, 0.2,
+        ];
+        let mixed_qkv = Tensor::from_vec(
+            mixed_qkv_data.clone(),
+            (batch_size, conv_dim, seq_len),
+            device,
+        )?;
+        let prev_state = Tensor::from_vec(
+            prev_state_data.clone(),
+            (batch_size, conv_dim, state_len),
+            device,
+        )?;
+        let weights = Tensor::from_vec(weight_data.clone(), (conv_dim, kernel_size), device)?;
+
+        let mut expected = Vec::with_capacity(batch_size * seq_len * conv_dim);
+        for b in 0..batch_size {
+            for t in 0..seq_len {
+                for c in 0..conv_dim {
+                    let mixed_base = b * conv_dim * seq_len + c * seq_len;
+                    let state_base = b * conv_dim * state_len + c * state_len;
+                    let weight_base = c * kernel_size;
+                    let mut acc = 0.0f32;
+                    for tap in 0..kernel_size {
+                        let src = t as isize + tap as isize - (kernel_size as isize - 1);
+                        let x = if src >= 0 {
+                            mixed_qkv_data[mixed_base + src as usize]
+                        } else {
+                            prev_state_data[state_base + (state_len as isize + src) as usize]
+                        };
+                        acc += x * weight_data[weight_base + tap];
+                    }
+                    expected.push(acc / (1.0 + (-acc).exp()));
+                }
+            }
+        }
+        Ok((mixed_qkv, prev_state, weights, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_linear_stateful_conv_value_decay_sample(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Vec<f32>)> {
+        let (mixed_qkv, prev_state, weights, conv_expected) = hip_linear_stateful_conv_sample(device)?;
+        let a_data = vec![
+            0.5f32, -1.0, //
+            0.25, 1.5, //
+            -0.75, 0.2, //
+            0.9, -0.4,
+        ];
+        let dt_bias_data = vec![0.1f32, -0.2];
+        let a_log_exp_data = vec![0.7f32, 0.8];
+        let a = Tensor::from_vec(a_data.clone(), (1usize, 4usize, 2usize), device)?
+            .to_dtype(mixed_qkv.dtype())?;
+        let dt_bias =
+            Tensor::from_vec(dt_bias_data.clone(), (1usize, 1usize, 2usize), device)?
+                .to_dtype(mixed_qkv.dtype())?;
+        let a_log_exp =
+            Tensor::from_vec(a_log_exp_data.clone(), (1usize, 1usize, 2usize), device)?
+                .to_dtype(mixed_qkv.dtype())?;
+
+        let mut expected = Vec::with_capacity(4 * 4);
+        for t in 0..4 {
+            expected.push(conv_expected[t * 2]);
+            expected.push(conv_expected[t * 2 + 1]);
+            for head in 0..2 {
+                let shifted = a_data[t * 2 + head] + dt_bias_data[head];
+                let softplus = (shifted.exp() + 1.0).ln();
+                expected.push(-softplus * a_log_exp_data[head]);
+            }
+        }
+        Ok((mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let _guard = hip_test_guard();
@@ -10465,6 +11018,81 @@ mod tests {
         )?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(output.dtype(), DType::F32);
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_stateful_conv_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (mixed_qkv, prev_state, weights, expected) = hip_linear_stateful_conv_sample(&device)?;
+        let output = linear_stateful_conv_hip(&mixed_qkv, &prev_state, &weights, 3)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_stateful_conv_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (mixed_qkv, prev_state, weights, _expected) = hip_linear_stateful_conv_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = linear_stateful_conv_hip(&mixed_qkv, &prev_state, &weights, 3)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), mixed_qkv.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_stateful_conv_value_decay_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, expected) =
+            hip_linear_stateful_conv_value_decay_sample(&device)?;
+        let output = linear_stateful_conv_value_decay_hip(
+            &mixed_qkv,
+            &prev_state,
+            &weights,
+            &a,
+            &dt_bias,
+            &a_log_exp,
+            3,
+        )?
+        .to_dtype(DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_linear_stateful_conv_value_decay_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, _expected) =
+            hip_linear_stateful_conv_value_decay_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = linear_stateful_conv_value_decay_hip(
+            &mixed_qkv,
+            &prev_state,
+            &weights,
+            &a,
+            &dt_bias,
+            &a_log_exp,
+            3,
+        )?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), mixed_qkv.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
