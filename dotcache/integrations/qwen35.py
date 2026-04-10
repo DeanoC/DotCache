@@ -7863,6 +7863,7 @@ def _build_persistent_full_attention_snapshot_runtime(
     snapshot: Any,
     *,
     persistent_serving_config: PersistentServingConfig,
+    dotcache_config: DotCacheConfig | None,
     query_scale: float | None,
     prev_attention_values: np.ndarray | None,
     prev_attention_transform: str,
@@ -7882,6 +7883,7 @@ def _build_persistent_full_attention_snapshot_runtime(
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
         config=persistent_serving_config,
+        dotcache_config=dotcache_config,
     )
     shaped_prev_attn = _seed_full_attention_prev_attention_ema_from_snapshot(
         runtime,
@@ -7962,6 +7964,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     snapshot_or_path: Any,
     *,
     persistent_serving_config: PersistentServingConfig | None = None,
+    dotcache_config: DotCacheConfig | None = None,
     shortlist_policy_choice: dict[str, Any] | None = None,
     query_scale: float | None = None,
     history_snapshots_or_paths: Sequence[Any] | None = None,
@@ -7995,6 +7998,7 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         _build_persistent_full_attention_snapshot_runtime(
             snapshot,
             persistent_serving_config=effective_config,
+            dotcache_config=dotcache_config,
             query_scale=query_scale,
             prev_attention_values=history_prev_attention,
             prev_attention_transform=prev_attention_transform,
@@ -8042,6 +8046,8 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     streaming_rel_error = streaming_abs_error / full_output.abs().clamp_min(1e-8)
     streaming_first_stop = streaming.get("first_certified_stop")
     streaming_final_checkpoint = streaming.get("final_checkpoint")
+    runtime_summary = runtime.summary()
+    selected_k_mode_counts = selection.get("selected_k_mode_counts", {})
     return {
         "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
         "head_dim": int(snapshot.head_dim),
@@ -8060,6 +8066,9 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "policy_preferred_bias_weight": float(selection.get("policy_preferred_bias_weight", 0.0)),
         "selected_block_count": int(len(selected_block_ids)),
         "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
+        "selected_m0_metadata_block_count": int(selected_k_mode_counts.get("M0", 0)),
+        "selected_m3_metadata_block_count": int(selected_k_mode_counts.get("M3", 0)),
+        "compression_invalid_block_count": int(len(selection.get("compression_invalid_block_ids", []))),
         "full_block_count": int(len(runtime.layers[0].block_token_starts)),
         "full_token_count": int(key_history.shape[0]),
         "beta_upper": float(certificate["beta_upper"]),
@@ -8098,6 +8107,14 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "streaming_final_delta_upper": (
             None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
         ),
+        "persistent_full_attention_m0_metadata_block_count": int(
+            runtime_summary["persistent_full_attention_m0_metadata_blocks_by_layer"]["0"]
+        ),
+        "persistent_full_attention_m3_metadata_block_count": int(
+            runtime_summary["persistent_full_attention_m3_metadata_blocks_by_layer"]["0"]
+        ),
+        "persistent_runtime_enable_compression": bool(effective_config.enable_compression),
+        "persistent_runtime_mode_cost_weight": float(effective_config.full_attention_mode_cost_weight),
         "persistent_runtime_enable_priority": bool(resolved_config.enable_priority),
         "persistent_runtime_shortlist_policy_mode": str(effective_config.full_attention_shortlist_policy_mode),
         "persistent_runtime_shortlist_policy_bias_weight": float(
@@ -8202,6 +8219,7 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
     snapshot_or_path: Any,
     *,
     persistent_serving_config: PersistentServingConfig | None = None,
+    dotcache_config: DotCacheConfig | None = None,
     query_scale: float | None = None,
     prev_attention_transform: str = "sqrt",
     prev_attention_neighbor_blend: float = 0.2,
@@ -8221,6 +8239,7 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
         _build_persistent_full_attention_snapshot_runtime(
             snapshot,
             persistent_serving_config=effective_config,
+            dotcache_config=dotcache_config,
             query_scale=query_scale,
             prev_attention_values=None,
             prev_attention_transform=prev_attention_transform,
