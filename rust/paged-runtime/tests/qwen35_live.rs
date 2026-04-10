@@ -21,7 +21,7 @@ const VERY_LONG_PROMPT_TOKENS: usize = 8_192;
 const PARITY_DECODE_STEPS: usize = 2;
 const MAX_KERNEL_LOGIT_DELTA: f32 = 0.05;
 const MAX_TRACE_DELTA: f32 = 0.05;
-const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 13] = [
+const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 14] = [
     "CANDLE_QWEN35_DELTA_STATE_KERNEL",
     "CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL",
     "CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL",
@@ -35,6 +35,7 @@ const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 13] = [
     "CANDLE_QWEN35_FULL_BLOCKWISE_ATTN",
     "CANDLE_QWEN35_FULL_SDPA_CHUNKED",
     "CANDLE_QWEN35_FULL_EAGER_TORCHLIKE",
+    "CANDLE_QWEN35_LINEAR_PACKED_PREFILL",
 ];
 
 fn argmax(values: &[f32]) -> usize {
@@ -639,6 +640,25 @@ fn qwen35_dense_control_chunk_step_non_windowed_matches_default_windowed_on_meta
             ("CANDLE_QWEN35_DELTA_CHUNK_WINDOWED_KERNEL", "0"),
             ("CANDLE_QWEN35_FULL_EAGER_TORCHLIKE", "1"),
         ],
+    )
+}
+
+#[cfg(feature = "candle-metal")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the linear packed-prefill opt-out path against the default dense-control Metal baseline"]
+fn qwen35_dense_control_linear_packed_prefill_opt_out_matches_default_on_metal_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Metal { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("metal device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_LINEAR_PACKED_PREFILL", "0")],
     )
 }
 
