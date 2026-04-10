@@ -849,6 +849,34 @@ fn use_full_attention_prefill_megakernel(
     }
 }
 
+fn use_full_attention_decode_megakernel(
+    device: &Device,
+    q_len: usize,
+    kv_len: usize,
+    seqlen_offset: usize,
+) -> bool {
+    if q_len != 1 || kv_len != seqlen_offset + 1 {
+        return false;
+    }
+
+    match device.location() {
+        DeviceLocation::Hip { .. } => match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL")
+        {
+            Ok(value)
+                if matches!(
+                    value.as_str(),
+                    "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
+                ) =>
+            {
+                false
+            }
+            Ok(_) => true,
+            Err(_) => true,
+        },
+        _ => false,
+    }
+}
+
 fn use_delta_chunk_scan_kernel(
     device: &Device,
     scan_mode: DeltaNetScanMode,
@@ -1536,6 +1564,21 @@ fn full_attention_prefill_megakernel(
             seqlen_offset,
         },
     )
+}
+
+fn full_attention_decode_megakernel(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Tensor> {
+    let (_, _, q_len, _) = query.dims4()?;
+    if q_len != 1 {
+        candle::bail!("full-attention-decode-megakernel requires q_len == 1, got {q_len}")
+    }
+    full_attention_prefill_megakernel(query, key, value, num_kv_groups, scale, seqlen_offset)
 }
 
 pub fn paged_attention_decode_megakernel(
@@ -5509,6 +5552,7 @@ impl FullAttention {
         profile.layout_prepare_millis += input_layout_elapsed;
         profile.full_attention_input_layout_millis += input_layout_elapsed;
 
+        let kv_len = key_states.dim(2)?;
         let attn_output = if let Some(handler) = external_full_attention.as_deref_mut() {
             let external_started = profile_start(device)?;
             let external = handler.forward(
@@ -5526,10 +5570,23 @@ impl FullAttention {
                 profile.full_attention_millis += external_elapsed;
             }
             external.attn_output
+        } else if use_full_attention_decode_megakernel(device, q_len, kv_len, seqlen_offset) {
+            let kernel_start = profile_start(device)?;
+            let output = full_attention_decode_megakernel(
+                &query_states,
+                &key_states,
+                &value_states,
+                self.num_kv_groups,
+                scale as f32,
+                seqlen_offset,
+            )?
+            .to_dtype(DType::F32)?;
+            profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+            output
         } else if use_full_attention_prefill_megakernel(
             device,
             q_len,
-            key_states.dim(2)?,
+            kv_len,
             seqlen_offset,
         ) {
             let kernel_start = profile_start(device)?;
@@ -5564,7 +5621,7 @@ impl FullAttention {
                     "hip full-prefill layer={} q_len={} kv_len={} dtype={:?} max_delta={:.6}",
                     layer_id,
                     q_len,
-                    key_states.dim(2)?,
+                    kv_len,
                     query_states.dtype(),
                     max_abs_delta(&output, &fallback)?,
                 );
@@ -8115,6 +8172,108 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_full_attention_decode_sample(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
+        let batch_size = 1usize;
+        let q_heads = 2usize;
+        let kv_heads = 1usize;
+        let q_len = 1usize;
+        let kv_len = 5usize;
+        let head_dim = 4usize;
+        let num_kv_groups = 2usize;
+        let scale = 0.5f32;
+        let seqlen_offset = 4usize;
+
+        let query_data = vec![0.2f32, -0.3, 0.1, 0.0, 0.0, 0.2, 0.2, -0.1];
+        let key_data = vec![
+            0.1f32, 0.0, 0.2, -0.1, 0.0, 0.3, -0.2, 0.1, 0.2, -0.1, 0.0, 0.4, -0.3, 0.2, 0.1,
+            0.0, 0.1, 0.1, -0.1, 0.2,
+        ];
+        let value_data = vec![
+            0.0f32, 0.2, -0.1, 0.3, 0.1, -0.2, 0.0, 0.2, 0.4, 0.1, -0.3, 0.0, -0.1, 0.3, 0.2,
+            -0.2, 0.2, 0.0, 0.1, 0.4,
+        ];
+
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_size, q_heads, q_len, head_dim),
+            device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+
+        let mut expected = Vec::with_capacity(batch_size * q_heads * q_len * head_dim);
+        for b in 0..batch_size {
+            for q_head in 0..q_heads {
+                let kv_head = q_head / num_kv_groups;
+                for q_pos in 0..q_len {
+                    let causal_limit = kv_len.min(seqlen_offset + q_pos + 1);
+                    let query_offset = ((b * q_heads + q_head) * q_len + q_pos) * head_dim;
+                    let q_row = &query_data[query_offset..query_offset + head_dim];
+                    let key_head_offset = (b * kv_heads + kv_head) * kv_len * head_dim;
+                    let value_head_offset = key_head_offset;
+
+                    let mut max_score = f32::NEG_INFINITY;
+                    let mut denom = 0.0f32;
+                    let mut out_row = vec![0.0f32; head_dim];
+                    for k_pos in 0..causal_limit {
+                        let key_offset = key_head_offset + k_pos * head_dim;
+                        let value_offset = value_head_offset + k_pos * head_dim;
+                        let mut score = 0.0f32;
+                        for d in 0..head_dim {
+                            score += q_row[d] * key_data[key_offset + d];
+                        }
+                        score *= scale;
+
+                        if !max_score.is_finite() {
+                            max_score = score;
+                            denom = 1.0;
+                            out_row.copy_from_slice(
+                                &value_data[value_offset..value_offset + head_dim],
+                            );
+                            continue;
+                        }
+
+                        let new_max = max_score.max(score);
+                        let prev_scale = (max_score - new_max).exp();
+                        let curr_scale = (score - new_max).exp();
+                        denom = denom * prev_scale + curr_scale;
+                        for d in 0..head_dim {
+                            out_row[d] =
+                                out_row[d] * prev_scale + curr_scale * value_data[value_offset + d];
+                        }
+                        max_score = new_max;
+                    }
+
+                    let inv_denom = if denom > 0.0 { 1.0 / denom } else { 0.0 };
+                    for value in out_row {
+                        expected.push(value * inv_denom);
+                    }
+                }
+            }
+        }
+
+        Ok((
+            query,
+            key,
+            value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            expected,
+        ))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let device = Device::new_hip(0)?;
@@ -8285,6 +8444,52 @@ mod tests {
         let output = output.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
 
         assert_close(&output, &expected, 1.5e-1);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_full_attention_decode_matches_reference() -> Result<()> {
+        let _env_lock = hip_env_lock().lock().unwrap();
+        let _env_guard = HipPersistentPrefillEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
+            hip_full_attention_decode_sample(&device)?;
+        let output = full_attention_decode_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_full_attention_decode_avoids_host_staging() -> Result<()> {
+        let _env_lock = hip_env_lock().lock().unwrap();
+        let _env_guard = HipPersistentPrefillEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, _) =
+            hip_full_attention_decode_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = full_attention_decode_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), DType::F32);
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
     }
 
