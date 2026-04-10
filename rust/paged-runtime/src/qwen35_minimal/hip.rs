@@ -62,6 +62,17 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_value_decay(
+            dtype: c_int,
+            device_ordinal: usize,
+            total_elems: usize,
+            num_heads: usize,
+            a: *const c_void,
+            dt_bias: *const c_void,
+            a_log_exp: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_rms_norm(
             dtype: c_int,
             device_ordinal: usize,

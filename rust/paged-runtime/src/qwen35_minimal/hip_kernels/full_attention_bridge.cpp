@@ -150,6 +150,37 @@ int l2norm_device(
     return 0;
 }
 
+template <typename T>
+int value_decay_device(
+    int device_ordinal,
+    int total_elems,
+    int num_heads,
+    const void* a,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_value_decay_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        num_heads,
+        static_cast<const T*>(a),
+        static_cast<const T*>(dt_bias),
+        static_cast<const T*>(a_log_exp),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 93;
+    if (hipDeviceSynchronize() != hipSuccess) return 94;
+    return 0;
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 int rms_norm_device(
     int device_ordinal,
@@ -367,6 +398,48 @@ extern "C" int dotcache_qwen35_hip_l2norm(
             out);
     default:
         return 92;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_value_decay(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    size_t num_heads,
+    const void* a,
+    const void* dt_bias,
+    const void* a_log_exp,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return value_decay_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            static_cast<int>(num_heads),
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 1:
+        return value_decay_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            static_cast<int>(num_heads),
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    case 2:
+        return value_decay_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            static_cast<int>(num_heads),
+            a,
+            dt_bias,
+            a_log_exp,
+            out);
+    default:
+        return 95;
     }
 }
 

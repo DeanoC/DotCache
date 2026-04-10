@@ -248,6 +248,28 @@ __global__ void dotcache_qwen35_l2norm_kernel(
     }
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_value_decay_kernel(
+    int total_elems,
+    int num_heads,
+    const T* a,
+    const T* dt_bias,
+    const T* a_log_exp,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+
+    const int head = idx % num_heads;
+    const float a_val = dotcache_qwen35_to_float(a[idx]);
+    const float bias = dotcache_qwen35_to_float(dt_bias[head]);
+    const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
+    const float softplus = log1pf(expf(a_val + bias));
+    out[idx] = dotcache_qwen35_from_float<T>(-softplus * decay);
+}
+
 template <typename T, bool ADD_UNIT_OFFSET>
 __global__ void dotcache_qwen35_rms_norm_kernel(
     int n_rows,

@@ -879,6 +879,124 @@ fn softplus(xs: &Tensor) -> Result<Tensor> {
     ((xs.exp()? + 1.0)?).log()
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HipValueDecay {
+    total_elems: usize,
+    num_heads: usize,
+}
+
+impl candle::CustomOp3 for HipValueDecay {
+    fn name(&self) -> &'static str {
+        "dotcache-hip-value-decay"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("dotcache-hip-value-decay has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        a: &candle::HipStorage,
+        a_layout: &candle::Layout,
+        dt_bias: &candle::HipStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::HipStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(a_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("dotcache-hip-value-decay requires contiguous inputs")
+        }
+        if a.dtype() != dt_bias.dtype() || a.dtype() != a_log_exp.dtype() {
+            candle::bail!(
+                "dotcache-hip-value-decay requires matching dtypes, got a={:?} dt_bias={:?} a_log_exp={:?}",
+                a.dtype(),
+                dt_bias.dtype(),
+                a_log_exp.dtype()
+            )
+        }
+
+        let a_elems = a_layout.shape().elem_count();
+        let dt_bias_elems = dt_bias_layout.shape().elem_count();
+        let a_log_exp_elems = a_log_exp_layout.shape().elem_count();
+        if a_elems != self.total_elems
+            || dt_bias_elems != self.num_heads
+            || a_log_exp_elems != self.num_heads
+        {
+            candle::bail!(
+                "dotcache-hip-value-decay shape mismatch a={:?} dt_bias={:?} a_log_exp={:?} expected_total={} expected_heads={}",
+                a_layout.shape().dims(),
+                dt_bias_layout.shape().dims(),
+                a_log_exp_layout.shape().dims(),
+                self.total_elems,
+                self.num_heads
+            )
+        }
+
+        let device = a.device().clone();
+        let out_shape = a_layout.shape().clone();
+        let output = unsafe { device.alloc_uninit(&out_shape, a.dtype())? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_value_decay(
+                hip::dtype_code(a.dtype())?,
+                device.ordinal(),
+                self.total_elems,
+                self.num_heads,
+                a.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+                dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
+                a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> Result<Tensor> {
+    let a = a.contiguous()?;
+    let target_dtype = a.dtype();
+    let dt_bias = dt_bias.contiguous()?;
+    let dt_bias = if dt_bias.dtype() == target_dtype {
+        dt_bias
+    } else {
+        dt_bias.to_dtype(target_dtype)?
+    };
+    let a_log_exp = a_log_exp.contiguous()?;
+    let a_log_exp = if a_log_exp.dtype() == target_dtype {
+        a_log_exp
+    } else {
+        a_log_exp.to_dtype(target_dtype)?
+    };
+    let total_elems = a.elem_count();
+    let num_heads = dt_bias.elem_count();
+    a.apply_op3_no_bwd(
+        &dt_bias,
+        &a_log_exp,
+        &HipValueDecay {
+            total_elems,
+            num_heads,
+        },
+    )
+}
+
 fn linear_attention_compute_dtype(device: &Device, input_dtype: DType) -> DType {
     match (device.location(), input_dtype) {
         (DeviceLocation::Metal { .. }, DType::F16 | DType::BF16) => input_dtype,
@@ -7331,9 +7449,13 @@ impl GatedDeltaNet {
             self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
         };
         let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
-        let g = softplus(&a.broadcast_add(&dt_bias)?)?
-            .broadcast_mul(&a_log_exp)?
-            .neg()?;
+        let g = if device.is_hip() {
+            hip_value_decay(&a, &dt_bias, &a_log_exp)?
+        } else {
+            softplus(&a.broadcast_add(&dt_bias)?)?
+                .broadcast_mul(&a_log_exp)?
+                .neg()?
+        };
         let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
         profile.linear_conv_millis += kv_append_elapsed;
         profile.kv_append_write_millis += kv_append_elapsed;
@@ -8636,6 +8758,32 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_value_decay_sample(device: &Device) -> Result<(Tensor, Tensor, Tensor, Vec<f32>)> {
+        let a_data = vec![
+            0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
+        ];
+        let dt_bias_data = vec![0.1f32, -0.2, 0.3, 0.4];
+        let a_log_exp_data = vec![0.7f32, 0.8, 0.9, 1.1];
+        let shape = (1usize, 3usize, 4usize);
+        let a = Tensor::from_vec(a_data.clone(), shape, device)?.to_dtype(DType::F16)?;
+        let dt_bias = Tensor::from_vec(dt_bias_data.clone(), (1usize, 1usize, 4usize), device)?
+            .to_dtype(DType::F16)?;
+        let a_log_exp =
+            Tensor::from_vec(a_log_exp_data.clone(), (1usize, 1usize, 4usize), device)?
+                .to_dtype(DType::F16)?;
+
+        let mut expected = Vec::with_capacity(a_data.len());
+        for value in a_data.chunks_exact(4) {
+            for head in 0..4 {
+                let shifted = value[head] + dt_bias_data[head];
+                let softplus = (shifted.exp() + 1.0).ln();
+                expected.push(-softplus * a_log_exp_data[head]);
+            }
+        }
+        Ok((a, dt_bias, a_log_exp, expected))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_linear_prefill_conv_pack_matches_reference() -> Result<()> {
         let device = Device::new_hip(0)?;
@@ -8981,6 +9129,33 @@ mod tests {
         let output = l2norm(&xs, 1e-6)?;
         let counters = candle::hip::transfer_counters();
         assert_eq!(output.dtype(), xs.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_value_decay_matches_reference() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (a, dt_bias, a_log_exp, expected) = hip_value_decay_sample(&device)?;
+        let output = hip_value_decay(&a, &dt_bias, &a_log_exp)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_value_decay_avoids_host_staging() -> Result<()> {
+        let device = Device::new_hip(0)?;
+        let (a, dt_bias, a_log_exp, _expected) = hip_value_decay_sample(&device)?;
+        candle::hip::reset_transfer_counters();
+        let output = hip_value_decay(&a, &dt_bias, &a_log_exp)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), a.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
         Ok(())
