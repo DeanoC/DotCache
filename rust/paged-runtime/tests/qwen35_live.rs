@@ -497,6 +497,210 @@ fn qwen35_dense_control_smoke_runs_on_cpu() -> dotcache_paged_runtime::Result<()
     Ok(())
 }
 
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and runs a live dense-control CUDA smoke test"]
+fn qwen35_dense_control_smoke_runs_on_cuda() -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    let mut model = CandleCausalLm::from_hf_with_runtime_mode(
+        QWEN35_MODEL_ID,
+        ModelFamily::Qwen35,
+        selector,
+        DType::F32,
+        CandleCausalLm::DEFAULT_TOKENS_PER_PAGE,
+        RuntimeMode::DenseControl,
+    )?;
+    let generation = greedy_generate(&mut model, "hello", 1)?;
+    assert!(generation.text.starts_with("hello"));
+    Ok(())
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the full-attention prefill megakernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_full_attention_megakernel_matches_baseline_on_cuda_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the packed linear prefill kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_linear_packed_prefill_matches_baseline_on_cuda_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_LINEAR_PACKED_PREFILL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the recurrent DeltaNet prefill kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_recurrent_prefill_kernel_matches_baseline_on_cuda_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        LONG_PROMPT_TOKENS,
+        &[
+            ("CANDLE_QWEN35_DELTA_RECURRENT_PREFILL_KERNEL", "1"),
+            ("CANDLE_QWEN35_FULL_EAGER_TORCHLIKE", "1"),
+        ],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the chunk-step kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_chunk_step_kernel_matches_baseline_on_cuda_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        LONG_PROMPT_TOKENS,
+        &[
+            ("CANDLE_QWEN35_DELTA_CHUNK_STEP_KERNEL", "1"),
+            ("CANDLE_QWEN35_FULL_EAGER_TORCHLIKE", "1"),
+        ],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the windowed chunk-step kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_chunk_windowed_kernel_matches_baseline_on_cuda_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[
+            ("CANDLE_QWEN35_DELTA_CHUNK_STEP_KERNEL", "1"),
+            ("CANDLE_QWEN35_DELTA_CHUNK_WINDOWED_KERNEL", "1"),
+            ("CANDLE_QWEN35_FULL_EAGER_TORCHLIKE", "1"),
+        ],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the chunk-scan kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_chunk_scan_kernel_matches_baseline_on_cuda_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_DELTA_CHUNK_SCAN_KERNEL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the state-scan kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_state_scan_kernel_matches_baseline_on_cuda_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the chunk-fused kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_chunk_fused_kernel_matches_baseline_on_cuda_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-cuda")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the full DeltaNet kernel against the dense-control CUDA baseline"]
+fn qwen35_dense_control_full_kernel_matches_baseline_on_cuda_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Cuda { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("cuda device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        LONG_PROMPT_TOKENS,
+        &[("CANDLE_QWEN35_DELTA_FULL_KERNEL", "1")],
+    )
+}
+
 #[cfg(feature = "candle-metal")]
 #[test]
 #[ignore = "downloads Qwen3.5-0.8B and validates the DeltaNet state-update kernel against the dense-control Metal baseline"]
