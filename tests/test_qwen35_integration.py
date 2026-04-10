@@ -384,6 +384,57 @@ def test_qwen35_generation_harness_stops_on_visible_sequence(monkeypatch: pytest
     assert result["dense_stop_reason"] == "text:4"
 
 
+def test_qwen35_generation_harness_reports_timed_decode_latency_per_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_iter = iter(
+        [
+            type("Outputs", (), {"logits": torch.tensor([[[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]], dtype=torch.float32), "past_key_values": None})(),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._normalize_text_inputs",
+        lambda adapter, **kwargs: (kwargs["input_ids"], kwargs["attention_mask"]),
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._run_dense_prefill",
+        lambda *args, **kwargs: type(
+            "PrefillOutputs",
+            (),
+            {"logits": torch.tensor([[[0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]], dtype=torch.float32), "past_key_values": None},
+        )(),
+    )
+    monkeypatch.setattr("dotcache.integrations.qwen35._begin_cuda_memory_region", lambda _device: None)
+    monkeypatch.setattr("dotcache.integrations.qwen35._end_cuda_memory_region", lambda _device, _baseline: {})
+    monkeypatch.setattr("dotcache.integrations.qwen35._hybrid_cache_nbytes", lambda _past_key_values: 0)
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._run_dense_decode_step",
+        lambda *args, **kwargs: next(output_iter),
+    )
+    monkeypatch.setattr(
+        "dotcache.integrations.qwen35._timed_call",
+        lambda fn, device=None: (fn(), 0.5),
+    )
+
+    tokenizer = _TinyTokenizer()
+    model = object()
+    adapter = Qwen35TextModelAdapter(model=_tiny_qwen35_model())
+    input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    attention_mask = torch.ones_like(input_ids)
+    result = run_qwen35_text_generation_harness(
+        model,
+        adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=2,
+        tokenizer=tokenizer,
+    )
+
+    assert result["dense_generated_ids"] == [4, 5]
+    assert result["dense_decode_ms_per_step"] == pytest.approx(0.5)
+
+
 def test_qwen35_loss_harness_runs_on_tiny_hybrid_model() -> None:
     model = _tiny_qwen35_model()
     adapter = Qwen35TextModelAdapter(model=model)
