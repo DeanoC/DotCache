@@ -208,6 +208,94 @@ int delta_chunk_single_prefill_device(
 }
 
 template <typename T>
+int delta_chunk_step_device(
+    int device_ordinal,
+    int batch_heads,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const void* prev_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (k_head_dim > 256) return 80;
+    constexpr int block = 256;
+    const size_t total_threads =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(v_head_dim);
+    const unsigned int grid = static_cast<unsigned int>((total_threads + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_chunk_step_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        chunk_size,
+        k_head_dim,
+        v_head_dim,
+        static_cast<const T*>(prev_state),
+        static_cast<const T*>(query),
+        static_cast<const T*>(key),
+        static_cast<const T*>(value),
+        static_cast<const T*>(beta),
+        static_cast<const T*>(g),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 81;
+    if (hipDeviceSynchronize() != hipSuccess) return 82;
+    return 0;
+}
+
+template <typename T>
+int delta_chunk_scan_raw_device(
+    int device_ordinal,
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const void* initial_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (k_head_dim > 256) return 83;
+    constexpr int block = 256;
+    const size_t total_threads =
+        static_cast<size_t>(batch_heads) * static_cast<size_t>(v_head_dim);
+    const unsigned int grid = static_cast<unsigned int>((total_threads + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_chunk_scan_raw_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        k_head_dim,
+        v_head_dim,
+        static_cast<const T*>(initial_state),
+        static_cast<const T*>(query),
+        static_cast<const T*>(key),
+        static_cast<const T*>(value),
+        static_cast<const T*>(beta),
+        static_cast<const T*>(g),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 84;
+    if (hipDeviceSynchronize() != hipSuccess) return 85;
+    return 0;
+}
+
+template <typename T>
 int l2norm_device(
     int device_ordinal,
     int n_rows,
@@ -564,6 +652,134 @@ extern "C" int dotcache_qwen35_hip_delta_chunk_single_prefill(
             out);
     default:
         return 79;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_chunk_step(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t chunk_size,
+    size_t k_head_dim,
+    size_t v_head_dim,
+    const void* prev_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_chunk_step_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            prev_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 1:
+        return delta_chunk_step_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            prev_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 2:
+        return delta_chunk_step_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            prev_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    default:
+        return 86;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_delta_chunk_scan_raw(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t num_chunks,
+    size_t chunk_size,
+    size_t k_head_dim,
+    size_t v_head_dim,
+    const void* initial_state,
+    const void* query,
+    const void* key,
+    const void* value,
+    const void* beta,
+    const void* g,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_chunk_scan_raw_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 1:
+        return delta_chunk_scan_raw_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    case 2:
+        return delta_chunk_scan_raw_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            static_cast<int>(v_head_dim),
+            initial_state,
+            query,
+            key,
+            value,
+            beta,
+            g,
+            out);
+    default:
+        return 87;
     }
 }
 

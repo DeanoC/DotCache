@@ -83,6 +83,39 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_delta_chunk_step(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            prev_state: *const c_void,
+            query: *const c_void,
+            key: *const c_void,
+            value: *const c_void,
+            beta: *const c_void,
+            g: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_delta_chunk_scan_raw(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            initial_state: *const c_void,
+            query: *const c_void,
+            key: *const c_void,
+            value: *const c_void,
+            beta: *const c_void,
+            g: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_l2norm(
             dtype: c_int,
             device_ordinal: usize,

@@ -1300,6 +1300,23 @@ fn use_hip_chunk_single_prefill_kernel(
         )
 }
 
+fn use_hip_multi_chunk_scan_prefill_kernel(
+    device: &Device,
+    sequence_length: usize,
+    num_chunks: usize,
+    chunk_size: usize,
+) -> bool {
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && num_chunks > 1
+        && num_chunks <= 4
+        && sequence_length > chunk_size
+        && chunk_size <= 64
+        && matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_MULTI_CHUNK_SCAN_PREFILL").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+}
+
 fn use_full_attention_prefill_megakernel(
     device: &Device,
     q_len: usize,
@@ -3663,7 +3680,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -3708,78 +3725,31 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
 
         let device = prev_state.device().clone();
         let storage_dtype = prev_state.dtype();
-        let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let prev_state = prev_state.cpu_storage().as_slice::<$ty>()?;
-                let prev_state = match prev_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &prev_state[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let query = query.cpu_storage().as_slice::<$ty>()?;
-                let query = match query_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &query[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let key = key.cpu_storage().as_slice::<$ty>()?;
-                let key = match key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &key[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let beta = beta.cpu_storage().as_slice::<$ty>()?;
-                let beta = match beta_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &beta[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let g = g.cpu_storage().as_slice::<$ty>()?;
-                let g = match g_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &g[o1..o2],
-                    None => candle::bail!("delta-chunk-step-raw requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_chunk_step(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        chunk_size,
-                        k_head_dim,
-                        v_head_dim,
-                        prev_state.as_ptr() as *const c_void,
-                        query.as_ptr() as *const c_void,
-                        key.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        beta.as_ptr() as *const c_void,
-                        g.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                prev_state.raw_device_ptr_with_offset(prev_layout.start_offset())?
+                    as *const c_void,
+                query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-chunk-step-raw unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -4934,7 +4904,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::backend::{BackendDevice, BackendStorage};
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -4983,82 +4953,35 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
 
         let device = initial_state.device().clone();
         let storage_dtype = initial_state.dtype();
-        let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape = candle::Shape::from_dims(&[
             batch_heads,
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let elem_count = out_shape.elem_count();
-
-        macro_rules! launch {
-            ($ty:ty, $zero:expr) => {{
-                let initial_state = initial_state.cpu_storage().as_slice::<$ty>()?;
-                let initial_state = match initial_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &initial_state[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let query = query.cpu_storage().as_slice::<$ty>()?;
-                let query = match query_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &query[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let key = key.cpu_storage().as_slice::<$ty>()?;
-                let key = match key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &key[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let beta = beta.cpu_storage().as_slice::<$ty>()?;
-                let beta = match beta_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &beta[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let g = g.cpu_storage().as_slice::<$ty>()?;
-                let g = match g_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &g[o1..o2],
-                    None => candle::bail!("delta-chunk-scan-raw requires contiguous inputs"),
-                };
-                let mut output = vec![$zero; elem_count];
-                let status = unsafe {
-                    candle::hip::ffi::qwen35_hip_delta_chunk_scan_raw(
-                        dtype_code,
-                        device.ordinal(),
-                        batch_heads,
-                        num_chunks,
-                        chunk_size,
-                        k_head_dim,
-                        v_head_dim,
-                        initial_state.as_ptr() as *const c_void,
-                        query.as_ptr() as *const c_void,
-                        key.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        beta.as_ptr() as *const c_void,
-                        g.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
-                    )
-                };
-                if status != 0 {
-                    return Err(candle::hip::qwen35_error(self.name(), status));
-                }
-                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
-                Ok((
-                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
-                    out_shape.clone(),
-                ))
-            }};
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_chunk_scan_raw(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                initial_state.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                    as *const c_void,
+                query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match storage_dtype {
-            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
-            DType::F32 => launch!(f32, 0.0f32),
-            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
-            other => candle::bail!("delta-chunk-scan-raw unsupported dtype {other:?}"),
-        }
+        Ok((output, out_shape))
     }
 }
 
@@ -7120,7 +7043,14 @@ impl GatedDeltaNet {
             return Ok((output, last_recurrent_state, profile));
         }
 
-        if use_delta_chunk_scan_kernel(query.device(), scan_mode, sequence_length, chunk_size) {
+        if use_delta_chunk_scan_kernel(query.device(), scan_mode, sequence_length, chunk_size)
+            || use_hip_multi_chunk_scan_prefill_kernel(
+                query.device(),
+                sequence_length,
+                num_chunks,
+                chunk_size,
+            )
+        {
             let pack_start = profile_start(device)?;
             let query_scan = query_scan.contiguous()?;
             let key_scan = key_scan.contiguous()?;
@@ -8658,6 +8588,94 @@ mod tests {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
+    struct HipMultiChunkScanPrefillEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl HipMultiChunkScanPrefillEnvGuard {
+        const KEY: &'static str = "DOTCACHE_QWEN35_HIP_MULTI_CHUNK_SCAN_PREFILL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for HipMultiChunkScanPrefillEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    struct LinearChunkSizeEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl LinearChunkSizeEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_LINEAR_CHUNK_SIZE";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    impl Drop for LinearChunkSizeEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn tiny_linear_text_config() -> TextConfig {
+        TextConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            hidden_act: candle_nn::Activation::Silu,
+            max_position_embeddings: 128,
+            rms_norm_eps: 1e-6,
+            tie_word_embeddings: false,
+            attention_bias: false,
+            attention_dropout: 0.0,
+            head_dim: 8,
+            linear_conv_kernel_dim: 4,
+            linear_key_head_dim: 4,
+            linear_value_head_dim: 4,
+            linear_num_key_heads: 1,
+            linear_num_value_heads: 1,
+            layer_types: vec!["linear_attention".to_string()],
+            rope_parameters: None,
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_full_attention_prefill_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
@@ -9657,6 +9675,107 @@ mod tests {
         }
 
         assert_close(&output, &expected, 1e-4);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_chunk_scan_raw_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 3usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state = Tensor::from_vec(
+            vec![0.1f32, -0.2, 0.05, 0.3],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query = Tensor::from_vec(
+            vec![0.2f32, -0.1, 0.0, 0.3, -0.2, 0.4, 0.1, -0.25, 0.15, 0.05, -0.3, 0.2],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key = Tensor::from_vec(
+            vec![0.1f32, 0.2, -0.3, 0.5, 0.4, -0.2, -0.15, 0.05, 0.25, -0.35, -0.05, 0.45],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            vec![0.3f32, -0.1, 0.2, 0.4, -0.2, 0.1, 0.05, -0.15, 0.35, -0.25, -0.1, 0.2],
+            (batch_heads, num_chunks, chunk_size, v_head_dim),
+            &device,
+        )?;
+        let beta = Tensor::from_vec(
+            vec![0.5f32, 0.25, 0.75, 0.6, 0.4, 0.55],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+        let g = Tensor::from_vec(
+            vec![0.0f32, -0.2, 0.1, -0.15, 0.05, -0.1],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let output = delta_chunk_scan_raw(&initial_state, &query, &key, &value, &beta, &g)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), initial_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_gated_deltanet_multi_chunk_scan_prefill_matches_baseline_and_reduces_host_staging(
+    ) -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let _chunk_size = LinearChunkSizeEnvGuard::set("8");
+        let _single_chunk = HipChunkSinglePrefillEnvGuard::set("0");
+        let cfg = tiny_linear_text_config();
+        let varmap = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = GatedDeltaNet::new(&cfg, vb)?;
+        let hidden_data: Vec<f32> = (0..(12usize * cfg.hidden_size))
+            .map(|idx| (((idx % 13) as f32) - 6.0) * 0.05)
+            .collect();
+        let hidden_states =
+            Tensor::from_vec(hidden_data, (1usize, 12usize, cfg.hidden_size), &device)?;
+
+        let mut baseline_model = model.clone();
+        let _multi_chunk_off = HipMultiChunkScanPrefillEnvGuard::set("0");
+        candle::hip::reset_transfer_counters();
+        let (baseline_out, _baseline_state, _baseline_profile) =
+            baseline_model.trace_profiled(&hidden_states, None)?;
+        let baseline_counters = candle::hip::transfer_counters();
+        drop(_multi_chunk_off);
+
+        let mut gated_model = model.clone();
+        let _multi_chunk_on = HipMultiChunkScanPrefillEnvGuard::set("1");
+        candle::hip::reset_transfer_counters();
+        let (gated_out, _gated_state, _gated_profile) =
+            gated_model.trace_profiled(&hidden_states, None)?;
+        let gated_counters = candle::hip::transfer_counters();
+
+        let baseline_out = baseline_out
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let gated_out = gated_out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        assert_close(&gated_out, &baseline_out, 1e-4);
+        assert!(
+            gated_counters.host_to_device_bytes < baseline_counters.host_to_device_bytes,
+            "expected gated multi-chunk scan to reduce H2D traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
+        assert!(
+            gated_counters.device_to_host_bytes < baseline_counters.device_to_host_bytes,
+            "expected gated multi-chunk scan to reduce D2H traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
+        );
         Ok(())
     }
 
