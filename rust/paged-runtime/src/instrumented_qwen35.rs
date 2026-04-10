@@ -45,7 +45,8 @@ impl candle_transformers::models::qwen3_5::ExternalFullAttention for PagedFullAt
         num_kv_groups: usize,
         head_dim: usize,
         seqlen_offset: usize,
-    ) -> candle_core::Result<candle_transformers::models::qwen3_5::ExternalFullAttentionOutput> {
+    ) -> candle_core::Result<candle_transformers::models::qwen3_5::ExternalFullAttentionOutput>
+    {
         let started = Instant::now();
         let (b_sz, q_heads, q_len, q_head_dim) = query_states.dims4()?;
         let (_, kv_heads, kv_len, kv_head_dim) = key_states.dims4()?;
@@ -89,15 +90,17 @@ impl candle_transformers::models::qwen3_5::ExternalFullAttention for PagedFullAt
             for kv_head in 0..kv_heads {
                 let row_offset = (kv_head * q_len + token_index) * head_dim;
                 let row_end = row_offset + head_dim;
-                let append_result = self.sessions.append_kv_row_at(
-                    self.session_id,
-                    layer_id,
-                    kv_head,
-                    absolute_pos,
-                    &k_values[row_offset..row_end],
-                    &v_values[row_offset..row_end],
-                )
-                .map_err(|err| candle_core::Error::msg(format!("{err:?}")))?;
+                let append_result = self
+                    .sessions
+                    .append_kv_row_at(
+                        self.session_id,
+                        layer_id,
+                        kv_head,
+                        absolute_pos,
+                        &k_values[row_offset..row_end],
+                        &v_values[row_offset..row_end],
+                    )
+                    .map_err(|err| candle_core::Error::msg(format!("{err:?}")))?;
                 ensure_sealed_page_resident(
                     self.sessions,
                     self.page_backend,
@@ -140,13 +143,15 @@ impl candle_transformers::models::qwen3_5::ExternalFullAttention for PagedFullAt
         let attn_output = Tensor::cat(&token_output_refs, 0)?
             .reshape((1, q_len, q_heads, head_dim))?
             .transpose(1, 2)?;
-        Ok(candle_transformers::models::qwen3_5::ExternalFullAttentionOutput {
-            attn_output,
-            profile: candle_transformers::models::qwen3_5::RuntimeProfile {
-                full_attention_millis: started.elapsed().as_secs_f64() * 1e3,
-                ..Default::default()
+        Ok(
+            candle_transformers::models::qwen3_5::ExternalFullAttentionOutput {
+                attn_output,
+                profile: candle_transformers::models::qwen3_5::RuntimeProfile {
+                    full_attention_millis: started.elapsed().as_secs_f64() * 1e3,
+                    ..Default::default()
+                },
             },
-        })
+        )
     }
 }
 

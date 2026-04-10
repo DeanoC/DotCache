@@ -274,9 +274,7 @@ impl candle_core::CustomOp3 for PagedAttentionDecodeMegakernel {
             DType::F32 => candle_metal_kernels::DType::F32,
             DType::BF16 => candle_metal_kernels::DType::BF16,
             other => {
-                candle_core::bail!(
-                    "paged-attention-decode-megakernel unsupported dtype {other:?}"
-                )
+                candle_core::bail!("paged-attention-decode-megakernel unsupported dtype {other:?}")
             }
         };
         let out_shape = candle_core::Shape::from((1, self.batch_size, 1, self.head_dim));
@@ -340,7 +338,9 @@ fn paged_attention_decode_megakernel(
             got: value_kv_len * value_head_dim,
         });
     }
-    let query = queries.contiguous()?.reshape((1, batch_size, 1, head_dim))?;
+    let query = queries
+        .contiguous()?
+        .reshape((1, batch_size, 1, head_dim))?;
     let key = key.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
     let value = value.contiguous()?.reshape((1, 1, kv_len, head_dim))?;
     Ok(query
@@ -506,7 +506,10 @@ impl CandlePageBackend {
         Self::new_with_device(selector, device)
     }
 
-    pub fn new_with_device(selector: CandleDeviceSelector, device: candle_core::Device) -> Result<Self> {
+    pub fn new_with_device(
+        selector: CandleDeviceSelector,
+        device: candle_core::Device,
+    ) -> Result<Self> {
         let attention_path = AttentionPathMode::default_for_selector(&selector);
         Ok(Self {
             device,

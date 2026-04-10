@@ -21,7 +21,7 @@ const VERY_LONG_PROMPT_TOKENS: usize = 8_192;
 const PARITY_DECODE_STEPS: usize = 2;
 const MAX_KERNEL_LOGIT_DELTA: f32 = 0.05;
 const MAX_TRACE_DELTA: f32 = 0.05;
-const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 16] = [
+const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 17] = [
     "CANDLE_QWEN35_DELTA_STATE_KERNEL",
     "CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL",
     "CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL",
@@ -37,6 +37,7 @@ const QWEN35_EXPERIMENT_ENV_KEYS: [&str; 16] = [
     "CANDLE_QWEN35_FULL_SDPA_CHUNKED",
     "CANDLE_QWEN35_FULL_EAGER_TORCHLIKE",
     "CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL",
+    "CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL",
     "CANDLE_QWEN35_LINEAR_PACKED_PREFILL",
 ];
 
@@ -537,6 +538,28 @@ fn qwen35_dense_control_full_attention_megakernel_matches_baseline_on_hip_very_l
         "hello from the qwen35 correctness harness",
         VERY_LONG_PROMPT_TOKENS,
         &[("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL", "1")],
+    )
+}
+
+#[cfg(feature = "candle-hip")]
+#[test]
+#[ignore = "downloads Qwen3.5-0.8B and validates the persistent HIP full-attention prefill megakernel against the dense-control HIP baseline"]
+fn qwen35_dense_control_full_attention_persistent_megakernel_matches_baseline_on_hip_very_long_prompt(
+) -> dotcache_paged_runtime::Result<()> {
+    let selector = CandleDeviceSelector::Hip { ordinal: 0 };
+    if selector.resolve().is_err() {
+        eprintln!("hip device is unavailable on this host, skipping");
+        return Ok(());
+    }
+
+    compare_dense_control_logits_with_kernel_env(
+        selector,
+        "hello from the qwen35 correctness harness",
+        VERY_LONG_PROMPT_TOKENS,
+        &[
+            ("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL", "1"),
+            ("CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL", "1"),
+        ],
     )
 }
 

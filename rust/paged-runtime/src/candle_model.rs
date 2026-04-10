@@ -486,8 +486,10 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        let page_backend =
-                            CandlePageBackend::new_with_device(device_selector.clone(), device.clone())?;
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
                         let cache = LlamaCache::new(true, dtype, &runtime_config, &device)?;
                         let model = InstrumentedLlama::load(var_builder, &runtime_config)?;
                         let mut sessions = SessionRuntime::new(
@@ -560,8 +562,10 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        let page_backend =
-                            CandlePageBackend::new_with_device(device_selector.clone(), device.clone())?;
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
                         let model = InstrumentedQwen2::load(var_builder, &runtime_config)?;
                         let mut sessions = SessionRuntime::new(
                             runtime_config.num_hidden_layers,
@@ -638,8 +642,10 @@ impl CandleCausalLm {
                         }
                     }
                     RuntimeMode::PagedControl | RuntimeMode::DotCacheExperimental => {
-                        let page_backend =
-                            CandlePageBackend::new_with_device(device_selector.clone(), device.clone())?;
+                        let page_backend = CandlePageBackend::new_with_device(
+                            device_selector.clone(),
+                            device.clone(),
+                        )?;
                         let model = InstrumentedQwen35::load(var_builder, &runtime_config)?;
                         let mut sessions = SessionRuntime::new(
                             text_config.num_hidden_layers,
@@ -921,18 +927,12 @@ impl CandleCausalLm {
                     keys.extend_from_slice(&key_rows[kv_head]);
                     values.extend_from_slice(&value_rows[kv_head]);
                 }
-                let key = Tensor::from_slice(
-                    &keys,
-                    (1, kv_head_count, token_count, head_dim),
-                    device,
-                )?
-                .to_dtype(dtype)?;
-                let value = Tensor::from_slice(
-                    &values,
-                    (1, kv_head_count, token_count, head_dim),
-                    device,
-                )?
-                .to_dtype(dtype)?;
+                let key =
+                    Tensor::from_slice(&keys, (1, kv_head_count, token_count, head_dim), device)?
+                        .to_dtype(dtype)?;
+                let value =
+                    Tensor::from_slice(&values, (1, kv_head_count, token_count, head_dim), device)?
+                        .to_dtype(dtype)?;
                 Some((key, value))
             };
 
@@ -973,13 +973,14 @@ impl CandleCausalLm {
         }
         for &layer_id in full_layer_ids {
             let layer_count = cache_state.layers.len();
-            let layer_state = cache_state
-                .layers
-                .get_mut(layer_id)
-                .ok_or(RuntimeError::InvalidLayer {
-                    layer: layer_id,
-                    layer_count,
-                })?;
+            let layer_state =
+                cache_state
+                    .layers
+                    .get_mut(layer_id)
+                    .ok_or(RuntimeError::InvalidLayer {
+                        layer: layer_id,
+                        layer_count,
+                    })?;
             match layer_state {
                 candle_transformers::models::qwen3_5::LayerCacheState::Full(layer_state) => {
                     if let Some((key, value)) = layer_state.kv_cache.as_ref() {
@@ -993,9 +994,12 @@ impl CandleCausalLm {
                         }
                         let key = key.narrow(2, start_position, token_count)?.contiguous()?;
                         let value = value.narrow(2, start_position, token_count)?.contiguous()?;
-                        let key_values = key.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-                        let value_values =
-                            value.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                        let key_values =
+                            key.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+                        let value_values = value
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?;
                         for token_idx in 0..token_count {
                             let absolute_pos = (start_position + token_idx) as u32;
                             for kv_head in 0..kv_head_count {
@@ -2458,7 +2462,8 @@ impl CandleCausalLm {
                     let page_ids = sessions.physical_page_ids(session_id)?;
                     let restore_started = Instant::now();
                     let _ = sessions.cache_mut().restore_physical_pages(&page_ids)?;
-                    stage_metrics.page_restore_millis += restore_started.elapsed().as_secs_f64() * 1e3;
+                    stage_metrics.page_restore_millis +=
+                        restore_started.elapsed().as_secs_f64() * 1e3;
                     sessions.cache_mut().touch_physical_pages(&page_ids)?;
                     let cache_state = sessions
                         .hybrid_cache_state(session_id)?
@@ -2888,7 +2893,8 @@ impl CandleCausalLm {
                 let hybrid_store_started = Instant::now();
                 let next_state = match next_state {
                     crate::session::HybridCacheState::Qwen35(mut state) => {
-                        if !Self::qwen35_paged_direct_full_attention_enabled(input_ids.len(), false) {
+                        if !Self::qwen35_paged_direct_full_attention_enabled(input_ids.len(), false)
+                        {
                             let full_layer_ids = model.full_attention_layer_ids();
                             Self::qwen35_store_full_attention_pages(
                                 sessions,

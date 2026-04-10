@@ -239,6 +239,7 @@ dependencies = [
  "candle-metal-kernels",
  "candle-nn",
  "fancy-regex",
+ "half",
  "num-traits",
  "rand",
  "rayon",

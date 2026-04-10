@@ -39,12 +39,12 @@ pub use model::{RuntimeMode, RuntimeStageMetrics};
 pub use page::{KvPage, PageId};
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
+#[cfg(feature = "candle")]
+pub use session::HybridCacheState;
 pub use session::{
     KvRow, LayerDecodePlan, SessionDecodePlan, SessionId, SessionMetrics, SessionPrefix,
     SessionRequestKind, SessionRuntime, SessionState, SessionTokenRows,
 };
-#[cfg(feature = "candle")]
-pub use session::HybridCacheState;
 pub use virtual_page::{
     VirtualCacheMetrics, VirtualLayerCache, VirtualPage, VirtualPageId, VirtualPageTable,
     VirtualPagedKvCache, VirtualSeqCache,
