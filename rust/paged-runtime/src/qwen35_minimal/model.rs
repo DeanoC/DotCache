@@ -1152,12 +1152,17 @@ fn use_delta_full_scan_kernel(
     }
 
     match device.location() {
-        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } | DeviceLocation::Hip { .. } => {
-            matches!(
-                std::env::var("CANDLE_QWEN35_DELTA_FULL_KERNEL").as_deref(),
-                Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-            )
-        }
+        DeviceLocation::Hip { .. } => match std::env::var("CANDLE_QWEN35_DELTA_FULL_KERNEL") {
+            Ok(raw) => !matches!(
+                raw.trim(),
+                "0" | "false" | "FALSE" | "no" | "NO"
+            ),
+            Err(_) => true,
+        },
+        DeviceLocation::Metal { .. } | DeviceLocation::Cuda { .. } => matches!(
+            std::env::var("CANDLE_QWEN35_DELTA_FULL_KERNEL").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        ),
         _ => false,
     }
 }
@@ -8705,6 +8710,14 @@ mod tests {
             }
             Self { saved }
         }
+
+        fn clear() -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::remove_var(Self::KEY);
+            }
+            Self { saved }
+        }
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -9987,6 +10000,34 @@ mod tests {
             gated_counters.device_to_host_bytes < baseline_counters.device_to_host_bytes,
             "expected full-scan path to reduce D2H traffic: baseline={baseline_counters:?} gated={gated_counters:?}"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_full_scan_gate_defaults_on_for_prebatched_local() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = DeltaFullKernelEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        assert!(use_delta_full_scan_kernel(
+            &device,
+            DeltaNetScanMode::PrebatchedLocal,
+            4096
+        ));
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_full_scan_gate_honors_opt_out() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = DeltaFullKernelEnvGuard::set("0");
+        let device = Device::new_hip(0)?;
+        assert!(!use_delta_full_scan_kernel(
+            &device,
+            DeltaNetScanMode::PrebatchedLocal,
+            4096
+        ));
         Ok(())
     }
 
