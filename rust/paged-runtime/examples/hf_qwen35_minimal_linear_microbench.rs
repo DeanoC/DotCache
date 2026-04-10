@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         model_id: String,
         prompt: String,
         layer_id: Option<usize>,
+        prompt_token_target: Option<usize>,
         repeats: usize,
         warmup_repeats: usize,
         device: DeviceSelector,
@@ -124,16 +125,46 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_linear_full_kernel_unpack_millis: f64,
     }
 
+    fn build_prompt_ids(
+        tokenizer: &Tokenizer,
+        prompt: &str,
+        target: Option<usize>,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut token_ids = tokenizer.encode(prompt, true)?.get_ids().to_vec();
+        if token_ids.is_empty() {
+            return Err("prompt encoding produced no tokens".into());
+        }
+        if let Some(target) = target {
+            match token_ids.len().cmp(&target) {
+                std::cmp::Ordering::Greater => token_ids.truncate(target),
+                std::cmp::Ordering::Equal => {}
+                std::cmp::Ordering::Less => {
+                    let filler = tokenizer.encode(format!(" {prompt}"), false)?;
+                    let filler_ids = filler.get_ids();
+                    if filler_ids.is_empty() {
+                        return Err("prompt filler encoding produced no tokens".into());
+                    }
+                    while token_ids.len() < target {
+                        token_ids.extend_from_slice(filler_ids);
+                    }
+                    token_ids.truncate(target);
+                }
+            }
+        }
+        Ok(token_ids)
+    }
+
     fn parse_args() -> Result<Args, Box<dyn std::error::Error + Send + Sync>> {
         let mut args = std::env::args().skip(1);
         let model_id = args.next().ok_or(
-            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--repeats N] [--warmup-repeats N] [--device cpu|hip[:ordinal]]",
+            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|hip[:ordinal]]",
         )?;
         let prompt = args.next().ok_or("missing prompt")?;
         let mut parsed = Args {
             model_id,
             prompt,
             layer_id: None,
+            prompt_token_target: None,
             repeats: 5,
             warmup_repeats: 1,
             device: DeviceSelector::Cpu,
@@ -144,6 +175,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     parsed.layer_id = Some(
                         args.next()
                             .ok_or("missing value for --layer-id")?
+                            .parse::<usize>()?,
+                    );
+                }
+                "--prompt-token-target" => {
+                    parsed.prompt_token_target = Some(
+                        args.next()
+                            .ok_or("missing value for --prompt-token-target")?
                             .parse::<usize>()?,
                     );
                 }
@@ -175,10 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let source = dotcache_paged_runtime::HfHubModelSource::new()?;
     let artifacts = source.snapshot(&args.model_id)?;
     let tokenizer = Tokenizer::from_file(&artifacts.tokenizer_path)?;
-    let prompt_ids = tokenizer.encode(args.prompt.as_str(), true)?.get_ids().to_vec();
-    if prompt_ids.is_empty() {
-        return Err("prompt encoding produced no tokens".into());
-    }
+    let prompt_ids = build_prompt_ids(&tokenizer, args.prompt.as_str(), args.prompt_token_target)?;
 
     let device = args.device.resolve()?;
     let load_started = Instant::now();
