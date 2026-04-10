@@ -161,6 +161,35 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_delta_full_scan_pack(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            query_scan: *const c_void,
+            key_scan: *const c_void,
+            exp_g_scan: *const c_void,
+            k_cumdecay_scan: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_delta_full_scan_packed(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            v_head_dim: usize,
+            initial_state: *const c_void,
+            packed_scan: *const c_void,
+            local_attn_scan: *const c_void,
+            value: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_l2norm(
             dtype: c_int,
             device_ordinal: usize,

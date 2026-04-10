@@ -778,6 +778,158 @@ __device__ inline void dotcache_qwen35_delta_full_scan_impl(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_delta_full_scan_pack_kernel(
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    const T* query_scan,
+    const T* key_scan,
+    const T* exp_g_scan,
+    const T* k_cumdecay_scan,
+    T* out
+) {
+    const int row = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int total_rows = batch_heads * num_chunks * chunk_size;
+    if (row >= total_rows) {
+        return;
+    }
+    const int row_stride = k_head_dim;
+    const int packed_width = 3 * k_head_dim + 1;
+    const int bh = row / (num_chunks * chunk_size);
+    const int rem = row - bh * num_chunks * chunk_size;
+    const int chunk = rem / chunk_size;
+    const int t = rem - chunk * chunk_size;
+    const int scan_row = row * row_stride;
+    const int packed_row = row * packed_width;
+
+    const float exp_g_t = dotcache_qwen35_to_float(exp_g_scan[row]);
+    const float exp_g_last = dotcache_qwen35_to_float(exp_g_scan[bh * num_chunks * chunk_size + chunk * chunk_size + (chunk_size - 1)]);
+    const float chunk_decay = exp_g_t != 0.0f ? (exp_g_last / exp_g_t) : 0.0f;
+
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        out[packed_row + k_idx] = dotcache_qwen35_from_float<T>(
+            dotcache_qwen35_to_float(key_scan[scan_row + k_idx]) * chunk_decay
+        );
+        out[packed_row + k_head_dim + k_idx] = k_cumdecay_scan[scan_row + k_idx];
+        out[packed_row + 2 * k_head_dim + k_idx] = dotcache_qwen35_from_float<T>(
+            dotcache_qwen35_to_float(query_scan[scan_row + k_idx]) * exp_g_t
+        );
+    }
+    out[packed_row + 3 * k_head_dim] = dotcache_qwen35_from_float<T>(exp_g_last);
+}
+
+template <typename T, int MAX_K = 256, int MAX_CHUNK = 64>
+__device__ inline void dotcache_qwen35_delta_full_scan_packed_impl(
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const T* initial_state,
+    const T* packed_scan,
+    const T* local_attn_scan,
+    const T* value,
+    T* out,
+    int tid
+) {
+    const int total_threads = batch_heads * v_head_dim;
+    if (tid >= total_threads || k_head_dim > MAX_K || chunk_size > MAX_CHUNK) {
+        return;
+    }
+
+    const int bh = tid / v_head_dim;
+    const int v_idx = tid - bh * v_head_dim;
+    const int state_stride = k_head_dim * v_head_dim;
+    const int token_count = num_chunks * chunk_size;
+    const int packed_width = 3 * k_head_dim + 1;
+    const int packed_base = bh * num_chunks * chunk_size * packed_width;
+    const int local_base = bh * num_chunks * chunk_size * chunk_size;
+    const int value_base = bh * token_count * v_head_dim;
+    const int out_base = bh * (token_count + k_head_dim) * v_head_dim;
+
+    float state[MAX_K];
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        state[k_idx] = dotcache_qwen35_to_float(
+            initial_state[bh * state_stride + k_idx * v_head_dim + v_idx]
+        );
+    }
+
+    float v_new[MAX_CHUNK];
+    float attn_inter[MAX_CHUNK];
+    for (int chunk = 0; chunk < num_chunks; ++chunk) {
+        const int chunk_packed = packed_base + chunk * chunk_size * packed_width;
+        const int chunk_local = local_base + chunk * chunk_size * chunk_size;
+        const int chunk_value = value_base + chunk * chunk_size * v_head_dim;
+        for (int t = 0; t < chunk_size; ++t) {
+            float v_prime = 0.0f;
+            float attn = 0.0f;
+            const int row = chunk_packed + t * packed_width;
+            for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+                v_prime += dotcache_qwen35_to_float(packed_scan[row + k_head_dim + k_idx]) * state[k_idx];
+                attn += dotcache_qwen35_to_float(packed_scan[row + 2 * k_head_dim + k_idx]) * state[k_idx];
+            }
+            v_new[t] = dotcache_qwen35_to_float(value[chunk_value + t * v_head_dim + v_idx]) - v_prime;
+            attn_inter[t] = attn;
+        }
+
+        for (int t = 0; t < chunk_size; ++t) {
+            float local = 0.0f;
+            const int row = chunk_local + t * chunk_size;
+            for (int s = 0; s < chunk_size; ++s) {
+                local += dotcache_qwen35_to_float(local_attn_scan[row + s]) * v_new[s];
+            }
+            out[out_base + (chunk * chunk_size + t) * v_head_dim + v_idx] =
+                dotcache_qwen35_from_float<T>(attn_inter[t] + local);
+        }
+
+        const float state_decay = dotcache_qwen35_to_float(packed_scan[chunk_packed + 3 * k_head_dim]);
+        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+            float update = 0.0f;
+            for (int t = 0; t < chunk_size; ++t) {
+                const int row = chunk_packed + t * packed_width;
+                update += dotcache_qwen35_to_float(packed_scan[row + k_idx]) * v_new[t];
+            }
+            state[k_idx] = state_decay * state[k_idx] + update;
+        }
+    }
+
+    const int state_out = out_base + token_count * v_head_dim;
+    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
+        out[state_out + k_idx * v_head_dim + v_idx] = dotcache_qwen35_from_float<T>(state[k_idx]);
+    }
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_delta_full_scan_packed_kernel(
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    int v_head_dim,
+    const T* initial_state,
+    const T* packed_scan,
+    const T* local_attn_scan,
+    const T* value,
+    T* out
+) {
+    const int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    dotcache_qwen35_delta_full_scan_packed_impl(
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        k_head_dim,
+        v_head_dim,
+        initial_state,
+        packed_scan,
+        local_attn_scan,
+        value,
+        out,
+        tid
+    );
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_delta_full_scan_kernel(
     int batch_heads,
     int num_chunks,

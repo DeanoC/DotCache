@@ -5438,6 +5438,250 @@ fn delta_full_scan(
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DeltaFullScanPack;
+
+impl candle::CustomOp4 for DeltaFullScanPack {
+    fn name(&self) -> &'static str {
+        "delta-full-scan-pack"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-full-scan-pack has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        query_scan: &candle::HipStorage,
+        query_layout: &candle::Layout,
+        key_scan: &candle::HipStorage,
+        key_layout: &candle::Layout,
+        exp_g_scan: &candle::HipStorage,
+        exp_g_layout: &candle::Layout,
+        k_cumdecay_scan: &candle::HipStorage,
+        k_cumdecay_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(query_layout.is_contiguous()
+            && key_layout.is_contiguous()
+            && exp_g_layout.is_contiguous()
+            && k_cumdecay_layout.is_contiguous())
+        {
+            candle::bail!("delta-full-scan-pack requires contiguous inputs")
+        }
+
+        let (batch_heads, num_chunks, chunk_size, k_head_dim) = query_layout.shape().dims4()?;
+        let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+        let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+        let (cum_bh, cum_chunks, cum_chunk_size, cum_k) = k_cumdecay_layout.shape().dims4()?;
+        if key_bh != batch_heads
+            || exp_bh != batch_heads
+            || cum_bh != batch_heads
+            || key_chunks != num_chunks
+            || exp_chunks != num_chunks
+            || cum_chunks != num_chunks
+            || key_chunk_size != chunk_size
+            || exp_chunk_size != chunk_size
+            || cum_chunk_size != chunk_size
+            || key_k != k_head_dim
+            || cum_k != k_head_dim
+        {
+            candle::bail!(
+                "delta-full-scan-pack shape mismatch: query={:?} key={:?} exp_g={:?} k_cumdecay={:?}",
+                query_layout.shape().dims(),
+                key_layout.shape().dims(),
+                exp_g_layout.shape().dims(),
+                k_cumdecay_layout.shape().dims()
+            )
+        }
+        if query_scan.dtype() != key_scan.dtype()
+            || query_scan.dtype() != exp_g_scan.dtype()
+            || query_scan.dtype() != k_cumdecay_scan.dtype()
+        {
+            candle::bail!(
+                "delta-full-scan-pack requires matching dtypes, got query={:?} key={:?} exp_g={:?} k_cumdecay={:?}",
+                query_scan.dtype(),
+                key_scan.dtype(),
+                exp_g_scan.dtype(),
+                k_cumdecay_scan.dtype()
+            )
+        }
+
+        let device = query_scan.device().clone();
+        let storage_dtype = query_scan.dtype();
+        let packed_width = 3 * k_head_dim + 1;
+        let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, packed_width]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_full_scan_pack(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                query_scan.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+                k_cumdecay_scan.raw_device_ptr_with_offset(k_cumdecay_layout.start_offset())?
+                    as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_full_scan_pack(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+) -> Result<Tensor> {
+    query_scan.apply_op4_no_bwd(key_scan, exp_g_scan, k_cumdecay_scan, &DeltaFullScanPack)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeltaFullScanPacked;
+
+impl candle::CustomOp4 for DeltaFullScanPacked {
+    fn name(&self) -> &'static str {
+        "delta-full-scan-packed"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-full-scan-packed has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        initial_state: &candle::HipStorage,
+        initial_layout: &candle::Layout,
+        packed_scan: &candle::HipStorage,
+        packed_layout: &candle::Layout,
+        local_attn_scan: &candle::HipStorage,
+        local_attn_layout: &candle::Layout,
+        value: &candle::HipStorage,
+        value_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !(initial_layout.is_contiguous()
+            && packed_layout.is_contiguous()
+            && local_attn_layout.is_contiguous()
+            && value_layout.is_contiguous())
+        {
+            candle::bail!("delta-full-scan-packed requires contiguous inputs")
+        }
+
+        let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+        let (packed_bh, num_chunks, chunk_size, packed_width) = packed_layout.shape().dims4()?;
+        let (local_bh, local_chunks, local_chunk_size, local_width) =
+            local_attn_layout.shape().dims4()?;
+        let (value_bh, value_chunks, value_chunk_size, value_v) = value_layout.shape().dims4()?;
+        if packed_bh != batch_heads
+            || local_bh != batch_heads
+            || value_bh != batch_heads
+            || local_chunks != num_chunks
+            || value_chunks != num_chunks
+            || local_chunk_size != chunk_size
+            || value_chunk_size != chunk_size
+            || local_width != chunk_size
+            || value_v != v_head_dim
+            || packed_width != 3 * k_head_dim + 1
+        {
+            candle::bail!(
+                "delta-full-scan-packed shape mismatch: initial={:?} packed={:?} local_attn={:?} value={:?}",
+                initial_layout.shape().dims(),
+                packed_layout.shape().dims(),
+                local_attn_layout.shape().dims(),
+                value_layout.shape().dims()
+            )
+        }
+        if initial_state.dtype() != packed_scan.dtype()
+            || initial_state.dtype() != local_attn_scan.dtype()
+            || initial_state.dtype() != value.dtype()
+        {
+            candle::bail!(
+                "delta-full-scan-packed requires matching dtypes, got initial={:?} packed={:?} local_attn={:?} value={:?}",
+                initial_state.dtype(),
+                packed_scan.dtype(),
+                local_attn_scan.dtype(),
+                value.dtype()
+            )
+        }
+
+        let device = initial_state.device().clone();
+        let storage_dtype = initial_state.dtype();
+        let out_shape = candle::Shape::from_dims(&[
+            batch_heads,
+            num_chunks * chunk_size + k_head_dim,
+            v_head_dim,
+        ]);
+        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                v_head_dim,
+                initial_state.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                    as *const c_void,
+                packed_scan.raw_device_ptr_with_offset(packed_layout.start_offset())?
+                    as *const c_void,
+                local_attn_scan.raw_device_ptr_with_offset(local_attn_layout.start_offset())?
+                    as *const c_void,
+                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn delta_full_scan_packed(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Tensor> {
+    initial_state.apply_op4_no_bwd(packed_scan, local_attn_scan, value, &DeltaFullScanPacked)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeltaNetScanMode {
     Flat3d,
@@ -7262,21 +7506,6 @@ impl GatedDeltaNet {
             use_delta_full_scan_kernel(query.device(), scan_mode, sequence_length);
         let full_scan = if use_full_scan_kernel {
             let full_pack_start = profile_start(device)?;
-            let state_decay_scan = state_decay_scan
-                .as_ref()
-                .ok_or_else(|| {
-                    candle::Error::Msg("delta-full-scan requires hoisted state decay".into())
-                })?
-                .squeeze(3)?
-                .squeeze(2)?
-                .contiguous()?;
-            let weighted_key_scan = key_scan
-                .broadcast_mul(chunk_decay_scan.as_ref().ok_or_else(|| {
-                    candle::Error::Msg("delta-full-scan requires hoisted chunk decay".into())
-                })?)?
-                .contiguous()?;
-            let k_cumdecay_scan = k_cumdecay_scan.contiguous()?;
-            let q_state_scan = q_state_scan.contiguous()?;
             let local_attn_scan = local_attn_scan
                 .as_ref()
                 .ok_or_else(|| {
@@ -7284,22 +7513,60 @@ impl GatedDeltaNet {
                 })?
                 .contiguous()?;
             let value_scan = value_scan.contiguous()?;
-            let full_pack_elapsed = profile_elapsed(full_pack_start, device)?;
-            profile.linear_full_kernel_pack_millis += full_pack_elapsed;
-            profile.transfer_millis += full_pack_elapsed;
-            let full_kernel_start = profile_start(device)?;
-            let full_scan = delta_full_scan(
-                &last_recurrent_state,
-                &weighted_key_scan,
-                &k_cumdecay_scan,
-                &q_state_scan,
-                &local_attn_scan,
-                &state_decay_scan,
-                &value_scan,
-            )?;
-            profile.linear_full_kernel_execute_millis +=
-                profile_elapsed(full_kernel_start, device)?;
-            Some(full_scan)
+            let full_scan = if query.device().is_hip() {
+                let packed_scan = delta_full_scan_pack(
+                    &query_scan.contiguous()?,
+                    &key_scan.contiguous()?,
+                    &exp_g_scan.contiguous()?,
+                    &k_cumdecay_scan.contiguous()?,
+                )?;
+                let full_pack_elapsed = profile_elapsed(full_pack_start, device)?;
+                profile.linear_full_kernel_pack_millis += full_pack_elapsed;
+                profile.transfer_millis += full_pack_elapsed;
+                let full_kernel_start = profile_start(device)?;
+                let full_scan = delta_full_scan_packed(
+                    &last_recurrent_state,
+                    &packed_scan,
+                    &local_attn_scan,
+                    &value_scan,
+                )?;
+                profile.linear_full_kernel_execute_millis +=
+                    profile_elapsed(full_kernel_start, device)?;
+                Some(full_scan)
+            } else {
+                let state_decay_scan = state_decay_scan
+                    .as_ref()
+                    .ok_or_else(|| {
+                        candle::Error::Msg("delta-full-scan requires hoisted state decay".into())
+                    })?
+                    .squeeze(3)?
+                    .squeeze(2)?
+                    .contiguous()?;
+                let weighted_key_scan = key_scan
+                    .broadcast_mul(chunk_decay_scan.as_ref().ok_or_else(|| {
+                        candle::Error::Msg("delta-full-scan requires hoisted chunk decay".into())
+                    })?)?
+                    .contiguous()?;
+                let k_cumdecay_scan = k_cumdecay_scan.contiguous()?;
+                let q_state_scan = q_state_scan.contiguous()?;
+                let full_pack_elapsed = profile_elapsed(full_pack_start, device)?;
+                profile.linear_full_kernel_pack_millis += full_pack_elapsed;
+                profile.transfer_millis += full_pack_elapsed;
+                let full_kernel_start = profile_start(device)?;
+                let full_scan = delta_full_scan(
+                    &last_recurrent_state,
+                    &weighted_key_scan,
+                    &k_cumdecay_scan,
+                    &q_state_scan,
+                    &local_attn_scan,
+                    &state_decay_scan,
+                    &value_scan,
+                )?;
+                profile.linear_full_kernel_execute_millis +=
+                    profile_elapsed(full_kernel_start, device)?;
+                Some(full_scan)
+            };
+            full_scan
         } else {
             None
         };
@@ -10691,6 +10958,89 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
+    fn hip_delta_full_scan_packed_matches_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 2usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state_data = vec![0.15f32, -0.05, 0.2, 0.1];
+        let query_scan_data = vec![0.05f32, -0.15, 0.2, 0.1, -0.1, 0.3, 0.15, -0.05];
+        let key_scan_data = vec![0.2f32, -0.1, 0.05, 0.3, -0.2, 0.15, 0.25, -0.05];
+        let exp_g_scan_data = vec![0.9f32, 1.1, 0.85, 1.2];
+        let k_cumdecay_data = vec![0.1f32, 0.25, -0.2, 0.05, 0.15, -0.1, 0.05, 0.2];
+        let local_attn_data = vec![0.2f32, 0.1, -0.1, 0.3, 0.05, -0.2, 0.25, 0.15];
+        let value_data = vec![0.3f32, 0.1, -0.2, 0.4, 0.05, -0.1, 0.2, 0.35];
+
+        let initial_state = Tensor::from_vec(
+            initial_state_data.clone(),
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query_scan = Tensor::from_vec(
+            query_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            key_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            exp_g_scan_data.clone(),
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+        let k_cumdecay_scan = Tensor::from_vec(
+            k_cumdecay_data.clone(),
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let local_attn_scan = Tensor::from_vec(
+            local_attn_data.clone(),
+            (batch_heads, num_chunks, chunk_size, chunk_size),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_heads, num_chunks, chunk_size, v_head_dim),
+            &device,
+        )?;
+
+        let packed_scan =
+            delta_full_scan_pack(&query_scan, &key_scan, &exp_g_scan, &k_cumdecay_scan)?;
+        let output = delta_full_scan_packed(&initial_state, &packed_scan, &local_attn_scan, &value)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let exp_g_last = exp_g_scan.i((.., .., chunk_size - 1))?;
+        let state_decay_scan = exp_g_last.contiguous()?;
+        let chunk_decay_scan = exp_g_last
+            .unsqueeze(D::Minus1)?
+            .broadcast_div(&exp_g_scan)?
+            .unsqueeze(D::Minus1)?;
+        let weighted_key_scan = key_scan.broadcast_mul(&chunk_decay_scan)?;
+        let q_state_scan = query_scan.broadcast_mul(&exp_g_scan.unsqueeze(D::Minus1)?)?;
+        let reference = delta_full_scan(
+            &initial_state,
+            &weighted_key_scan.contiguous()?,
+            &k_cumdecay_scan.contiguous()?,
+            &q_state_scan.contiguous()?,
+            &local_attn_scan.contiguous()?,
+            &state_decay_scan.contiguous()?,
+            &value.contiguous()?,
+        )?;
+        let reference = reference.flatten_all()?.to_vec1::<f32>()?;
+
+        assert_close(&output, &reference, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
     fn hip_delta_full_scan_avoids_host_staging() -> Result<()> {
         let _guard = hip_test_guard();
         let device = Device::new_hip(0)?;
@@ -10744,6 +11094,66 @@ mod tests {
             &value,
         )?;
         let counters = candle::hip::transfer_counters();
+        assert_eq!(output.dtype(), initial_state.dtype());
+        assert_eq!(counters.host_to_device_bytes, 0);
+        assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_full_scan_packed_avoids_host_staging() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 2usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state = Tensor::from_vec(
+            vec![0.15f32, -0.05, 0.2, 0.1],
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query_scan = Tensor::from_vec(
+            vec![0.05f32, -0.15, 0.2, 0.1, -0.1, 0.3, 0.15, -0.05],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            vec![0.2f32, -0.1, 0.05, 0.3, -0.2, 0.15, 0.25, -0.05],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            vec![0.9f32, 1.1, 0.85, 1.2],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+        let k_cumdecay_scan = Tensor::from_vec(
+            vec![0.1f32, 0.25, -0.2, 0.05, 0.15, -0.1, 0.05, 0.2],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let local_attn_scan = Tensor::from_vec(
+            vec![0.2f32, 0.1, -0.1, 0.3, 0.05, -0.2, 0.25, 0.15],
+            (batch_heads, num_chunks, chunk_size, chunk_size),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            vec![0.3f32, 0.1, -0.2, 0.4, 0.05, -0.1, 0.2, 0.35],
+            (batch_heads, num_chunks, chunk_size, v_head_dim),
+            &device,
+        )?;
+
+        candle::hip::reset_transfer_counters();
+        let packed_scan =
+            delta_full_scan_pack(&query_scan, &key_scan, &exp_g_scan, &k_cumdecay_scan)?;
+        let output =
+            delta_full_scan_packed(&initial_state, &packed_scan, &local_attn_scan, &value)?;
+        let counters = candle::hip::transfer_counters();
+        assert_eq!(packed_scan.dtype(), query_scan.dtype());
         assert_eq!(output.dtype(), initial_state.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
