@@ -1167,6 +1167,31 @@ fn use_delta_full_scan_kernel(
     }
 }
 
+fn use_hip_exact_multi_chunk_full_scan_prefill(
+    device: &Device,
+    scan_mode: DeltaNetScanMode,
+    sequence_length: usize,
+    num_chunks: usize,
+    chunk_size: usize,
+) -> bool {
+    if !matches!(device.location(), DeviceLocation::Hip { .. }) {
+        return false;
+    }
+    if !(matches!(scan_mode, DeltaNetScanMode::PrebatchedLocal)
+        && num_chunks > 1
+        && num_chunks <= 4
+        && sequence_length > chunk_size
+        && chunk_size <= 64)
+    {
+        return false;
+    }
+
+    match std::env::var("CANDLE_QWEN35_DELTA_FULL_KERNEL") {
+        Ok(raw) => !matches!(raw.trim(), "0" | "false" | "FALSE" | "no" | "NO"),
+        Err(_) => true,
+    }
+}
+
 fn use_delta_recurrent_prefill_kernel(device: &Device, sequence_length: usize) -> bool {
     sequence_length >= 4096
         && match device.location() {
@@ -7633,8 +7658,14 @@ impl GatedDeltaNet {
             use_delta_state_scan_kernel(query.device(), scan_mode, sequence_length);
         let use_chunk_fused_kernel =
             use_delta_chunk_fused_kernel(query.device(), scan_mode, sequence_length);
-        let use_full_scan_kernel =
-            use_delta_full_scan_kernel(query.device(), scan_mode, sequence_length);
+        let use_full_scan_kernel = use_delta_full_scan_kernel(query.device(), scan_mode, sequence_length)
+            || use_hip_exact_multi_chunk_full_scan_prefill(
+                query.device(),
+                scan_mode,
+                sequence_length,
+                num_chunks,
+                chunk_size,
+            );
         let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
 
         let solve_batch = batch_size * num_heads * num_chunks;
@@ -10616,6 +10647,38 @@ mod tests {
             &device,
             DeltaNetScanMode::PrebatchedLocal,
             4096
+        ));
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_exact_multi_chunk_full_scan_gate_defaults_on() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = DeltaFullKernelEnvGuard::clear();
+        let device = Device::new_hip(0)?;
+        assert!(use_hip_exact_multi_chunk_full_scan_prefill(
+            &device,
+            DeltaNetScanMode::PrebatchedLocal,
+            18,
+            3,
+            8
+        ));
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_exact_multi_chunk_full_scan_gate_honors_opt_out() -> Result<()> {
+        let _guard = hip_test_guard();
+        let _env = DeltaFullKernelEnvGuard::set("0");
+        let device = Device::new_hip(0)?;
+        assert!(!use_hip_exact_multi_chunk_full_scan_prefill(
+            &device,
+            DeltaNetScanMode::PrebatchedLocal,
+            18,
+            3,
+            8
         ));
         Ok(())
     }
