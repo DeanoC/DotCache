@@ -1480,6 +1480,67 @@ __global__ void dotcache_qwen35_delta_attn_solve_scan_kernel(
     }
 }
 
+template <typename T, int MAX_CHUNK = 64>
+__global__ void dotcache_qwen35_delta_attn_solve_from_inputs_kernel(
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    const T* k_beta_scan,
+    const T* key_scan,
+    const T* exp_g_scan,
+    T* out
+) {
+    const int matrix = static_cast<int>(blockIdx.x);
+    const int total_mats = batch_heads * num_chunks;
+    if (matrix >= total_mats || threadIdx.x != 0) {
+        return;
+    }
+
+    const int chunk_base = matrix * chunk_size;
+    const int qk_base = chunk_base * k_head_dim;
+    const int out_base = matrix * chunk_size * chunk_size;
+    float rows[MAX_CHUNK * MAX_CHUNK];
+    float base_row[MAX_CHUNK];
+    #pragma unroll
+    for (int idx = 0; idx < MAX_CHUNK * MAX_CHUNK; ++idx) {
+        rows[idx] = 0.0f;
+    }
+
+    for (int i = 1; i < chunk_size; ++i) {
+        const float exp_g_t = dotcache_qwen35_to_float(exp_g_scan[chunk_base + i]);
+        for (int k = 0; k < i; ++k) {
+            const int row_base = qk_base + i * k_head_dim;
+            const int col_base = qk_base + k * k_head_dim;
+            float dot = 0.0f;
+            for (int d = 0; d < k_head_dim; ++d) {
+                dot += dotcache_qwen35_to_float(k_beta_scan[row_base + d]) *
+                    dotcache_qwen35_to_float(key_scan[col_base + d]);
+            }
+            const float exp_g_s = dotcache_qwen35_to_float(exp_g_scan[chunk_base + k]);
+            const float decay = exp_g_s != 0.0f ? (exp_g_t / exp_g_s) : 0.0f;
+            base_row[k] = -dot * decay;
+        }
+        for (int j = 0; j < i; ++j) {
+            float correction = 0.0f;
+            for (int k = 0; k < i; ++k) {
+                correction += base_row[k] * rows[k * chunk_size + j];
+            }
+            rows[i * chunk_size + j] = base_row[j] + correction;
+        }
+    }
+
+    for (int i = 0; i < chunk_size; ++i) {
+        for (int j = 0; j < chunk_size; ++j) {
+            float value = rows[i * chunk_size + j];
+            if (i == j) {
+                value += 1.0f;
+            }
+            out[out_base + i * chunk_size + j] = dotcache_qwen35_from_float<T>(value);
+        }
+    }
+}
+
 template <typename T>
 __global__ void dotcache_qwen35_swiglu_mul_kernel(
     int elem_count,

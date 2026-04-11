@@ -385,6 +385,19 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_delta_attn_solve_from_inputs(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_heads: usize,
+            num_chunks: usize,
+            chunk_size: usize,
+            k_head_dim: usize,
+            k_beta_scan: *const c_void,
+            key_scan: *const c_void,
+            exp_g_scan: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_delta_full_scan_packed(
             dtype: c_int,
             device_ordinal: usize,
