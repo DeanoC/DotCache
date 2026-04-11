@@ -2246,6 +2246,13 @@ def _score_m0_logits_fused_torch(fused_scaled_codes, fused_queries, bias_groups,
 
 def _score_exact_logits_paged_torch(keys, queries):
     torch = _load_torch()
+    squeeze_batch = False
+    if keys.ndim == 3:
+        keys = keys.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
     if keys.ndim != 4:
         raise ValueError("keys must have shape [batch_size, page_count, token_count, head_dim]")
     if queries.ndim != 3:
@@ -2254,11 +2261,19 @@ def _score_exact_logits_paged_torch(keys, queries):
     if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
         raise ValueError("queries batch/head_dim must align with keys")
     key_flat = keys.reshape(batch_size, -1, head_dim)
-    return torch.bmm(key_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    output = torch.bmm(key_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
 
 
 def _score_exact_logits_flat_torch(keys_flat, queries):
     torch = _load_torch()
+    squeeze_batch = False
+    if keys_flat.ndim == 2:
+        keys_flat = keys_flat.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
     if keys_flat.ndim != 3:
         raise ValueError("keys_flat must have shape [batch_size, token_count, head_dim]")
     if queries.ndim != 3:
@@ -2266,11 +2281,19 @@ def _score_exact_logits_flat_torch(keys_flat, queries):
     batch_size, _token_count, head_dim = map(int, keys_flat.shape)
     if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
         raise ValueError("queries batch/head_dim must align with keys_flat")
-    return torch.bmm(keys_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    output = torch.bmm(keys_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
 
 
 def _score_exact_logits_transposed_torch(keys_transposed, queries):
     torch = _load_torch()
+    squeeze_batch = False
+    if keys_transposed.ndim == 2:
+        keys_transposed = keys_transposed.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
     if keys_transposed.ndim != 3:
         raise ValueError("keys_transposed must have shape [batch_size, head_dim, token_count]")
     if queries.ndim != 3:
@@ -2278,7 +2301,8 @@ def _score_exact_logits_transposed_torch(keys_transposed, queries):
     batch_size, head_dim, _token_count = map(int, keys_transposed.shape)
     if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
         raise ValueError("queries batch/head_dim must align with keys_transposed")
-    return torch.bmm(queries, keys_transposed).to(torch.float32)
+    output = torch.bmm(queries, keys_transposed).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
 
 
 def _mix_m0_contribution_two_group64_torch(weights, fused_scaled_codes, bias_groups):

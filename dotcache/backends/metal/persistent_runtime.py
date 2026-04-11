@@ -43,10 +43,14 @@ def _synchronize_torch_device(value: Any) -> None:
         torch.cuda.synchronize()
 
 
-def _load_torch_m0_execution_ops():
-    from ..torch_mps import _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch
+def _load_torch_mixed_execution_ops():
+    from ..torch_mps import (
+        _mix_m0_contribution_fused_torch,
+        _score_exact_logits_flat_torch,
+        _score_m0_logits_fused_torch,
+    )
 
-    return _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch
+    return _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch, _score_exact_logits_flat_torch
 
 
 def _torch_dtype_bytes(dtype: Any) -> int:
@@ -1931,7 +1935,7 @@ def _decode_selected_blocks_direct_m0_torch(
     config: PersistentServingConfig,
 ):
     torch = _load_torch()
-    _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch = _load_torch_m0_execution_ops()
+    _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch, score_exact_logits_flat_torch = _load_torch_mixed_execution_ops()
     query_tensor = query.to(dtype=torch.float32)
     q_head_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
     resolved_block_ids = [int(block_id) for block_id in block_ids]
@@ -2111,7 +2115,7 @@ def _decode_selected_blocks_direct_m0_torch(
                     device=query_tensor.device,
                     dtype=score_dtype,
                 )
-            m3_logits = torch.matmul(q_slice_score, m3_keys.transpose(0, 1)).to(dtype=torch.float32)
+            m3_logits = score_exact_logits_flat_torch(m3_keys, q_slice_score)
             _synchronize_torch_device(q_slice)
             timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
             logits.index_copy_(1, m3_local_indices, m3_logits)
