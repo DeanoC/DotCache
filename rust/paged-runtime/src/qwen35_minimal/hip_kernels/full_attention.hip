@@ -42,6 +42,50 @@ __device__ inline hip_bfloat16 dotcache_qwen35_from_float<hip_bfloat16>(float va
     return hip_bfloat16(value);
 }
 
+template <typename T>
+__device__ inline float dotcache_qwen35_conv4_contiguous_t_ge3(
+    const T* mixed_qkv,
+    size_t mixed_c_offset,
+    size_t t,
+    const T* weights,
+    size_t weight_offset
+) {
+    const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+    const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+    const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+    const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+    const float x0 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 3)]);
+    const float x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 2)]);
+    const float x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 1)]);
+    const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + t]);
+    return ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
+}
+
+template <>
+__device__ inline float dotcache_qwen35_conv4_contiguous_t_ge3<__half>(
+    const __half* mixed_qkv,
+    size_t mixed_c_offset,
+    size_t t,
+    const __half* weights,
+    size_t weight_offset
+) {
+    const __half2 x01 = __halves2half2(
+        mixed_qkv[mixed_c_offset + (t - 3)],
+        mixed_qkv[mixed_c_offset + (t - 2)]);
+    const __half2 x23 = __halves2half2(
+        mixed_qkv[mixed_c_offset + (t - 1)],
+        mixed_qkv[mixed_c_offset + t]);
+    const __half2 w01 = __halves2half2(
+        weights[weight_offset],
+        weights[weight_offset + 1]);
+    const __half2 w23 = __halves2half2(
+        weights[weight_offset + 2],
+        weights[weight_offset + 3]);
+    const float2 f01 = __half22float2(__hmul2(x01, w01));
+    const float2 f23 = __half22float2(__hmul2(x23, w23));
+    return (f01.x + f01.y) + (f23.x + f23.y);
+}
+
 __device__ inline float dotcache_qwen35_wave_sum(float value) {
     for (int offset = warpSize / 2; offset > 0; offset /= 2) {
         value += __shfl_down(value, offset);
@@ -361,34 +405,41 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel_k4s3(
         const size_t state_c_offset = state_b_offset + c * 3u;
         const size_t weight_offset = c * 4u;
 
-        const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
-        const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
-        const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
-        const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
-
-        const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + t]);
-        float x2;
-        float x1;
-        float x0;
+        float acc;
         if (t >= 3) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 1)]);
-            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 2)]);
-            x0 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 3)]);
+            acc = dotcache_qwen35_conv4_contiguous_t_ge3(
+                mixed_qkv, mixed_c_offset, t, weights, weight_offset);
         } else if (t == 2) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
-            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            const float x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 2]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         } else if (t == 1) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
-            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         } else {
-            x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
-            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+            const float x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         }
-
-        float acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         const float silu = acc / (1.0f + expf(-acc));
         out[tid] = dotcache_qwen35_from_float<T>(silu);
         return;
@@ -452,34 +503,41 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_with_state_kern
         const size_t state_c_offset = state_b_offset + c * 3u;
         const size_t weight_offset = c * 4u;
 
-        const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
-        const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
-        const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
-        const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
-
-        const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + t]);
-        float x2;
-        float x1;
-        float x0;
+        float acc;
         if (t >= 3) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 1)]);
-            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 2)]);
-            x0 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + (t - 3)]);
+            acc = dotcache_qwen35_conv4_contiguous_t_ge3(
+                mixed_qkv, mixed_c_offset, t, weights, weight_offset);
         } else if (t == 2) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
-            x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x1 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            const float x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 2]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         } else if (t == 1) {
-            x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
-            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x2 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 1]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         } else {
-            x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
-            x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
-            x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+            const float w0 = dotcache_qwen35_to_float(weights[weight_offset]);
+            const float w1 = dotcache_qwen35_to_float(weights[weight_offset + 1]);
+            const float w2 = dotcache_qwen35_to_float(weights[weight_offset + 2]);
+            const float w3 = dotcache_qwen35_to_float(weights[weight_offset + 3]);
+            const float x0 = dotcache_qwen35_to_float(prev_state[state_c_offset + 0]);
+            const float x1 = dotcache_qwen35_to_float(prev_state[state_c_offset + 1]);
+            const float x2 = dotcache_qwen35_to_float(prev_state[state_c_offset + 2]);
+            const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
+            acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         }
-
-        const float acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         const float silu = acc / (1.0f + expf(-acc));
         out[tid] = dotcache_qwen35_from_float<T>(silu);
         return;
