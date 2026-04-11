@@ -6,7 +6,7 @@ use super::prepared::PreparedTensorSource;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::{conv1d_no_bias, embedding, ops, Conv1d, Conv1dConfig, Embedding, VarBuilder};
+use candle_nn::{embedding, ops, Embedding, VarBuilder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -36,10 +36,6 @@ fn prepared_linear_b(source: &PreparedTensorSource, bias: bool) -> Result<Linear
 
 fn prepared_embedding(source: &PreparedTensorSource, hidden_size: usize) -> Result<Embedding> {
     Ok(Embedding::new(source.get("weight")?, hidden_size))
-}
-
-fn prepared_conv1d_no_bias(source: &PreparedTensorSource, config: Conv1dConfig) -> Result<Conv1d> {
-    Ok(Conv1d::new(source.get("weight")?, None, config))
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -7890,10 +7886,10 @@ struct GatedDeltaNet {
     in_proj_z: Linear,
     in_proj_b: Linear,
     in_proj_a: Linear,
-    conv1d: Conv1d,
+    conv1d_raw_weight: Option<Tensor>,
     conv1d_weight_squeezed: Option<Tensor>,
-    dt_bias: Tensor,
-    a_log: Tensor,
+    dt_bias_raw: Option<Tensor>,
+    a_log_raw: Option<Tensor>,
     dt_bias_prepared: Option<Tensor>,
     a_log_exp_prepared: Option<Tensor>,
     norm: Qwen35RmsNormGated,
@@ -7947,17 +7943,9 @@ impl GatedDeltaNet {
         let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
         let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
         let conv_dim = key_dim * 2 + value_dim;
-        let conv1d = conv1d_no_bias(
-            conv_dim,
-            conv_dim,
-            cfg.linear_conv_kernel_dim,
-            Conv1dConfig {
-                padding: 0,
-                groups: conv_dim,
-                ..Default::default()
-            },
-            vb.pp("conv1d"),
-        )?;
+        let conv1d_raw_weight =
+            vb.pp("conv1d")
+                .get((conv_dim, 1, cfg.linear_conv_kernel_dim), "weight")?;
         Ok(Self {
             in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
             in_proj_z: linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?,
@@ -7971,10 +7959,10 @@ impl GatedDeltaNet {
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_a"),
             )?,
-            conv1d,
+            conv1d_raw_weight: Some(conv1d_raw_weight),
             conv1d_weight_squeezed: None,
-            dt_bias: vb.get(cfg.linear_num_value_heads, "dt_bias")?,
-            a_log: vb.get(cfg.linear_num_value_heads, "A_log")?,
+            dt_bias_raw: Some(vb.get(cfg.linear_num_value_heads, "dt_bias")?),
+            a_log_raw: Some(vb.get(cfg.linear_num_value_heads, "A_log")?),
             dt_bias_prepared: None,
             a_log_exp_prepared: None,
             norm: Qwen35RmsNormGated::new(
@@ -8000,35 +7988,41 @@ impl GatedDeltaNet {
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
         let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
         let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
-        let conv_dim = key_dim * 2 + value_dim;
-        let conv1d = prepared_conv1d_no_bias(
-            &source.pp("conv1d"),
-            Conv1dConfig {
-                padding: 0,
-                groups: conv_dim,
-                ..Default::default()
-            },
-        )?;
+        let dt_bias_prepared = source
+            .contains_tensor("dt_bias.__dotcache_head_bias_reshaped")
+            .then(|| source.get("dt_bias.__dotcache_head_bias_reshaped"))
+            .transpose()?;
+        let a_log_exp_prepared = source
+            .contains_tensor("A_log.__dotcache_head_exp_reshaped")
+            .then(|| source.get("A_log.__dotcache_head_exp_reshaped"))
+            .transpose()?;
+        let conv1d_weight_squeezed = source
+            .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
+            .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
+            .transpose()?;
         Ok(Self {
             in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
             in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
             in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
             in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
-            conv1d,
-            conv1d_weight_squeezed: source
-                .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
-                .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
-                .transpose()?,
-            dt_bias: source.get("dt_bias")?,
-            a_log: source.get("A_log")?,
-            dt_bias_prepared: source
-                .contains_tensor("dt_bias.__dotcache_head_bias_reshaped")
-                .then(|| source.get("dt_bias.__dotcache_head_bias_reshaped"))
-                .transpose()?,
-            a_log_exp_prepared: source
-                .contains_tensor("A_log.__dotcache_head_exp_reshaped")
-                .then(|| source.get("A_log.__dotcache_head_exp_reshaped"))
-                .transpose()?,
+            conv1d_raw_weight: if conv1d_weight_squeezed.is_some() {
+                None
+            } else {
+                Some(source.get("conv1d.weight")?)
+            },
+            conv1d_weight_squeezed,
+            dt_bias_raw: if dt_bias_prepared.is_some() {
+                None
+            } else {
+                Some(source.get("dt_bias")?)
+            },
+            a_log_raw: if a_log_exp_prepared.is_some() {
+                None
+            } else {
+                Some(source.get("A_log")?)
+            },
+            dt_bias_prepared,
+            a_log_exp_prepared,
             norm: Qwen35RmsNormGated::from_prepared(cfg.rms_norm_eps, &source.pp("norm"))?,
             out_proj: prepared_linear_no_bias(&source.pp("out_proj"))?,
             num_v_heads: cfg.linear_num_value_heads,
@@ -8055,10 +8049,17 @@ impl GatedDeltaNet {
         if rebuild {
             let dt_bias_base = if let Some(dt_bias) = &self.dt_bias_prepared {
                 dt_bias.clone()
-            } else if self.dt_bias.dtype() == dtype {
-                self.dt_bias.clone()
             } else {
-                self.dt_bias.to_dtype(dtype)?
+                let dt_bias = self.dt_bias_raw.as_ref().ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both prepared and raw dt_bias tensor".into(),
+                    )
+                })?;
+                if dt_bias.dtype() == dtype {
+                    dt_bias.clone()
+                } else {
+                    dt_bias.to_dtype(dtype)?
+                }
             };
             let dt_bias = if dt_bias_base.rank() == 3 {
                 if dt_bias_base.dtype() == dtype {
@@ -8081,10 +8082,15 @@ impl GatedDeltaNet {
                     prepared.to_dtype(dtype)?
                 }
             } else {
-                let a_log = if self.a_log.dtype() == dtype {
-                    self.a_log.clone()
+                let a_log = self.a_log_raw.as_ref().ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both prepared and raw A_log tensor".into(),
+                    )
+                })?;
+                let a_log = if a_log.dtype() == dtype {
+                    a_log.clone()
                 } else {
-                    self.a_log.to_dtype(dtype)?
+                    a_log.to_dtype(dtype)?
                 };
                 a_log.exp()?.reshape((1, 1, self.num_v_heads))?
             };
@@ -8106,7 +8112,14 @@ impl GatedDeltaNet {
         if let Some(weight) = &self.conv1d_weight_squeezed {
             Ok(weight.clone())
         } else {
-            self.conv1d.weight().squeeze(1)
+            self.conv1d_raw_weight
+                .as_ref()
+                .ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both squeezed and raw conv1d weight".into(),
+                    )
+                })?
+                .squeeze(1)
         }
     }
 

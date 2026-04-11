@@ -10,6 +10,10 @@ That status note also records the currently confirmed model-size ceiling on this
 the minimal HIP path is verified through `Qwen/Qwen3.5-4B`, while tested `9B` variants currently
 run out of HIP memory on this host.
 
+For the minimal Qwen3.5 path, the default loader is now the package-backed `native` mode from
+`dotcache-model-store`. The old direct Hugging Face path remains available as a fallback/debug
+path, but it is no longer the default.
+
 It deliberately starts smaller than `llama.cpp`:
 
 - append-only per-sequence page tables

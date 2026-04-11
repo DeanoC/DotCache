@@ -62,6 +62,37 @@ The combined HIP linear decode path still exists only as an experiment. It reduc
 traffic, but on this UMA host it is slower than the split decode path, so it should remain gated
 unless it is re-evaluated on a discrete ROCm system.
 
+## Current Loader Path
+
+The default model-loading path is now `native`.
+
+What that means in practice:
+
+- package creation and reuse is owned by the `dotcache-model-store` crate
+- the runtime resolves a backend/family-specific local package under `~/.cache/dotcache/model-packages/`
+- the package-backed path is the default runtime path
+- the old direct Hugging Face path remains only as a fallback/debug path
+
+The public minimal-loader modes are now:
+
+- `native`
+- `direct`
+
+The runtime also accepts:
+
+- `DOTCACHE_QWEN35_LOAD_MODE=native|direct`
+
+On this host, `native` is the right default. Representative `0.8B` HIP load-bench numbers:
+
+- `native`: `load_millis≈3897`, `peak_rss_kib≈3287224`
+- `direct`: `load_millis≈4849`, `peak_rss_kib≈3294900`
+
+Important constraint:
+
+- peak RSS is still close to `direct`
+- the package bytes are mmap-backed, but backend execution storage still owns a separate live copy
+- true shared-weight execution on UMA is future backend work, not part of the current loader design
+
 ## Confirmed Model Size Ceiling On This Host
 
 The minimal HIP path has now been smoke-tested beyond `0.8B` on the current host.
@@ -85,6 +116,12 @@ Important detail:
 
 So the current practical upper bound to document for this specific machine/runtime combination is
 `Qwen/Qwen3.5-4B`.
+
+Representative native HIP load-bench results on this host:
+
+- `Qwen/Qwen3.5-0.8B`: `load_millis≈3897`, `peak_rss_kib≈3287224`
+- `Qwen/Qwen3.5-2B`: `load_millis≈14045`, `peak_rss_kib≈4473892`
+- `Qwen/Qwen3.5-4B`: `load_millis≈25809`, `peak_rss_kib≈5526108`
 
 ## Long-Context Benchmark Tools
 
