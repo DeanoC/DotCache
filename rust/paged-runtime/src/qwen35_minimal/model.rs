@@ -8818,9 +8818,10 @@ impl FullAttention {
 #[derive(Debug, Clone)]
 struct GatedDeltaNet {
     in_proj_qkv: Linear,
-    in_proj_z: Linear,
-    in_proj_b: Linear,
-    in_proj_a: Linear,
+    in_proj_z: Option<Linear>,
+    in_proj_b: Option<Linear>,
+    in_proj_a: Option<Linear>,
+    in_proj_zba_pack: Option<Linear>,
     conv1d: Conv1d,
     conv1d_weight_squeezed: Option<Tensor>,
     dt_bias: Tensor,
@@ -8891,17 +8892,18 @@ impl GatedDeltaNet {
         )?;
         Ok(Self {
             in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
-            in_proj_z: linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?,
-            in_proj_b: linear_no_bias(
+            in_proj_z: Some(linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?),
+            in_proj_b: Some(linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_b"),
-            )?,
-            in_proj_a: linear_no_bias(
+            )?),
+            in_proj_a: Some(linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_a"),
-            )?,
+            )?),
+            in_proj_zba_pack: None,
             conv1d,
             conv1d_weight_squeezed: None,
             dt_bias: vb.get(cfg.linear_num_value_heads, "dt_bias")?,
@@ -8940,11 +8942,28 @@ impl GatedDeltaNet {
                 ..Default::default()
             },
         )?;
+        let in_proj_zba_pack = source
+            .contains_tensor("zba_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("zba_pack")))
+            .transpose()?;
         Ok(Self {
             in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
-            in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
-            in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
-            in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
+            in_proj_z: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_z"))?)
+            } else {
+                None
+            },
+            in_proj_b: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_b"))?)
+            } else {
+                None
+            },
+            in_proj_a: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_a"))?)
+            } else {
+                None
+            },
+            in_proj_zba_pack,
             conv1d,
             conv1d_weight_squeezed: source
                 .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
@@ -10438,14 +10457,36 @@ impl GatedDeltaNet {
 
         let qkv_start = profile_start(device)?;
         let mixed_qkv = self.in_proj_qkv.forward(&hidden_states)?.transpose(1, 2)?;
-        let z = self.in_proj_z.forward(&hidden_states)?.reshape((
-            batch_size,
-            seq_len,
-            self.num_v_heads,
-            self.head_v_dim,
-        ))?;
-        let beta_raw = self.in_proj_b.forward(&hidden_states)?;
-        let a = self.in_proj_a.forward(&hidden_states)?;
+        let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
+            let packed = in_proj_zba_pack.forward(&hidden_states)?;
+            let z = packed.narrow(D::Minus1, 0, self.value_dim)?.reshape((
+                batch_size,
+                seq_len,
+                self.num_v_heads,
+                self.head_v_dim,
+            ))?;
+            let beta_raw = packed.narrow(D::Minus1, self.value_dim, self.num_v_heads)?;
+            let a = packed.narrow(D::Minus1, self.value_dim + self.num_v_heads, self.num_v_heads)?;
+            (z, beta_raw, a)
+        } else {
+            let z = self
+                .in_proj_z
+                .as_ref()
+                .expect("in_proj_z missing without packed zba")
+                .forward(&hidden_states)?
+                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
+            let beta_raw = self
+                .in_proj_b
+                .as_ref()
+                .expect("in_proj_b missing without packed zba")
+                .forward(&hidden_states)?;
+            let a = self
+                .in_proj_a
+                .as_ref()
+                .expect("in_proj_a missing without packed zba")
+                .forward(&hidden_states)?;
+            (z, beta_raw, a)
+        };
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         if use_combined_linear_decode(device, seq_len) {
