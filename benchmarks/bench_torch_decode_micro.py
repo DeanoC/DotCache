@@ -103,6 +103,14 @@ def _score_exact_torch(keys: torch.Tensor, queries: torch.Tensor) -> torch.Tenso
     return torch.bmm(key_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
 
 
+def _score_exact_flat_torch(keys_flat: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
+    return torch.bmm(keys_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+
+
+def _score_exact_transposed_torch(keys_transposed: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
+    return torch.bmm(queries, keys_transposed).to(torch.float32)
+
+
 def _mix_exact_torch(weights: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
     batch_size, _page_count, _token_count, head_dim = map(int, values.shape)
     value_flat = values.reshape(batch_size, -1, head_dim)
@@ -392,6 +400,8 @@ def _runtime_score_breakdown_result(
 
     exact_m3_score_ms = 0.0
     exact_m3_logits = None
+    exact_m3_flat_score_ms = 0.0
+    exact_m3_transposed_score_ms = 0.0
     m3_page_tensor = None
     if int(m3_pages) > 0:
         m3_key_pages = torch.randn(
@@ -399,13 +409,33 @@ def _runtime_score_breakdown_result(
             dtype=torch.float32,
             device=device,
         )
+        m3_key_flat = m3_key_pages.reshape(num_key_value_heads, int(m3_pages) * int(tokens_per_page), head_dim).contiguous()
+        m3_key_transposed = m3_key_flat.transpose(1, 2).contiguous()
         exact_m3_score_ms, exact_m3_logits = _bench(
             device,
             lambda: _score_exact_torch(m3_key_pages, queries),
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
+        exact_m3_flat_score_ms, exact_m3_flat_logits = _bench(
+            device,
+            lambda: _score_exact_flat_torch(m3_key_flat, queries),
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        exact_m3_transposed_score_ms, exact_m3_transposed_logits = _bench(
+            device,
+            lambda: _score_exact_transposed_torch(m3_key_transposed, queries),
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        if exact_m3_logits is not None:
+            assert exact_m3_flat_logits is not None
+            assert exact_m3_transposed_logits is not None
         m3_page_tensor = m3_key_pages
+    else:
+        exact_m3_flat_logits = None
+        exact_m3_transposed_logits = None
 
     def _combined_logits_from_parts() -> torch.Tensor:
         parts = []
@@ -493,12 +523,24 @@ def _runtime_score_breakdown_result(
         "direct_m0_variant": str(direct_variant),
         "direct_m0_score_ms": float(direct_score_ms),
         "exact_m3_score_ms": float(exact_m3_score_ms),
+        "exact_m3_flat_score_ms": float(exact_m3_flat_score_ms),
+        "exact_m3_transposed_score_ms": float(exact_m3_transposed_score_ms),
         "final_mix_ms": float(final_mix_ms),
         "combined_ms": float(combined_ms),
         "direct_vs_dense_score_max_abs_error": (
             0.0
             if direct_score_logits is None or m0_logits_reference is None
             else _max_abs_error(direct_score_logits, m0_logits_reference)
+        ),
+        "exact_m3_flat_vs_page_score_max_abs_error": (
+            0.0
+            if exact_m3_logits is None or exact_m3_flat_logits is None
+            else _max_abs_error(exact_m3_flat_logits, exact_m3_logits)
+        ),
+        "exact_m3_transposed_vs_page_score_max_abs_error": (
+            0.0
+            if exact_m3_logits is None or exact_m3_transposed_logits is None
+            else _max_abs_error(exact_m3_transposed_logits, exact_m3_logits)
         ),
         "combined_vs_dense_mix_max_abs_error": _max_abs_error(combined_output, dense_reference_output),
     }
