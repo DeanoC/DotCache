@@ -36,7 +36,7 @@ impl MinimalQwen35Runner {
         }
     }
 
-    pub fn load_from_hf_0_8b_f16(model_id: &str, device: &Device) -> Result<Self> {
+    pub fn load_from_hf_f16(model_id: &str, device: &Device) -> Result<Self> {
         let source = HfHubModelSource::new()?;
         let artifacts = source.snapshot(model_id)?;
         let config: MinimalQwen35Config =
@@ -54,6 +54,10 @@ impl MinimalQwen35Runner {
             model,
             device: device.clone(),
         })
+    }
+
+    pub fn load_from_hf_0_8b_f16(model_id: &str, device: &Device) -> Result<Self> {
+        Self::load_from_hf_f16(model_id, device)
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {

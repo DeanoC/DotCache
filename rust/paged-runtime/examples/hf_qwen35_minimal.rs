@@ -227,11 +227,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cpu_device = Device::Cpu;
     let target_device = device_selector.resolve()?;
     let cpu_load_started = Instant::now();
-    let mut cpu_runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &cpu_device)?;
+    let mut cpu_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &cpu_device)?;
     let cpu_load_elapsed = cpu_load_started.elapsed();
 
     let device_load_started = Instant::now();
-    let mut device_runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &target_device)?;
+    let mut device_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &target_device)?;
     let device_load_elapsed = device_load_started.elapsed();
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
