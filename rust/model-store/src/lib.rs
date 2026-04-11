@@ -667,7 +667,7 @@ impl ModelFamilyConverter for Qwen35MinimalConverter {
     }
 
     fn converter_version(&self) -> u32 {
-        3
+        4
     }
 
     fn build_package(
@@ -740,6 +740,9 @@ fn build_qwen35_minimal_package(
             })?;
 
         for name in tensors_file.names() {
+            if !qwen35_minimal_keeps_tensor(name) {
+                continue;
+            }
             let view = tensors_file
                 .tensor(name)
                 .map_err(|err| ModelStoreError::External {
@@ -822,6 +825,10 @@ fn build_qwen35_minimal_package(
         ),
     })?;
     Ok(())
+}
+
+fn qwen35_minimal_keeps_tensor(name: &str) -> bool {
+    name.starts_with("model.language_model.") || name == "lm_head.weight"
 }
 
 fn write_tensor_entry(
@@ -1321,5 +1328,16 @@ mod tests {
         assert!(prepared.replaces_raw);
         assert_eq!(prepared.layout, TensorLayoutTag::DepthwiseConvSqueezed);
         assert_eq!(prepared.shape, vec![8, 4]);
+    }
+
+    #[test]
+    fn qwen35_tensor_filter_keeps_only_minimal_runtime_weights() {
+        assert!(qwen35_minimal_keeps_tensor(
+            "model.language_model.layers.0.self_attn.q_proj.weight"
+        ));
+        assert!(qwen35_minimal_keeps_tensor("model.language_model.embed_tokens.weight"));
+        assert!(qwen35_minimal_keeps_tensor("lm_head.weight"));
+        assert!(!qwen35_minimal_keeps_tensor("model.visual.patch_embed.proj.weight"));
+        assert!(!qwen35_minimal_keeps_tensor("mtp.layers.0.weight"));
     }
 }

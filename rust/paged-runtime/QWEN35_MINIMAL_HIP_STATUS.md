@@ -102,6 +102,11 @@ Current package behavior on the native path:
   - `dt_bias` -> `dt_bias.__dotcache_head_bias_reshaped`
   - `A_log` -> `A_log.__dotcache_head_exp_reshaped`
 - that reduced native reuse load time materially without changing steady-state execution behavior
+- the converter also now drops entire tensor trees that the minimal runtime does not consume:
+  - `model.visual.*`
+  - `mtp.*`
+- the native package for the minimal runtime is now text-only rather than a copy of unused
+  multimodal and auxiliary weights
 
 ## Confirmed Model Size Ceiling On This Host
 
@@ -129,9 +134,9 @@ So the current practical upper bound to document for this specific machine/runti
 
 Representative native HIP load-bench results on this host:
 
-- `Qwen/Qwen3.5-0.8B`: `load_millis≈3268`, `peak_rss_kib≈3286752`
-- `Qwen/Qwen3.5-2B`: `load_millis≈3936`, `peak_rss_kib≈4776208`
-- `Qwen/Qwen3.5-4B`: `load_millis≈8158`, `peak_rss_kib≈5518300`
+- `Qwen/Qwen3.5-0.8B`: `load_millis≈3233`, `peak_rss_kib≈3286988`
+- `Qwen/Qwen3.5-2B`: `load_millis≈6425`, `peak_rss_kib≈4773872`
+- `Qwen/Qwen3.5-4B`: `load_millis≈9713`, `peak_rss_kib≈5519760`
 
 ## Long-Context Benchmark Tools
 
