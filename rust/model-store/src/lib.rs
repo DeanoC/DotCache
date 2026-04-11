@@ -622,16 +622,24 @@ pub struct CandleWeightProvider {
     package: Arc<PreparedPackage>,
     device: Device,
     prefix: String,
-    load_stats: Arc<Mutex<BTreeMap<String, TensorLoadAccumulator>>>,
+    load_stats: Option<Arc<Mutex<BTreeMap<String, TensorLoadAccumulator>>>>,
 }
 
 impl CandleWeightProvider {
     pub fn new(package: Arc<PreparedPackage>, device: Device) -> Self {
+        Self::with_stats(package, device, false)
+    }
+
+    pub fn new_profiled(package: Arc<PreparedPackage>, device: Device) -> Self {
+        Self::with_stats(package, device, true)
+    }
+
+    fn with_stats(package: Arc<PreparedPackage>, device: Device, collect_stats: bool) -> Self {
         Self {
             package,
             device,
             prefix: String::new(),
-            load_stats: Arc::new(Mutex::new(BTreeMap::new())),
+            load_stats: collect_stats.then(|| Arc::new(Mutex::new(BTreeMap::new()))),
         }
     }
 
@@ -656,17 +664,22 @@ impl CandleWeightProvider {
 
     pub fn get(&self, name: &str) -> candle_core::Result<Tensor> {
         let full_name = self.full_name(name);
-        let started = std::time::Instant::now();
+        let started = self
+            .load_stats
+            .as_ref()
+            .map(|_| std::time::Instant::now());
         let (tensor, byte_len) = self
             .package
             .load_tensor_with_byte_len(&full_name, &self.device)
             .map_err(|err| candle_core::Error::Msg(err.to_string()))?;
-        let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
-        let mut stats = self.load_stats.lock().expect("load stats mutex poisoned");
-        let entry = stats.entry(full_name.clone()).or_default();
-        entry.calls += 1;
-        entry.bytes += byte_len;
-        entry.millis += elapsed_millis;
+        if let (Some(started), Some(load_stats)) = (started, self.load_stats.as_ref()) {
+            let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
+            let mut stats = load_stats.lock().expect("load stats mutex poisoned");
+            let entry = stats.entry(full_name.clone()).or_default();
+            entry.calls += 1;
+            entry.bytes += byte_len;
+            entry.millis += elapsed_millis;
+        }
         Ok(tensor)
     }
 
@@ -694,7 +707,17 @@ impl CandleWeightProvider {
     }
 
     pub fn load_stats(&self) -> WeightLoadStats {
-        let stats = self.load_stats.lock().expect("load stats mutex poisoned");
+        let Some(load_stats) = self.load_stats.as_ref() else {
+            return WeightLoadStats {
+                tensor_get_calls: 0,
+                unique_tensors: 0,
+                tensor_bytes: 0,
+                tensor_load_millis: 0.0,
+                top_by_bytes: Vec::new(),
+                top_by_millis: Vec::new(),
+            };
+        };
+        let stats = load_stats.lock().expect("load stats mutex poisoned");
         let tensor_get_calls = stats.values().map(|entry| entry.calls).sum();
         let tensor_bytes = stats.values().map(|entry| entry.bytes).sum();
         let tensor_load_millis = stats.values().map(|entry| entry.millis).sum();

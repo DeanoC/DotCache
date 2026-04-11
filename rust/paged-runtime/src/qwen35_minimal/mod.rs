@@ -97,7 +97,29 @@ impl MinimalQwen35Runner {
     }
 
     pub fn load_native_for_device(model_id: &str, device: &Device) -> Result<Self> {
-        Ok(Self::load_native_for_device_profiled(model_id, device)?.0)
+        let package = Arc::new(
+            ModelPackage::resolve_or_build_qwen35_minimal(model_id, device).map_err(|err| {
+                crate::RuntimeError::External {
+                    context: "model-store",
+                    message: err.to_string(),
+                }
+            })?,
+        );
+        let config: MinimalQwen35Config =
+            serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+        let source = PreparedTensorSource::new(package.clone(), device.clone());
+        let model = ModelForCausalLM::from_prepared(&config, source)?;
+        Ok(Self {
+            config,
+            weights: MinimalQwen35Weights {
+                model_id: package.manifest().model_id.clone(),
+                revision: package.manifest().revision.clone(),
+                tokenizer_path: package.tokenizer_path(),
+                package_root: package.root().to_path_buf(),
+            },
+            model,
+            device: device.clone(),
+        })
     }
 
     pub fn load_native_for_device_profiled(
@@ -124,7 +146,7 @@ impl MinimalQwen35Runner {
             serde_json::from_slice(&std::fs::read(package.config_path())?)?;
         let config_parse_millis = config_started.elapsed().as_secs_f64() * 1000.0;
         let model_started = Instant::now();
-        let source = PreparedTensorSource::new(package.clone(), device.clone());
+        let source = PreparedTensorSource::new_profiled(package.clone(), device.clone());
         let model = ModelForCausalLM::from_prepared(
             &config,
             source.clone(),

@@ -93,6 +93,10 @@ Important constraint:
 - the package bytes are mmap-backed, but backend execution storage still owns a separate live copy
 - true shared-weight execution on UMA is future backend work, not part of the current loader design
 
+The default `native` load path is now also unprofiled. Package/tensor timing collection still exists,
+but only through the profiled load-bench path; the normal runtime load path no longer pays that
+per-tensor accounting overhead.
+
 Current package behavior on the native path:
 
 - if a qwen35-minimal tensor is fully replaced by a package-built prepacked form, the raw tensor is
@@ -137,6 +141,38 @@ Representative native HIP load-bench results on this host:
 - `Qwen/Qwen3.5-0.8B`: `load_millis≈3233`, `peak_rss_kib≈3286988`
 - `Qwen/Qwen3.5-2B`: `load_millis≈6425`, `peak_rss_kib≈4773872`
 - `Qwen/Qwen3.5-4B`: `load_millis≈9713`, `peak_rss_kib≈5519760`
+
+## Immutable Embedding Status
+
+There is now an experimental immutable HIP path for:
+
+- `embed_tokens.weight`
+- tied `lm_head`
+
+It is gated by:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_EMBED=1`
+
+This path is a real loader-side RAM win on this UMA host, but it is not a general default.
+
+Measured behavior:
+
+- `0.8B`
+  - eager: `peak_rss_kib≈3289196`, `first_prefill_millis≈2478`
+  - immutable: `peak_rss_kib≈1798792`, `first_prefill_millis≈2478`
+- `2B`
+  - eager: `peak_rss_kib≈4778024`, `first_prefill_millis≈2187`
+  - immutable: `peak_rss_kib≈1799300`, `first_prefill_millis≈3392`
+- `4B`
+  - eager: `peak_rss_kib≈5523852`, `first_prefill_millis≈3649`
+  - immutable: `peak_rss_kib≈1952428`, `first_prefill_millis≈16804`
+
+So the current conclusion is:
+
+- immutable embedding/tied output is a strong RAM-reduction tool
+- it is acceptable at `0.8B` on this host
+- it shifts too much cost into first prefill at `2B` and `4B`
+- it should remain experimental and opt-in until there is a better transport/storage path
 
 ## Long-Context Benchmark Tools
 
