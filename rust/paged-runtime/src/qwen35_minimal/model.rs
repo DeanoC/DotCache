@@ -805,8 +805,9 @@ impl Qwen35RmsNormGated {
 
 #[derive(Debug, Clone)]
 struct Mlp {
-    gate_proj: Linear,
-    up_proj: Linear,
+    gate_proj: Option<Linear>,
+    up_proj: Option<Linear>,
+    gate_up_pack_proj: Option<Linear>,
     down_proj: Linear,
     act_fn: candle_nn::Activation,
 }
@@ -814,17 +815,39 @@ struct Mlp {
 impl Mlp {
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
-            up_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
+            gate_proj: Some(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("gate_proj"),
+            )?),
+            up_proj: Some(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("up_proj"),
+            )?),
+            gate_up_pack_proj: None,
             down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
             act_fn: cfg.hidden_act,
         })
     }
 
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
+        let gate_up_pack_proj = source
+            .contains_tensor("gate_up_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("gate_up_pack")))
+            .transpose()?;
         Ok(Self {
-            gate_proj: prepared_linear_no_bias(&source.pp("gate_proj"))?,
-            up_proj: prepared_linear_no_bias(&source.pp("up_proj"))?,
+            gate_proj: if gate_up_pack_proj.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("gate_proj"))?)
+            } else {
+                None
+            },
+            up_proj: if gate_up_pack_proj.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("up_proj"))?)
+            } else {
+                None
+            },
+            gate_up_pack_proj,
             down_proj: prepared_linear_no_bias(&source.pp("down_proj"))?,
             act_fn: cfg.hidden_act,
         })
@@ -833,8 +856,25 @@ impl Mlp {
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let gate = xs.apply(&self.gate_proj)?;
-        let up = xs.apply(&self.up_proj)?;
+        let (gate, up) = if let Some(gate_up_pack_proj) = &self.gate_up_pack_proj {
+            let packed = gate_up_pack_proj.forward(xs)?;
+            let intermediate = self.down_proj.weight().dims2()?.1;
+            let gate = packed.narrow(D::Minus1, 0, intermediate)?;
+            let up = packed.narrow(D::Minus1, intermediate, intermediate)?;
+            (gate, up)
+        } else {
+            let gate = xs.apply(
+                self.gate_proj
+                    .as_ref()
+                    .expect("gate_proj missing without packed gate/up"),
+            )?;
+            let up = xs.apply(
+                self.up_proj
+                    .as_ref()
+                    .expect("up_proj missing without packed gate/up"),
+            )?;
+            (gate, up)
+        };
         let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
             hip_swiglu_mul(&gate, &up)?
         } else {
