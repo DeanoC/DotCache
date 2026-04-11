@@ -1,4 +1,4 @@
-use candle_core::{D, DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -199,17 +199,12 @@ pub struct Qwen35FastRunner {
 
 impl Qwen35FastRunner {
     fn argmax_last_token(logits: &Tensor) -> Result<u32> {
-        let last_token = match logits.dims() {
-            [1, _vocab] => logits.i(0)?,
-            [1, seq, _vocab] => logits.i((0, seq - 1))?,
-            dims => {
-                return Err(RuntimeError::External {
-                    context: "qwen35_fast",
-                    message: format!("unexpected logits shape {dims:?}"),
-                })
-            }
-        };
-        last_token.argmax(D::Minus1)?.to_scalar::<u32>().map_err(Into::into)
+        let (_, seq_len, _vocab_size) = logits.dims3()?;
+        let last_token = logits.narrow(1, seq_len.saturating_sub(1), 1)?;
+        Ok(last_token
+            .argmax(candle_core::D::Minus1)?
+            .flatten_all()?
+            .to_vec1::<u32>()?[0])
     }
 
     fn hidden_states_on_runner_device(&self, hidden_states: &Tensor) -> Result<Tensor> {

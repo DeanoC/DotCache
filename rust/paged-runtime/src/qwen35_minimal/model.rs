@@ -528,7 +528,7 @@ impl candle::CustomOp2 for HipRmsNorm {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
@@ -615,7 +615,7 @@ impl candle::CustomOp3 for HipRmsNormGated {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(hidden_layout.is_contiguous()
@@ -758,6 +758,9 @@ impl Module for Qwen35RmsNorm {
         if xs.device().is_hip() && self.weight.device().is_hip() {
             return hip_rms_norm(xs, &self.weight, self.eps, true);
         }
+        if xs.device().is_cuda() && self.weight.device().is_cuda() {
+            return cuda_rms_norm(xs, &self.weight, self.eps, true);
+        }
         let xs_dtype = xs.dtype();
         let xs = xs.to_dtype(DType::F32)?;
         let variance = (xs.sqr()?.sum_keepdim(D::Minus1)? / xs.dim(D::Minus1)? as f64)?;
@@ -794,6 +797,12 @@ impl Qwen35RmsNormGated {
             && self.weight.device().is_hip()
         {
             return hip_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
+        }
+        if hidden_states.device().is_cuda()
+            && gate.device().is_cuda()
+            && self.weight.device().is_cuda()
+        {
+            return cuda_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
         }
         let out_dtype = hidden_states.dtype();
         let hidden_states = hidden_states.to_dtype(DType::F32)?;
@@ -931,7 +940,7 @@ impl candle::CustomOp2 for HipSwigluMul {
         up: &candle::HipStorage,
         up_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
@@ -1007,7 +1016,7 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         indexes: &candle::HipStorage,
         indexes_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
@@ -1144,6 +1153,300 @@ fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor>
         &HipEmbeddingLookup {
             vocab_size,
             hidden_size,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaRmsNorm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+    add_unit_offset: bool,
+}
+
+impl candle::CustomOp2 for CudaRmsNorm {
+    fn name(&self) -> &'static str {
+        "cuda-rms-norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _xs: &candle::CpuStorage,
+        _xs_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-rms-norm has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        xs: &candle::CudaStorage,
+        xs_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+            candle::bail!("cuda-rms-norm requires contiguous inputs")
+        }
+        if xs.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-rms-norm requires matching dtypes, got xs={:?} weight={:?}",
+                xs.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let xs_dims = xs_layout.shape().dims();
+        let n_cols = *xs_dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
+        let n_rows = xs_layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows
+            || n_cols != self.n_cols
+            || weight_layout.shape().elem_count() != self.n_cols
+        {
+            candle::bail!(
+                "cuda-rms-norm shape mismatch xs={:?} weight={:?} expected_rows={} expected_cols={}",
+                xs_dims,
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = xs.device().clone();
+        let out_shape = xs_layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = xs.as_cuda_slice::<$ty>()?;
+                let xs = match xs_layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm requires contiguous xs"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.n_rows,
+                    self.n_cols,
+                    self.eps,
+                    if self.add_unit_offset { 1i32 } else { 0i32 }
+                );
+                builder.arg(&xs);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match xs.dtype() {
+            DType::F16 => launch!(half::f16, "rms_norm_f16"),
+            DType::F32 => launch!(f32, "rms_norm_f32"),
+            DType::BF16 => launch!(half::bf16, "rms_norm_bf16"),
+            other => candle::bail!("cuda-rms-norm unsupported dtype {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaRmsNormGated {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp3 for CudaRmsNormGated {
+    fn name(&self) -> &'static str {
+        "cuda-rms-norm-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _hidden: &candle::CpuStorage,
+        _hidden_layout: &candle::Layout,
+        _gate: &candle::CpuStorage,
+        _gate_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-rms-norm-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        hidden: &candle::CudaStorage,
+        hidden_layout: &candle::Layout,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(hidden_layout.is_contiguous()
+            && gate_layout.is_contiguous()
+            && weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-rms-norm-gated requires contiguous inputs")
+        }
+        if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-rms-norm-gated requires matching dtypes, got hidden={:?} gate={:?} weight={:?}",
+                hidden.dtype(),
+                gate.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let hidden_dims = hidden_layout.shape().dims();
+        let n_cols = *hidden_dims.last().ok_or_else(|| {
+            candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
+        })?;
+        let n_rows = hidden_layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows
+            || n_cols != self.n_cols
+            || gate_layout.shape().elem_count() != hidden_layout.shape().elem_count()
+            || weight_layout.shape().elem_count() != self.n_cols
+        {
+            candle::bail!(
+                "cuda-rms-norm-gated shape mismatch hidden={:?} gate={:?} weight={:?} expected_rows={} expected_cols={}",
+                hidden_dims,
+                gate_layout.shape().dims(),
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = hidden.device().clone();
+        let out_shape = hidden_layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let hidden = hidden.as_cuda_slice::<$ty>()?;
+                let hidden = match hidden_layout.contiguous_offsets() {
+                    Some((o1, o2)) => hidden.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous hidden"),
+                };
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous gate"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
+                builder.arg(&hidden);
+                builder.arg(&gate);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match hidden.dtype() {
+            DType::F16 => launch!(half::f16, "rms_norm_gated_f16"),
+            DType::F32 => launch!(f32, "rms_norm_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "rms_norm_gated_bf16"),
+            other => candle::bail!("cuda-rms-norm-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == xs.dtype() {
+        weight
+    } else {
+        weight.to_dtype(xs.dtype())?
+    };
+    let xs_dims = xs.dims();
+    let n_cols = *xs_dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op2_no_bwd(
+        &weight,
+        &CudaRmsNorm {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
+            add_unit_offset,
+        },
+    )
+}
+
+fn cuda_rms_norm_gated(
+    hidden_states: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Tensor> {
+    let hidden_states = hidden_states.contiguous()?;
+    let gate = gate.contiguous()?;
+    let gate = if gate.dtype() == hidden_states.dtype() {
+        gate
+    } else {
+        gate.to_dtype(hidden_states.dtype())?
+    };
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == hidden_states.dtype() {
+        weight
+    } else {
+        weight.to_dtype(hidden_states.dtype())?
+    };
+    let hidden_dims = hidden_states.dims();
+    let n_cols = *hidden_dims.last().ok_or_else(|| {
+        candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = hidden_states.elem_count() / n_cols;
+    hidden_states.apply_op3_no_bwd(
+        &gate,
+        &weight,
+        &CudaRmsNormGated {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
         },
     )
 }
@@ -11875,7 +12178,7 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_rms_norm_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, Vec<f32>, Vec<f32>)> {
@@ -12907,6 +13210,27 @@ mod tests {
         assert_eq!(gated.dtype(), xs.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_rms_norm_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, gate, weight, expected_norm, expected_gated) = hip_rms_norm_sample(&device)?;
+
+        let norm = cuda_rms_norm(&xs, &weight, 1e-6, true)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&norm, &expected_norm, 5e-3);
+
+        let gated = cuda_rms_norm_gated(&xs, &gate, &weight, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&gated, &expected_gated, 5e-3);
         Ok(())
     }
 
