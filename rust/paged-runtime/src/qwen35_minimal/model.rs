@@ -10167,6 +10167,48 @@ impl GatedDeltaNet {
         Ok(())
     }
 
+    fn update_depthwise_conv_state_from_projected(&mut self, projected: &Tensor) -> Result<()> {
+        let state_len = self.conv_kernel_size.saturating_sub(1);
+        if state_len == 0 {
+            self.conv_state = None;
+            return Ok(());
+        }
+
+        let seq_len = projected.dim(1)?;
+        let mixed_qkv = projected
+            .narrow(D::Minus1, 0, self.conv_dim())?
+            .transpose(1, 2)?;
+        if seq_len == 1 {
+            let target_dtype = mixed_qkv.dtype();
+            let state = match &self.conv_state {
+                Some(prev_state) => {
+                    if prev_state.dtype() == target_dtype {
+                        prev_state.clone()
+                    } else {
+                        prev_state.to_dtype(target_dtype)?
+                    }
+                }
+                None => Tensor::zeros(
+                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    target_dtype,
+                    mixed_qkv.device(),
+                )?,
+            };
+            let prev_state_len = state.dim(2)?;
+            if prev_state_len == state_len {
+                if state_len > 1 {
+                    let tail = state.narrow(2, 1, state_len - 1)?.contiguous()?;
+                    state.slice_set(&tail, 2, 0)?;
+                }
+                state.slice_set(&mixed_qkv.contiguous()?, 2, state_len - 1)?;
+                self.conv_state = Some(state);
+                return Ok(());
+            }
+        }
+
+        self.update_depthwise_conv_state_from_raw(&mixed_qkv)
+    }
+
     fn depthwise_conv_from_state(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         let kernel = self.conv_kernel_size;
         let seq_len = mixed_qkv.dim(2)?;
@@ -11249,22 +11291,28 @@ impl GatedDeltaNet {
         } else {
             None
         };
+        let packed_cuda_combined_decode =
+            packed_qkv_zba.is_some() && use_combined_linear_decode(device, seq_len) && device.is_cuda();
         let (mixed_qkv, z, beta_raw, a) = if let Some(packed) = &packed_qkv_zba {
-            let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
-            let z = packed
-                .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
-                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
-            let beta_raw = packed.narrow(
-                D::Minus1,
-                self.conv_dim() + self.value_dim,
-                self.num_v_heads,
-            )?;
-            let a = packed.narrow(
-                D::Minus1,
-                self.conv_dim() + self.value_dim + self.num_v_heads,
-                self.num_v_heads,
-            )?;
-            (mixed_qkv, z, beta_raw, a)
+            if packed_cuda_combined_decode {
+                (None, None, None, None)
+            } else {
+                let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
+                let z = packed
+                    .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
+                    .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
+                let beta_raw = packed.narrow(
+                    D::Minus1,
+                    self.conv_dim() + self.value_dim,
+                    self.num_v_heads,
+                )?;
+                let a = packed.narrow(
+                    D::Minus1,
+                    self.conv_dim() + self.value_dim + self.num_v_heads,
+                    self.num_v_heads,
+                )?;
+                (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
+            }
         } else {
             let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
             let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
@@ -11297,13 +11345,20 @@ impl GatedDeltaNet {
                 .forward(&hidden_states)?;
             (z, beta_raw, a)
             };
-            (mixed_qkv, z, beta_raw, a)
+            (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
         };
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         if use_combined_linear_decode(device, seq_len) {
             let kv_append_start = profile_start(device)?;
-            let target_dtype = mixed_qkv.dtype();
+            let target_dtype = if let Some(packed_qkv_zba) = &packed_qkv_zba {
+                packed_qkv_zba.dtype()
+            } else {
+                mixed_qkv
+                    .as_ref()
+                    .expect("mixed_qkv required without packed qkv_zba")
+                    .dtype()
+            };
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
             let prev_conv_state = match &self.conv_state {
@@ -11315,20 +11370,10 @@ impl GatedDeltaNet {
                     }
                 }
                 None => Tensor::zeros(
-                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    (batch_size, self.conv_dim(), state_len),
                     target_dtype,
-                    mixed_qkv.device(),
+                    device,
                 )?,
-            };
-            let a = if a.dtype() == target_dtype {
-                a.clone()
-            } else {
-                a.to_dtype(target_dtype)?
-            };
-            let beta_raw = if beta_raw.dtype() == target_dtype {
-                beta_raw.clone()
-            } else {
-                beta_raw.to_dtype(target_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let value_cache_pack = self
@@ -11363,9 +11408,22 @@ impl GatedDeltaNet {
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
             let fused = if device.is_hip() {
-                let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
+                let a_beta_raw = Tensor::cat(
+                    &[
+                        a.as_ref()
+                            .expect("a required for hip linear decode"),
+                        beta_raw
+                            .as_ref()
+                            .expect("beta_raw required for hip linear decode"),
+                    ],
+                    D::Minus1,
+                )?
+                .contiguous()?;
                 linear_decode_step_hip(
-                    &mixed_qkv.contiguous()?,
+                    &mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required for hip linear decode")
+                        .contiguous()?,
                     &prev_conv_state,
                     &weights,
                     &a_beta_raw,
@@ -11394,15 +11452,50 @@ impl GatedDeltaNet {
                     head_repeat,
                 )?
             } else {
+                let a = if a
+                    .as_ref()
+                    .expect("a required without packed projected decode")
+                    .dtype()
+                    == target_dtype
+                {
+                    a.as_ref()
+                        .expect("a required without packed projected decode")
+                        .clone()
+                } else {
+                    a.as_ref()
+                        .expect("a required without packed projected decode")
+                        .to_dtype(target_dtype)?
+                };
+                let beta_raw = if beta_raw
+                    .as_ref()
+                    .expect("beta_raw required without packed projected decode")
+                    .dtype()
+                    == target_dtype
+                {
+                    beta_raw
+                        .as_ref()
+                        .expect("beta_raw required without packed projected decode")
+                        .clone()
+                } else {
+                    beta_raw
+                        .as_ref()
+                        .expect("beta_raw required without packed projected decode")
+                        .to_dtype(target_dtype)?
+                };
                 linear_decode_step_cuda_gated(
-                    &mixed_qkv.contiguous()?,
+                    &mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required without packed projected decode")
+                        .contiguous()?,
                     &prev_conv_state,
                     &weights,
                     &a,
                     &beta_raw,
                     &value_cache_pack,
                     &initial_state,
-                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                    &z.as_ref()
+                        .expect("z required without packed projected decode")
+                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
                     &self.norm.weight,
                     self.norm.eps,
                     self.num_v_heads,
@@ -11412,7 +11505,15 @@ impl GatedDeltaNet {
                     head_repeat,
                 )?
             };
-            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
+            if let Some(packed_qkv_zba) = &packed_qkv_zba {
+                self.update_depthwise_conv_state_from_projected(packed_qkv_zba)?;
+            } else {
+                self.update_depthwise_conv_state_from_raw(
+                    mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required without packed qkv_zba"),
+                )?;
+            }
             let core_attn_out = fused
                 .narrow(1, 0, self.value_dim)?
                 .reshape((batch_size, seq_len, self.value_dim))?;
@@ -11439,11 +11540,16 @@ impl GatedDeltaNet {
 
         let kv_append_start = profile_start(device)?;
         let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
+            let mixed_qkv = mixed_qkv
+                .as_ref()
+                .expect("mixed_qkv required for linear prefill");
             let target_dtype = mixed_qkv.dtype();
-            let a = if a.dtype() == target_dtype {
-                a.clone()
+            let a = if a.as_ref().expect("a required for linear prefill").dtype() == target_dtype {
+                a.as_ref().expect("a required for linear prefill").clone()
             } else {
-                a.to_dtype(target_dtype)?
+                a.as_ref()
+                    .expect("a required for linear prefill")
+                    .to_dtype(target_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
@@ -11490,18 +11596,23 @@ impl GatedDeltaNet {
             };
             (mixed_qkv, g)
         } else {
+            let mixed_qkv = mixed_qkv
+                .as_ref()
+                .expect("mixed_qkv required for linear conv path");
             let mixed_qkv = if seq_len == 1 {
-                self.run_depthwise_conv_update(&mixed_qkv)?
+                self.run_depthwise_conv_update(mixed_qkv)?
                     .transpose(1, 2)?
             } else if use_linear_prefill_packed_kernel(device, seq_len) {
-                self.run_depthwise_conv_packed_prefill(&mixed_qkv)?
+                self.run_depthwise_conv_packed_prefill(mixed_qkv)?
             } else {
-                self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
+                self.run_depthwise_conv(mixed_qkv)?.transpose(1, 2)?
             };
-            let a = if a.dtype() == compute_dtype {
-                a
+            let a = if a.as_ref().expect("a required for linear conv path").dtype() == compute_dtype {
+                a.as_ref().expect("a required for linear conv path").clone()
             } else {
-                a.to_dtype(compute_dtype)?
+                a.as_ref()
+                    .expect("a required for linear conv path")
+                    .to_dtype(compute_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
             let g = if device.is_hip() {
@@ -11558,7 +11669,11 @@ impl GatedDeltaNet {
         } else {
             value.to_dtype(compute_dtype)?
         };
-        let beta = ops::sigmoid(&beta_raw)?;
+        let beta = ops::sigmoid(
+            beta_raw
+                .as_ref()
+                .expect("beta_raw required for linear attention"),
+        )?;
         let beta = if beta.dtype() == compute_dtype {
             beta
         } else {
@@ -11596,7 +11711,9 @@ impl GatedDeltaNet {
             .forward(
                 &core_attn_out
                     .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                &z.as_ref()
+                    .expect("z required for linear attention")
+                    .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
             )?
             .reshape((batch_size, seq_len, self.value_dim))?;
         let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
