@@ -219,17 +219,17 @@ impl Qwen35FastRunner {
                 ),
             });
         }
-        let source = HfHubModelSource::new()?;
-        let artifacts = source.snapshot(model_id)?;
-        let config: MinimalQwen35Config =
-            serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
-        let config = config.normalized();
         let topology = Qwen35FastTopology::qwen35_0_8b();
-        Qwen35FastTopology::validate_config(&config)?;
         if matches!(
             std::env::var("DOTCACHE_QWEN35_DISABLE_PREPARED_LOAD").as_deref(),
             Ok("1" | "true" | "TRUE" | "yes" | "YES")
         ) {
+            let source = HfHubModelSource::new()?;
+            let artifacts = source.snapshot(model_id)?;
+            let config: MinimalQwen35Config =
+                serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
+            let config = config.normalized();
+            Qwen35FastTopology::validate_config(&config)?;
             let vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&artifacts.weight_paths, DType::F16, device)?
             };

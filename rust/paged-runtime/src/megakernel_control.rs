@@ -421,20 +421,17 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
         });
     }
 
-    let source = crate::HfHubModelSource::new()?;
-    let artifacts = source.snapshot(args.model_id)?;
-    let tokenizer = Tokenizer::from_file(&artifacts.tokenizer_path).map_err(|err| {
+    let device = resolve_minimal_device(args.device)?;
+    let load_started = Instant::now();
+    let mut runner = Qwen35FastRunner::load_qwen35_0_8b_f16(args.model_id, &device)?;
+    let load_millis = load_started.elapsed().as_secs_f64() * 1_000.0;
+    let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path).map_err(|err| {
         RuntimeError::External {
             context: "megakernel_control",
             message: format!("failed to load tokenizer: {err}"),
         }
     })?;
     let prompt_ids = build_prompt_ids(&tokenizer, args.prompt, args.prompt_token_target)?;
-    let device = resolve_minimal_device(args.device)?;
-
-    let load_started = Instant::now();
-    let mut runner = Qwen35FastRunner::load_qwen35_0_8b_f16(args.model_id, &device)?;
-    let load_millis = load_started.elapsed().as_secs_f64() * 1_000.0;
 
     let mut warmup_millis = 0.0f64;
     for _ in 0..args.warmup_runs {
