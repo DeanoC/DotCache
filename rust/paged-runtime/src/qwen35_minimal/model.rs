@@ -3464,6 +3464,177 @@ struct CudaLinearDecodePreparePackedCache {
     head_repeat: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeFromProjectedGated {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-from-projected-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-from-projected-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        projected: &candle::CudaStorage,
+        projected_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        value_cache_pack: &candle::CudaStorage,
+        value_cache_pack_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+        norm_weight: &candle::CudaStorage,
+        norm_weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(projected_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && value_cache_pack_layout.is_contiguous()
+            && initial_state_layout.is_contiguous()
+            && norm_weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous inputs")
+        }
+        if projected.dtype() != prev_conv_state.dtype()
+            || projected.dtype() != weights.dtype()
+            || projected.dtype() != value_cache_pack.dtype()
+            || projected.dtype() != norm_weight.dtype()
+        {
+            candle::bail!(
+                "cuda-linear-decode-from-projected-gated requires matching projected/state weight/value-cache/norm dtypes, got projected={:?} prev_state={:?} weights={:?} value_cache={:?} norm_weight={:?}",
+                projected.dtype(),
+                prev_conv_state.dtype(),
+                weights.dtype(),
+                value_cache_pack.dtype(),
+                norm_weight.dtype()
+            )
+        }
+        if initial_state.dtype() != DType::F32 {
+            candle::bail!("cuda-linear-decode-from-projected-gated requires F32 initial_state")
+        }
+
+        let device = projected.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim.max(self.head_k_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        let initial_state = initial_state.as_cuda_slice::<f32>()?;
+        let initial_state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => initial_state.slice(o1..o2),
+            None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous initial_state"),
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let projected = projected.as_cuda_slice::<$ty>()?;
+                let projected = match projected_layout.contiguous_offsets() {
+                    Some((o1, o2)) => projected.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous projected"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous prev_conv_state"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous weights"),
+                };
+                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
+                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
+                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous value_cache_pack"),
+                };
+                let norm_weight = norm_weight.as_cuda_slice::<$ty>()?;
+                let norm_weight = match norm_weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => norm_weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous norm_weight"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32,
+                    self.eps
+                );
+                builder.arg(&projected);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&value_cache_pack);
+                builder.arg(&initial_state);
+                builder.arg(&norm_weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match projected.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_from_projected_gated_f16"),
+            DType::F32 => launch!(f32, "linear_decode_from_projected_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_from_projected_gated_bf16"),
+            other => candle::bail!("cuda-linear-decode-from-projected-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
 impl candle::CustomOp6 for LinearDecodePrepare {
     fn name(&self) -> &'static str {
         "linear-decode-prepare"
@@ -4262,6 +4433,55 @@ fn linear_decode_step_cuda_gated(
             num_v_heads,
             head_k_dim,
             head_v_dim,
+            eps: eps as f32,
+        },
+    )
+}
+
+fn linear_decode_step_cuda_from_projected_gated(
+    projected: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    norm_weight: &Tensor,
+    eps: f64,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let projected = projected.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let norm_weight = norm_weight.contiguous()?;
+    let norm_weight = if norm_weight.dtype() == projected.dtype() {
+        norm_weight
+    } else {
+        norm_weight.to_dtype(projected.dtype())?
+    };
+    let (batch_size, seq_len, _out_dim) = projected.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    projected.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &value_cache_pack,
+        &initial_state,
+        &norm_weight,
+        &CudaLinearDecodeFromProjectedGated {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
             eps: eps as f32,
         },
     )
@@ -11016,16 +11236,20 @@ impl GatedDeltaNet {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let qkv_start = profile_start(device)?;
-        let (mixed_qkv, z, beta_raw, a) = if seq_len == 1
+        let packed_qkv_zba = if seq_len == 1
             && hidden_states.device().is_cuda()
             && self.in_proj_qkv_zba_pack.is_some()
         {
-            let packed = fast_linear_decode(
+            Some(fast_linear_decode(
                 &hidden_states,
                 self.in_proj_qkv_zba_pack
                     .as_ref()
                     .expect("qkv_zba pack checked above"),
-            )?;
+            )?)
+        } else {
+            None
+        };
+        let (mixed_qkv, z, beta_raw, a) = if let Some(packed) = &packed_qkv_zba {
             let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
             let z = packed
                 .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
@@ -11148,6 +11372,21 @@ impl GatedDeltaNet {
                     &dt_bias,
                     &a_log_exp,
                     &initial_state,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            } else if let Some(packed_qkv_zba) = &packed_qkv_zba {
+                linear_decode_step_cuda_from_projected_gated(
+                    packed_qkv_zba,
+                    &prev_conv_state,
+                    &weights,
+                    &value_cache_pack,
+                    &initial_state,
+                    &self.norm.weight,
+                    self.norm.eps,
                     self.num_v_heads,
                     self.head_k_dim,
                     self.head_v_dim,
@@ -14217,6 +14456,72 @@ mod tests {
 
         assert_close(&fused_flat[0..4], &expected_value_flat, 5e-3);
         assert_close(&fused_flat[4..12], &expected_state_flat, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_from_projected_gated_matches_composed_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (1usize, 1usize, 4usize), &device)?
+            .to_dtype(DType::F16)?;
+        let norm_weight =
+            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
+        let beta_raw = a_beta_raw.narrow(D::Minus1, 0, 2)?;
+        let a_raw = a_beta_raw.narrow(D::Minus1, 2, 2)?;
+        let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?;
+        let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
+
+        let fused = linear_decode_step_cuda_from_projected_gated(
+            &projected,
+            &prev_conv_state,
+            &weights,
+            &value_cache_pack,
+            &initial_state,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+
+        let expected = linear_decode_step_cuda_gated(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_raw,
+            &beta_raw,
+            &value_cache_pack,
+            &initial_state,
+            &gate.reshape((2usize, 2usize))?,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+
+        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
+        let expected_flat: Vec<f32> = expected.into_iter().flatten().collect();
+        assert_close(&fused_flat, &expected_flat, 5e-3);
         Ok(())
     }
 
