@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
     parser.add_argument("--main-cargo-features", default=DEFAULT_MAIN_CARGO_FEATURES)
     parser.add_argument("--minimal-cargo-features", default=DEFAULT_MINIMAL_CARGO_FEATURES)
+    parser.add_argument("--luce-repo", default=None)
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--run-tag", default=datetime.now(UTC).strftime("%Y%m%d"))
     parser.add_argument("--dry-run", action="store_true")
@@ -111,10 +113,14 @@ def build_matrix(
     prompt_text: str = DEFAULT_PROMPT,
     warmup_runs: int = DEFAULT_WARMUP_RUNS,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    luce_repo: str | None = None,
 ) -> list[RunSpec]:
     specs: list[RunSpec] = []
+    lanes = list(DEFAULT_LANES)
+    if luce_repo is not None:
+        lanes.append("luce_external_megakernel")
     for context in contexts:
-        for lane in DEFAULT_LANES:
+        for lane in lanes:
             specs.append(
                 RunSpec(
                     model_id=model_id,
@@ -145,6 +151,7 @@ def command_for_run(
     out_prefix: Path,
     minimal_cargo_features: str,
     main_cargo_features: str,
+    luce_repo: str | None,
 ) -> list[str]:
     if spec.lane in {"minimal_control", "minimal_megakernel"}:
         return [
@@ -194,6 +201,26 @@ def command_for_run(
             str(spec.prompt_token_count),
             "--sync-stage-profile",
         ]
+    if spec.lane == "luce_external_megakernel":
+        if luce_repo is None:
+            raise ValueError("luce_external_megakernel lane requires --luce-repo")
+        return [
+            sys.executable,
+            str(_repo_root() / "benchmarks" / "bench_qwen35_luce_external.py"),
+            spec.model_id,
+            spec.prompt_text,
+            str(out_prefix),
+            "--luce-repo",
+            luce_repo,
+            "--device",
+            spec.device,
+            "--prompt-token-target",
+            str(spec.prompt_token_count),
+            "--warmup-runs",
+            str(spec.warmup_runs),
+            "--max-new-tokens",
+            str(spec.max_new_tokens),
+        ]
     raise ValueError(f"unknown lane {spec.lane}")
 
 
@@ -214,6 +241,7 @@ def _run_config_signature(
     *,
     minimal_cargo_features: str,
     main_cargo_features: str,
+    luce_repo: str | None,
 ) -> dict[str, Any]:
     return {
         "model_id": spec.model_id,
@@ -226,6 +254,7 @@ def _run_config_signature(
         "prompt_text_sha256": hashlib.sha256(spec.prompt_text.encode("utf-8")).hexdigest(),
         "minimal_cargo_features": minimal_cargo_features,
         "main_cargo_features": main_cargo_features,
+        "luce_repo": luce_repo,
         "env_overrides": env_for_run(spec),
     }
 
@@ -275,6 +304,7 @@ def execute_run(
     output_dir: Path,
     minimal_cargo_features: str,
     main_cargo_features: str,
+    luce_repo: str | None,
     resume: bool,
     dry_run: bool,
 ) -> dict[str, Any]:
@@ -290,11 +320,13 @@ def execute_run(
         out_prefix=out_prefix,
         minimal_cargo_features=minimal_cargo_features,
         main_cargo_features=main_cargo_features,
+        luce_repo=luce_repo,
     )
     signature = _run_config_signature(
         spec,
         minimal_cargo_features=minimal_cargo_features,
         main_cargo_features=main_cargo_features,
+        luce_repo=luce_repo,
     )
     record: dict[str, Any] = {
         "run_id": spec.run_slug(),
@@ -410,9 +442,10 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     for key in sorted(grouped):
         model_id, prompt_token_count = key
         entries = grouped[key]
+        lane_names = sorted({entry["lane"] for entry in entries})
         lane_entries = {
             lane: next((entry for entry in entries if entry["lane"] == lane), None)
-            for lane in DEFAULT_LANES
+            for lane in lane_names
         }
         lane_metrics = {
             lane: None if entry is None else entry.get("summary_metrics")
@@ -430,20 +463,28 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "status": lane_entries[lane]["status"],
                         "summary_metrics": lane_metrics[lane],
                     }
-                    for lane in DEFAULT_LANES
+                    for lane in lane_names
                 },
                 "comparisons": {
                     "minimal_control_vs_main": _comparison_payload(
-                        lane_metrics["main_dense_control"],
-                        lane_metrics["minimal_control"],
+                        lane_metrics.get("main_dense_control"),
+                        lane_metrics.get("minimal_control"),
                     ),
                     "minimal_megakernel_vs_main": _comparison_payload(
-                        lane_metrics["main_dense_control"],
-                        lane_metrics["minimal_megakernel"],
+                        lane_metrics.get("main_dense_control"),
+                        lane_metrics.get("minimal_megakernel"),
                     ),
                     "minimal_megakernel_vs_minimal_control": _comparison_payload(
-                        lane_metrics["minimal_control"],
-                        lane_metrics["minimal_megakernel"],
+                        lane_metrics.get("minimal_control"),
+                        lane_metrics.get("minimal_megakernel"),
+                    ),
+                    "luce_external_megakernel_vs_main": _comparison_payload(
+                        lane_metrics.get("main_dense_control"),
+                        lane_metrics.get("luce_external_megakernel"),
+                    ),
+                    "luce_external_megakernel_vs_minimal_control": _comparison_payload(
+                        lane_metrics.get("minimal_control"),
+                        lane_metrics.get("luce_external_megakernel"),
                     ),
                 },
             }
@@ -473,7 +514,17 @@ def render_report_markdown(report: dict[str, Any]) -> str:
                 "| --- | --- | ---: | ---: | ---: | ---: | --- |",
             ]
         )
-        for lane in DEFAULT_LANES:
+        lane_names = [
+            lane
+            for lane in (
+                "main_dense_control",
+                "minimal_control",
+                "minimal_megakernel",
+                "luce_external_megakernel",
+            )
+            if lane in group
+        ]
+        for lane in lane_names:
             entry = group[lane]
             if entry is None:
                 lines.append(f"| {lane} | missing | - | - | - | - | - |")
@@ -535,6 +586,7 @@ def main() -> None:
         prompt_text=args.prompt_text,
         warmup_runs=args.warmup_runs,
         max_new_tokens=args.max_new_tokens,
+        luce_repo=args.luce_repo,
     )
     manifest: dict[str, Any] = {
         "generated_at": _utc_now(),
@@ -548,6 +600,7 @@ def main() -> None:
         "max_new_tokens": args.max_new_tokens,
         "minimal_cargo_features": args.minimal_cargo_features,
         "main_cargo_features": args.main_cargo_features,
+        "luce_repo": args.luce_repo,
         "records": [],
     }
     persist_outputs(output_dir, manifest)
@@ -557,6 +610,7 @@ def main() -> None:
             output_dir=output_dir,
             minimal_cargo_features=args.minimal_cargo_features,
             main_cargo_features=args.main_cargo_features,
+            luce_repo=args.luce_repo,
             resume=args.resume,
             dry_run=args.dry_run,
         )

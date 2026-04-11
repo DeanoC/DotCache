@@ -317,6 +317,25 @@ for the same model, device, prompt token count, and decode length.
 On CUDA, this lane is still guarded by the model-side `head_dim <= 128` restriction, so
 `Qwen/Qwen3.5-0.8B` currently falls back rather than claiming unsupported megakernel coverage.
 
+To compare against the actual Luce external megakernel implementation instead of the in-tree
+minimal lane, point the harness at a checkout of `https://github.com/Luce-Org/luce-megakernel`:
+
+```bash
+python benchmarks/bench_qwen35_minimal_control_compare.py \
+  --contexts 2048 \
+  --luce-repo /path/to/luce-megakernel
+```
+
+That adds a fourth lane:
+
+- `luce_external_megakernel`
+
+This lane runs the real Luce Python/CUDA extension as an external control. Current constraints:
+
+- CUDA only
+- `Qwen/Qwen3.5-0.8B` only
+- context length `<= 2048`
+
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 
 ```bash
