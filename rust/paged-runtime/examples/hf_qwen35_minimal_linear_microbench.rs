@@ -306,15 +306,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let args = parse_args()?;
-    let source = dotcache_paged_runtime::HfHubModelSource::new()?;
-    let artifacts = source.snapshot(&args.model_id)?;
-    let tokenizer = Tokenizer::from_file(&artifacts.tokenizer_path)?;
-    let prompt_ids = build_prompt_ids(&tokenizer, args.prompt.as_str(), args.prompt_token_target)?;
-
     let device = args.device.resolve()?;
     let load_started = Instant::now();
-    let mut runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&args.model_id, &device)?;
+    let mut runner = MinimalQwen35Runner::load_from_hf_f16(&args.model_id, &device)?;
     let load_elapsed = load_started.elapsed().as_secs_f64() * 1_000.0;
+    let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
+    let prompt_ids = build_prompt_ids(&tokenizer, args.prompt.as_str(), args.prompt_token_target)?;
 
     let linear_layer_ids = runner.model.linear_attention_layer_ids();
     let layer_id = args.layer_id.unwrap_or_else(|| linear_layer_ids[0]);

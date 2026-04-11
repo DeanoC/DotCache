@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from benchmarks.bench_qwen35_persistent_serving_policy_compare import (
+    _persistent_base_config,
     _resolve_prompt_records,
     _summarize_records,
 )
@@ -67,6 +68,14 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_compression_selection_ms_total": 1.5,
                 "hand_tuned_policy_bias_ms_total": 0.0,
                 "bias_policy_bias_ms_total": 1.5,
+                "hand_tuned_direct_m0_assembly_ms_total": 10.0,
+                "bias_direct_m0_assembly_ms_total": 20.0,
+                "hand_tuned_direct_m0_score_ms_total": 30.0,
+                "bias_direct_m0_score_ms_total": 40.0,
+                "hand_tuned_exact_m3_score_ms_total": 50.0,
+                "bias_exact_m3_score_ms_total": 60.0,
+                "hand_tuned_final_mix_ms_total": 70.0,
+                "bias_final_mix_ms_total": 80.0,
             },
             {
                 "dense_decode_ms_per_step": 12.0,
@@ -89,6 +98,14 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_compression_selection_ms_total": 2.5,
                 "hand_tuned_policy_bias_ms_total": 0.0,
                 "bias_policy_bias_ms_total": 2.5,
+                "hand_tuned_direct_m0_assembly_ms_total": 12.0,
+                "bias_direct_m0_assembly_ms_total": 22.0,
+                "hand_tuned_direct_m0_score_ms_total": 32.0,
+                "bias_direct_m0_score_ms_total": 42.0,
+                "hand_tuned_exact_m3_score_ms_total": 52.0,
+                "bias_exact_m3_score_ms_total": 62.0,
+                "hand_tuned_final_mix_ms_total": 72.0,
+                "bias_final_mix_ms_total": 82.0,
             },
         ]
     )
@@ -115,3 +132,19 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     assert summary["bias_compression_selection_ms_per_case"] == 2.0
     assert summary["hand_tuned_policy_bias_ms_per_case"] == 0.0
     assert summary["bias_policy_bias_ms_per_case"] == 2.0
+    assert summary["hand_tuned_direct_m0_assembly_ms_per_case"] == 11.0
+    assert summary["bias_direct_m0_assembly_ms_per_case"] == 21.0
+    assert summary["hand_tuned_direct_m0_score_ms_per_case"] == 31.0
+    assert summary["bias_direct_m0_score_ms_per_case"] == 41.0
+    assert summary["hand_tuned_exact_m3_score_ms_per_case"] == 51.0
+    assert summary["bias_exact_m3_score_ms_per_case"] == 61.0
+    assert summary["hand_tuned_final_mix_ms_per_case"] == 71.0
+    assert summary["bias_final_mix_ms_per_case"] == 81.0
+
+
+def test_persistent_base_config_enables_compression_for_mixed_execution() -> None:
+    config = _persistent_base_config(enable_mixed_execution=True, mixed_execution_strategy="direct_m0")
+
+    assert config.enable_full_attention_mixed_mode_execution is True
+    assert config.enable_compression is True
+    assert config.full_attention_mixed_mode_execution_strategy == "direct_m0"

@@ -62,6 +62,30 @@ The combined HIP linear decode path still exists only as an experiment. It reduc
 traffic, but on this UMA host it is slower than the split decode path, so it should remain gated
 unless it is re-evaluated on a discrete ROCm system.
 
+## Confirmed Model Size Ceiling On This Host
+
+The minimal HIP path has now been smoke-tested beyond `0.8B` on the current host.
+
+Confirmed working:
+
+- `Qwen/Qwen3.5-2B`
+- `Qwen/Qwen3.5-4B`
+
+Confirmed not fitting on the current HIP path and machine:
+
+- `Qwen/Qwen3.5-9B`
+- `lovedheart/Qwen3.5-9B-FP8`
+
+Important detail:
+
+- `9B` first failed when the example loaded both a CPU runner and a HIP runner in one process
+- the example now has `--device-only` so larger models can be tested without the CPU control lane
+- even with `--device-only`, both the dense `9B` checkpoint and the tested FP8 variant still fail
+  with `hipMalloc ... out of memory`
+
+So the current practical upper bound to document for this specific machine/runtime combination is
+`Qwen/Qwen3.5-4B`.
+
 ## Long-Context Benchmark Tools
 
 These are the committed tools to use before touching the long-context fused prefill kernel again:

@@ -20,6 +20,7 @@ pub mod megakernel_control;
 pub mod policy;
 #[cfg(feature = "qwen35-minimal")]
 pub mod qwen35_fast;
+pub mod model_package;
 #[cfg(feature = "qwen35-minimal")]
 pub mod qwen35_minimal;
 pub mod session;
@@ -49,6 +50,8 @@ pub use page_mode::{
 };
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
+#[cfg(feature = "qwen35-minimal")]
+pub use model_package::{ModelTarget, PreparedModelPackage};
 #[cfg(feature = "qwen35-minimal")]
 pub use qwen35_minimal::{
     MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionLayerSpec,

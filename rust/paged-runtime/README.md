@@ -10,6 +10,10 @@ There is also a Rust/Candle minimal-control benchmark lane for Qwen3.5. It is in
 separate from the main paged runtime so it can be used as a direct benchmark/control path while
 the main runtime keeps evolving.
 
+That status note also records the currently confirmed model-size ceiling on this machine:
+the minimal HIP path is verified through `Qwen/Qwen3.5-4B`, while tested `9B` variants currently
+run out of HIP memory on this host.
+
 It deliberately starts smaller than `llama.cpp`:
 
 - append-only per-sequence page tables

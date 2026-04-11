@@ -1,12 +1,14 @@
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::{
-    HfHubModelSource, MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35Weights, Result,
-    RuntimeError,
+    HfHubModelSource, MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35Weights,
+    PreparedModelPackage, Result, RuntimeError,
 };
 
-use crate::qwen35_minimal::ModelForCausalLM;
+use crate::qwen35_minimal::{ModelForCausalLM, PreparedTensorSource};
 
 pub const SUPPORTED_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
 pub const BACKEND_IMPL: &str = "qwen35_fast_v1";
@@ -224,20 +226,51 @@ impl Qwen35FastRunner {
         let config = config.normalized();
         let topology = Qwen35FastTopology::qwen35_0_8b();
         Qwen35FastTopology::validate_config(&config)?;
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&artifacts.weight_paths, DType::F16, device)?
-        };
-        let model = ModelForCausalLM::new(&config, vb)?;
-        Ok(Self {
-            config,
-            topology,
-            weights: MinimalQwen35Weights {
-                model_id: artifacts.model_id,
-                revision: artifacts.revision,
-            },
-            model,
-            device: device.clone(),
-        })
+        if matches!(
+            std::env::var("DOTCACHE_QWEN35_DISABLE_PREPARED_LOAD").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        ) {
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&artifacts.weight_paths, DType::F16, device)?
+            };
+            let model = ModelForCausalLM::new(&config, vb)?;
+            Ok(Self {
+                config,
+                topology,
+                weights: MinimalQwen35Weights {
+                    model_id: artifacts.model_id,
+                    revision: artifacts.revision,
+                    tokenizer_path: artifacts.tokenizer_path,
+                    prepared_package_root: PathBuf::new(),
+                },
+                model,
+                device: device.clone(),
+            })
+        } else {
+            let package = Arc::new(PreparedModelPackage::resolve_or_build_qwen35_minimal(
+                model_id, device,
+            )?);
+            let package_config: MinimalQwen35Config =
+                serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+            let package_config = package_config.normalized();
+            Qwen35FastTopology::validate_config(&package_config)?;
+            let model = ModelForCausalLM::from_prepared(
+                &package_config,
+                PreparedTensorSource::new(package.clone(), device.clone()),
+            )?;
+            Ok(Self {
+                config: package_config,
+                topology,
+                weights: MinimalQwen35Weights {
+                    model_id: package.manifest().model_id.clone(),
+                    revision: package.manifest().revision.clone(),
+                    tokenizer_path: package.tokenizer_path(),
+                    prepared_package_root: package.root().to_path_buf(),
+                },
+                model,
+                device: device.clone(),
+            })
+        }
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {

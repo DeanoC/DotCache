@@ -1119,7 +1119,7 @@ def page_supported_torch(page: EncodedPage | PreparedPageTorch) -> bool:
         and (
             (
                 header.mode_default == "M0"
-                and header.bits in (2, 3, 4)
+                and header.bits in (2, 3, 4, 8)
                 and header.quant_scheme == "affine"
                 and source_page.scales is not None
                 and source_page.bias is not None
@@ -2125,7 +2125,25 @@ def _mix_m0_contribution_packed32_grouped_torch(
 
 def _score_m0_logits_two_group64_torch(fused_scaled_codes, fused_queries, bias_groups, query_group_sums):
     torch = _load_torch()
-    bias0, bias1 = bias_groups
+    if isinstance(bias_groups, torch.Tensor):
+        if bias_groups.ndim == 2:
+            if int(bias_groups.shape[0]) == 2:
+                bias0 = bias_groups[0]
+                bias1 = bias_groups[1]
+            elif int(bias_groups.shape[1]) == 2:
+                bias0 = bias_groups[:, 0]
+                bias1 = bias_groups[:, 1]
+            else:
+                raise ValueError("tensor bias_groups must have a two-group dimension")
+        elif bias_groups.ndim == 3:
+            if int(bias_groups.shape[1]) != 2:
+                raise ValueError("batched tensor bias_groups must have shape [batch, 2, token_count]")
+            bias0 = bias_groups[:, 0, :]
+            bias1 = bias_groups[:, 1, :]
+        else:
+            raise ValueError("tensor bias_groups must have shape [2, token_count], [token_count, 2], or [batch, 2, token_count]")
+    else:
+        bias0, bias1 = bias_groups
     matmul_dtype = fused_scaled_codes.dtype if torch.is_floating_point(fused_scaled_codes) else torch.float32
     if fused_scaled_codes.ndim == 3:
         fused_queries_mm = fused_queries.to(dtype=matmul_dtype)
@@ -2140,44 +2158,241 @@ def _score_m0_logits_two_group64_torch(fused_scaled_codes, fused_queries, bias_g
         return logits + bias_term
     if fused_scaled_codes.ndim == 4:
         batch_size = int(fused_scaled_codes.shape[0])
+        squeeze_batch = False
         fused_queries_mm = fused_queries.to(dtype=matmul_dtype)
+        query_group_sums_mm = query_group_sums
+        if fused_queries_mm.ndim == 2:
+            fused_queries_mm = fused_queries_mm.unsqueeze(0)
+            query_group_sums_mm = query_group_sums_mm.unsqueeze(0)
+            squeeze_batch = True
         logits = torch.bmm(
             fused_scaled_codes.reshape(batch_size, -1, int(fused_scaled_codes.shape[-1])),
             fused_queries_mm.transpose(1, 2),
         ).transpose(1, 2).to(torch.float32)
         bias_term = (
-            query_group_sums[:, :, 0:1] * bias0.reshape(batch_size, 1, -1)
-            + query_group_sums[:, :, 1:2] * bias1.reshape(batch_size, 1, -1)
+            query_group_sums_mm[:, :, 0:1] * bias0.reshape(batch_size, 1, -1)
+            + query_group_sums_mm[:, :, 1:2] * bias1.reshape(batch_size, 1, -1)
         )
-        return logits + bias_term
+        output = logits + bias_term
+        return output.squeeze(0) if squeeze_batch else output
     raise ValueError("fused_scaled_codes must have shape [page_count, token_count, 64] or [batch_size, page_count, token_count, 64]")
 
 
 def _score_m0_logits_fused_torch(fused_scaled_codes, fused_queries, bias_groups, query_group_sums):
     torch = _load_torch()
+    num_groups = int(query_group_sums.shape[-1])
+    bias_tensor = None
+    if isinstance(bias_groups, torch.Tensor):
+        if bias_groups.ndim == 2:
+            if int(bias_groups.shape[0]) == num_groups:
+                bias_tensor = bias_groups
+            elif int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups.transpose(0, 1)
+            else:
+                raise ValueError("tensor bias_groups must align with the query group count")
+        elif bias_groups.ndim == 3:
+            if int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups
+            elif int(bias_groups.shape[2]) == num_groups:
+                bias_tensor = bias_groups.transpose(1, 2)
+            else:
+                raise ValueError("batched tensor bias_groups must align with the query group count")
+        elif bias_groups.ndim == 4:
+            if int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups.reshape(int(bias_groups.shape[0]), num_groups, -1)
+            elif int(bias_groups.shape[-1]) == num_groups:
+                bias_tensor = bias_groups.permute(0, 3, 1, 2).reshape(int(bias_groups.shape[0]), num_groups, -1)
+            else:
+                raise ValueError("4D tensor bias_groups must align with the query group count")
+        else:
+            raise ValueError(
+                "tensor bias_groups must have shape [num_groups, token_count], [token_count, num_groups], "
+                "[batch, num_groups, token_count], or [batch, num_groups, page_count, token_count]"
+            )
+    elif fused_scaled_codes.ndim == 3:
+        bias_tensor = torch.stack(tuple(bias_group.reshape(-1) for bias_group in bias_groups), dim=0)
+    elif fused_scaled_codes.ndim == 4:
+        bias_tensor = torch.stack(tuple(bias_group.reshape(int(bias_group.shape[0]), -1) for bias_group in bias_groups), dim=1)
+    else:
+        raise ValueError(
+            "fused_scaled_codes must have shape [page_count, token_count, padded_head_dim] "
+            "or [batch_size, page_count, token_count, padded_head_dim]"
+        )
+    matmul_dtype = fused_scaled_codes.dtype if torch.is_floating_point(fused_scaled_codes) else torch.float32
     if fused_scaled_codes.ndim == 3:
+        if bias_tensor.ndim == 3:
+            if int(bias_tensor.shape[0]) != 1:
+                raise ValueError("single-batch fused M0 scoring expects bias tensor batch dimension of 1")
+            bias_tensor = bias_tensor.squeeze(0)
         logits = torch.matmul(
             fused_scaled_codes.reshape(-1, int(fused_scaled_codes.shape[-1])),
-            fused_queries.transpose(0, 1),
+            fused_queries.to(dtype=matmul_dtype).transpose(0, 1),
         ).transpose(0, 1).to(torch.float32)
-        bias_term = torch.zeros_like(logits)
-        for group_index, bias_group in enumerate(bias_groups):
-            bias_term += query_group_sums[:, group_index : group_index + 1] * bias_group.reshape(1, -1)
+        bias_term = torch.matmul(
+            query_group_sums.to(dtype=torch.float32),
+            bias_tensor.to(dtype=torch.float32),
+        )
         return logits + bias_term
     if fused_scaled_codes.ndim == 4:
         batch_size = int(fused_scaled_codes.shape[0])
+        squeeze_batch = False
+        fused_queries_mm = fused_queries
+        query_group_sums_mm = query_group_sums
+        if fused_queries_mm.ndim == 2:
+            fused_queries_mm = fused_queries_mm.unsqueeze(0)
+            query_group_sums_mm = query_group_sums_mm.unsqueeze(0)
+            squeeze_batch = True
+        if bias_tensor.ndim == 2:
+            bias_tensor = bias_tensor.unsqueeze(0)
         logits = torch.bmm(
             fused_scaled_codes.reshape(batch_size, -1, int(fused_scaled_codes.shape[-1])),
-            fused_queries.transpose(1, 2),
+            fused_queries_mm.to(dtype=matmul_dtype).transpose(1, 2),
         ).transpose(1, 2).to(torch.float32)
-        bias_term = torch.zeros_like(logits)
-        for group_index, bias_group in enumerate(bias_groups):
-            bias_term += query_group_sums[:, :, group_index : group_index + 1] * bias_group.reshape(batch_size, 1, -1)
+        bias_term = torch.bmm(
+            query_group_sums_mm.to(dtype=torch.float32),
+            bias_tensor.to(dtype=torch.float32),
+        )
+        output = logits + bias_term
+        return output.squeeze(0) if squeeze_batch else output
+
+
+def _score_m0_logits_fused_transposed_torch(fused_scaled_codes_transposed, fused_queries, bias_groups, query_group_sums):
+    torch = _load_torch()
+    num_groups = int(query_group_sums.shape[-1])
+    bias_tensor = None
+    if isinstance(bias_groups, torch.Tensor):
+        if bias_groups.ndim == 2:
+            if int(bias_groups.shape[0]) == num_groups:
+                bias_tensor = bias_groups
+            elif int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups.transpose(0, 1)
+            else:
+                raise ValueError("tensor bias_groups must align with the query group count")
+        elif bias_groups.ndim == 3:
+            if int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups
+            elif int(bias_groups.shape[2]) == num_groups:
+                bias_tensor = bias_groups.transpose(1, 2)
+            else:
+                raise ValueError("batched tensor bias_groups must align with the query group count")
+        elif bias_groups.ndim == 4:
+            if int(bias_groups.shape[1]) == num_groups:
+                bias_tensor = bias_groups.reshape(int(bias_groups.shape[0]), num_groups, -1)
+            elif int(bias_groups.shape[-1]) == num_groups:
+                bias_tensor = bias_groups.permute(0, 3, 1, 2).reshape(int(bias_groups.shape[0]), num_groups, -1)
+            else:
+                raise ValueError("4D tensor bias_groups must align with the query group count")
+        else:
+            raise ValueError(
+                "tensor bias_groups must have shape [num_groups, token_count], [token_count, num_groups], "
+                "[batch, num_groups, token_count], or [batch, num_groups, page_count, token_count]"
+            )
+    elif fused_scaled_codes_transposed.ndim == 2:
+        bias_tensor = torch.stack(tuple(bias_group.reshape(-1) for bias_group in bias_groups), dim=0)
+    elif fused_scaled_codes_transposed.ndim == 3:
+        bias_tensor = torch.stack(tuple(bias_group.reshape(int(bias_group.shape[0]), -1) for bias_group in bias_groups), dim=1)
+    else:
+        raise ValueError(
+            "fused_scaled_codes_transposed must have shape [padded_head_dim, token_count] "
+            "or [batch_size, padded_head_dim, token_count]"
+        )
+    matmul_dtype = fused_scaled_codes_transposed.dtype if torch.is_floating_point(fused_scaled_codes_transposed) else torch.float32
+    if fused_scaled_codes_transposed.ndim == 2:
+        logits = torch.matmul(
+            fused_queries.to(dtype=matmul_dtype),
+            fused_scaled_codes_transposed.to(dtype=matmul_dtype),
+        ).to(torch.float32)
+        bias_term = torch.matmul(
+            query_group_sums.to(dtype=torch.float32),
+            bias_tensor.to(dtype=torch.float32),
+        )
         return logits + bias_term
+    if fused_scaled_codes_transposed.ndim == 3:
+        batch_size = int(fused_scaled_codes_transposed.shape[0])
+        squeeze_batch = False
+        fused_queries_mm = fused_queries
+        query_group_sums_mm = query_group_sums
+        if fused_queries_mm.ndim == 2:
+            fused_queries_mm = fused_queries_mm.unsqueeze(0)
+            query_group_sums_mm = query_group_sums_mm.unsqueeze(0)
+            squeeze_batch = True
+        if bias_tensor.ndim == 2:
+            bias_tensor = bias_tensor.unsqueeze(0)
+        logits = torch.bmm(
+            fused_queries_mm.to(dtype=matmul_dtype),
+            fused_scaled_codes_transposed.to(dtype=matmul_dtype),
+        ).to(torch.float32)
+        bias_term = torch.bmm(
+            query_group_sums_mm.to(dtype=torch.float32),
+            bias_tensor.to(dtype=torch.float32),
+        )
+        output = logits + bias_term
+        return output.squeeze(0) if squeeze_batch else output
     raise ValueError(
-        "fused_scaled_codes must have shape [page_count, token_count, padded_head_dim] "
-        "or [batch_size, page_count, token_count, padded_head_dim]"
+        "fused_scaled_codes_transposed must have shape [padded_head_dim, token_count] "
+        "or [batch_size, padded_head_dim, token_count]"
     )
+
+
+def _score_exact_logits_paged_torch(keys, queries):
+    torch = _load_torch()
+    squeeze_batch = False
+    if keys.ndim == 3:
+        keys = keys.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
+    if keys.ndim != 4:
+        raise ValueError("keys must have shape [batch_size, page_count, token_count, head_dim]")
+    if queries.ndim != 3:
+        raise ValueError("queries must have shape [batch_size, query_count, head_dim]")
+    batch_size, _page_count, _token_count, head_dim = map(int, keys.shape)
+    if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
+        raise ValueError("queries batch/head_dim must align with keys")
+    key_flat = keys.reshape(batch_size, -1, head_dim)
+    output = torch.bmm(key_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
+
+
+def _score_exact_logits_flat_torch(keys_flat, queries):
+    torch = _load_torch()
+    squeeze_batch = False
+    if keys_flat.ndim == 2:
+        keys_flat = keys_flat.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
+    if keys_flat.ndim != 3:
+        raise ValueError("keys_flat must have shape [batch_size, token_count, head_dim]")
+    if queries.ndim != 3:
+        raise ValueError("queries must have shape [batch_size, query_count, head_dim]")
+    batch_size, _token_count, head_dim = map(int, keys_flat.shape)
+    if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
+        raise ValueError("queries batch/head_dim must align with keys_flat")
+    output = torch.bmm(keys_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
+
+
+def _score_exact_logits_transposed_torch(keys_transposed, queries):
+    torch = _load_torch()
+    squeeze_batch = False
+    if keys_transposed.ndim == 2:
+        keys_transposed = keys_transposed.unsqueeze(0)
+        squeeze_batch = True
+    if queries.ndim == 2:
+        queries = queries.unsqueeze(0)
+        squeeze_batch = True
+    if keys_transposed.ndim != 3:
+        raise ValueError("keys_transposed must have shape [batch_size, head_dim, token_count]")
+    if queries.ndim != 3:
+        raise ValueError("queries must have shape [batch_size, query_count, head_dim]")
+    batch_size, head_dim, _token_count = map(int, keys_transposed.shape)
+    if int(queries.shape[0]) != batch_size or int(queries.shape[-1]) != head_dim:
+        raise ValueError("queries batch/head_dim must align with keys_transposed")
+    output = torch.bmm(queries, keys_transposed).to(torch.float32)
+    return output.squeeze(0) if squeeze_batch else output
 
 
 def _mix_m0_contribution_two_group64_torch(weights, fused_scaled_codes, bias_groups):

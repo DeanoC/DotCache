@@ -1,6 +1,8 @@
 mod hip;
 mod model;
+mod prepared;
 mod with_tracing;
+pub(crate) use prepared::PreparedTensorSource;
 
 pub use model::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
@@ -10,13 +12,16 @@ pub use model::{
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use crate::{HfHubModelSource, Result};
-
+use crate::{HfHubModelSource, PreparedModelPackage, Result};
 #[derive(Debug, Clone)]
 pub struct MinimalQwen35Weights {
     pub model_id: String,
     pub revision: String,
+    pub tokenizer_path: PathBuf,
+    pub prepared_package_root: PathBuf,
 }
 
 #[derive(Debug)]
@@ -36,7 +41,7 @@ impl MinimalQwen35Runner {
         }
     }
 
-    pub fn load_from_hf_0_8b_f16(model_id: &str, device: &Device) -> Result<Self> {
+    pub fn load_from_hf_direct_f16(model_id: &str, device: &Device) -> Result<Self> {
         let source = HfHubModelSource::new()?;
         let artifacts = source.snapshot(model_id)?;
         let config: MinimalQwen35Config =
@@ -50,10 +55,50 @@ impl MinimalQwen35Runner {
             weights: MinimalQwen35Weights {
                 model_id: artifacts.model_id,
                 revision: artifacts.revision,
+                tokenizer_path: artifacts.tokenizer_path,
+                prepared_package_root: PathBuf::new(),
             },
             model,
             device: device.clone(),
         })
+    }
+
+    pub fn load_prepared_for_device(model_id: &str, device: &Device) -> Result<Self> {
+        let package = Arc::new(PreparedModelPackage::resolve_or_build_qwen35_minimal(
+            model_id, device,
+        )?);
+        let config: MinimalQwen35Config =
+            serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+        let model = ModelForCausalLM::from_prepared(
+            &config,
+            PreparedTensorSource::new(package.clone(), device.clone()),
+        )?;
+        Ok(Self {
+            config,
+            weights: MinimalQwen35Weights {
+                model_id: package.manifest().model_id.clone(),
+                revision: package.manifest().revision.clone(),
+                tokenizer_path: package.tokenizer_path(),
+                prepared_package_root: package.root().to_path_buf(),
+            },
+            model,
+            device: device.clone(),
+        })
+    }
+
+    pub fn load_from_hf_f16(model_id: &str, device: &Device) -> Result<Self> {
+        if matches!(
+            std::env::var("DOTCACHE_QWEN35_DISABLE_PREPARED_LOAD").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        ) {
+            Self::load_from_hf_direct_f16(model_id, device)
+        } else {
+            Self::load_prepared_for_device(model_id, device)
+        }
+    }
+
+    pub fn load_from_hf_0_8b_f16(model_id: &str, device: &Device) -> Result<Self> {
+        Self::load_from_hf_f16(model_id, device)
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
