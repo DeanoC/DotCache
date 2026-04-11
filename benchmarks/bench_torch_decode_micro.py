@@ -13,6 +13,9 @@ from transformers import AutoConfig
 from dotcache.backends.torch_mps import (
     _mix_m0_contribution_fused_torch,
     _mix_m0_contribution_two_group64_torch,
+    _score_exact_logits_flat_torch,
+    _score_exact_logits_paged_torch,
+    _score_exact_logits_transposed_torch,
     _score_m0_logits_fused_torch,
     _score_m0_logits_two_group64_torch,
 )
@@ -95,21 +98,6 @@ def _resolve_shape(args: argparse.Namespace) -> tuple[int, int, int]:
     kv_head_count = int(args.num_key_value_heads) if args.num_key_value_heads is not None else num_key_value_heads
     query_count = int(args.query_count) if args.query_count is not None else num_attention_heads // num_key_value_heads
     return head_dim, kv_head_count, query_count
-
-
-def _score_exact_torch(keys: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
-    batch_size, _page_count, _token_count, head_dim = map(int, keys.shape)
-    key_flat = keys.reshape(batch_size, -1, head_dim)
-    return torch.bmm(key_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
-
-
-def _score_exact_flat_torch(keys_flat: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
-    return torch.bmm(keys_flat, queries.transpose(1, 2)).transpose(1, 2).to(torch.float32)
-
-
-def _score_exact_transposed_torch(keys_transposed: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
-    return torch.bmm(queries, keys_transposed).to(torch.float32)
-
 
 def _mix_exact_torch(weights: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
     batch_size, _page_count, _token_count, head_dim = map(int, values.shape)
@@ -362,7 +350,7 @@ def _runtime_score_breakdown_result(
             dtype=torch.float32,
             device=device,
         )
-        m0_logits_reference = _score_exact_torch(m0_key_pages, queries)
+        m0_logits_reference = _score_exact_logits_paged_torch(m0_key_pages, queries)
         key_codes_np, key_scales_np, key_bias_np = _quantize_grouped_blocks_to_numpy(
             values=m0_key_pages,
             group_size=int(group_size),
@@ -413,19 +401,19 @@ def _runtime_score_breakdown_result(
         m3_key_transposed = m3_key_flat.transpose(1, 2).contiguous()
         exact_m3_score_ms, exact_m3_logits = _bench(
             device,
-            lambda: _score_exact_torch(m3_key_pages, queries),
+            lambda: _score_exact_logits_paged_torch(m3_key_pages, queries),
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
         exact_m3_flat_score_ms, exact_m3_flat_logits = _bench(
             device,
-            lambda: _score_exact_flat_torch(m3_key_flat, queries),
+            lambda: _score_exact_logits_flat_torch(m3_key_flat, queries),
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
         exact_m3_transposed_score_ms, exact_m3_transposed_logits = _bench(
             device,
-            lambda: _score_exact_transposed_torch(m3_key_transposed, queries),
+            lambda: _score_exact_logits_transposed_torch(m3_key_transposed, queries),
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
@@ -489,7 +477,7 @@ def _runtime_score_breakdown_result(
             )
         if int(m3_pages) > 0:
             assert m3_page_tensor is not None
-            parts.append(_score_exact_torch(m3_page_tensor, queries))
+            parts.append(_score_exact_logits_paged_torch(m3_page_tensor, queries))
         logits = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
         weights = torch.softmax(logits, dim=-1)
         return _mix_exact_flat_torch(weights, value_flat)
@@ -509,7 +497,7 @@ def _runtime_score_breakdown_result(
     dense_reference_keys_tensor = (
         torch.cat(dense_reference_keys, dim=1) if len(dense_reference_keys) > 1 else dense_reference_keys[0]
     )
-    dense_reference_logits = _score_exact_torch(dense_reference_keys_tensor, queries)
+    dense_reference_logits = _score_exact_logits_paged_torch(dense_reference_keys_tensor, queries)
     dense_reference_weights = torch.softmax(dense_reference_logits, dim=-1)
     dense_reference_output = _mix_exact_flat_torch(dense_reference_weights, value_flat)
 
@@ -602,10 +590,10 @@ def main() -> None:
     )
 
     def dense_exact_score():
-        return _score_exact_torch(keys, queries)
+        return _score_exact_logits_paged_torch(keys, queries)
 
     def dense_exact_combined():
-        logits = _score_exact_torch(keys, queries)
+        logits = _score_exact_logits_paged_torch(keys, queries)
         weights = torch.softmax(logits, dim=-1).reshape(num_key_value_heads, query_count, page_count, token_count)
         return _mix_exact_torch(weights, values)
 
@@ -659,9 +647,9 @@ def main() -> None:
     )
     cached_reconstruct_combined_ms, cached_combined_output = _bench(
         device,
-        lambda: _mix_exact_torch(
+            lambda: _mix_exact_torch(
             torch.softmax(
-                _score_exact_torch(
+                _score_exact_logits_paged_torch(
                     _cached_dequantize_blocks_to_device(
                         codes_np=key_codes_np,
                         scales_np=key_scales_np,
@@ -739,9 +727,9 @@ def main() -> None:
     )
     blockwise_qdq_combined_ms, blockwise_combined_output = _bench(
         device,
-        lambda: _mix_exact_torch(
+            lambda: _mix_exact_torch(
             torch.softmax(
-                _score_exact_torch(
+                _score_exact_logits_paged_torch(
                     _blockwise_quantize_dequantize_to_device(
                         values=keys,
                         group_size=int(args.group_size),
@@ -821,11 +809,11 @@ def main() -> None:
         bench_iters=args.bench_iters,
     )
 
-    cached_score_logits = _score_exact_torch(cached_keys, queries)
+    cached_score_logits = _score_exact_logits_paged_torch(cached_keys, queries)
     cached_weights = torch.softmax(cached_score_logits, dim=-1).reshape(num_key_value_heads, query_count, page_count, token_count)
     cached_mix_output = _mix_exact_torch(cached_weights, cached_values)
 
-    blockwise_score_logits = _score_exact_torch(blockwise_keys, queries)
+    blockwise_score_logits = _score_exact_logits_paged_torch(blockwise_keys, queries)
     blockwise_weights = torch.softmax(blockwise_score_logits, dim=-1).reshape(num_key_value_heads, query_count, page_count, token_count)
     blockwise_mix_output = _mix_exact_torch(blockwise_weights, blockwise_values)
 
