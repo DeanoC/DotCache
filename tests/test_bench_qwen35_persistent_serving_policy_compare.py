@@ -72,6 +72,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_direct_m0_assembly_ms_total": 20.0,
                 "hand_tuned_direct_m0_score_ms_total": 30.0,
                 "bias_direct_m0_score_ms_total": 40.0,
+                "hand_tuned_executed_m0_block_count_total": 11,
+                "bias_executed_m0_block_count_total": 21,
+                "hand_tuned_executed_m3_block_count_total": 31,
+                "bias_executed_m3_block_count_total": 41,
                 "hand_tuned_exact_m3_score_ms_total": 50.0,
                 "bias_exact_m3_score_ms_total": 60.0,
                 "hand_tuned_final_mix_ms_total": 70.0,
@@ -102,6 +106,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_direct_m0_assembly_ms_total": 22.0,
                 "hand_tuned_direct_m0_score_ms_total": 32.0,
                 "bias_direct_m0_score_ms_total": 42.0,
+                "hand_tuned_executed_m0_block_count_total": 13,
+                "bias_executed_m0_block_count_total": 23,
+                "hand_tuned_executed_m3_block_count_total": 33,
+                "bias_executed_m3_block_count_total": 43,
                 "hand_tuned_exact_m3_score_ms_total": 52.0,
                 "bias_exact_m3_score_ms_total": 62.0,
                 "hand_tuned_final_mix_ms_total": 72.0,
@@ -136,6 +144,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     assert summary["bias_direct_m0_assembly_ms_per_case"] == 21.0
     assert summary["hand_tuned_direct_m0_score_ms_per_case"] == 31.0
     assert summary["bias_direct_m0_score_ms_per_case"] == 41.0
+    assert summary["hand_tuned_executed_m0_blocks_per_case"] == 12.0
+    assert summary["bias_executed_m0_blocks_per_case"] == 22.0
+    assert summary["hand_tuned_executed_m3_blocks_per_case"] == 32.0
+    assert summary["bias_executed_m3_blocks_per_case"] == 42.0
     assert summary["hand_tuned_exact_m3_score_ms_per_case"] == 51.0
     assert summary["bias_exact_m3_score_ms_per_case"] == 61.0
     assert summary["hand_tuned_final_mix_ms_per_case"] == 71.0

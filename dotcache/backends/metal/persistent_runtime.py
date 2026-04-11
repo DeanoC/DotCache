@@ -3342,9 +3342,9 @@ def _decode_selected_blocks_direct_m0_torch(
         )
         if bool(np.any(m0_block_mask)):
             executed_m0_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m0_block_mask].tolist())
-        _synchronize_torch_device(q_slice)
-        timing["direct_m0_assembly_ms"] += (time.perf_counter() - assembly_start) * 1000.0
         if m0_global_indices_np.size > 0:
+            _synchronize_torch_device(q_slice)
+            timing["direct_m0_assembly_ms"] += (time.perf_counter() - assembly_start) * 1000.0
             assert direct_group_size is not None
             assert direct_padded_head_dim is not None
             _synchronize_torch_device(q_slice)

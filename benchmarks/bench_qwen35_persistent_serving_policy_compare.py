@@ -306,6 +306,10 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_direct_m0_assembly_ms_per_case": 0.0,
             "hand_tuned_direct_m0_score_ms_per_case": 0.0,
             "bias_direct_m0_score_ms_per_case": 0.0,
+            "hand_tuned_executed_m0_blocks_per_case": 0.0,
+            "bias_executed_m0_blocks_per_case": 0.0,
+            "hand_tuned_executed_m3_blocks_per_case": 0.0,
+            "bias_executed_m3_blocks_per_case": 0.0,
             "hand_tuned_exact_m3_score_ms_per_case": 0.0,
             "bias_exact_m3_score_ms_per_case": 0.0,
             "hand_tuned_final_mix_ms_per_case": 0.0,
@@ -387,6 +391,18 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_direct_m0_score_ms_per_case": float(
             sum(float(record["bias_direct_m0_score_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_executed_m0_blocks_per_case": float(
+            sum(float(record["hand_tuned_executed_m0_block_count_total"]) for record in records) / case_count
+        ),
+        "bias_executed_m0_blocks_per_case": float(
+            sum(float(record["bias_executed_m0_block_count_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_executed_m3_blocks_per_case": float(
+            sum(float(record["hand_tuned_executed_m3_block_count_total"]) for record in records) / case_count
+        ),
+        "bias_executed_m3_blocks_per_case": float(
+            sum(float(record["bias_executed_m3_block_count_total"]) for record in records) / case_count
+        ),
         "hand_tuned_exact_m3_score_ms_per_case": float(
             sum(float(record["hand_tuned_exact_m3_score_ms_total"]) for record in records) / case_count
         ),
@@ -442,6 +458,10 @@ def _render_markdown(*, records: list[dict[str, Any]], summary: dict[str, Any], 
     lines.append(f"- bias direct-M0 assembly ms/case: {float(summary['bias_direct_m0_assembly_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned direct-M0 score ms/case: {float(summary['hand_tuned_direct_m0_score_ms_per_case']):.4f}")
     lines.append(f"- bias direct-M0 score ms/case: {float(summary['bias_direct_m0_score_ms_per_case']):.4f}")
+    lines.append(f"- hand-tuned executed M0 blocks/case: {float(summary['hand_tuned_executed_m0_blocks_per_case']):.2f}")
+    lines.append(f"- bias executed M0 blocks/case: {float(summary['bias_executed_m0_blocks_per_case']):.2f}")
+    lines.append(f"- hand-tuned executed M3 blocks/case: {float(summary['hand_tuned_executed_m3_blocks_per_case']):.2f}")
+    lines.append(f"- bias executed M3 blocks/case: {float(summary['bias_executed_m3_blocks_per_case']):.2f}")
     lines.append(f"- hand-tuned exact-M3 score ms/case: {float(summary['hand_tuned_exact_m3_score_ms_per_case']):.4f}")
     lines.append(f"- bias exact-M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned final-mix ms/case: {float(summary['hand_tuned_final_mix_ms_per_case']):.4f}")
@@ -854,6 +874,42 @@ def main() -> None:
                     float(value)
                     for value in bias_result.get(
                         "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_executed_m0_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_m0_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_m0_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_m0_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_executed_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_m3_block_count_total_by_layer",
                         {},
                     ).values()
                 )
