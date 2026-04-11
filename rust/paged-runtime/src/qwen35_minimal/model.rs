@@ -620,6 +620,10 @@ pub struct RuntimeProfile {
     pub mlp_millis: f64,
     pub linear_conv_millis: f64,
     pub linear_chunk_prepare_millis: f64,
+    pub linear_chunk_prepare_k_beta_millis: f64,
+    pub linear_chunk_prepare_g_millis: f64,
+    pub linear_chunk_prepare_cache_millis: f64,
+    pub linear_chunk_prepare_base_attn_millis: f64,
     pub linear_chunk_solve_millis: f64,
     pub linear_chunk_scan_millis: f64,
     pub linear_chunk_index_millis: f64,
@@ -655,6 +659,10 @@ impl RuntimeProfile {
         self.mlp_millis += other.mlp_millis;
         self.linear_conv_millis += other.linear_conv_millis;
         self.linear_chunk_prepare_millis += other.linear_chunk_prepare_millis;
+        self.linear_chunk_prepare_k_beta_millis += other.linear_chunk_prepare_k_beta_millis;
+        self.linear_chunk_prepare_g_millis += other.linear_chunk_prepare_g_millis;
+        self.linear_chunk_prepare_cache_millis += other.linear_chunk_prepare_cache_millis;
+        self.linear_chunk_prepare_base_attn_millis += other.linear_chunk_prepare_base_attn_millis;
         self.linear_chunk_solve_millis += other.linear_chunk_solve_millis;
         self.linear_chunk_scan_millis += other.linear_chunk_scan_millis;
         self.linear_chunk_index_millis += other.linear_chunk_index_millis;
@@ -694,6 +702,11 @@ impl RuntimeProfile {
             mlp_millis: self.mlp_millis * factor,
             linear_conv_millis: self.linear_conv_millis * factor,
             linear_chunk_prepare_millis: self.linear_chunk_prepare_millis * factor,
+            linear_chunk_prepare_k_beta_millis: self.linear_chunk_prepare_k_beta_millis * factor,
+            linear_chunk_prepare_g_millis: self.linear_chunk_prepare_g_millis * factor,
+            linear_chunk_prepare_cache_millis: self.linear_chunk_prepare_cache_millis * factor,
+            linear_chunk_prepare_base_attn_millis: self.linear_chunk_prepare_base_attn_millis
+                * factor,
             linear_chunk_solve_millis: self.linear_chunk_solve_millis * factor,
             linear_chunk_scan_millis: self.linear_chunk_scan_millis * factor,
             linear_chunk_index_millis: self.linear_chunk_index_millis * factor,
@@ -8789,12 +8802,15 @@ impl GatedDeltaNet {
 
         let prepare_start = profile_start(device)?;
         let batch_heads = batch_size * num_heads;
+        let k_beta_start = profile_start(device)?;
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let v_beta = value.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let query = query.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let key = key.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let k_beta = k_beta.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let v_beta = v_beta.reshape((batch_heads, num_chunks, chunk_size, v_head_dim))?;
+        profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
+        let g_start = profile_start(device)?;
         let g = {
             let g = g.reshape((batch_heads, num_chunks, chunk_size))?;
             if g.device().is_hip() {
@@ -8803,17 +8819,22 @@ impl GatedDeltaNet {
                 g.cumsum(D::Minus1)?
             }
         };
+        profile.linear_chunk_prepare_g_millis += profile_elapsed(g_start, device)?;
+        let cache_start = profile_start(device)?;
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower_2d = cache.lower_2d.reshape((1, chunk_size, chunk_size))?;
         let eye_2d = Tensor::eye(chunk_size, compute_dtype, query.device())?
             .reshape((1, chunk_size, chunk_size))?;
         let strict_lower_2d = lower_2d.broadcast_sub(&eye_2d)?;
+        profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
+        let base_attn_start = profile_start(device)?;
         let decay_deltas = g
             .unsqueeze(3)?
             .broadcast_sub(&g.unsqueeze(2)?)?
             .broadcast_mul(&lower_2d)?;
         let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower_2d)?;
         let exp_g = g.exp()?;
+        profile.linear_chunk_prepare_base_attn_millis += profile_elapsed(base_attn_start, device)?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
         let solve_start = profile_start(device)?;
@@ -9585,7 +9606,10 @@ impl GatedDeltaNet {
         }
 
         let prepare_start = profile_start(device)?;
+        let k_beta_start = profile_start(device)?;
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
+        profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
+        let g_start = profile_start(device)?;
         let g = if g_raw.device().is_hip() {
             hip_cumsum_last_dim(&g_raw)?
         } else {
@@ -9593,7 +9617,9 @@ impl GatedDeltaNet {
         };
         let exp_g = g.exp()?;
         let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
+        profile.linear_chunk_prepare_g_millis += profile_elapsed(g_start, device)?;
 
+        let cache_start = profile_start(device)?;
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower = cache.lower;
         let eye = cache.eye;
@@ -9612,8 +9638,10 @@ impl GatedDeltaNet {
                 chunk_size,
             );
         let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
+        profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
 
         let solve_batch = batch_size * num_heads * num_chunks;
+        let base_attn_start = profile_start(device)?;
         let (base_attn, decay_scan) = if hip_full_scan_fast_path {
             (
                 delta_base_attn_scan(
@@ -9650,6 +9678,7 @@ impl GatedDeltaNet {
                 Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
             )
         };
+        profile.linear_chunk_prepare_base_attn_millis += profile_elapsed(base_attn_start, device)?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
         let solve_start = profile_start(device)?;
