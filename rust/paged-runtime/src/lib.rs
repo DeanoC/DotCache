@@ -43,7 +43,8 @@ pub use page::{KvPage, PageId};
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
 #[cfg(feature = "qwen35-minimal")]
 pub use qwen35_minimal::{
-    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35Runner, MinimalQwen35Weights,
+    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionLayerSpec,
+    MinimalQwen35Runner, MinimalQwen35Weights,
 };
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;

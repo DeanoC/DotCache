@@ -1,7 +1,9 @@
 #[cfg(feature = "qwen35-minimal")]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::{Device, Tensor};
-    use dotcache_paged_runtime::{MinimalQwen35Runner, RuntimeError};
+    use dotcache_paged_runtime::{
+        MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35Runner, RuntimeError,
+    };
     use serde::Serialize;
     use std::time::Instant;
     use tokenizers::Tokenizer;
@@ -85,6 +87,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         model_id: String,
         device: String,
         layer_id: usize,
+        layer_conv_dim: usize,
+        layer_num_v_heads: usize,
+        layer_num_k_heads: usize,
+        layer_head_k_dim: usize,
+        layer_head_v_dim: usize,
+        layer_key_dim: usize,
+        layer_value_dim: usize,
+        layer_state_len: usize,
+        layer_kernel_size: usize,
         prompt_token_count: usize,
         repeats: usize,
         warmup_repeats: usize,
@@ -123,6 +134,62 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_linear_full_kernel_pack_millis: f64,
         stage_linear_full_kernel_execute_millis: f64,
         stage_linear_full_kernel_unpack_millis: f64,
+        fused_prefill_unique_input_bytes: u64,
+        fused_prefill_unique_output_bytes: u64,
+        fused_prefill_algorithmic_bytes: u64,
+        fused_prefill_algorithmic_flops: u64,
+        fused_prefill_algorithmic_arithmetic_intensity: f64,
+        fused_prefill_achieved_gbytes_per_sec: f64,
+        fused_prefill_achieved_gflops_per_sec: f64,
+    }
+
+    fn fused_prefill_work_estimate(
+        spec: MinimalQwen35LinearAttentionLayerSpec,
+        batch_size: usize,
+        seq_len: usize,
+        dtype_bytes: u64,
+    ) -> (u64, u64, u64, u64) {
+        let batch = batch_size as u64;
+        let seq = seq_len as u64;
+        let conv_dim = spec.conv_dim as u64;
+        let num_heads = spec.num_v_heads as u64;
+        let state_len = spec.state_len as u64;
+        let kernel_size = spec.kernel_size as u64;
+        let out_width = conv_dim + num_heads;
+
+        let unique_input_bytes =
+            batch * ((conv_dim * seq) + (conv_dim * state_len) + (conv_dim * kernel_size) + (num_heads * seq) + (2 * num_heads)) * dtype_bytes;
+        let unique_output_bytes =
+            batch * ((seq * out_width) + (conv_dim * state_len)) * dtype_bytes;
+
+        let conv_boundary_steps = seq.min(state_len);
+        let conv_steady_steps = seq.saturating_sub(conv_boundary_steps);
+        let conv_boundary_reads = batch * conv_dim * conv_boundary_steps * kernel_size;
+        let conv_steady_reads = batch * conv_dim * conv_steady_steps * kernel_size;
+        let conv_weight_reads = batch * conv_dim * seq * kernel_size;
+        let g_reads = batch * num_heads * seq * 3;
+        let conv_writes = batch * conv_dim * seq;
+        let g_writes = batch * num_heads * seq;
+        let tail_writes = batch * conv_dim * state_len;
+        let algorithmic_bytes = (conv_boundary_reads
+            + conv_steady_reads
+            + conv_weight_reads
+            + g_reads
+            + conv_writes
+            + g_writes
+            + tail_writes)
+            * dtype_bytes;
+
+        let conv_flops = batch * conv_dim * seq * ((kernel_size * 2) - 1 + 4);
+        let g_flops = batch * num_heads * seq * 8;
+        let algorithmic_flops = conv_flops + g_flops;
+
+        (
+            unique_input_bytes,
+            unique_output_bytes,
+            algorithmic_bytes,
+            algorithmic_flops,
+        )
     }
 
     fn build_prompt_ids(
@@ -229,6 +296,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .into());
     }
+    let layer_spec = runner.model.linear_attention_layer_spec(layer_id)?;
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &device)?;
     let capture_started = Instant::now();
@@ -242,10 +310,43 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .bench_linear_attention_layer(&input_ids, layer_id, 0, args.repeats)?;
     let capture_elapsed = capture_started.elapsed().as_secs_f64() * 1_000.0;
 
+    let dtype_bytes = 2u64;
+    let (
+        fused_prefill_unique_input_bytes,
+        fused_prefill_unique_output_bytes,
+        fused_prefill_algorithmic_bytes,
+        fused_prefill_algorithmic_flops,
+    ) = fused_prefill_work_estimate(layer_spec, 1, prompt_ids.len(), dtype_bytes);
+    let conv_seconds = result.mean_profile.kv_append_write_millis / 1_000.0;
+    let fused_prefill_algorithmic_arithmetic_intensity = if fused_prefill_algorithmic_bytes > 0 {
+        fused_prefill_algorithmic_flops as f64 / fused_prefill_algorithmic_bytes as f64
+    } else {
+        0.0
+    };
+    let fused_prefill_achieved_gbytes_per_sec = if conv_seconds > 0.0 {
+        fused_prefill_algorithmic_bytes as f64 / conv_seconds / 1.0e9
+    } else {
+        0.0
+    };
+    let fused_prefill_achieved_gflops_per_sec = if conv_seconds > 0.0 {
+        fused_prefill_algorithmic_flops as f64 / conv_seconds / 1.0e9
+    } else {
+        0.0
+    };
+
     let summary = Summary {
         model_id: args.model_id,
         device: args.device.to_string(),
         layer_id,
+        layer_conv_dim: layer_spec.conv_dim,
+        layer_num_v_heads: layer_spec.num_v_heads,
+        layer_num_k_heads: layer_spec.num_k_heads,
+        layer_head_k_dim: layer_spec.head_k_dim,
+        layer_head_v_dim: layer_spec.head_v_dim,
+        layer_key_dim: layer_spec.key_dim,
+        layer_value_dim: layer_spec.value_dim,
+        layer_state_len: layer_spec.state_len,
+        layer_kernel_size: layer_spec.kernel_size,
         prompt_token_count: prompt_ids.len(),
         repeats: args.repeats,
         warmup_repeats: args.warmup_repeats,
@@ -304,6 +405,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_linear_full_kernel_unpack_millis: result
             .mean_profile
             .linear_full_kernel_unpack_millis,
+        fused_prefill_unique_input_bytes,
+        fused_prefill_unique_output_bytes,
+        fused_prefill_algorithmic_bytes,
+        fused_prefill_algorithmic_flops,
+        fused_prefill_algorithmic_arithmetic_intensity,
+        fused_prefill_achieved_gbytes_per_sec,
+        fused_prefill_achieved_gflops_per_sec,
     };
 
     println!("{}", serde_json::to_string_pretty(&summary)?);

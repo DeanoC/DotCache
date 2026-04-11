@@ -3,7 +3,8 @@ mod model;
 mod with_tracing;
 
 pub use model::{
-    CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config, ModelForCausalLM,
+    CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
+    LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec, ModelForCausalLM,
     TextConfig as MinimalQwen35TextConfig,
 };
 

@@ -336,6 +336,20 @@ pub struct LinearAttentionBenchResult {
     pub best_profile: RuntimeProfile,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LinearAttentionLayerSpec {
+    pub layer_id: usize,
+    pub conv_dim: usize,
+    pub num_v_heads: usize,
+    pub num_k_heads: usize,
+    pub head_k_dim: usize,
+    pub head_v_dim: usize,
+    pub key_dim: usize,
+    pub value_dim: usize,
+    pub state_len: usize,
+    pub kernel_size: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct LinearAttentionTrace {
     pub layer_id: usize,
@@ -9825,6 +9839,38 @@ impl TextModel {
             .collect()
     }
 
+    pub fn linear_attention_layer_spec(
+        &self,
+        layer_id: usize,
+    ) -> Result<LinearAttentionLayerSpec> {
+        let layer = self.layers.get(layer_id).ok_or_else(|| {
+            candle::Error::Msg(format!(
+                "linear-attention layer {} is out of range for {} layers",
+                layer_id,
+                self.layers.len()
+            ))
+        })?;
+        match &layer.token_mixer {
+            LayerKind::Linear(linear) => Ok(LinearAttentionLayerSpec {
+                layer_id,
+                conv_dim: linear.conv_dim(),
+                num_v_heads: linear.num_v_heads,
+                num_k_heads: linear.num_k_heads,
+                head_k_dim: linear.head_k_dim,
+                head_v_dim: linear.head_v_dim,
+                key_dim: linear.key_dim,
+                value_dim: linear.value_dim,
+                state_len: linear.conv_kernel_size.saturating_sub(1),
+                kernel_size: linear.conv_kernel_size,
+            }),
+            LayerKind::Full(_) => candle::bail!(
+                "layer {} is {:?}, expected linear_attention",
+                layer_id,
+                layer.layer_type()
+            ),
+        }
+    }
+
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
         if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
             return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
@@ -10293,6 +10339,13 @@ impl ModelForCausalLM {
 
     pub fn linear_attention_layer_ids(&self) -> Vec<usize> {
         self.language_model.linear_attention_layer_ids()
+    }
+
+    pub fn linear_attention_layer_spec(
+        &self,
+        layer_id: usize,
+    ) -> Result<LinearAttentionLayerSpec> {
+        self.language_model.linear_attention_layer_spec(layer_id)
     }
 
     pub fn full_attention_layer_ids(&self) -> Vec<usize> {
