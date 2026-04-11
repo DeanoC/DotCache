@@ -2581,13 +2581,7 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
-        DeviceLocation::Cuda { .. } => {
-            head_dim <= 128
-                && matches!(
-                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
-                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-                )
-        }
+        DeviceLocation::Cuda { .. } => head_dim <= 256,
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -4131,7 +4125,15 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
         let elem_count = out_shape.elem_count();
         let total_rows = self.batch_size * self.q_heads * self.q_len;
-        let cfg = LaunchConfig::for_num_elems(total_rows as u32);
+        let cfg = if self.q_len == 1 {
+            LaunchConfig {
+                grid_dim: (total_rows as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            }
+        } else {
+            LaunchConfig::for_num_elems(total_rows as u32)
+        };
 
         macro_rules! launch {
             ($ty:ty, $kernel:expr) => {{
@@ -4188,10 +4190,34 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             }};
         }
 
+        let kernel = if self.q_len == 1 {
+            match query.dtype() {
+                DType::F16 => "full_attention_decode_f16",
+                DType::F32 => "full_attention_decode_f32",
+                DType::BF16 => "full_attention_decode_bf16",
+                other => {
+                    candle::bail!(
+                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
+                    )
+                }
+            }
+        } else {
+            match query.dtype() {
+                DType::F16 => "full_attention_prefill_f16",
+                DType::F32 => "full_attention_prefill_f32",
+                DType::BF16 => "full_attention_prefill_bf16",
+                other => {
+                    candle::bail!(
+                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
+                    )
+                }
+            }
+        };
+
         match query.dtype() {
-            DType::F16 => launch!(half::f16, "full_attention_prefill_f16"),
-            DType::F32 => launch!(f32, "full_attention_prefill_f32"),
-            DType::BF16 => launch!(half::bf16, "full_attention_prefill_bf16"),
+            DType::F16 => launch!(half::f16, kernel),
+            DType::F32 => launch!(f32, kernel),
+            DType::BF16 => launch!(half::bf16, kernel),
             other => candle::bail!("full-attention-prefill-megakernel unsupported dtype {other:?}"),
         }
     }
@@ -12716,6 +12742,99 @@ mod tests {
         ))
     }
 
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_full_attention_decode_sample_large(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
+        let batch_size = 1usize;
+        let q_heads = 8usize;
+        let kv_heads = 2usize;
+        let q_len = 1usize;
+        let kv_len = 17usize;
+        let head_dim = 256usize;
+        let num_kv_groups = q_heads / kv_heads;
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seqlen_offset = kv_len - 1;
+
+        let query_data = (0..batch_size * q_heads * q_len * head_dim)
+            .map(|idx| ((idx % 29) as f32 - 14.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let key_data = (0..batch_size * kv_heads * kv_len * head_dim)
+            .map(|idx| ((idx % 31) as f32 - 15.0) * 0.0234375)
+            .collect::<Vec<_>>();
+        let value_data = (0..batch_size * kv_heads * kv_len * head_dim)
+            .map(|idx| ((idx % 37) as f32 - 18.0) * 0.046875)
+            .collect::<Vec<_>>();
+
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_size, q_heads, q_len, head_dim),
+            device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+
+        let mut expected = Vec::with_capacity(batch_size * q_heads * q_len * head_dim);
+        for b in 0..batch_size {
+            for q_head in 0..q_heads {
+                let kv_head = q_head / num_kv_groups;
+                let query_offset = ((b * q_heads + q_head) * q_len) * head_dim;
+                let q_row = &query_data[query_offset..query_offset + head_dim];
+                let key_head_offset = (b * kv_heads + kv_head) * kv_len * head_dim;
+                let value_head_offset = key_head_offset;
+                let mut max_score = f32::NEG_INFINITY;
+                let mut denom = 0.0f32;
+                let mut out_row = vec![0.0f32; head_dim];
+                for k_pos in 0..kv_len {
+                    let key_offset = key_head_offset + k_pos * head_dim;
+                    let value_offset = value_head_offset + k_pos * head_dim;
+                    let mut score = 0.0f32;
+                    for d in 0..head_dim {
+                        score += q_row[d] * key_data[key_offset + d];
+                    }
+                    score *= scale;
+                    if !max_score.is_finite() {
+                        max_score = score;
+                        denom = 1.0;
+                        out_row.copy_from_slice(&value_data[value_offset..value_offset + head_dim]);
+                        continue;
+                    }
+                    let new_max = max_score.max(score);
+                    let prev_scale = (max_score - new_max).exp();
+                    let curr_scale = (score - new_max).exp();
+                    denom = denom * prev_scale + curr_scale;
+                    for d in 0..head_dim {
+                        out_row[d] =
+                            out_row[d] * prev_scale + curr_scale * value_data[value_offset + d];
+                    }
+                    max_score = new_max;
+                }
+                let inv_denom = if denom > 0.0 { 1.0 / denom } else { 0.0 };
+                for value in out_row {
+                    expected.push(value * inv_denom);
+                }
+            }
+        }
+
+        Ok((
+            query,
+            key,
+            value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            expected,
+        ))
+    }
+
     #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_rms_norm_sample(
         device: &Device,
@@ -13432,6 +13551,29 @@ mod tests {
         let output = output.flatten_all()?.to_vec1::<f32>()?;
 
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_full_attention_decode_matches_reference_large_head_dim() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
+            cuda_full_attention_decode_sample_large(&device)?;
+        let output = full_attention_decode_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let output = output
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 2e-2);
         Ok(())
     }
 
