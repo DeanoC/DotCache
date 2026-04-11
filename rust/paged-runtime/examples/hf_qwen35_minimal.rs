@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Instant;
 
     use candle_core::{DType, Device, IndexOp, Tensor};
-    use dotcache_paged_runtime::{HfHubModelSource, MinimalQwen35Runner, Result, RuntimeError};
+    use dotcache_paged_runtime::{MinimalQwen35Runner, Result, RuntimeError};
     use tokenizers::Tokenizer;
 
     #[derive(Clone, Debug)]
@@ -219,14 +219,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .transpose()?
         .unwrap_or(8);
 
-    let source = HfHubModelSource::new()?;
-    let artifacts = source.snapshot(&model_id)?;
-    let tokenizer = Tokenizer::from_file(&artifacts.tokenizer_path)?;
-    let prompt_ids = tokenizer.encode(prompt.as_str(), true)?.get_ids().to_vec();
-    if prompt_ids.is_empty() {
-        return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
-    }
-
     let cpu_device = Device::Cpu;
     let target_device = device_selector.resolve()?;
     let (mut cpu_runner, cpu_load_elapsed) = if device_only {
@@ -240,6 +232,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let device_load_started = Instant::now();
     let mut device_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &target_device)?;
     let device_load_elapsed = device_load_started.elapsed();
+    let tokenizer = Tokenizer::from_file(&device_runner.weights.tokenizer_path)?;
+    let prompt_ids = tokenizer.encode(prompt.as_str(), true)?.get_ids().to_vec();
+    if prompt_ids.is_empty() {
+        return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
+    }
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
     let hidden_states = if let Some(cpu_runner) = cpu_runner.as_ref() {

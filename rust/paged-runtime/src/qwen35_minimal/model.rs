@@ -2,6 +2,7 @@
 
 #[cfg(feature = "qwen35-minimal-hip")]
 use super::hip;
+use super::prepared::PreparedTensorSource;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
@@ -21,6 +22,24 @@ fn repeat_kv(xs: Tensor, repeats: usize) -> Result<Tensor> {
     let (b_sz, kv_heads, seq_len, head_dim) = xs.dims4()?;
     let repeated = vec![&xs; repeats];
     Tensor::cat(&repeated, 2)?.reshape((b_sz, kv_heads * repeats, seq_len, head_dim))
+}
+
+fn prepared_linear_no_bias(source: &PreparedTensorSource) -> Result<Linear> {
+    Ok(Linear::new(source.get("weight")?, None))
+}
+
+fn prepared_linear_b(source: &PreparedTensorSource, bias: bool) -> Result<Linear> {
+    let weight = source.get("weight")?;
+    let bias = if bias { Some(source.get("bias")?) } else { None };
+    Ok(Linear::new(weight, bias))
+}
+
+fn prepared_embedding(source: &PreparedTensorSource, hidden_size: usize) -> Result<Embedding> {
+    Ok(Embedding::new(source.get("weight")?, hidden_size))
+}
+
+fn prepared_conv1d_no_bias(source: &PreparedTensorSource, config: Conv1dConfig) -> Result<Conv1d> {
+    Ok(Conv1d::new(source.get("weight")?, None, config))
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -722,6 +741,13 @@ impl Qwen35RmsNorm {
             eps,
         })
     }
+
+    fn from_prepared(eps: f64, source: &PreparedTensorSource) -> Result<Self> {
+        Ok(Self {
+            weight: source.get("weight")?,
+            eps,
+        })
+    }
 }
 
 impl Module for Qwen35RmsNorm {
@@ -748,6 +774,13 @@ impl Qwen35RmsNormGated {
     fn new(dim: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             weight: vb.get(dim, "weight")?,
+            eps,
+        })
+    }
+
+    fn from_prepared(eps: f64, source: &PreparedTensorSource) -> Result<Self> {
+        Ok(Self {
+            weight: source.get("weight")?,
             eps,
         })
     }
@@ -784,6 +817,15 @@ impl Mlp {
             gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
             up_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
             down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
+            act_fn: cfg.hidden_act,
+        })
+    }
+
+    fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
+        Ok(Self {
+            gate_proj: prepared_linear_no_bias(&source.pp("gate_proj"))?,
+            up_proj: prepared_linear_no_bias(&source.pp("up_proj"))?,
+            down_proj: prepared_linear_no_bias(&source.pp("down_proj"))?,
             act_fn: cfg.hidden_act,
         })
     }
@@ -7534,6 +7576,28 @@ impl FullAttention {
         })
     }
 
+    fn from_prepared(
+        cfg: &TextConfig,
+        rotary_emb: Arc<RotaryEmbedding>,
+        source: &PreparedTensorSource,
+    ) -> Result<Self> {
+        Ok(Self {
+            q_proj: prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?,
+            k_proj: prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?,
+            v_proj: prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?,
+            o_proj: prepared_linear_b(&source.pp("o_proj"), cfg.attention_bias)?,
+            q_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("q_norm"))?,
+            k_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("k_norm"))?,
+            num_heads: cfg.num_attention_heads,
+            num_kv_heads: cfg.num_key_value_heads,
+            num_kv_groups: cfg.num_attention_heads / cfg.num_key_value_heads,
+            head_dim: cfg.head_dim,
+            attention_size: cfg.num_attention_heads * cfg.head_dim,
+            rotary_emb,
+            kv_cache: None,
+        })
+    }
+
     fn forward_profiled_with_external(
         &mut self,
         xs: &Tensor,
@@ -7827,8 +7891,11 @@ struct GatedDeltaNet {
     in_proj_b: Linear,
     in_proj_a: Linear,
     conv1d: Conv1d,
+    conv1d_weight_squeezed: Option<Tensor>,
     dt_bias: Tensor,
     a_log: Tensor,
+    dt_bias_prepared: Option<Tensor>,
+    a_log_exp_prepared: Option<Tensor>,
     norm: Qwen35RmsNormGated,
     out_proj: Linear,
     num_v_heads: usize,
@@ -7905,14 +7972,65 @@ impl GatedDeltaNet {
                 vb.pp("in_proj_a"),
             )?,
             conv1d,
+            conv1d_weight_squeezed: None,
             dt_bias: vb.get(cfg.linear_num_value_heads, "dt_bias")?,
             a_log: vb.get(cfg.linear_num_value_heads, "A_log")?,
+            dt_bias_prepared: None,
+            a_log_exp_prepared: None,
             norm: Qwen35RmsNormGated::new(
                 cfg.linear_value_head_dim,
                 cfg.rms_norm_eps,
                 vb.pp("norm"),
             )?,
             out_proj: linear_no_bias(value_dim, cfg.hidden_size, vb.pp("out_proj"))?,
+            num_v_heads: cfg.linear_num_value_heads,
+            num_k_heads: cfg.linear_num_key_heads,
+            head_k_dim: cfg.linear_key_head_dim,
+            head_v_dim: cfg.linear_value_head_dim,
+            key_dim,
+            value_dim,
+            conv_kernel_size: cfg.linear_conv_kernel_dim,
+            conv_state: None,
+            recurrent_state: None,
+            chunk_cache: None,
+            value_cache: None,
+        })
+    }
+
+    fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
+        let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
+        let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
+        let conv_dim = key_dim * 2 + value_dim;
+        let conv1d = prepared_conv1d_no_bias(
+            &source.pp("conv1d"),
+            Conv1dConfig {
+                padding: 0,
+                groups: conv_dim,
+                ..Default::default()
+            },
+        )?;
+        Ok(Self {
+            in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
+            in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
+            in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
+            in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
+            conv1d,
+            conv1d_weight_squeezed: source
+                .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
+                .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
+                .transpose()?,
+            dt_bias: source.get("dt_bias")?,
+            a_log: source.get("A_log")?,
+            dt_bias_prepared: source
+                .contains_tensor("dt_bias.__dotcache_head_bias_reshaped")
+                .then(|| source.get("dt_bias.__dotcache_head_bias_reshaped"))
+                .transpose()?,
+            a_log_exp_prepared: source
+                .contains_tensor("A_log.__dotcache_head_exp_reshaped")
+                .then(|| source.get("A_log.__dotcache_head_exp_reshaped"))
+                .transpose()?,
+            norm: Qwen35RmsNormGated::from_prepared(cfg.rms_norm_eps, &source.pp("norm"))?,
+            out_proj: prepared_linear_no_bias(&source.pp("out_proj"))?,
             num_v_heads: cfg.linear_num_value_heads,
             num_k_heads: cfg.linear_num_key_heads,
             head_k_dim: cfg.linear_key_head_dim,
@@ -7935,18 +8053,41 @@ impl GatedDeltaNet {
             .map(|cache| cache.dtype != dtype || cache.device_location != device_location)
             .unwrap_or(true);
         if rebuild {
-            let dt_bias = if self.dt_bias.dtype() == dtype {
+            let dt_bias_base = if let Some(dt_bias) = &self.dt_bias_prepared {
+                dt_bias.clone()
+            } else if self.dt_bias.dtype() == dtype {
                 self.dt_bias.clone()
             } else {
                 self.dt_bias.to_dtype(dtype)?
-            }
-            .reshape((1, 1, self.num_v_heads))?;
-            let a_log = if self.a_log.dtype() == dtype {
-                self.a_log.clone()
-            } else {
-                self.a_log.to_dtype(dtype)?
             };
-            let a_log_exp = a_log.exp()?.reshape((1, 1, self.num_v_heads))?;
+            let dt_bias = if dt_bias_base.rank() == 3 {
+                if dt_bias_base.dtype() == dtype {
+                    dt_bias_base
+                } else {
+                    dt_bias_base.to_dtype(dtype)?
+                }
+            } else {
+                let dt_bias = if dt_bias_base.dtype() == dtype {
+                    dt_bias_base
+                } else {
+                    dt_bias_base.to_dtype(dtype)?
+                };
+                dt_bias.reshape((1, 1, self.num_v_heads))?
+            };
+            let a_log_exp = if let Some(prepared) = &self.a_log_exp_prepared {
+                if prepared.dtype() == dtype {
+                    prepared.clone()
+                } else {
+                    prepared.to_dtype(dtype)?
+                }
+            } else {
+                let a_log = if self.a_log.dtype() == dtype {
+                    self.a_log.clone()
+                } else {
+                    self.a_log.to_dtype(dtype)?
+                };
+                a_log.exp()?.reshape((1, 1, self.num_v_heads))?
+            };
             self.value_cache = Some(LinearValueCache {
                 dtype,
                 device_location,
@@ -7959,6 +8100,14 @@ impl GatedDeltaNet {
             .as_ref()
             .expect("linear value cache must be initialized");
         Ok((cache.dt_bias.clone(), cache.a_log_exp.clone()))
+    }
+
+    fn conv1d_weight_squeezed(&self) -> Result<Tensor> {
+        if let Some(weight) = &self.conv1d_weight_squeezed {
+            Ok(weight.clone())
+        } else {
+            self.conv1d.weight().squeeze(1)
+        }
     }
 
     fn chunk_cache(
@@ -8292,7 +8441,7 @@ impl GatedDeltaNet {
         let kernel = self.conv_kernel_size;
         let seq_len = mixed_qkv.dim(2)?;
         let mixed_qkv = self.prepare_depthwise_conv_input(mixed_qkv)?;
-        let weights = self.conv1d.weight().squeeze(1)?;
+        let weights = self.conv1d_weight_squeezed()?;
         let mut output: Option<Tensor> = None;
         for tap in 0..kernel {
             let xs = mixed_qkv.narrow(2, tap, seq_len)?;
@@ -8329,12 +8478,12 @@ impl GatedDeltaNet {
     fn run_depthwise_conv_materialized_pack(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         let seq_len = mixed_qkv.dim(2)?;
         let mixed_qkv = self.prepare_depthwise_conv_input(mixed_qkv)?.contiguous()?;
-        let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+        let weights = self.conv1d_weight_squeezed()?.contiguous()?;
         linear_prefill_conv_pack(&mixed_qkv, &weights, seq_len, self.conv_kernel_size)
     }
 
     fn run_depthwise_conv_packed_prefill(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
-        let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+        let weights = self.conv1d_weight_squeezed()?.contiguous()?;
         if mixed_qkv.device().is_hip() {
             let state_len = self.conv_kernel_size.saturating_sub(1);
             let prev_state = match &self.conv_state {
@@ -9365,7 +9514,7 @@ impl GatedDeltaNet {
         if use_hip_combined_linear_decode(device, seq_len) {
             let kv_append_start = profile_start(device)?;
             let target_dtype = mixed_qkv.dtype();
-            let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+            let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
             let prev_conv_state = match &self.conv_state {
                 Some(prev_state) => {
@@ -9474,7 +9623,7 @@ impl GatedDeltaNet {
                 a.to_dtype(target_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
-            let weights = self.conv1d.weight().squeeze(1)?.contiguous()?;
+            let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
             let prev_state = match &self.conv_state {
                 Some(prev_state) => {
@@ -9725,6 +9874,43 @@ impl DecoderLayer {
         })
     }
 
+    fn from_prepared(
+        cfg: &TextConfig,
+        layer_idx: usize,
+        rotary_emb: Arc<RotaryEmbedding>,
+        source: &PreparedTensorSource,
+    ) -> Result<Self> {
+        let layer_type = cfg
+            .layer_types
+            .get(layer_idx)
+            .cloned()
+            .unwrap_or_else(|| "linear_attention".to_string());
+        let token_mixer = match layer_type.as_str() {
+            "linear_attention" => {
+                LayerKind::Linear(GatedDeltaNet::from_prepared(cfg, &source.pp("linear_attn"))?)
+            }
+            "full_attention" => LayerKind::Full(FullAttention::from_prepared(
+                cfg,
+                rotary_emb,
+                &source.pp("self_attn"),
+            )?),
+            other => candle::bail!("unsupported qwen3.5 layer type {other:?}"),
+        };
+        Ok(Self {
+            layer_type,
+            token_mixer,
+            mlp: Mlp::from_prepared(cfg, &source.pp("mlp"))?,
+            input_layernorm: Qwen35RmsNorm::from_prepared(
+                cfg.rms_norm_eps,
+                &source.pp("input_layernorm"),
+            )?,
+            post_attention_layernorm: Qwen35RmsNorm::from_prepared(
+                cfg.rms_norm_eps,
+                &source.pp("post_attention_layernorm"),
+            )?,
+        })
+    }
+
     fn forward_profiled_with_external(
         &mut self,
         layer_id: usize,
@@ -9860,6 +10046,32 @@ impl TextModel {
             norm: Qwen35RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?,
             device: vb.device().clone(),
             dtype: vb.dtype(),
+        })
+    }
+
+    pub(crate) fn from_prepared(cfg: &TextConfig, source: PreparedTensorSource) -> Result<Self> {
+        let cfg = cfg.clone().normalized();
+        let model_source = source.pp("model").pp("language_model");
+        let embed_tokens =
+            prepared_embedding(&model_source.pp("embed_tokens"), cfg.hidden_size)?;
+        let dtype = embed_tokens.embeddings().dtype();
+        let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, source.device(), dtype)?);
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        let layers_source = model_source.pp("layers");
+        for layer_idx in 0..cfg.num_hidden_layers {
+            layers.push(DecoderLayer::from_prepared(
+                &cfg,
+                layer_idx,
+                rotary_emb.clone(),
+                &layers_source.pp(layer_idx),
+            )?);
+        }
+        Ok(Self {
+            embed_tokens,
+            layers,
+            norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &model_source.pp("norm"))?,
+            device: source.device().clone(),
+            dtype,
         })
     }
 
@@ -10289,6 +10501,20 @@ impl ModelForCausalLM {
                 cfg.text_config.vocab_size,
                 vb.pp("lm_head"),
             )?
+        } else {
+            Linear::new(language_model.embed_tokens.embeddings().clone(), None)
+        };
+        Ok(Self {
+            language_model,
+            lm_head,
+        })
+    }
+
+    pub(crate) fn from_prepared(cfg: &Config, source: PreparedTensorSource) -> Result<Self> {
+        let cfg = cfg.clone().normalized();
+        let language_model = TextModel::from_prepared(&cfg.text_config, source.clone())?;
+        let lm_head = if source.contains_tensor("lm_head.weight") {
+            prepared_linear_no_bias(&source.pp("lm_head"))?
         } else {
             Linear::new(language_model.embed_tokens.embeddings().clone(), None)
         };
