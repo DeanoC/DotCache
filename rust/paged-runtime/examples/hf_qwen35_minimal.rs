@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[derive(Clone, Debug)]
     enum DeviceSelector {
         Cpu,
+        Cuda(usize),
         Hip(usize),
     }
 
@@ -16,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Cpu => f.write_str("cpu"),
+                Self::Cuda(ordinal) => write!(f, "cuda:{ordinal}"),
                 Self::Hip(ordinal) => write!(f, "hip:{ordinal}"),
             }
         }
@@ -28,6 +30,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let normalized = value.trim().to_ascii_lowercase();
             if normalized == "cpu" {
                 return Ok(Self::Cpu);
+            }
+            if let Some(rest) = normalized.strip_prefix("cuda") {
+                let ordinal = rest
+                    .strip_prefix(':')
+                    .map(|ordinal| ordinal.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| RuntimeError::External {
+                        context: "device",
+                        message: format!("invalid cuda device ordinal in `{value}`: {err}"),
+                    })?
+                    .unwrap_or(0);
+                return Ok(Self::Cuda(ordinal));
             }
             if let Some(rest) = normalized.strip_prefix("hip") {
                 let ordinal = rest
@@ -43,7 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             Err(RuntimeError::External {
                 context: "device",
-                message: format!("unsupported device `{value}`, expected cpu or hip[:ordinal]"),
+                message: format!(
+                    "unsupported device `{value}`, expected cpu, cuda[:ordinal], or hip[:ordinal]"
+                ),
             })
         }
     }
@@ -52,6 +68,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         fn resolve(&self) -> Result<Device> {
             match self {
                 Self::Cpu => Ok(Device::Cpu),
+                Self::Cuda(ordinal) => {
+                    #[cfg(feature = "qwen35-minimal-cuda")]
+                    {
+                        Ok(Device::new_cuda(*ordinal)?)
+                    }
+                    #[cfg(not(feature = "qwen35-minimal-cuda"))]
+                    {
+                        Err(RuntimeError::BackendUnavailable {
+                            backend: "cuda",
+                            device: format!("cuda:{ordinal}"),
+                        })
+                    }
+                }
                 Self::Hip(ordinal) => {
                     #[cfg(feature = "qwen35-minimal-hip")]
                     {
@@ -168,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|hip[:ordinal]]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();

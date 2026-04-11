@@ -1833,7 +1833,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         candle::bail!("linear-prefill-conv-pack has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         mixed_qkv: &candle::CudaStorage,
@@ -2874,7 +2874,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         candle::bail!("full-attention-prefill-megakernel has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         query: &candle::CudaStorage,
@@ -3389,7 +3389,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         candle::bail!("delta-state-scan has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -3665,7 +3665,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         candle::bail!("delta-chunk-fused has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -3927,7 +3927,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         candle::bail!("delta-recurrent-prefill has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -4419,7 +4419,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         candle::bail!("delta-chunk-step-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -4873,7 +4873,7 @@ impl candle::CustomOp6 for DeltaChunkStepWindowedRaw {
         candle::bail!("delta-chunk-step-windowed-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -5704,7 +5704,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         candle::bail!("delta-chunk-scan-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -6107,7 +6107,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         candle::bail!("delta-full-scan has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -10394,12 +10394,12 @@ impl ModelForCausalLM {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     use std::ffi::OsString;
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn assert_close(lhs: &[f32], rhs: &[f32], tol: f32) {
         assert_eq!(lhs.len(), rhs.len());
         for (idx, (lhs, rhs)) in lhs.iter().zip(rhs.iter()).enumerate() {
@@ -10420,6 +10420,19 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_test_guard() -> MutexGuard<'static, ()> {
         hip_env_lock().lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_test_guard() -> MutexGuard<'static, ()> {
+        cuda_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -10450,6 +10463,37 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     impl Drop for HipPersistentPrefillEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    struct CudaFullPrefillEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    impl CudaFullPrefillEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    impl Drop for CudaFullPrefillEnvGuard {
         fn drop(&mut self) {
             unsafe {
                 if let Some(value) = self.saved.as_ref() {
@@ -10751,7 +10795,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_full_attention_prefill_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
@@ -10856,7 +10900,7 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_full_attention_prefill_sample_qwen35_like(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
@@ -11723,6 +11767,28 @@ mod tests {
         let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
             hip_full_attention_decode_sample(&device)?;
         let output = full_attention_decode_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_full_attention_prefill_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let _env_guard = CudaFullPrefillEnvGuard::set("1");
+        let device = Device::new_cuda(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
+            hip_full_attention_prefill_sample(&device)?;
+        let output = full_attention_prefill_megakernel(
             &query,
             &key,
             &value,
