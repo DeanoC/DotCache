@@ -7271,9 +7271,10 @@ fn delta_net_compute_dtype(scan_mode: DeltaNetScanMode, initial_dtype: DType) ->
 
 #[derive(Debug, Clone)]
 struct FullAttention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
+    q_proj: Option<Linear>,
+    k_proj: Option<Linear>,
+    v_proj: Option<Linear>,
+    qkv_pack_proj: Option<Linear>,
     o_proj: Linear,
     q_norm: Qwen35RmsNorm,
     k_norm: Qwen35RmsNorm,
@@ -7560,9 +7561,10 @@ impl FullAttention {
             vb.pp("o_proj"),
         )?;
         Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
+            q_proj: Some(q_proj),
+            k_proj: Some(k_proj),
+            v_proj: Some(v_proj),
+            qkv_pack_proj: None,
             o_proj,
             q_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?,
@@ -7581,10 +7583,27 @@ impl FullAttention {
         rotary_emb: Arc<RotaryEmbedding>,
         source: &PreparedTensorSource,
     ) -> Result<Self> {
+        let qkv_pack_proj = source
+            .contains_tensor("qkv_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("qkv_pack")))
+            .transpose()?;
         Ok(Self {
-            q_proj: prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?,
-            k_proj: prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?,
-            v_proj: prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?,
+            q_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            k_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            v_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            qkv_pack_proj,
             o_proj: prepared_linear_b(&source.pp("o_proj"), cfg.attention_bias)?,
             q_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("k_norm"))?,
@@ -7611,10 +7630,41 @@ impl FullAttention {
         let mut profile = RuntimeProfile::default();
         let (b_sz, q_len, _) = xs.dims3()?;
         let qkv_start = profile_start(device)?;
-        let q_and_gate =
-            self.q_proj
+        let q_gate_out = self.num_heads * self.head_dim * 2;
+        let kv_out = self.num_kv_heads * self.head_dim;
+        let (q_and_gate, key_states, value_states) = if let Some(qkv_pack_proj) = &self.qkv_pack_proj {
+            let packed = qkv_pack_proj.forward(xs)?;
+            let q_and_gate = packed
+                .narrow(D::Minus1, 0, q_gate_out)?
+                .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
+            let key_states = packed
+                .narrow(D::Minus1, q_gate_out, kv_out)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            let value_states = packed
+                .narrow(D::Minus1, q_gate_out + kv_out, kv_out)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            (q_and_gate, key_states, value_states)
+        } else {
+            let q_and_gate = self
+                .q_proj
+                .as_ref()
+                .expect("q_proj missing without packed qkv")
                 .forward(xs)?
                 .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
+            let key_states = self
+                .k_proj
+                .as_ref()
+                .expect("k_proj missing without packed qkv")
+                .forward(xs)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            let value_states = self
+                .v_proj
+                .as_ref()
+                .expect("v_proj missing without packed qkv")
+                .forward(xs)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            (q_and_gate, key_states, value_states)
+        };
         let query_states = q_and_gate
             .narrow(D::Minus1, 0, self.head_dim)?
             .apply(&self.q_norm)?
@@ -7623,16 +7673,10 @@ impl FullAttention {
             .narrow(D::Minus1, self.head_dim, self.head_dim)?
             .reshape((b_sz, q_len, self.num_heads * self.head_dim))?;
 
-        let key_states = self
-            .k_proj
-            .forward(xs)?
-            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
+        let key_states = key_states
             .apply(&self.k_norm)?
             .transpose(1, 2)?;
-        let value_states = self
-            .v_proj
-            .forward(xs)?
-            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
+        let value_states = value_states
             .transpose(1, 2)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 

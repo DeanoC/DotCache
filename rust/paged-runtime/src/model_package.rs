@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{HfHubModelSource, Result, RuntimeError};
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
-const PACKAGE_CONVERTER_VERSION: u32 = 2;
+const PACKAGE_CONVERTER_VERSION: u32 = 3;
 const PACKAGE_ALIGNMENT: u64 = 4096;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const WEIGHTS_FILENAME: &str = "weights.bin";
@@ -79,6 +79,7 @@ pub enum PreparedTensorLayout {
     DepthwiseConvSqueezed,
     HeadBiasReshaped,
     HeadExpReshaped,
+    FullAttentionQkvPacked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +161,9 @@ pub struct PreparedModelPackage {
 impl PreparedModelPackage {
     pub fn resolve_or_build_qwen35_minimal(model_id: &str, device: &Device) -> Result<Self> {
         let target = ModelTarget::detect(device);
+        let mut package_root_from_alias = None;
         if let Some(alias) = read_alias(MODEL_FAMILY_QWEN35_MINIMAL, model_id, &target)? {
+            package_root_from_alias = Some(alias.package_root.clone());
             if alias.package_root.exists() {
                 let package = Self::open(&alias.package_root)?;
                 if package.manifest.schema_version == PACKAGE_SCHEMA_VERSION
@@ -179,6 +182,21 @@ impl PreparedModelPackage {
             &artifacts.revision,
             &target,
         )?;
+
+        let needs_rebuild = if let Some(alias_root) = package_root_from_alias.as_ref() {
+            alias_root == &package_root && package_root.exists()
+        } else {
+            false
+        };
+        if needs_rebuild {
+            fs::remove_dir_all(&package_root).map_err(|err| RuntimeError::External {
+                context: "prepared-model-package",
+                message: format!(
+                    "failed to remove stale prepared package {}: {err}",
+                    package_root.display()
+                ),
+            })?;
+        }
 
         if !package_root.exists() {
             build_package_with_lock(&package_root, || {
@@ -330,6 +348,7 @@ fn build_qwen35_minimal_package(
         message: format!("failed to create {}: {err}", weights_path.display()),
     })?;
     let mut offset = 0u64;
+    let mut full_attn_qkv_packs = BTreeMap::<String, FullAttentionQkvPackCandidate>::new();
 
     for weight_path in &artifacts.weight_paths {
         let file = File::open(weight_path).map_err(|err| RuntimeError::External {
@@ -352,6 +371,13 @@ fn build_qwen35_minimal_package(
                 message: format!("failed to read tensor {name} from {}: {err}", weight_path.display()),
             })?;
             let dtype = PreparedDType::from_safetensors(view.dtype())?;
+            collect_full_attention_qkv_candidate(
+                &mut full_attn_qkv_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
             write_tensor_entry(
                 &mut weights_file,
                 &mut offset,
@@ -379,6 +405,22 @@ fn build_qwen35_minimal_package(
             }
         }
     }
+
+    for (prefix, candidate) in full_attn_qkv_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.qkv_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::FullAttentionQkvPacked,
+                &bytes,
+            )?;
+        }
+    }
+
     weights_file.flush().map_err(|err| RuntimeError::External {
         context: "prepared-model-package",
         message: format!("failed to flush weights blob: {err}"),
@@ -418,6 +460,70 @@ fn build_qwen35_minimal_package(
         ),
     })?;
     Ok(())
+}
+
+#[derive(Default)]
+struct FullAttentionQkvPackCandidate {
+    q_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    k_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    v_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+impl FullAttentionQkvPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((q_shape, q_dtype, mut q_bytes)) = self.q_weight else {
+            return Ok(None);
+        };
+        let Some((k_shape, k_dtype, k_bytes)) = self.k_weight else {
+            return Ok(None);
+        };
+        let Some((v_shape, v_dtype, v_bytes)) = self.v_weight else {
+            return Ok(None);
+        };
+        if q_dtype != k_dtype || q_dtype != v_dtype {
+            return Ok(None);
+        }
+        if q_shape.len() != 2 || k_shape.len() != 2 || v_shape.len() != 2 {
+            return Ok(None);
+        }
+        if q_shape[1] != k_shape[1] || q_shape[1] != v_shape[1] {
+            return Ok(None);
+        }
+        let in_dim = q_shape[1];
+        let out_dim = q_shape[0] + k_shape[0] + v_shape[0];
+        q_bytes.extend_from_slice(&k_bytes);
+        q_bytes.extend_from_slice(&v_bytes);
+        Ok(Some((vec![out_dim, in_dim], q_dtype, q_bytes)))
+    }
+}
+
+fn collect_full_attention_qkv_candidate(
+    candidates: &mut BTreeMap<String, FullAttentionQkvPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".q_proj.weight") {
+        Some((prefix.to_string(), "q"))
+    } else if let Some(prefix) = name.strip_suffix(".k_proj.weight") {
+        Some((prefix.to_string(), "k"))
+    } else if let Some(prefix) = name.strip_suffix(".v_proj.weight") {
+        Some((prefix.to_string(), "v"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "q" => candidate.q_weight = Some(payload),
+        "k" => candidate.k_weight = Some(payload),
+        "v" => candidate.v_weight = Some(payload),
+        _ => {}
+    }
 }
 
 fn write_tensor_entry(
