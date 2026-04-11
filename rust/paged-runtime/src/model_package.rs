@@ -546,7 +546,33 @@ fn load_tensor_from_prepared_bytes(
 
 fn load_typed_tensor<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) -> Result<Tensor> {
     let elem_size = std::mem::size_of::<T>();
+    if !data.len().is_multiple_of(elem_size) {
+        return Err(RuntimeError::External {
+            context: "prepared-model-package",
+            message: format!(
+                "tensor byte length {} is not a multiple of element size {}",
+                data.len(),
+                elem_size
+            ),
+        });
+    }
     let elem_count = data.len() / elem_size;
+    let expected_elem_count = shape
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+        .ok_or_else(|| RuntimeError::External {
+            context: "prepared-model-package",
+            message: format!("tensor shape {:?} overflows element count", shape),
+        })?;
+    if elem_count != expected_elem_count {
+        return Err(RuntimeError::External {
+            context: "prepared-model-package",
+            message: format!(
+                "tensor element count mismatch: bytes imply {} elems but shape {:?} implies {}",
+                elem_count, shape, expected_elem_count
+            ),
+        });
+    }
     let storage = if (data.as_ptr() as usize).is_multiple_of(elem_size) {
         let typed =
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
@@ -749,14 +775,16 @@ fn write_alias(
 }
 
 fn sanitize_path_component(value: &str) -> OsString {
-    let sanitized = value
-        .chars()
-        .map(|ch| match ch {
-            '/' | '\\' | ':' | ' ' => '-',
-            _ => ch,
-        })
-        .collect::<String>();
-    OsString::from(sanitized)
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' => {
+                encoded.push(*byte as char)
+            }
+            _ => encoded.push_str(&format!("~{:02X}", byte)),
+        }
+    }
+    OsString::from(encoded)
 }
 
 fn align_up(value: u64, alignment: u64) -> u64 {
@@ -828,7 +856,15 @@ mod tests {
     fn sanitize_path_component_replaces_path_separators() {
         assert_eq!(
             sanitize_path_component("Qwen/Qwen3.5-4B"),
-            OsString::from("Qwen-Qwen3.5-4B")
+            OsString::from("Qwen~2FQwen3.5-4B")
+        );
+    }
+
+    #[test]
+    fn sanitize_path_component_preserves_model_id_uniqueness() {
+        assert_ne!(
+            sanitize_path_component("foo/bar"),
+            sanitize_path_component("foo-bar")
         );
     }
 
@@ -838,5 +874,11 @@ mod tests {
         assert_eq!(align_up(1, 4096), 4096);
         assert_eq!(align_up(4096, 4096), 4096);
         assert_eq!(align_up(4097, 4096), 8192);
+    }
+
+    #[test]
+    fn load_typed_tensor_rejects_misaligned_byte_lengths() {
+        let err = load_typed_tensor::<u32>(&[1, 2, 3], &[1], &Device::Cpu).unwrap_err();
+        assert!(format!("{err}").contains("not a multiple of element size"));
     }
 }
