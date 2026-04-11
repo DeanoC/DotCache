@@ -325,7 +325,7 @@ impl Qwen35FastRunner {
         let seqlen_offset = self.model.sequence_length();
         Ok(self
             .model
-            .forward_hidden_states_profiled(&hidden_states, seqlen_offset)?)
+            .decode_hidden_states_profiled(&hidden_states, seqlen_offset)?)
     }
 
     pub fn decode_next_token_profiled(

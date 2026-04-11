@@ -12150,6 +12150,36 @@ impl DecoderLayer {
             .map(|(output, _)| output)
     }
 
+    fn decode_profiled(
+        &mut self,
+        xs: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let device = xs.device();
+        let mut profile = RuntimeProfile::default();
+        let residual = xs;
+        let xs_norm = self.input_layernorm.forward(xs)?;
+        let xs = match &mut self.token_mixer {
+            LayerKind::Linear(linear_attn) => {
+                let (xs, layer_profile) = linear_attn.forward_profiled(&xs_norm, None)?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+            LayerKind::Full(self_attn) => {
+                let (xs, layer_profile) = self_attn.forward_profiled(&xs_norm, None, seqlen_offset)?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+        };
+        let xs = residual.broadcast_add(&xs)?;
+        let residual = &xs;
+        let xs = self.post_attention_layernorm.forward(&xs)?;
+        let mlp_start = profile_start(device)?;
+        let xs = self.mlp.forward(&xs)?;
+        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
+        Ok((residual.broadcast_add(&xs)?, profile))
+    }
+
     fn clear_kv_cache(&mut self) {
         match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => linear_attn.clear_kv_cache(),
@@ -12636,6 +12666,25 @@ impl TextModel {
         Ok((self.norm.forward(&xs)?, profile))
     }
 
+    pub fn decode_hidden_states_profiled(
+        &mut self,
+        hidden_states: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let (_, seq_len, _) = hidden_states.dims3()?;
+        if seq_len != 1 {
+            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
+        }
+        let mut profile = RuntimeProfile::default();
+        let mut xs = hidden_states.clone();
+        for layer in self.layers.iter_mut() {
+            let (next_xs, layer_profile) = layer.decode_profiled(&xs, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((self.norm.forward(&xs)?, profile))
+    }
+
     pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         self.forward_profiled(input_ids, seqlen_offset)
             .map(|(output, _)| output)
@@ -12730,6 +12779,27 @@ impl ModelForCausalLM {
                 seqlen_offset,
                 external_full_attention,
             )?;
+        let output_start = profile_start(device)?;
+        let logits = hidden_states
+            .narrow(1, seq_len - 1, 1)?
+            .apply(&self.lm_head)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        Ok((logits, profile))
+    }
+
+    pub fn decode_hidden_states_profiled(
+        &mut self,
+        hidden_states: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let (_, seq_len, _) = hidden_states.dims3()?;
+        if seq_len != 1 {
+            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
+        }
+        let (hidden_states, mut profile) = self
+            .language_model
+            .decode_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
             .narrow(1, seq_len - 1, 1)?
