@@ -889,6 +889,10 @@ impl Module for Mlp {
         };
         let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
             hip_swiglu_mul(&gate, &up)?
+        } else if xs.device().is_cuda() && matches!(self.act_fn, candle_nn::Activation::Silu) {
+            let gate = gate.contiguous()?;
+            let up = up.contiguous()?;
+            cuda_swiglu_mul(&gate, &up)?
         } else {
             (gate.apply(&self.act_fn)? * up)?
         };
@@ -909,6 +913,9 @@ fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     if xs.device().is_hip() {
         return hip_l2norm(xs, eps);
+    }
+    if xs.device().is_cuda() {
+        return cuda_l2norm(xs, eps);
     }
     let norm = xs.sqr()?.sum_keepdim(D::Minus1)?;
     xs.broadcast_div(&(norm + eps)?.sqrt()?)
@@ -985,6 +992,98 @@ impl candle::CustomOp2 for HipSwigluMul {
 
 fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaSwigluMul;
+
+impl candle::CustomOp2 for CudaSwigluMul {
+    fn name(&self) -> &'static str {
+        "cuda-swiglu-mul"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _gate: &candle::CpuStorage,
+        _gate_layout: &candle::Layout,
+        _up: &candle::CpuStorage,
+        _up_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-swiglu-mul has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        up: &candle::CudaStorage,
+        up_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
+            candle::bail!("cuda-swiglu-mul requires contiguous inputs")
+        }
+        if gate_layout.shape() != up_layout.shape() {
+            candle::bail!(
+                "cuda-swiglu-mul shape mismatch gate={:?} up={:?}",
+                gate_layout.shape().dims(),
+                up_layout.shape().dims()
+            )
+        }
+        if gate.dtype() != up.dtype() {
+            candle::bail!(
+                "cuda-swiglu-mul requires matching dtypes, got gate={:?} up={:?}",
+                gate.dtype(),
+                up.dtype()
+            )
+        }
+
+        let device = gate.device().clone();
+        let out_shape = gate_layout.shape().clone();
+        let elem_count = out_shape.elem_count();
+        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-swiglu-mul requires contiguous gate"),
+                };
+                let up = up.as_cuda_slice::<$ty>()?;
+                let up = match up_layout.contiguous_offsets() {
+                    Some((o1, o2)) => up.slice(o1..o2),
+                    None => candle::bail!("cuda-swiglu-mul requires contiguous up"),
+                };
+                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, elem_count);
+                builder.arg(&gate);
+                builder.arg(&up);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match gate.dtype() {
+            DType::F16 => launch!(half::f16, "swiglu_mul_f16"),
+            DType::F32 => launch!(f32, "swiglu_mul_f32"),
+            DType::BF16 => launch!(half::bf16, "swiglu_mul_bf16"),
+            other => candle::bail!("cuda-swiglu-mul unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    gate.apply_op2_no_bwd(up, &CudaSwigluMul)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1660,6 +1759,104 @@ fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
         .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
     let n_rows = xs.elem_count() / n_cols;
     xs.apply_op1_no_bwd(&HipL2Norm {
+        n_rows,
+        n_cols,
+        eps: eps as f32,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaL2Norm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp1 for CudaL2Norm {
+    fn name(&self) -> &'static str {
+        "cuda-l2norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-l2norm has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        storage: &candle::CudaStorage,
+        layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !layout.is_contiguous() {
+            candle::bail!("cuda-l2norm requires contiguous input")
+        }
+        let dims = layout.shape().dims();
+        let n_cols = *dims.last().ok_or_else(|| {
+            candle::Error::Msg("cuda-l2norm requires non-empty shape".into())
+        })?;
+        let n_rows = layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows || n_cols != self.n_cols {
+            candle::bail!(
+                "cuda-l2norm shape mismatch input={:?} expected_rows={} expected_cols={}",
+                dims,
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = storage.device().clone();
+        let out_shape = layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = storage.as_cuda_slice::<$ty>()?;
+                let xs = match layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-l2norm requires contiguous input"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
+                builder.arg(&xs);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match storage.dtype() {
+            DType::F16 => launch!(half::f16, "l2norm_f16"),
+            DType::F32 => launch!(f32, "l2norm_f32"),
+            DType::BF16 => launch!(half::bf16, "l2norm_bf16"),
+            other => candle::bail!("cuda-l2norm unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let dims = xs.dims();
+    let n_cols = *dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-l2norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op1_no_bwd(&CudaL2Norm {
         n_rows,
         n_cols,
         eps: eps as f32,
@@ -12215,7 +12412,7 @@ mod tests {
         Ok((xs, gate, weight, expected_norm, expected_gated))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_l2norm_sample(device: &Device) -> Result<(Tensor, Vec<f32>)> {
         let xs_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -12235,7 +12432,7 @@ mod tests {
         Ok((xs, expected))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_swiglu_mul_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
         let gate_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -13234,6 +13431,20 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_l2norm_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, expected) = hip_l2norm_sample(&device)?;
+        let output = cuda_l2norm(&xs, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_l2norm_matches_reference() -> Result<()> {
@@ -13270,6 +13481,20 @@ mod tests {
         let device = Device::new_hip(0)?;
         let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
         let output = hip_swiglu_mul(&gate, &up)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_swiglu_mul_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
+        let output = cuda_swiglu_mul(&gate, &up)?
             .to_dtype(DType::F32)?
             .flatten_all()?
             .to_vec1::<f32>()?;
