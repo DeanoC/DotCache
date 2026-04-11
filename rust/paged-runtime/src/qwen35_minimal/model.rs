@@ -624,6 +624,11 @@ pub struct RuntimeProfile {
     pub linear_chunk_prepare_g_millis: f64,
     pub linear_chunk_prepare_cache_millis: f64,
     pub linear_chunk_prepare_base_attn_millis: f64,
+    pub linear_chunk_prepare_base_attn_decay_mask_millis: f64,
+    pub linear_chunk_prepare_base_attn_key_t_millis: f64,
+    pub linear_chunk_prepare_base_attn_flatten_millis: f64,
+    pub linear_chunk_prepare_base_attn_matmul_millis: f64,
+    pub linear_chunk_prepare_base_attn_post_millis: f64,
     pub linear_chunk_solve_millis: f64,
     pub linear_chunk_scan_millis: f64,
     pub linear_chunk_index_millis: f64,
@@ -663,6 +668,16 @@ impl RuntimeProfile {
         self.linear_chunk_prepare_g_millis += other.linear_chunk_prepare_g_millis;
         self.linear_chunk_prepare_cache_millis += other.linear_chunk_prepare_cache_millis;
         self.linear_chunk_prepare_base_attn_millis += other.linear_chunk_prepare_base_attn_millis;
+        self.linear_chunk_prepare_base_attn_decay_mask_millis +=
+            other.linear_chunk_prepare_base_attn_decay_mask_millis;
+        self.linear_chunk_prepare_base_attn_key_t_millis +=
+            other.linear_chunk_prepare_base_attn_key_t_millis;
+        self.linear_chunk_prepare_base_attn_flatten_millis +=
+            other.linear_chunk_prepare_base_attn_flatten_millis;
+        self.linear_chunk_prepare_base_attn_matmul_millis +=
+            other.linear_chunk_prepare_base_attn_matmul_millis;
+        self.linear_chunk_prepare_base_attn_post_millis +=
+            other.linear_chunk_prepare_base_attn_post_millis;
         self.linear_chunk_solve_millis += other.linear_chunk_solve_millis;
         self.linear_chunk_scan_millis += other.linear_chunk_scan_millis;
         self.linear_chunk_index_millis += other.linear_chunk_index_millis;
@@ -706,6 +721,21 @@ impl RuntimeProfile {
             linear_chunk_prepare_g_millis: self.linear_chunk_prepare_g_millis * factor,
             linear_chunk_prepare_cache_millis: self.linear_chunk_prepare_cache_millis * factor,
             linear_chunk_prepare_base_attn_millis: self.linear_chunk_prepare_base_attn_millis
+                * factor,
+            linear_chunk_prepare_base_attn_decay_mask_millis: self
+                .linear_chunk_prepare_base_attn_decay_mask_millis
+                * factor,
+            linear_chunk_prepare_base_attn_key_t_millis: self
+                .linear_chunk_prepare_base_attn_key_t_millis
+                * factor,
+            linear_chunk_prepare_base_attn_flatten_millis: self
+                .linear_chunk_prepare_base_attn_flatten_millis
+                * factor,
+            linear_chunk_prepare_base_attn_matmul_millis: self
+                .linear_chunk_prepare_base_attn_matmul_millis
+                * factor,
+            linear_chunk_prepare_base_attn_post_millis: self
+                .linear_chunk_prepare_base_attn_post_millis
                 * factor,
             linear_chunk_solve_millis: self.linear_chunk_solve_millis * factor,
             linear_chunk_scan_millis: self.linear_chunk_scan_millis * factor,
@@ -9735,19 +9765,54 @@ impl GatedDeltaNet {
                 chunk_size,
             );
         let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
+        let hip_base_attn_fast_path = query.device().is_hip() && !hip_full_scan_fast_path;
         profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
 
         let solve_batch = batch_size * num_heads * num_chunks;
         let base_attn_start = profile_start(device)?;
         let (base_attn, decay_scan) = if hip_full_scan_fast_path {
             (None, None)
-        } else {
+        } else if hip_base_attn_fast_path {
+            let decay_mask_start = profile_start(device)?;
             let decay_deltas = g
                 .unsqueeze(4)?
                 .broadcast_sub(&g.unsqueeze(3)?)?
                 .broadcast_mul(&lower)?;
             let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
+            profile.linear_chunk_prepare_base_attn_decay_mask_millis +=
+                profile_elapsed(decay_mask_start, device)?;
+
+            let post_start = profile_start(device)?;
+            let base_attn = delta_base_attn_scan(
+                &k_beta
+                    .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?
+                    .contiguous()?,
+                &key_scan.contiguous()?,
+                &exp_g_scan.contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?;
+            profile.linear_chunk_prepare_base_attn_post_millis +=
+                profile_elapsed(post_start, device)?;
+            (
+                Some(base_attn),
+                Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
+            )
+        } else {
+            let decay_mask_start = profile_start(device)?;
+            let decay_deltas = g
+                .unsqueeze(4)?
+                .broadcast_sub(&g.unsqueeze(3)?)?
+                .broadcast_mul(&lower)?;
+            let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
+            profile.linear_chunk_prepare_base_attn_decay_mask_millis +=
+                profile_elapsed(decay_mask_start, device)?;
+
+            let key_t_start = profile_start(device)?;
             let key_t = key.transpose(4, 3)?.contiguous()?;
+            profile.linear_chunk_prepare_base_attn_key_t_millis +=
+                profile_elapsed(key_t_start, device)?;
+
+            let flatten_start = profile_start(device)?;
             let k_beta_flat = k_beta
                 .reshape((solve_batch, chunk_size, k_head_dim))?
                 .contiguous()?;
@@ -9755,8 +9820,16 @@ impl GatedDeltaNet {
                 .reshape((solve_batch, k_head_dim, chunk_size))?
                 .contiguous()?;
             let decay_mask_flat = decay_mask.reshape((solve_batch, chunk_size, chunk_size))?;
+            profile.linear_chunk_prepare_base_attn_flatten_millis +=
+                profile_elapsed(flatten_start, device)?;
+
+            let matmul_start = profile_start(device)?;
             let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
-            (
+            profile.linear_chunk_prepare_base_attn_matmul_millis +=
+                profile_elapsed(matmul_start, device)?;
+
+            let post_start = profile_start(device)?;
+            let result = (
                 Some(
                     raw_attn
                         .broadcast_mul(&decay_mask_flat)?
@@ -9765,7 +9838,10 @@ impl GatedDeltaNet {
                         .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
                 ),
                 Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
-            )
+            );
+            profile.linear_chunk_prepare_base_attn_post_millis +=
+                profile_elapsed(post_start, device)?;
+            result
         };
         profile.linear_chunk_prepare_base_attn_millis += profile_elapsed(base_attn_start, device)?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
@@ -9778,6 +9854,14 @@ impl GatedDeltaNet {
                     .contiguous()?,
                 &key_scan.contiguous()?,
                 &exp_g_scan.contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
+        } else if hip_base_attn_fast_path {
+            let base_attn = base_attn.as_ref().expect("base_attn exists on HIP base-attn path");
+            delta_attn_solve_scan(
+                &base_attn
+                    .reshape((batch_heads, num_chunks, chunk_size, chunk_size))?
+                    .contiguous()?,
             )?
             .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
         } else if scan_policy.use_flattened_solve {

@@ -189,6 +189,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_linear_chunk_prepare_g_millis: f64,
         stage_linear_chunk_prepare_cache_millis: f64,
         stage_linear_chunk_prepare_base_attn_millis: f64,
+        stage_linear_chunk_prepare_base_attn_decay_mask_millis: f64,
+        stage_linear_chunk_prepare_base_attn_key_t_millis: f64,
+        stage_linear_chunk_prepare_base_attn_flatten_millis: f64,
+        stage_linear_chunk_prepare_base_attn_matmul_millis: f64,
+        stage_linear_chunk_prepare_base_attn_post_millis: f64,
         stage_linear_chunk_solve_millis: f64,
         stage_linear_chunk_scan_millis: f64,
         stage_linear_chunk_index_millis: f64,
@@ -472,6 +477,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_linear_chunk_prepare_g_millis: result.mean_profile.linear_chunk_prepare_g_millis,
         stage_linear_chunk_prepare_cache_millis: result.mean_profile.linear_chunk_prepare_cache_millis,
         stage_linear_chunk_prepare_base_attn_millis: result.mean_profile.linear_chunk_prepare_base_attn_millis,
+        stage_linear_chunk_prepare_base_attn_decay_mask_millis: result
+            .mean_profile
+            .linear_chunk_prepare_base_attn_decay_mask_millis,
+        stage_linear_chunk_prepare_base_attn_key_t_millis: result
+            .mean_profile
+            .linear_chunk_prepare_base_attn_key_t_millis,
+        stage_linear_chunk_prepare_base_attn_flatten_millis: result
+            .mean_profile
+            .linear_chunk_prepare_base_attn_flatten_millis,
+        stage_linear_chunk_prepare_base_attn_matmul_millis: result
+            .mean_profile
+            .linear_chunk_prepare_base_attn_matmul_millis,
+        stage_linear_chunk_prepare_base_attn_post_millis: result
+            .mean_profile
+            .linear_chunk_prepare_base_attn_post_millis,
         stage_linear_chunk_solve_millis: result.mean_profile.linear_chunk_solve_millis,
         stage_linear_chunk_scan_millis: result.mean_profile.linear_chunk_scan_millis,
         stage_linear_chunk_index_millis: result.mean_profile.linear_chunk_index_millis,
