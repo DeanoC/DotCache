@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 import time
 from typing import Any
 
@@ -348,6 +352,7 @@ def _runtime_score_breakdown_result(
     direct_score_transposed_ms = 0.0
     direct_score_transposed_logits = None
     m0_page_tensor = None
+    metal_direct_m0_probe = {"available": False, "reason": "disabled"}
     if int(m0_pages) > 0:
         m0_key_pages = torch.randn(
             (num_key_value_heads, int(m0_pages), int(tokens_per_page), head_dim),
@@ -399,6 +404,19 @@ def _runtime_score_breakdown_result(
                 key_bias_groups,
                 query_group_sums,
             ),
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        metal_direct_m0_probe = _run_metal_direct_m0_probe(
+            device=device,
+            queries=queries,
+            query_group_sums=query_group_sums,
+            fused_scaled_codes=key_fused_scaled_codes,
+            fused_scaled_codes_transposed=key_fused_scaled_codes_transposed,
+            bias_groups=key_bias_groups,
+            dense_reference_logits=m0_logits_reference,
+            flat_reference_logits=direct_score_logits,
+            transposed_reference_logits=direct_score_transposed_logits,
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
@@ -529,6 +547,7 @@ def _runtime_score_breakdown_result(
         "direct_m0_variant": str(direct_variant),
         "direct_m0_score_ms": float(direct_score_ms),
         "direct_m0_transposed_score_ms": float(direct_score_transposed_ms),
+        "direct_m0_metal_probe": metal_direct_m0_probe,
         "exact_m3_score_ms": float(exact_m3_score_ms),
         "exact_m3_flat_score_ms": float(exact_m3_flat_score_ms),
         "exact_m3_transposed_score_ms": float(exact_m3_transposed_score_ms),
@@ -556,6 +575,171 @@ def _runtime_score_breakdown_result(
         ),
         "combined_vs_dense_mix_max_abs_error": _max_abs_error(combined_output, dense_reference_output),
     }
+    return result
+
+
+def _write_float_tensor_raw(path: Path, tensor: torch.Tensor) -> None:
+    np.asarray(
+        tensor.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy(),
+        dtype=np.float32,
+    ).tofile(path)
+
+
+def _run_swift_metal_direct_m0_probe(
+    *,
+    kernel: str,
+    queries: torch.Tensor,
+    query_group_sums: torch.Tensor,
+    fused_scaled_codes: torch.Tensor,
+    bias: torch.Tensor,
+    warmup_iters: int,
+    bench_iters: int,
+    metal_source_path: Path,
+    swift_script_path: Path,
+) -> dict[str, Any]:
+    swift_path = shutil.which("swift")
+    if swift_path is None:
+        return {"available": False, "reason": "swift_unavailable"}
+    if not metal_source_path.exists():
+        return {"available": False, "reason": "metal_source_missing"}
+    if not swift_script_path.exists():
+        return {"available": False, "reason": "swift_probe_missing"}
+    batch_count, query_count, padded_head_dim = map(int, queries.shape)
+    token_count = int(fused_scaled_codes.shape[-1] if kernel == "transposed" else fused_scaled_codes.shape[-2])
+    num_groups = int(query_group_sums.shape[-1])
+    with tempfile.TemporaryDirectory(prefix="dotcache-metal-directm0-") as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        queries_path = tmpdir_path / "queries.bin"
+        query_group_sums_path = tmpdir_path / "query_group_sums.bin"
+        fused_path = tmpdir_path / "fused.bin"
+        bias_path = tmpdir_path / "bias.bin"
+        output_path = tmpdir_path / "logits.bin"
+        _write_float_tensor_raw(queries_path, queries)
+        _write_float_tensor_raw(query_group_sums_path, query_group_sums)
+        _write_float_tensor_raw(fused_path, fused_scaled_codes)
+        _write_float_tensor_raw(bias_path, bias)
+        completed = subprocess.run(
+            [
+                swift_path,
+                str(swift_script_path),
+                "--metal-source",
+                str(metal_source_path),
+                "--kernel",
+                str(kernel),
+                "--queries",
+                str(queries_path),
+                "--query-group-sums",
+                str(query_group_sums_path),
+                "--fused",
+                str(fused_path),
+                "--bias",
+                str(bias_path),
+                "--output",
+                str(output_path),
+                "--batch-count",
+                str(batch_count),
+                "--query-count",
+                str(query_count),
+                "--padded-head-dim",
+                str(padded_head_dim),
+                "--token-count",
+                str(token_count),
+                "--num-groups",
+                str(num_groups),
+                "--query-scale",
+                "1.0",
+                "--warmup-iters",
+                str(max(int(warmup_iters), 0)),
+                "--bench-iters",
+                str(max(int(bench_iters), 1)),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            return {
+                "available": False,
+                "reason": "swift_probe_failed",
+                "stderr": completed.stderr.strip(),
+                "stdout": completed.stdout.strip(),
+            }
+        payload = json.loads(completed.stdout)
+        logits = np.fromfile(output_path, dtype=np.float32).reshape(batch_count, query_count, token_count)
+        return {
+            "available": True,
+            "kernel": str(kernel),
+            "avg_ms": float(payload["avg_ms"]),
+            "logits": torch.as_tensor(logits, dtype=torch.float32, device=queries.device),
+        }
+
+
+def _run_metal_direct_m0_probe(
+    *,
+    device: str,
+    queries: torch.Tensor,
+    query_group_sums: torch.Tensor,
+    fused_scaled_codes: torch.Tensor,
+    fused_scaled_codes_transposed: torch.Tensor,
+    bias_groups: tuple[torch.Tensor, ...],
+    dense_reference_logits: torch.Tensor | None,
+    flat_reference_logits: torch.Tensor | None,
+    transposed_reference_logits: torch.Tensor | None,
+    warmup_iters: int,
+    bench_iters: int,
+) -> dict[str, Any]:
+    if device != "mps":
+        return {"available": False, "reason": "mps_only"}
+    script_path = Path(__file__).with_name("metal_direct_m0_probe.swift")
+    metal_source_path = Path(__file__).resolve().parents[1] / "dotcache" / "backends" / "metal" / "persistent_attention.metal"
+    fused_scaled_codes_flat = fused_scaled_codes.reshape(int(fused_scaled_codes.shape[0]), -1, int(fused_scaled_codes.shape[-1]))
+    bias_tensor = torch.stack(bias_groups, dim=1).reshape(int(fused_scaled_codes.shape[0]), len(bias_groups), -1).contiguous()
+    flat_probe = _run_swift_metal_direct_m0_probe(
+        kernel="flat",
+        queries=queries,
+        query_group_sums=query_group_sums,
+        fused_scaled_codes=fused_scaled_codes_flat,
+        bias=bias_tensor,
+        warmup_iters=warmup_iters,
+        bench_iters=bench_iters,
+        metal_source_path=metal_source_path,
+        swift_script_path=script_path,
+    )
+    transposed_probe = _run_swift_metal_direct_m0_probe(
+        kernel="transposed",
+        queries=queries,
+        query_group_sums=query_group_sums,
+        fused_scaled_codes=fused_scaled_codes_transposed,
+        bias=bias_tensor,
+        warmup_iters=warmup_iters,
+        bench_iters=bench_iters,
+        metal_source_path=metal_source_path,
+        swift_script_path=script_path,
+    )
+    if not flat_probe.get("available", False) and not transposed_probe.get("available", False):
+        return {
+            "available": False,
+            "reason": flat_probe.get("reason", transposed_probe.get("reason", "probe_unavailable")),
+        }
+    result: dict[str, Any] = {"available": True}
+    if flat_probe.get("available", False):
+        flat_logits = flat_probe["logits"]
+        result["flat_score_ms"] = float(flat_probe["avg_ms"])
+        result["flat_vs_dense_score_max_abs_error"] = (
+            0.0 if dense_reference_logits is None else _max_abs_error(flat_logits, dense_reference_logits)
+        )
+        result["flat_vs_torch_direct_score_max_abs_error"] = (
+            0.0 if flat_reference_logits is None else _max_abs_error(flat_logits, flat_reference_logits)
+        )
+    if transposed_probe.get("available", False):
+        transposed_logits = transposed_probe["logits"]
+        result["transposed_score_ms"] = float(transposed_probe["avg_ms"])
+        result["transposed_vs_dense_score_max_abs_error"] = (
+            0.0 if dense_reference_logits is None else _max_abs_error(transposed_logits, dense_reference_logits)
+        )
+        result["transposed_vs_torch_direct_score_max_abs_error"] = (
+            0.0 if transposed_reference_logits is None else _max_abs_error(transposed_logits, transposed_reference_logits)
+        )
     return result
 
 
