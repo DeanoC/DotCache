@@ -3140,8 +3140,13 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         fallback_rung = 0
         compression_rerank = False
         dense_fallback = False
-        use_streaming_early_exit = bool(final_config.enable_early_exit) and not bool(
-            final_config.enable_full_attention_mixed_mode_execution
+        mixed_streaming_eligible = (
+            bool(final_config.enable_full_attention_mixed_mode_execution)
+            and not bool(final_config.full_attention_mixed_mode_execution_allow_value_m0)
+        )
+        use_streaming_early_exit = bool(final_config.enable_early_exit) and (
+            not bool(final_config.enable_full_attention_mixed_mode_execution)
+            or mixed_streaming_eligible
         )
 
         if use_streaming_early_exit:

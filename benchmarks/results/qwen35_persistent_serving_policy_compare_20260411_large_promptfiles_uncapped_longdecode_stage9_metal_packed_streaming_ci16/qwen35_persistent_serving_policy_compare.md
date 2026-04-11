@@ -1,0 +1,23 @@
+## Qwen3.5 Stage 9 Packed Mixed Certified Streaming: Uncapped 10-Prompt Longdecode
+
+- Config:
+  - `enable_early_exit=true`
+  - `enable_full_attention_mixed_mode_execution=true`
+  - `full_attention_mixed_mode_execution_strategy=direct_m0_metal_packed`
+  - `full_attention_mixed_mode_execution_max_k_comp_error=0.10`
+  - `full_attention_streaming_order_mode=priority_value_hybrid`
+  - `full_attention_streaming_priority_value_upper_weight=0.25`
+  - `full_attention_check_interval=16`
+  - `full_attention_key_centroid_count_by_layer={19:8,23:16}`
+- Result:
+  - bias: `1232.17 ms/step`
+  - hand-tuned: `1594.65 ms/step`
+  - bias faster on `10/10`
+- Comparison:
+  - conservative certified baseline bias: `2457.43 ms/step`
+  - prior Stage 9 packed bias checkpoint: `2509.11 ms/step`
+  - delta vs conservative: about `-49.86%`
+  - delta vs prior Stage 9: about `-50.89%`
+- Notes:
+  - certified early stop triggered on `9/10` prompts
+  - `model_roadmap` still ran to full coverage

@@ -3149,6 +3149,7 @@ def _decode_selected_block_tensors_exact_torch(
     value_cache: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
+    return_stream_stats: bool = False,
 ):
     torch = _load_torch()
     query_tensor = query.to(dtype=torch.float32)
@@ -3162,6 +3163,17 @@ def _decode_selected_block_tensors_exact_torch(
         dtype=torch.float32,
         device=query_tensor.device,
     )
+    per_head_logits: list[Any] = [
+        torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
+        for _ in range(int(query_tensor.shape[0]))
+    ]
+    tranche_m = torch.full((int(query_tensor.shape[0]),), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    tranche_l = torch.zeros((int(query_tensor.shape[0]),), dtype=torch.float32, device=query_tensor.device)
+    tranche_h = torch.zeros(
+        (int(query_tensor.shape[0]), int(value_tensor.shape[-1])),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
     for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
         head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
         if head_ids.size == 0:
@@ -3171,10 +3183,32 @@ def _decode_selected_block_tensors_exact_torch(
         k_slice = key_tensor[int(kv_head)]
         v_slice = value_tensor[int(kv_head)]
         logits = torch.matmul(q_slice, k_slice.transpose(0, 1)) * float(query_scale)
-        weights = torch.softmax(logits, dim=-1)
-        output[head_index_tensor] = torch.matmul(weights.to(dtype=torch.float32), v_slice)
+        if int(logits.shape[-1]) <= 0:
+            continue
+        head_m = logits.max(dim=-1).values.to(dtype=torch.float32)
+        exp_scores = torch.exp(logits - head_m[:, None])
+        head_l = exp_scores.sum(dim=-1).to(dtype=torch.float32)
+        head_h = torch.matmul(exp_scores.to(dtype=torch.float32), v_slice)
+        weights = exp_scores / head_l[:, None].clamp_min(1e-8)
+        output[head_index_tensor] = head_h / head_l[:, None].clamp_min(1e-8)
         attn_weights[0, head_index_tensor, 0, :] = weights.to(dtype=torch.float32)
-    return output, attn_weights
+        for local_head_idx, q_head_idx in enumerate(head_ids.tolist()):
+            per_head_logits[int(q_head_idx)] = logits[int(local_head_idx)].to(dtype=torch.float32)
+            tranche_m[int(q_head_idx)] = head_m[int(local_head_idx)]
+            tranche_l[int(q_head_idx)] = head_l[int(local_head_idx)]
+            tranche_h[int(q_head_idx)] = head_h[int(local_head_idx)]
+    if not bool(return_stream_stats):
+        return output, attn_weights
+    return {
+        "output": output,
+        "attn_weights": attn_weights,
+        "stream_stats": {
+            "per_head_logits": per_head_logits,
+            "m": tranche_m,
+            "l": tranche_l,
+            "h": tranche_h,
+        },
+    }
 
 
 def _decode_selected_blocks_direct_m0_torch(
@@ -3186,6 +3220,7 @@ def _decode_selected_blocks_direct_m0_torch(
     query_scale: float,
     config: PersistentServingConfig,
     dotcache_config: Any | None = None,
+    return_stream_stats: bool = False,
 ):
     torch = _load_torch()
     _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch, score_exact_logits_flat_torch = _load_torch_mixed_execution_ops()
@@ -3240,6 +3275,18 @@ def _decode_selected_blocks_direct_m0_torch(
         "final_mix_ms": 0.0,
     }
     executed_m0_blocks: set[int] = set()
+    per_head_logits: list[Any] = [
+        torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
+        for _ in range(int(query_tensor.shape[0]))
+    ]
+    tranche_m = torch.full((int(query_tensor.shape[0]),), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    tranche_l = torch.zeros((int(query_tensor.shape[0]),), dtype=torch.float32, device=query_tensor.device)
+    tranche_h = torch.zeros(
+        (int(query_tensor.shape[0]), int(gathered_values.shape[-1])),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    block_max_logits = np.full((int(len(resolved_block_ids)),), float("-inf"), dtype=np.float32)
     for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
         head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
         if head_ids.size == 0:
@@ -3421,16 +3468,52 @@ def _decode_selected_blocks_direct_m0_torch(
         _synchronize_torch_device(q_slice)
         final_mix_start = time.perf_counter()
         logits = logits * float(query_scale)
-        weights = torch.softmax(logits, dim=-1).to(dtype=torch.float32)
-        context = torch.matmul(weights, gathered_values[int(kv_head)])
+        if int(logits.shape[-1]) > 0:
+            for block_offset_idx, block_token_count in enumerate(token_counts):
+                resolved_block_token_count = int(block_token_count)
+                if resolved_block_token_count <= 0:
+                    continue
+                token_start = int(sum(token_counts[:block_offset_idx]))
+                block_logits = logits[:, token_start : token_start + resolved_block_token_count]
+                if int(block_logits.numel()) > 0:
+                    block_max_logits[int(block_offset_idx)] = max(
+                        float(block_max_logits[int(block_offset_idx)]),
+                        float(block_logits.max().item()),
+                    )
+        head_m = logits.max(dim=-1).values.to(dtype=torch.float32)
+        exp_scores = torch.exp(logits - head_m[:, None])
+        head_l = exp_scores.sum(dim=-1).to(dtype=torch.float32)
+        head_h = torch.matmul(exp_scores.to(dtype=torch.float32), gathered_values[int(kv_head)])
+        weights = exp_scores / head_l[:, None].clamp_min(1e-8)
+        context = head_h / head_l[:, None].clamp_min(1e-8)
         _synchronize_torch_device(q_slice)
         timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
         output[head_index_tensor] = context
         attn_weights[0, head_index_tensor, 0, :] = weights
+        for local_head_idx, q_head_idx in enumerate(head_ids.tolist()):
+            per_head_logits[int(q_head_idx)] = logits[int(local_head_idx)].to(dtype=torch.float32)
+            tranche_m[int(q_head_idx)] = head_m[int(local_head_idx)]
+            tranche_l[int(q_head_idx)] = head_l[int(local_head_idx)]
+            tranche_h[int(q_head_idx)] = head_h[int(local_head_idx)]
     executed_mode_counts = {
         "M0": int(len(executed_m0_blocks)),
         "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
     }
+    if bool(return_stream_stats):
+        return {
+            "output": output,
+            "attn_weights": attn_weights,
+            "token_counts": token_counts,
+            "executed_mode_counts": executed_mode_counts,
+            "timing": timing,
+            "stream_stats": {
+                "per_head_logits": per_head_logits,
+                "m": tranche_m,
+                "l": tranche_l,
+                "h": tranche_h,
+                "block_max_logits": block_max_logits,
+            },
+        }
     return output, attn_weights, token_counts, executed_mode_counts, timing
 
 
@@ -4473,6 +4556,13 @@ class PersistentFullAttentionState:
                 upper_bounds=upper_bounds,
                 num_heads=num_heads,
             )
+        executed_mode_counts_total = {"M0": 0, "M3": 0}
+        mixed_timing_totals = {
+            "direct_m0_assembly_ms": 0.0,
+            "direct_m0_score_ms": 0.0,
+            "exact_m3_score_ms": 0.0,
+            "final_mix_ms": 0.0,
+        }
 
         next_block_index = 0
         while next_block_index < len(processing_order):
@@ -4490,45 +4580,103 @@ class PersistentFullAttentionState:
                 unresolved_block_ids.discard(int(block_id))
             if not tranche_active_block_ids:
                 continue
-            gathered_keys, gathered_values, tranche_token_counts = _gather_selected_block_tensors(
-                state=state,
-                block_ids=tranche_active_block_ids,
-            )
+            if (
+                bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
+                and bool(getattr(resolved_config, "enable_compression", False))
+                and _can_use_direct_m0_execution(state=state, config=resolved_config)
+            ):
+                tranche_result = _decode_selected_blocks_direct_m0_torch(
+                    state=state,
+                    block_ids=tranche_active_block_ids,
+                    query=query_tensor,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    query_scale=float(query_scale),
+                    config=resolved_config,
+                    dotcache_config=self.dotcache_config,
+                    return_stream_stats=True,
+                )
+                tranche_token_counts = [int(token_count) for token_count in tranche_result["token_counts"]]
+                tranche_stream_stats = tranche_result["stream_stats"]
+                executed_mode_counts_total["M0"] += int(tranche_result["executed_mode_counts"].get("M0", 0))
+                executed_mode_counts_total["M3"] += int(tranche_result["executed_mode_counts"].get("M3", 0))
+                for timing_key in mixed_timing_totals:
+                    mixed_timing_totals[timing_key] += float(tranche_result["timing"].get(timing_key, 0.0))
+                tranche_block_max_logits = np.asarray(
+                    tranche_stream_stats.get("block_max_logits", np.full((len(tranche_active_block_ids),), float("-inf"))),
+                    dtype=np.float32,
+                )
+            else:
+                if (
+                    bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
+                    and bool(getattr(resolved_config, "enable_compression", False))
+                ):
+                    gathered_keys, gathered_values, tranche_token_counts, _executed_mode_counts = (
+                        _prepare_selected_block_execution_tensors(
+                            state=state,
+                            block_ids=tranche_active_block_ids,
+                            config=resolved_config,
+                            dotcache_config=self.dotcache_config,
+                        )
+                    )
+                    executed_mode_counts_total["M0"] += int(_executed_mode_counts.get("M0", 0))
+                    executed_mode_counts_total["M3"] += int(_executed_mode_counts.get("M3", 0))
+                else:
+                    gathered_keys, gathered_values, tranche_token_counts = _gather_selected_block_tensors(
+                        state=state,
+                        block_ids=tranche_active_block_ids,
+                    )
+                tranche_result = _decode_selected_block_tensors_exact_torch(
+                    query=query_tensor,
+                    key_cache=gathered_keys,
+                    value_cache=gathered_values,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    query_scale=float(query_scale),
+                    return_stream_stats=True,
+                )
+                tranche_stream_stats = tranche_result["stream_stats"]
+                tranche_block_max_logits = np.full((int(len(tranche_active_block_ids)),), float("-inf"), dtype=np.float32)
+                block_offset = 0
+                for block_idx, block_token_count in enumerate(tranche_token_counts):
+                    resolved_block_token_count = int(block_token_count)
+                    if resolved_block_token_count <= 0:
+                        continue
+                    block_max = float("-inf")
+                    for q_head_idx in range(num_heads):
+                        logits = tranche_stream_stats["per_head_logits"][q_head_idx]
+                        if int(logits.numel()) <= 0:
+                            continue
+                        block_logits = logits[block_offset : block_offset + resolved_block_token_count]
+                        if int(block_logits.numel()) > 0:
+                            block_max = max(block_max, float(block_logits.max().item()))
+                    tranche_block_max_logits[int(block_idx)] = float(block_max)
+                    block_offset += resolved_block_token_count
             tranche_token_total = int(sum(int(token_count) for token_count in tranche_token_counts))
             processed_block_ids.extend(int(block_id) for block_id in tranche_active_block_ids)
             processed_block_token_counts.extend(int(token_count) for token_count in tranche_token_counts)
             processed_token_count += int(tranche_token_total)
+            for block_id, block_max in zip(tranche_active_block_ids, tranche_block_max_logits.tolist(), strict=False):
+                if math.isfinite(float(block_max)):
+                    max_bound_excess = max(
+                        max_bound_excess,
+                        float(block_max) - float(upper_bounds[int(block_id)].item()),
+                    )
             for q_head_idx in range(num_heads):
-                kv_head_idx = int(q_to_kv[q_head_idx])
-                q_vec = query_tensor[q_head_idx]
-                k_slice = gathered_keys[kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
-                v_slice = gathered_values[kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
-                logits = torch.matmul(k_slice, q_vec) * float(query_scale)
-                if int(logits.numel()) == 0:
+                logits = tranche_stream_stats["per_head_logits"][q_head_idx]
+                if int(logits.numel()) > 0:
+                    per_head_processed_logits[q_head_idx].append(logits.to(dtype=torch.float32))
+                tranche_max = float(tranche_stream_stats["m"][q_head_idx].item())
+                if not math.isfinite(tranche_max):
                     continue
-                per_head_processed_logits[q_head_idx].append(logits.to(dtype=torch.float32))
-                block_offset = 0
-                for block_id, block_token_count in zip(tranche_active_block_ids, tranche_token_counts):
-                    resolved_block_token_count = int(block_token_count)
-                    if resolved_block_token_count <= 0:
-                        continue
-                    block_logits = logits[block_offset : block_offset + resolved_block_token_count]
-                    if int(block_logits.numel()) > 0:
-                        block_max = float(block_logits.max().item())
-                        max_bound_excess = max(
-                            max_bound_excess,
-                            block_max - float(upper_bounds[int(block_id)].item()),
-                        )
-                    block_offset += resolved_block_token_count
-                tranche_max = float(logits.max().item())
+                tranche_l_value = tranche_stream_stats["l"][q_head_idx].to(dtype=torch.float32)
+                tranche_h_value = tranche_stream_stats["h"][q_head_idx].to(dtype=torch.float32)
                 m_old = float(m[q_head_idx].item())
                 m_new = float(max(m_old, tranche_max))
-                rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
-                exp_scores = torch.exp(logits - float(m_new))
-                l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
-                h_accum[q_head_idx] = h_accum[q_head_idx] * float(rescale) + torch.sum(
-                    exp_scores[:, None] * v_slice,
-                    dim=0,
+                old_rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
+                tranche_rescale = math.exp(max(min(tranche_max - m_new, 0.0), -80.0))
+                l[q_head_idx] = l[q_head_idx] * float(old_rescale) + tranche_l_value * float(tranche_rescale)
+                h_accum[q_head_idx] = (
+                    h_accum[q_head_idx] * float(old_rescale)
+                    + tranche_h_value * float(tranche_rescale)
                 )
                 m[q_head_idx] = float(m_new)
             if residual_tracker is not None:
@@ -4707,6 +4855,22 @@ class PersistentFullAttentionState:
             head_weights = torch.exp(head_logits - m[q_head_idx]) / l[q_head_idx].clamp_min(1e-8)
             attn_weights[0, q_head_idx, 0, : int(head_logits.shape[0])] = head_weights.to(dtype=torch.float32)
         final_checkpoint = checkpoints[-1] if checkpoints else None
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts_total.get("M0", 0))
+        layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts_total.get("M3", 0))
+        layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(
+            mixed_timing_totals.get("direct_m0_assembly_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(
+            mixed_timing_totals.get("direct_m0_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(
+            mixed_timing_totals.get("exact_m3_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_ms_total += float(
+            mixed_timing_totals.get("final_mix_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_prepare_ms_total += float(sum(mixed_timing_totals.values()))
         state.last_first_certified_stop = None if first_certified_stop is None else dict(first_certified_stop)
         state.last_checkpoint_count = int(len(checkpoints))
         if final_checkpoint is not None:

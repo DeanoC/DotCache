@@ -743,6 +743,67 @@ def test_persistent_full_attention_stream_decode_can_find_certified_stop() -> No
     )
 
 
+def test_persistent_full_attention_stream_decode_mixed_direct_m0_can_find_certified_stop() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        enable_early_exit=True,
+        enable_compression=True,
+        enable_full_attention_mixed_mode_execution=True,
+        full_attention_mixed_mode_execution_strategy="direct_m0",
+        full_attention_mixed_mode_execution_max_k_comp_error=10.0,
+        full_attention_sink_block_count=0,
+        full_attention_recent_block_count=0,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=1,
+        full_attention_check_interval=1,
+        full_attention_mass_eps=0.05,
+        full_attention_value_eps=0.05,
+        full_attention_min_processed_blocks=1,
+    )
+    dotcache_config = DotCacheConfig(
+        head_dim=4,
+        group_size=4,
+        bits_k=2,
+        bits_v=4,
+        tokens_per_page=1,
+        default_mode_k="M0",
+        default_mode_v="M3",
+    )
+    prefill_tensors = {
+        27: (
+            torch.tensor(
+                [[[[5.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+        dotcache_config=dotcache_config,
+    )
+    query = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32)
+    streamed = state.stream_decode_layer(27, query, query_scale=1.0, check_interval=1, stop_on_certificate=True)
+    assert streamed["first_certified_stop"] is not None
+    assert streamed["first_certified_stop"]["processed_block_count"] == 1
+    assert streamed["processed_block_ids"] == [0]
+    selected_output, _attn_weights, _token_counts, executed_mode_counts = state.decode_selected_blocks(
+        27,
+        block_ids=[0],
+        query=query,
+        query_scale=1.0,
+    )
+    assert executed_mode_counts["M0"] == 1
+    assert torch.allclose(streamed["output"], selected_output, atol=1e-5, rtol=1e-5)
+
+
 def test_persistent_full_attention_stream_decode_requires_mandatory_coverage() -> None:
     config = PersistentServingConfig(
         block_size=1,
