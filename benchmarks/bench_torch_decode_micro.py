@@ -26,6 +26,7 @@ from dotcache.backends.torch_mps import (
 )
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
 from dotcache.modes.m0_affine import dequantize_groups, quantize_tensor
+from dotcache.packing import pack_bits
 
 
 def _default_device() -> str:
@@ -165,6 +166,47 @@ def _prepare_fused_m0_inputs(
     ).contiguous()
     bias_groups = tuple(bias[..., group_index].contiguous() for group_index in range(num_groups))
     return fused_scaled_codes, bias_groups
+
+
+def _prepare_packed_group_major_m0_inputs(
+    *,
+    values: torch.Tensor,
+    group_size: int,
+    bits: int,
+    scheme: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    values_cpu = values.detach().cpu()
+    batch_size, page_count, token_count, _head_dim = map(int, values.shape)
+    payload_rows: list[np.ndarray] = []
+    scales_rows: list[np.ndarray] = []
+    bias_rows: list[np.ndarray] = []
+    for batch_index in range(batch_size):
+        batch_payload_pages: list[np.ndarray] = []
+        batch_scales_pages: list[np.ndarray] = []
+        batch_bias_pages: list[np.ndarray] = []
+        for page_index in range(page_count):
+            page_values = np.asarray(values_cpu[batch_index, page_index].numpy(), dtype=np.float32)
+            codes, scales, bias, _padded_head_dim = quantize_tensor(
+                page_values,
+                group_size=group_size,
+                bits=bits,
+                scheme=scheme,
+            )
+            packed = pack_bits(codes, bits=bits).transpose(1, 0, 2).astype(np.uint32, copy=False)
+            batch_payload_pages.append(packed)
+            batch_scales_pages.append(np.asarray(scales, dtype=np.float32))
+            batch_bias_pages.append(np.asarray(bias, dtype=np.float32))
+        payload_rows.append(np.stack(batch_payload_pages, axis=0))
+        scales_rows.append(np.stack(batch_scales_pages, axis=0))
+        bias_rows.append(np.stack(batch_bias_pages, axis=0))
+    payload = np.stack(payload_rows, axis=0)
+    scales = np.stack(scales_rows, axis=0)
+    bias = np.stack(bias_rows, axis=0)
+    batch_count, page_count, num_groups, token_count, words_per_group = map(int, payload.shape)
+    payload = payload.transpose(0, 2, 1, 3, 4).reshape(batch_count, num_groups, page_count * token_count, words_per_group)
+    scales = scales.reshape(batch_count, page_count * token_count, -1)
+    bias = bias.reshape(batch_count, page_count * token_count, -1)
+    return payload, scales, bias
 
 
 def _cached_dequantize_blocks_to_device(
@@ -409,6 +451,9 @@ def _runtime_score_breakdown_result(
         )
         metal_direct_m0_probe = _run_metal_direct_m0_probe(
             device=device,
+            m0_page_tensor=m0_key_pages,
+            bits_k=int(bits_k),
+            quant_scheme_k=str(quant_scheme_k),
             queries=queries,
             query_group_sums=query_group_sums,
             fused_scaled_codes=key_fused_scaled_codes,
@@ -585,6 +630,10 @@ def _write_float_tensor_raw(path: Path, tensor: torch.Tensor) -> None:
     ).tofile(path)
 
 
+def _write_uint32_array_raw(path: Path, array: np.ndarray) -> None:
+    np.asarray(array, dtype=np.uint32).tofile(path)
+
+
 def _run_swift_metal_direct_m0_probe(
     *,
     kernel: str,
@@ -605,7 +654,9 @@ def _run_swift_metal_direct_m0_probe(
     if not swift_script_path.exists():
         return {"available": False, "reason": "swift_probe_missing"}
     batch_count, query_count, padded_head_dim = map(int, queries.shape)
-    token_count = int(fused_scaled_codes.shape[-1] if kernel == "transposed" else fused_scaled_codes.shape[-2])
+    token_count = int(
+        fused_scaled_codes.shape[-1] if kernel in {"transposed", "transposed_tiled"} else fused_scaled_codes.shape[-2]
+    )
     num_groups = int(query_group_sums.shape[-1])
     with tempfile.TemporaryDirectory(prefix="dotcache-metal-directm0-") as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -674,9 +725,106 @@ def _run_swift_metal_direct_m0_probe(
         }
 
 
+def _run_swift_metal_direct_m0_packed_probe(
+    *,
+    queries: torch.Tensor,
+    query_group_sums: torch.Tensor,
+    payload_words: np.ndarray,
+    scales: np.ndarray,
+    bias: np.ndarray,
+    warmup_iters: int,
+    bench_iters: int,
+    metal_source_path: Path,
+    swift_script_path: Path,
+) -> dict[str, Any]:
+    swift_path = shutil.which("swift")
+    if swift_path is None:
+        return {"available": False, "reason": "swift_unavailable"}
+    if not metal_source_path.exists():
+        return {"available": False, "reason": "metal_source_missing"}
+    if not swift_script_path.exists():
+        return {"available": False, "reason": "swift_probe_missing"}
+    batch_count, query_count, padded_head_dim = map(int, queries.shape)
+    _payload_batch, num_groups, token_count, words_per_group = map(int, payload_words.shape)
+    with tempfile.TemporaryDirectory(prefix="dotcache-metal-packedm0-") as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        queries_path = tmpdir_path / "queries.bin"
+        query_group_sums_path = tmpdir_path / "query_group_sums.bin"
+        payload_path = tmpdir_path / "payload.bin"
+        scales_path = tmpdir_path / "scales.bin"
+        bias_path = tmpdir_path / "bias.bin"
+        output_path = tmpdir_path / "logits.bin"
+        _write_float_tensor_raw(queries_path, queries)
+        _write_float_tensor_raw(query_group_sums_path, query_group_sums)
+        _write_uint32_array_raw(payload_path, payload_words)
+        np.asarray(scales, dtype=np.float32).tofile(scales_path)
+        np.asarray(bias, dtype=np.float32).tofile(bias_path)
+        completed = subprocess.run(
+            [
+                swift_path,
+                str(swift_script_path),
+                "--metal-source",
+                str(metal_source_path),
+                "--kernel",
+                "packed_group_major_8bit",
+                "--queries",
+                str(queries_path),
+                "--query-group-sums",
+                str(query_group_sums_path),
+                "--payload",
+                str(payload_path),
+                "--scales",
+                str(scales_path),
+                "--bias",
+                str(bias_path),
+                "--output",
+                str(output_path),
+                "--batch-count",
+                str(batch_count),
+                "--query-count",
+                str(query_count),
+                "--padded-head-dim",
+                str(padded_head_dim),
+                "--token-count",
+                str(token_count),
+                "--num-groups",
+                str(num_groups),
+                "--words-per-group",
+                str(words_per_group),
+                "--query-scale",
+                "1.0",
+                "--warmup-iters",
+                str(max(int(warmup_iters), 0)),
+                "--bench-iters",
+                str(max(int(bench_iters), 1)),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            return {
+                "available": False,
+                "reason": "swift_probe_failed",
+                "stderr": completed.stderr.strip(),
+                "stdout": completed.stdout.strip(),
+            }
+        payload = json.loads(completed.stdout)
+        logits = np.fromfile(output_path, dtype=np.float32).reshape(batch_count, query_count, token_count)
+        return {
+            "available": True,
+            "kernel": "packed_group_major_8bit",
+            "avg_ms": float(payload["avg_ms"]),
+            "logits": torch.as_tensor(logits, dtype=torch.float32, device=queries.device),
+        }
+
+
 def _run_metal_direct_m0_probe(
     *,
     device: str,
+    m0_page_tensor: torch.Tensor | None,
+    bits_k: int,
+    quant_scheme_k: str,
     queries: torch.Tensor,
     query_group_sums: torch.Tensor,
     fused_scaled_codes: torch.Tensor,
@@ -716,10 +864,56 @@ def _run_metal_direct_m0_probe(
         metal_source_path=metal_source_path,
         swift_script_path=script_path,
     )
-    if not flat_probe.get("available", False) and not transposed_probe.get("available", False):
+    packed_probe = {"available": False, "reason": "unsupported_packed_shape"}
+    if (
+        m0_page_tensor is not None
+        and int(bits_k) == 8
+        and str(quant_scheme_k) == "affine"
+        and len(bias_groups) * 32 == int(queries.shape[-1])
+    ):
+        try:
+            payload_words, scales, bias = _prepare_packed_group_major_m0_inputs(
+                values=m0_page_tensor,
+                group_size=32,
+                bits=int(bits_k),
+                scheme=str(quant_scheme_k),
+            )
+            packed_probe = _run_swift_metal_direct_m0_packed_probe(
+                queries=queries,
+                query_group_sums=query_group_sums,
+                payload_words=payload_words,
+                scales=scales,
+                bias=bias,
+                warmup_iters=warmup_iters,
+                bench_iters=bench_iters,
+                metal_source_path=metal_source_path,
+                swift_script_path=script_path,
+            )
+        except Exception as exc:
+            packed_probe = {"available": False, "reason": f"packed_probe_exception:{type(exc).__name__}"}
+    transposed_tiled_probe = _run_swift_metal_direct_m0_probe(
+        kernel="transposed_tiled",
+        queries=queries,
+        query_group_sums=query_group_sums,
+        fused_scaled_codes=fused_scaled_codes_transposed,
+        bias=bias_tensor,
+        warmup_iters=warmup_iters,
+        bench_iters=bench_iters,
+        metal_source_path=metal_source_path,
+        swift_script_path=script_path,
+    )
+    if (
+        not flat_probe.get("available", False)
+        and not transposed_probe.get("available", False)
+        and not packed_probe.get("available", False)
+        and not transposed_tiled_probe.get("available", False)
+    ):
         return {
             "available": False,
-            "reason": flat_probe.get("reason", transposed_probe.get("reason", "probe_unavailable")),
+            "reason": flat_probe.get(
+                "reason",
+                transposed_probe.get("reason", transposed_tiled_probe.get("reason", "probe_unavailable")),
+            ),
         }
     result: dict[str, Any] = {"available": True}
     if flat_probe.get("available", False):
@@ -739,6 +933,26 @@ def _run_metal_direct_m0_probe(
         )
         result["transposed_vs_torch_direct_score_max_abs_error"] = (
             0.0 if transposed_reference_logits is None else _max_abs_error(transposed_logits, transposed_reference_logits)
+        )
+    if packed_probe.get("available", False):
+        packed_logits = packed_probe["logits"]
+        result["packed_group_major_8bit_score_ms"] = float(packed_probe["avg_ms"])
+        result["packed_group_major_8bit_vs_dense_score_max_abs_error"] = (
+            0.0 if dense_reference_logits is None else _max_abs_error(packed_logits, dense_reference_logits)
+        )
+        result["packed_group_major_8bit_vs_torch_direct_score_max_abs_error"] = (
+            0.0 if flat_reference_logits is None else _max_abs_error(packed_logits, flat_reference_logits)
+        )
+    if transposed_tiled_probe.get("available", False):
+        transposed_tiled_logits = transposed_tiled_probe["logits"]
+        result["transposed_tiled_score_ms"] = float(transposed_tiled_probe["avg_ms"])
+        result["transposed_tiled_vs_dense_score_max_abs_error"] = (
+            0.0 if dense_reference_logits is None else _max_abs_error(transposed_tiled_logits, dense_reference_logits)
+        )
+        result["transposed_tiled_vs_torch_direct_score_max_abs_error"] = (
+            0.0
+            if transposed_reference_logits is None
+            else _max_abs_error(transposed_tiled_logits, transposed_reference_logits)
         )
     return result
 

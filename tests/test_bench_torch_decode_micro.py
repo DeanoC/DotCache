@@ -96,6 +96,8 @@ def test_bench_torch_decode_micro_emits_runtime_shaped_breakdown() -> None:
     assert breakdown["exact_m3_flat_score_ms"] >= 0.0
     assert breakdown["exact_m3_transposed_score_ms"] >= 0.0
     assert breakdown["direct_m0_transposed_score_ms"] >= 0.0
+    if breakdown["direct_m0_metal_probe"]["available"] is True:
+        assert breakdown["direct_m0_metal_probe"]["transposed_tiled_score_ms"] >= 0.0
     assert "direct_m0_metal_probe" in breakdown
     assert breakdown["direct_m0_metal_probe"]["available"] is False
     assert breakdown["exact_m3_flat_vs_page_score_max_abs_error"] >= 0.0
