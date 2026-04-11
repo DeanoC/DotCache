@@ -8954,8 +8954,7 @@ impl FullAttention {
                 self.num_kv_groups,
                 scale as f32,
                 seqlen_offset,
-            )?
-            .to_dtype(DType::F32)?;
+            )?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
         } else if use_full_attention_prefill_megakernel(
@@ -9684,14 +9683,25 @@ impl GatedDeltaNet {
         } else {
             match &self.conv_state {
                 Some(prev_state) => {
-                    let prev_state = if prev_state.dtype() == mixed_qkv.dtype() {
+                    let state = if prev_state.dtype() == mixed_qkv.dtype() {
                         prev_state.clone()
                     } else {
                         prev_state.to_dtype(mixed_qkv.dtype())?
                     };
-                    let keep = state_len - seq_len;
-                    let prev_tail = prev_state.narrow(2, prev_state.dim(2)? - keep, keep)?;
-                    Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
+                    let prev_state_len = state.dim(2)?;
+                    if prev_state_len == state_len {
+                        let keep = state_len - seq_len;
+                        let prev_tail = state
+                            .narrow(2, prev_state_len - keep, keep)?
+                            .contiguous()?;
+                        state.slice_set(&prev_tail, 2, 0)?;
+                        state.slice_set(mixed_qkv, 2, keep)?;
+                        state
+                    } else {
+                        let keep = state_len - seq_len;
+                        let prev_tail = state.narrow(2, prev_state_len - keep, keep)?;
+                        Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
+                    }
                 }
                 None => {
                     let zeros = Tensor::zeros(
