@@ -6,6 +6,10 @@ For the current status of the DotCache-local Qwen3.5 minimal HIP path, including
 what the benchmark tools are, and which long-context kernel directions were already tried and
 rejected, see [QWEN35_MINIMAL_HIP_STATUS.md](/home/deano/DotCache/rust/paged-runtime/QWEN35_MINIMAL_HIP_STATUS.md).
 
+That status note also records the currently confirmed model-size ceiling on this machine:
+the minimal HIP path is verified through `Qwen/Qwen3.5-4B`, while tested `9B` variants currently
+run out of HIP memory on this host.
+
 It deliberately starts smaller than `llama.cpp`:
 
 - append-only per-sequence page tables
