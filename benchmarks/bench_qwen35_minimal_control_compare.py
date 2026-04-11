@@ -24,7 +24,11 @@ DEFAULT_FAMILY = "qwen35"
 DEFAULT_MAIN_RUNTIME = "dense_control"
 DEFAULT_MAIN_CARGO_FEATURES = "candle-cuda"
 DEFAULT_MINIMAL_CARGO_FEATURES = "qwen35-minimal-cuda"
-DEFAULT_LANES = ("main_dense_control", "minimal_control", "minimal_megakernel")
+DEFAULT_LANES = (
+    "main_dense_control",
+    "minimal_control",
+    "minimal_megakernel",
+)
 
 
 @dataclass(frozen=True)
@@ -118,7 +122,7 @@ def build_matrix(
     specs: list[RunSpec] = []
     lanes = list(DEFAULT_LANES)
     if luce_repo is not None:
-        lanes.append("luce_external_megakernel")
+        lanes.append("megakernel_control")
     for context in contexts:
         for lane in lanes:
             specs.append(
@@ -201,25 +205,35 @@ def command_for_run(
             str(spec.prompt_token_count),
             "--sync-stage-profile",
         ]
-    if spec.lane == "luce_external_megakernel":
+    if spec.lane == "megakernel_control":
         if luce_repo is None:
-            raise ValueError("luce_external_megakernel lane requires --luce-repo")
+            raise ValueError("megakernel_control lane requires --luce-repo")
         return [
-            sys.executable,
-            str(_repo_root() / "benchmarks" / "bench_qwen35_luce_external.py"),
+            _cargo_bin(),
+            "run",
+            "--features",
+            main_cargo_features,
+            "--example",
+            "hf_bench",
+            "--",
+            DEFAULT_FAMILY,
             spec.model_id,
             spec.prompt_text,
             str(out_prefix),
-            "--luce-repo",
-            luce_repo,
             "--device",
             spec.device,
-            "--prompt-token-target",
-            str(spec.prompt_token_count),
+            "--dtype",
+            spec.dtype,
+            "--runtime-mode",
+            "megakernel_control",
+            "--luce-repo",
+            luce_repo,
             "--warmup-runs",
             str(spec.warmup_runs),
             "--max-new-tokens",
             str(spec.max_new_tokens),
+            "--prompt-token-target",
+            str(spec.prompt_token_count),
         ]
     raise ValueError(f"unknown lane {spec.lane}")
 
@@ -286,7 +300,7 @@ def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str,
                 "hip_persistent_full_prefill_requested"
             ),
         }
-    if lane == "luce_external_megakernel":
+    if lane == "megakernel_control":
         return {
             "prompt_token_count": summary.get("prompt_token_count"),
             "generated_token_count": summary.get("generated_token_count"),
@@ -296,6 +310,8 @@ def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str,
             "prefill_tokens_per_second": summary.get("prefill_tokens_per_second"),
             "decode_tokens_per_second": summary.get("decode_tokens_per_second"),
             "total_tokens_per_second": summary.get("total_tokens_per_second"),
+            "backend_status": summary.get("backend_status"),
+            "warning_message": summary.get("warning_message"),
             "invalid_token_id": summary.get("invalid_token_id"),
             "invalid_token_step": summary.get("invalid_token_step"),
             "terminated_due_to_invalid_token": summary.get("terminated_due_to_invalid_token"),
@@ -395,21 +411,26 @@ def execute_run(
     record["exit_status"] = completed.returncode
     record["completed_at"] = _utc_now()
     if completed.returncode == 0 and summary_path.exists():
-        print(f"[done] {record['run_id']}", flush=True)
         summary = _load_json(summary_path)
-        record["status"] = "completed"
         record["summary_metrics"] = _extract_summary_metrics(summary, lane=spec.lane)
+        if summary.get("backend_status") == "completed_with_warning":
+            print(f"[done-with-warning] {record['run_id']}", flush=True)
+            record["status"] = "completed_with_warning"
+            record["warning_message"] = summary.get("warning_message")
+        else:
+            print(f"[done] {record['run_id']}", flush=True)
+            record["status"] = "completed"
         return record
 
-    if spec.lane == "luce_external_megakernel" and summary_path.exists():
-        print(f"[done-with-warning] {record['run_id']}", flush=True)
+    if summary_path.exists():
         summary = _load_json(summary_path)
-        record["status"] = "completed_with_warning"
-        record["summary_metrics"] = _extract_summary_metrics(summary, lane=spec.lane)
-        stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
-        stdout_text = stdout_path.read_text(encoding="utf-8") if stdout_path.exists() else ""
-        record["warning_message"] = (stderr_text or stdout_text).strip()[-4000:]
-        return record
+        backend_status = summary.get("backend_status")
+        if backend_status == "completed_with_warning":
+            print(f"[done-with-warning] {record['run_id']}", flush=True)
+            record["status"] = "completed_with_warning"
+            record["summary_metrics"] = _extract_summary_metrics(summary, lane=spec.lane)
+            record["warning_message"] = summary.get("warning_message")
+            return record
 
     print(f"[failed] {record['run_id']}", flush=True)
     record["status"] = "failed"
@@ -502,13 +523,13 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
                         lane_metrics.get("minimal_control"),
                         lane_metrics.get("minimal_megakernel"),
                     ),
-                    "luce_external_megakernel_vs_main": _comparison_payload(
+                    "megakernel_control_vs_main": _comparison_payload(
                         lane_metrics.get("main_dense_control"),
-                        lane_metrics.get("luce_external_megakernel"),
+                        lane_metrics.get("megakernel_control"),
                     ),
-                    "luce_external_megakernel_vs_minimal_control": _comparison_payload(
+                    "megakernel_control_vs_minimal_control": _comparison_payload(
                         lane_metrics.get("minimal_control"),
-                        lane_metrics.get("luce_external_megakernel"),
+                        lane_metrics.get("megakernel_control"),
                     ),
                 },
             }
@@ -544,7 +565,7 @@ def render_report_markdown(report: dict[str, Any]) -> str:
                 "main_dense_control",
                 "minimal_control",
                 "minimal_megakernel",
-                "luce_external_megakernel",
+                "megakernel_control",
             )
             if lane in group
         ]

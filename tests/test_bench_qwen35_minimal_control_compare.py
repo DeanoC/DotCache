@@ -29,7 +29,7 @@ def test_build_matrix_locks_default_compare_run_count() -> None:
 def test_build_matrix_adds_luce_lane_when_requested() -> None:
     specs = build_matrix(luce_repo="/tmp/luce-megakernel")
     assert len(specs) == 8
-    assert "luce_external_megakernel" in {spec.lane for spec in specs}
+    assert "megakernel_control" in {spec.lane for spec in specs}
 
 
 def test_command_for_run_emits_lane_specific_examples(tmp_path) -> None:
@@ -79,11 +79,11 @@ def test_command_for_run_emits_lane_specific_examples(tmp_path) -> None:
     assert "--sync-stage-profile" in main_command
 
 
-def test_command_for_run_emits_luce_external_wrapper(tmp_path) -> None:
+def test_command_for_run_emits_megakernel_control_runtime(tmp_path) -> None:
     spec = RunSpec(
         model_id=DEFAULT_MODEL,
         prompt_token_count=2048,
-        lane="luce_external_megakernel",
+        lane="megakernel_control",
         device="cuda:0",
         warmup_runs=0,
         max_new_tokens=4,
@@ -92,13 +92,21 @@ def test_command_for_run_emits_luce_external_wrapper(tmp_path) -> None:
     )
     command = command_for_run(
         spec,
-        out_prefix=tmp_path / "luce",
+        out_prefix=tmp_path / "megakernel",
         minimal_cargo_features="qwen35-minimal-cuda",
         main_cargo_features="candle-cuda",
         luce_repo="/tmp/luce-megakernel",
     )
-    assert command[0].endswith("python") or command[0].endswith("python3")
-    assert "bench_qwen35_luce_external.py" in command[1]
+    assert command[0].endswith("cargo")
+    assert command[1:7] == [
+        "run",
+        "--features",
+        "candle-cuda",
+        "--example",
+        "hf_bench",
+        "--",
+    ]
+    assert "megakernel_control" in command
     assert "--luce-repo" in command
 
 
@@ -148,7 +156,7 @@ def test_build_report_compares_minimal_to_main() -> None:
             "run_id": "luce",
             "model_id": DEFAULT_MODEL,
             "prompt_token_count": 2048,
-            "lane": "luce_external_megakernel",
+            "lane": "megakernel_control",
             "status": "completed",
             "summary_metrics": {
                 "prefill_millis": 800.0,
@@ -165,7 +173,7 @@ def test_build_report_compares_minimal_to_main() -> None:
     assert group["main_dense_control"]["run_id"] == "main"
     assert group["minimal_control"]["run_id"] == "minimal"
     assert group["minimal_megakernel"]["run_id"] == "megakernel"
-    assert group["luce_external_megakernel"]["run_id"] == "luce"
+    assert group["megakernel_control"]["run_id"] == "luce"
     assert group["comparisons"]["minimal_control_vs_main"]["delta_prefill_millis"] == -100.0
     assert group["comparisons"]["minimal_control_vs_main"]["decode_millis_ratio"] == 1.2
     assert (
@@ -173,7 +181,7 @@ def test_build_report_compares_minimal_to_main() -> None:
     )
     assert group["comparisons"]["minimal_megakernel_vs_main"]["delta_total_millis"] == -100.0
     assert group["comparisons"]["minimal_megakernel_vs_minimal_control"]["delta_total_millis"] == -100.0
-    assert group["comparisons"]["luce_external_megakernel_vs_main"]["delta_total_millis"] == -300.0
+    assert group["comparisons"]["megakernel_control_vs_main"]["delta_total_millis"] == -300.0
 
 
 def test_build_report_tolerates_partial_groups() -> None:
@@ -219,21 +227,22 @@ def test_build_report_accepts_luce_completed_with_warning() -> None:
                 "run_id": "luce",
                 "model_id": DEFAULT_MODEL,
                 "prompt_token_count": 2048,
-                "lane": "luce_external_megakernel",
+                "lane": "megakernel_control",
                 "status": "completed_with_warning",
                 "summary_metrics": {
                     "prefill_millis": 250.0,
                     "decode_millis": 250.0,
                     "total_millis": 500.0,
                     "total_tokens_per_second": 300.0,
+                    "backend_status": "completed_with_warning",
                     "terminated_due_to_invalid_token": True,
                 },
             },
         ]
     )
     group = report["groups"][0]
-    assert group["luce_external_megakernel"]["status"] == "completed_with_warning"
-    assert group["comparisons"]["luce_external_megakernel_vs_main"]["total_millis_ratio"] == 1 / 3
+    assert group["megakernel_control"]["status"] == "completed_with_warning"
+    assert group["comparisons"]["megakernel_control_vs_main"]["total_millis_ratio"] == 1 / 3
 
 
 def test_resume_requires_matching_run_configuration(tmp_path) -> None:

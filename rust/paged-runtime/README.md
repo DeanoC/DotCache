@@ -354,9 +354,11 @@ python benchmarks/bench_qwen35_minimal_control_compare.py \
 
 That adds a fourth lane:
 
-- `luce_external_megakernel`
+- `megakernel_control`
 
-This lane runs the real Luce Python/CUDA extension as an external control. Current constraints:
+This lane runs `hf_bench --runtime-mode megakernel_control`, which in turn delegates to the real
+Luce Python/CUDA extension and normalizes the result into the standard Rust benchmark summary.
+Current constraints:
 
 - CUDA only
 - `Qwen/Qwen3.5-0.8B` only
