@@ -213,6 +213,35 @@ So the current conclusion is:
   better than eager load
 - it should remain experimental until there is a clearer default policy by model size
 
+The policy is now size-aware:
+
+- `0.8B`: stays eager by default
+- `2B` and `4B`: enable deferred MLP materialization by default
+
+The current heuristic is based on estimated total MLP weight bytes for the model. The env still
+overrides the policy:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_LINEAR=0|1|auto`
+
+There is also a second experimental target for the next real eager weight class:
+
+- `DOTCACHE_QWEN35_DEFERRED_IN_PROJ_QKV=1`
+
+That extends deferred one-shot upload to `linear_attn.in_proj_qkv.weight`. Initial `2B` signal on
+this host is small but non-negative:
+
+- auto deferred MLP only:
+  - `load_millis≈4617`
+  - `first_prefill_millis≈4032`
+  - `deferred_linear_count=72`
+- plus deferred `in_proj_qkv`:
+  - `load_millis≈4581`
+  - `first_prefill_millis≈3945`
+  - `deferred_linear_count=90`
+
+So `in_proj_qkv` is a plausible next loader-side target, but it is still experimental and not part
+of the default policy.
+
 ## Long-Context Benchmark Tools
 
 These are the committed tools to use before touching the long-context fused prefill kernel again:

@@ -145,9 +145,30 @@ fn immutable_embedding_enabled() -> bool {
     )
 }
 
-fn immutable_linear_enabled() -> bool {
+fn deferred_linear_auto_enabled(cfg: &TextConfig) -> bool {
+    let total_mlp_weight_bytes = (cfg.num_hidden_layers as u128)
+        * 3
+        * (cfg.hidden_size as u128)
+        * (cfg.intermediate_size as u128)
+        * 2;
+    total_mlp_weight_bytes >= (1u128 << 30)
+}
+
+fn immutable_linear_enabled(cfg: &TextConfig) -> bool {
+    match std::env::var("DOTCACHE_QWEN35_IMMUTABLE_LINEAR") {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            "auto" => deferred_linear_auto_enabled(cfg),
+            _ => deferred_linear_auto_enabled(cfg),
+        },
+        Err(_) => deferred_linear_auto_enabled(cfg),
+    }
+}
+
+fn deferred_in_proj_qkv_enabled() -> bool {
     matches!(
-        std::env::var("DOTCACHE_QWEN35_IMMUTABLE_LINEAR").as_deref(),
+        std::env::var("DOTCACHE_QWEN35_DEFERRED_IN_PROJ_QKV").as_deref(),
         Ok("1" | "true" | "TRUE" | "yes" | "YES")
     )
 }
@@ -1178,7 +1199,7 @@ impl Mlp {
     }
 
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
-        let immutable_requested = immutable_linear_enabled();
+        let immutable_requested = immutable_linear_enabled(cfg);
         Ok(Self {
             gate_proj: build_prepared_linear_source_no_bias(
                 &source.pp("gate_proj"),
@@ -8407,7 +8428,7 @@ impl FullAttention {
 
 #[derive(Debug, Clone)]
 struct GatedDeltaNet {
-    in_proj_qkv: Linear,
+    in_proj_qkv: LinearSource,
     in_proj_z: Linear,
     in_proj_b: Linear,
     in_proj_a: Linear,
@@ -8464,6 +8485,10 @@ impl GatedDeltaNet {
         self.recurrent_state = state.recurrent_state.clone();
     }
 
+    fn deferred_linear_count(&self) -> usize {
+        usize::from(self.in_proj_qkv.is_deferred())
+    }
+
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
         let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
@@ -8472,7 +8497,11 @@ impl GatedDeltaNet {
             vb.pp("conv1d")
                 .get((conv_dim, 1, cfg.linear_conv_kernel_dim), "weight")?;
         Ok(Self {
-            in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
+            in_proj_qkv: LinearSource::Materialized(linear_no_bias(
+                cfg.hidden_size,
+                conv_dim,
+                vb.pp("in_proj_qkv"),
+            )?),
             in_proj_z: linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?,
             in_proj_b: linear_no_bias(
                 cfg.hidden_size,
@@ -8526,7 +8555,12 @@ impl GatedDeltaNet {
             .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
             .transpose()?;
         Ok(Self {
-            in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
+            in_proj_qkv: build_prepared_linear_source_no_bias(
+                &source.pp("in_proj_qkv"),
+                cfg.hidden_size,
+                key_dim * 2 + value_dim,
+                deferred_in_proj_qkv_enabled(),
+            )?,
             in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
             in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
             in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
@@ -10554,6 +10588,10 @@ impl DecoderLayer {
 
     fn deferred_linear_count(&self) -> usize {
         self.mlp.deferred_linear_count()
+            + match &self.token_mixer {
+                LayerKind::Linear(linear_attn) => linear_attn.deferred_linear_count(),
+                LayerKind::Full(_) => 0,
+            }
     }
 }
 
@@ -10618,7 +10656,7 @@ impl TextModel {
         let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, source.device(), dtype)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let layers_source = model_source.pp("layers");
-        let immutable_linear_requested = immutable_linear_enabled();
+        let immutable_linear_requested = immutable_linear_enabled(&cfg);
         let mut deferred_linear_count = 0usize;
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::from_prepared(

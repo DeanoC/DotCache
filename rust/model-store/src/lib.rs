@@ -699,6 +699,8 @@ impl CandleWeightProvider {
             || full_name.ends_with(".mlp.gate_proj.weight")
             || full_name.ends_with(".mlp.up_proj.weight")
             || full_name.ends_with(".mlp.down_proj.weight");
+        let immutable_supported =
+            immutable_supported || full_name.ends_with(".linear_attn.in_proj_qkv.weight");
         if !immutable_supported {
             return Ok(None);
         }
