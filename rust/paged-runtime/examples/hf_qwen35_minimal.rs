@@ -102,7 +102,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[derive(Clone, Copy, Debug)]
     enum LoadMode {
-        Prepared,
         Native,
         Direct,
     }
@@ -110,7 +109,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     impl LoadMode {
         fn runner_mode(self) -> Option<MinimalQwen35LoadMode> {
             match self {
-                Self::Prepared => Some(MinimalQwen35LoadMode::PreparedCandle),
                 Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
                 Self::Direct => None,
             }
@@ -122,14 +120,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         fn from_str(value: &str) -> Result<Self> {
             match value.trim().to_ascii_lowercase().as_str() {
-                "prepared" => Ok(Self::Prepared),
                 "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!(
-                        "unsupported load mode `{other}`, expected prepared, native, or direct"
-                    ),
+                    message: format!("unsupported load mode `{other}`, expected native or direct"),
                 }),
             }
         }
@@ -236,12 +231,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode prepared|native|direct] [--device-only]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct] [--device-only]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
-    let mut load_mode = LoadMode::Prepared;
+    let mut load_mode = LoadMode::Native;
     let mut device_only = false;
     while let Some(arg) = args.next() {
         if arg == "--device" {

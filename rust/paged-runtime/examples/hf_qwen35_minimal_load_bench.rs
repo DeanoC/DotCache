@@ -103,7 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[derive(Clone, Copy, Debug)]
     enum LoadMode {
-        Prepared,
         Native,
         Direct,
     }
@@ -111,7 +110,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     impl std::fmt::Display for LoadMode {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::Prepared => f.write_str("prepared"),
                 Self::Native => f.write_str("native"),
                 Self::Direct => f.write_str("direct"),
             }
@@ -123,14 +121,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         fn from_str(value: &str) -> Result<Self> {
             match value.trim().to_ascii_lowercase().as_str() {
-                "prepared" => Ok(Self::Prepared),
                 "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!(
-                        "unsupported load mode `{other}`, expected prepared, native, or direct"
-                    ),
+                    message: format!("unsupported load mode `{other}`, expected native or direct"),
                 }),
             }
         }
@@ -152,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokenizer_load_millis: f64,
         peak_rss_kib: u64,
         current_rss_kib: u64,
-        prepared_package_root: Option<String>,
+        package_root: Option<String>,
         tokenizer_path: String,
         revision: String,
     }
@@ -162,11 +157,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let model_id = args.next().ok_or_else(|| RuntimeError::External {
             context: "hf_qwen35_minimal_load_bench",
             message:
-                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode prepared|native|direct]"
+                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode native|direct]"
                     .to_string(),
         })?;
         let mut device = DeviceSelector::Cpu;
-        let mut mode = LoadMode::Prepared;
+        let mut mode = LoadMode::Native;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--device" => {
@@ -226,11 +221,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let device = args.device.resolve()?;
     let load_started = Instant::now();
     let runner = match args.mode {
-        LoadMode::Prepared => MinimalQwen35Runner::load_with_mode(
-            &args.model_id,
-            &device,
-            MinimalQwen35LoadMode::PreparedCandle,
-        )?,
         LoadMode::Native => MinimalQwen35Runner::load_with_mode(
             &args.model_id,
             &device,
@@ -245,11 +235,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let peak_rss_kib = read_proc_status_value_kib("VmHWM:")?;
     let current_rss_kib = read_proc_status_value_kib("VmRSS:")?;
 
-    let prepared_package_root = if runner.weights.prepared_package_root.as_os_str().is_empty() {
+    let package_root = if runner.weights.package_root.as_os_str().is_empty() {
         None
     } else {
         Some(
-            Path::new(&runner.weights.prepared_package_root)
+            Path::new(&runner.weights.package_root)
                 .display()
                 .to_string(),
         )
@@ -263,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokenizer_load_millis,
         peak_rss_kib,
         current_rss_kib,
-        prepared_package_root,
+        package_root,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),
     };

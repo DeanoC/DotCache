@@ -1,5 +1,10 @@
 pub use dotcache_model_store::{
-    BackendKind, CandleWeightProvider, ModelFamilyConverter, ModelStoreError, ModelTarget,
-    PackageKey, PreparedDType, PreparedModelManifest, PreparedModelPackage, PreparedTensorEncoding,
-    PreparedTensorEntry, PreparedTensorLayout, TargetSpec, WeightProvider, WeightView,
+    BackendKind, CandleWeightProvider, ModelFamilyConverter, ModelStoreError, PackageKey,
+    PreparedDType, PreparedTensorEncoding, PreparedTensorEntry, TargetSpec, WeightProvider,
+    WeightView,
+};
+
+pub use dotcache_model_store::{
+    ModelTarget, PreparedModelManifest as ModelManifest, PreparedModelPackage as ModelPackage,
+    PreparedTensorLayout as TensorLayout,
 };

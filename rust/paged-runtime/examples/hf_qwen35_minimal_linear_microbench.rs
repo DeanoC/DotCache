@@ -115,7 +115,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[derive(Clone, Copy, Debug)]
     enum LoadMode {
-        Prepared,
         Native,
         Direct,
     }
@@ -123,7 +122,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     impl LoadMode {
         fn runner_mode(self) -> Option<MinimalQwen35LoadMode> {
             match self {
-                Self::Prepared => Some(MinimalQwen35LoadMode::PreparedCandle),
                 Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
                 Self::Direct => None,
             }
@@ -135,14 +133,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         fn from_str(value: &str) -> dotcache_paged_runtime::Result<Self> {
             match value.trim().to_ascii_lowercase().as_str() {
-                "prepared" => Ok(Self::Prepared),
                 "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!(
-                        "unsupported load mode `{other}`, expected prepared, native, or direct"
-                    ),
+                    message: format!("unsupported load mode `{other}`, expected native or direct"),
                 }),
             }
         }
@@ -295,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fn parse_args() -> Result<Args, Box<dyn std::error::Error + Send + Sync>> {
         let mut args = std::env::args().skip(1);
         let model_id = args.next().ok_or(
-            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode prepared|native|direct]",
+            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct]",
         )?;
         let prompt = args.next().ok_or("missing prompt")?;
         let mut parsed = Args {
@@ -306,7 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             repeats: 5,
             warmup_repeats: 1,
             device: DeviceSelector::Cpu,
-            load_mode: LoadMode::Prepared,
+            load_mode: LoadMode::Native,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
