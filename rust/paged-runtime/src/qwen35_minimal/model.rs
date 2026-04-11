@@ -1747,17 +1747,22 @@ fn use_hip_combined_linear_prefill(device: &Device, sequence_length: usize) -> b
         )
 }
 
-fn use_hip_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
+fn use_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
     // Keep the combined decode path opt-in on this UMA ROCm host: it cuts transfer
     // traffic substantially, but the custom kernels are still slower than the split
     // path here. This remains worth testing on larger discrete ROCm systems where
     // transfer cost is materially higher.
-    matches!(device.location(), DeviceLocation::Hip { .. })
-        && sequence_length == 1
-        && matches!(
-            std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        )
+    match device.location() {
+        DeviceLocation::Hip { .. } => {
+            sequence_length == 1
+                && matches!(
+                    std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
+        DeviceLocation::Cuda { .. } => sequence_length == 1,
+        _ => false,
+    }
 }
 
 fn use_hip_chunk_single_prefill_kernel(
@@ -2758,6 +2763,119 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         candle::bail!("linear-decode-prepare has no cpu implementation")
     }
 
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        mixed_qkv: &candle::CudaStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        a_beta_raw: &candle::CudaStorage,
+        a_beta_raw_layout: &candle::Layout,
+        dt_bias: &candle::CudaStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::CudaStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_beta_raw_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("linear-decode-prepare requires contiguous inputs")
+        }
+
+        let device = mixed_qkv.device().clone();
+        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
+        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_k_dim.max(self.head_v_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
+                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
+                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let a_beta_raw = a_beta_raw.as_cuda_slice::<$ty>()?;
+                let a_beta_raw = match a_beta_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_beta_raw.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let dt_bias = dt_bias.as_cuda_slice::<$ty>()?;
+                let dt_bias = match dt_bias_layout.contiguous_offsets() {
+                    Some((o1, o2)) => dt_bias.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let a_log_exp = a_log_exp.as_cuda_slice::<$ty>()?;
+                let a_log_exp = match a_log_exp_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_log_exp.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32
+                );
+                builder.arg(&mixed_qkv);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&a_beta_raw);
+                builder.arg(&dt_bias);
+                builder.arg(&a_log_exp);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match mixed_qkv.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_prepare_f16"),
+            DType::F32 => launch!(f32, "linear_decode_prepare_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_bf16"),
+            other => candle::bail!("linear-decode-prepare unsupported dtype {other:?}"),
+        }
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_fwd(
         &self,
@@ -2844,6 +2962,73 @@ impl candle::CustomOp2 for LinearDecodeApply {
         candle::bail!("linear-decode-apply has no cpu implementation")
     }
 
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        packed: &candle::CudaStorage,
+        packed_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
+            candle::bail!("linear-decode-apply requires contiguous inputs")
+        }
+        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
+            candle::bail!("linear-decode-apply requires F32 packed/state inputs")
+        }
+
+        let device = packed.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        let packed = packed.as_cuda_slice::<f32>()?;
+        let packed = match packed_layout.contiguous_offsets() {
+            Some((o1, o2)) => packed.slice(o1..o2),
+            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
+        };
+        let initial_state = initial_state.as_cuda_slice::<f32>()?;
+        let initial_state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => initial_state.slice(o1..o2),
+            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
+        };
+        let output = unsafe { device.alloc::<f32>(elem_count) }?;
+        let func = device
+            .get_or_load_func("linear_decode_apply_f32", &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+        let mut builder = func.builder();
+        candle::builder_arg!(
+            builder,
+            self.batch_size as i32,
+            self.num_v_heads as i32,
+            self.head_k_dim as i32,
+            self.head_v_dim as i32
+        );
+        builder.arg(&packed);
+        builder.arg(&initial_state);
+        builder.arg(&output);
+        unsafe { builder.launch(cfg) }.w()?;
+        let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+        Ok((storage, output_shape))
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_fwd(
         &self,
@@ -2889,6 +3074,59 @@ impl candle::CustomOp2 for LinearDecodeApply {
 }
 
 fn linear_decode_step_hip(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_beta_raw = a_beta_raw.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    let packed = mixed_qkv.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &a_beta_raw,
+        &dt_bias,
+        &a_log_exp,
+        &LinearDecodePrepare {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+        },
+    )?;
+    packed.apply_op2_no_bwd(
+        &initial_state,
+        &LinearDecodeApply {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+        },
+    )
+}
+
+fn linear_decode_step_cuda(
     mixed_qkv: &Tensor,
     prev_conv_state: &Tensor,
     weights: &Tensor,
@@ -9631,7 +9869,7 @@ impl GatedDeltaNet {
         let a = self.in_proj_a.forward(&hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
-        if use_hip_combined_linear_decode(device, seq_len) {
+        if use_combined_linear_decode(device, seq_len) {
             let kv_append_start = profile_start(device)?;
             let target_dtype = mixed_qkv.dtype();
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
@@ -9687,20 +9925,37 @@ impl GatedDeltaNet {
                 )?,
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
-            let fused = linear_decode_step_hip(
-                &mixed_qkv.contiguous()?,
-                &prev_conv_state,
-                &weights,
-                &a_beta_raw,
-                &dt_bias,
-                &a_log_exp,
-                &initial_state,
-                self.num_v_heads,
-                self.head_k_dim,
-                self.head_v_dim,
-                self.conv_kernel_size,
-                head_repeat,
-            )?;
+            let fused = if device.is_hip() {
+                linear_decode_step_hip(
+                    &mixed_qkv.contiguous()?,
+                    &prev_conv_state,
+                    &weights,
+                    &a_beta_raw,
+                    &dt_bias,
+                    &a_log_exp,
+                    &initial_state,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            } else {
+                linear_decode_step_cuda(
+                    &mixed_qkv.contiguous()?,
+                    &prev_conv_state,
+                    &weights,
+                    &a_beta_raw,
+                    &dt_bias,
+                    &a_log_exp,
+                    &initial_state,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            };
             self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
             let core_attn_out = fused
                 .narrow(1, 0, self.value_dim)?
@@ -11795,7 +12050,6 @@ mod tests {
     }
 
 
-    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_linear_decode_step_sample(
         device: &Device,
     ) -> Result<(
@@ -12494,6 +12748,39 @@ mod tests {
         assert_eq!(output.dtype(), DType::F32);
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_step_matches_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let output = linear_decode_step_cuda(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_vec2::<f32>()?;
+        assert_close(&output[0], &expected, 5e-3);
         Ok(())
     }
 
