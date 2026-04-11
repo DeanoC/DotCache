@@ -3227,6 +3227,36 @@ fn full_attention_decode_megakernel(
     full_attention_prefill_megakernel(query, key, value, num_kv_groups, scale, seqlen_offset)
 }
 
+fn paged_attention_decode_fallback(
+    queries: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+) -> Result<Tensor> {
+    let (batch_queries, head_dim) = queries.dims2()?;
+    let (kv_len, _) = key.dims2()?;
+    let query = queries
+        .contiguous()?
+        .reshape((1, batch_queries, 1, head_dim))?
+        .to_dtype(DType::F32)?;
+    let key = key
+        .contiguous()?
+        .reshape((1, 1, kv_len, head_dim))?
+        .to_dtype(DType::F32)?;
+    let value = value
+        .contiguous()?
+        .reshape((1, 1, kv_len, head_dim))?
+        .to_dtype(DType::F32)?;
+    let key = repeat_kv(key, batch_queries)?.contiguous()?;
+    let value = repeat_kv(value, batch_queries)?.contiguous()?;
+    let key_t = key.transpose(2, 3)?.contiguous()?;
+    let attn_weights = ops::softmax_last_dim(
+        &((query.matmul(&key_t)?) * (1.0f64 / (head_dim as f64).sqrt()))?,
+    )?;
+    Ok(attn_weights
+        .matmul(&value)?
+        .reshape((batch_queries, head_dim))?)
+}
+
 pub fn paged_attention_decode_megakernel(
     queries: &Tensor,
     key: &Tensor,
@@ -3245,6 +3275,9 @@ pub fn paged_attention_decode_megakernel(
     }
     if batch_queries == 0 {
         candle::bail!("paged-attention-decode-megakernel requires at least one query row")
+    }
+    if matches!(queries.device().location(), DeviceLocation::Cuda { .. }) && head_dim > 128 {
+        return paged_attention_decode_fallback(queries, key, value);
     }
     let query = queries
         .contiguous()?
@@ -11822,6 +11855,37 @@ mod tests {
         )?;
         let output = output.flatten_all()?.to_vec1::<f32>()?;
 
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_paged_attention_decode_falls_back_for_large_head_dim() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let _env_guard = CudaFullPrefillEnvGuard::set("1");
+        let device = Device::new_cuda(0)?;
+        let batch_queries = 2usize;
+        let kv_len = 5usize;
+        let head_dim = 256usize;
+        let query_data = (0..batch_queries * head_dim)
+            .map(|idx| (idx % 17) as f32 * 0.03125 - 0.25)
+            .collect::<Vec<_>>();
+        let key_data = (0..kv_len * head_dim)
+            .map(|idx| (idx % 19) as f32 * 0.015625 - 0.125)
+            .collect::<Vec<_>>();
+        let value_data = (0..kv_len * head_dim)
+            .map(|idx| (idx % 23) as f32 * 0.046875 - 0.5)
+            .collect::<Vec<_>>();
+        let queries = Tensor::from_vec(query_data, (batch_queries, head_dim), &device)?;
+        let key = Tensor::from_vec(key_data, (kv_len, head_dim), &device)?;
+        let value = Tensor::from_vec(value_data, (kv_len, head_dim), &device)?;
+        let expected = paged_attention_decode_fallback(&queries, &key, &value)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let output = paged_attention_decode_megakernel(&queries, &key, &value)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
         assert_close(&output, &expected, 1e-5);
         Ok(())
     }
