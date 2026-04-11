@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -235,6 +235,24 @@ pub struct PreparedPackageStats {
     pub standard_bytes: u64,
     pub prepacked_tensor_count: usize,
     pub prepacked_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensorLoadStatEntry {
+    pub name: String,
+    pub calls: u64,
+    pub bytes: u64,
+    pub millis: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeightLoadStats {
+    pub tensor_get_calls: u64,
+    pub unique_tensors: usize,
+    pub tensor_bytes: u64,
+    pub tensor_load_millis: f64,
+    pub top_by_bytes: Vec<TensorLoadStatEntry>,
+    pub top_by_millis: Vec<TensorLoadStatEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -492,6 +510,10 @@ impl PreparedPackage {
     }
 
     pub fn load_tensor(&self, name: &str, device: &Device) -> Result<Tensor> {
+        Ok(self.load_tensor_with_byte_len(name, device)?.0)
+    }
+
+    pub fn load_tensor_with_byte_len(&self, name: &str, device: &Device) -> Result<(Tensor, u64)> {
         let view = self.weight_view(name)?;
         let start = usize::try_from(view.entry.offset).map_err(|_| ModelStoreError::External {
             context: "model-store",
@@ -511,7 +533,7 @@ impl PreparedPackage {
         let tensor =
             load_tensor_from_prepared_bytes(view.bytes(), view.dtype(), view.shape(), device)?;
         release_mmap_range(&self.weights, start, byte_len);
-        Ok(tensor)
+        Ok((tensor, view.entry.byte_len))
     }
 
     fn tensor_entry(&self, name: &str) -> Result<&PreparedTensorEntry> {
@@ -530,6 +552,7 @@ pub struct CandleWeightProvider {
     package: Arc<PreparedPackage>,
     device: Device,
     prefix: String,
+    load_stats: Arc<Mutex<BTreeMap<String, TensorLoadAccumulator>>>,
 }
 
 impl CandleWeightProvider {
@@ -538,6 +561,7 @@ impl CandleWeightProvider {
             package,
             device,
             prefix: String::new(),
+            load_stats: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -556,17 +580,67 @@ impl CandleWeightProvider {
             package: self.package.clone(),
             device: self.device.clone(),
             prefix,
+            load_stats: self.load_stats.clone(),
         }
     }
 
     pub fn get(&self, name: &str) -> candle_core::Result<Tensor> {
-        self.package
-            .load_tensor(&self.full_name(name), &self.device)
-            .map_err(|err| candle_core::Error::Msg(err.to_string()))
+        let full_name = self.full_name(name);
+        let started = std::time::Instant::now();
+        let (tensor, byte_len) = self
+            .package
+            .load_tensor_with_byte_len(&full_name, &self.device)
+            .map_err(|err| candle_core::Error::Msg(err.to_string()))?;
+        let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
+        let mut stats = self.load_stats.lock().expect("load stats mutex poisoned");
+        let entry = stats.entry(full_name.clone()).or_default();
+        entry.calls += 1;
+        entry.bytes += byte_len;
+        entry.millis += elapsed_millis;
+        Ok(tensor)
     }
 
     pub fn contains_tensor(&self, name: &str) -> bool {
         self.package.contains_tensor(&self.full_name(name))
+    }
+
+    pub fn load_stats(&self) -> WeightLoadStats {
+        let stats = self.load_stats.lock().expect("load stats mutex poisoned");
+        let tensor_get_calls = stats.values().map(|entry| entry.calls).sum();
+        let tensor_bytes = stats.values().map(|entry| entry.bytes).sum();
+        let tensor_load_millis = stats.values().map(|entry| entry.millis).sum();
+        let unique_tensors = stats.len();
+        let mut entries = stats
+            .iter()
+            .map(|(name, entry)| TensorLoadStatEntry {
+                name: name.clone(),
+                calls: entry.calls,
+                bytes: entry.bytes,
+                millis: entry.millis,
+            })
+            .collect::<Vec<_>>();
+        let mut top_by_bytes = entries.clone();
+        top_by_bytes.sort_by(|lhs, rhs| {
+            rhs.bytes
+                .cmp(&lhs.bytes)
+                .then_with(|| lhs.name.cmp(&rhs.name))
+        });
+        top_by_bytes.truncate(10);
+        entries.sort_by(|lhs, rhs| {
+            rhs.millis
+                .partial_cmp(&lhs.millis)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| lhs.name.cmp(&rhs.name))
+        });
+        entries.truncate(10);
+        WeightLoadStats {
+            tensor_get_calls,
+            unique_tensors,
+            tensor_bytes,
+            tensor_load_millis,
+            top_by_bytes,
+            top_by_millis: entries,
+        }
     }
 
     fn full_name(&self, name: &str) -> String {
@@ -602,6 +676,13 @@ pub mod adapters {
     pub mod candle {
         pub use crate::CandleWeightProvider;
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TensorLoadAccumulator {
+    calls: u64,
+    bytes: u64,
+    millis: f64,
 }
 
 #[derive(Debug, Clone)]

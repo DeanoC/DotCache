@@ -159,8 +159,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         package_standard_bytes: Option<u64>,
         package_prepacked_tensor_count: Option<usize>,
         package_prepacked_bytes: Option<u64>,
+        weight_tensor_get_calls: Option<u64>,
+        weight_unique_tensors: Option<usize>,
+        weight_tensor_bytes: Option<u64>,
+        weight_tensor_load_millis: Option<f64>,
+        weight_top_by_bytes: Option<Vec<TensorLoadSummary>>,
+        weight_top_by_millis: Option<Vec<TensorLoadSummary>>,
         tokenizer_path: String,
         revision: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct TensorLoadSummary {
+        name: String,
+        calls: u64,
+        bytes: u64,
+        millis: f64,
     }
 
     fn parse_args() -> Result<Args> {
@@ -271,11 +285,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         package_standard_bytes,
         package_prepacked_tensor_count,
         package_prepacked_bytes,
+        weight_tensor_get_calls,
+        weight_unique_tensors,
+        weight_tensor_bytes,
+        weight_tensor_load_millis,
+        weight_top_by_bytes,
+        weight_top_by_millis,
     ) = if let Some(MinimalQwen35LoadTrace {
         package_resolve_millis,
         config_parse_millis,
         model_build_millis,
         package_stats,
+        weight_load_stats,
         ..
     }) = load_trace
     {
@@ -291,9 +312,40 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             package_stats.as_ref().map(|stats| stats.standard_bytes),
             package_stats.as_ref().map(|stats| stats.prepacked_tensor_count),
             package_stats.as_ref().map(|stats| stats.prepacked_bytes),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_get_calls),
+            weight_load_stats.as_ref().map(|stats| stats.unique_tensors),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_bytes),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_load_millis),
+            weight_load_stats.as_ref().map(|stats| {
+                stats
+                    .top_by_bytes
+                    .iter()
+                    .map(|entry| TensorLoadSummary {
+                        name: entry.name.clone(),
+                        calls: entry.calls,
+                        bytes: entry.bytes,
+                        millis: entry.millis,
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            weight_load_stats.as_ref().map(|stats| {
+                stats
+                    .top_by_millis
+                    .iter()
+                    .map(|entry| TensorLoadSummary {
+                        name: entry.name.clone(),
+                        calls: entry.calls,
+                        bytes: entry.bytes,
+                        millis: entry.millis,
+                    })
+                    .collect::<Vec<_>>()
+            }),
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None,
+        )
     };
 
     let summary = Summary {
@@ -316,6 +368,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         package_standard_bytes,
         package_prepacked_tensor_count,
         package_prepacked_bytes,
+        weight_tensor_get_calls,
+        weight_unique_tensors,
+        weight_tensor_bytes,
+        weight_tensor_load_millis,
+        weight_top_by_bytes,
+        weight_top_by_millis,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),
     };

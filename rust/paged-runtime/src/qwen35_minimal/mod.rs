@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::{HfHubModelSource, ModelPackage, PreparedPackageSummary, Result};
+use crate::{HfHubModelSource, ModelPackage, PreparedPackageSummary, Result, WeightLoadStats};
 use prepared::PreparedTensorSource;
 
 #[derive(Debug, Clone)]
@@ -33,6 +33,7 @@ pub struct MinimalQwen35LoadTrace {
     pub model_build_millis: f64,
     pub total_load_millis: f64,
     pub package_stats: Option<PreparedPackageSummary>,
+    pub weight_load_stats: Option<WeightLoadStats>,
 }
 
 #[derive(Debug)]
@@ -119,11 +120,13 @@ impl MinimalQwen35Runner {
             serde_json::from_slice(&std::fs::read(package.config_path())?)?;
         let config_parse_millis = config_started.elapsed().as_secs_f64() * 1000.0;
         let model_started = Instant::now();
+        let source = PreparedTensorSource::new(package.clone(), device.clone());
         let model = ModelForCausalLM::from_prepared(
             &config,
-            PreparedTensorSource::new(package.clone(), device.clone()),
+            source.clone(),
         )?;
         let model_build_millis = model_started.elapsed().as_secs_f64() * 1000.0;
+        let weight_load_stats = source.load_stats();
         let total_load_millis = total_started.elapsed().as_secs_f64() * 1000.0;
         Ok((
             Self {
@@ -143,6 +146,7 @@ impl MinimalQwen35Runner {
                 model_build_millis,
                 total_load_millis,
                 package_stats: Some(package_stats),
+                weight_load_stats: Some(weight_load_stats),
             },
         ))
     }
