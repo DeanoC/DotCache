@@ -1713,6 +1713,7 @@ fn use_full_attention_prefill_megakernel(
     device: &Device,
     q_len: usize,
     kv_len: usize,
+    head_dim: usize,
     seqlen_offset: usize,
 ) -> bool {
     if kv_len != q_len + seqlen_offset {
@@ -1734,10 +1735,13 @@ fn use_full_attention_prefill_megakernel(
                 Err(_) => true,
             }
         }
-        DeviceLocation::Cuda { .. } => matches!(
-            std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        ),
+        DeviceLocation::Cuda { .. } => {
+            head_dim <= 128
+                && matches!(
+                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -1760,6 +1764,7 @@ fn use_full_attention_decode_megakernel(
     device: &Device,
     q_len: usize,
     kv_len: usize,
+    head_dim: usize,
     seqlen_offset: usize,
 ) -> bool {
     if q_len != 1 || kv_len != seqlen_offset + 1 {
@@ -1767,6 +1772,13 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
+        DeviceLocation::Cuda { .. } => {
+            head_dim <= 128
+                && matches!(
+                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -7582,7 +7594,13 @@ impl FullAttention {
                 profile.full_attention_millis += external_elapsed;
             }
             external.attn_output
-        } else if use_full_attention_decode_megakernel(device, q_len, kv_len, seqlen_offset) {
+        } else if use_full_attention_decode_megakernel(
+            device,
+            q_len,
+            kv_len,
+            self.head_dim,
+            seqlen_offset,
+        ) {
             let kernel_start = profile_start(device)?;
             let output = full_attention_decode_megakernel(
                 &query_states,
@@ -7595,7 +7613,13 @@ impl FullAttention {
             .to_dtype(DType::F32)?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
-        } else if use_full_attention_prefill_megakernel(device, q_len, kv_len, seqlen_offset) {
+        } else if use_full_attention_prefill_megakernel(
+            device,
+            q_len,
+            kv_len,
+            self.head_dim,
+            seqlen_offset,
+        ) {
             let kernel_start = profile_start(device)?;
             let output = full_attention_prefill_megakernel(
                 &query_states,
