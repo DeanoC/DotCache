@@ -3812,6 +3812,163 @@ struct LinearDecodeApply {
     head_v_dim: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeApplyGated {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp4 for CudaLinearDecodeApplyGated {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-apply-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-apply-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        packed: &candle::CudaStorage,
+        packed_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(packed_layout.is_contiguous()
+            && initial_state_layout.is_contiguous()
+            && gate_layout.is_contiguous()
+            && weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-apply-gated requires contiguous inputs")
+        }
+        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
+            candle::bail!("cuda-linear-decode-apply-gated requires F32 packed/state inputs")
+        }
+        if gate.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated requires matching gate/weight dtypes, got gate={:?} weight={:?}",
+                gate.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let gate_dims = gate_layout.shape().dims();
+        let n_cols = *gate_dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-apply-gated requires non-empty gate shape".into()))?;
+        let n_rows = gate_layout.shape().elem_count() / n_cols;
+        if n_rows != self.batch_size * self.num_v_heads || n_cols != self.head_v_dim {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated expected gate rows={} cols={}, got {:?}",
+                self.batch_size * self.num_v_heads,
+                self.head_v_dim,
+                gate_dims
+            )
+        }
+        if weight_layout.shape().elem_count() != self.head_v_dim {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated expected weight len {}, got {:?}",
+                self.head_v_dim,
+                weight_layout.shape().dims()
+            )
+        }
+
+        let device = packed.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        let packed = packed.as_cuda_slice::<f32>()?;
+        let packed = match packed_layout.contiguous_offsets() {
+            Some((o1, o2)) => packed.slice(o1..o2),
+            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous packed"),
+        };
+        let initial_state = initial_state.as_cuda_slice::<f32>()?;
+        let initial_state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => initial_state.slice(o1..o2),
+            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous state"),
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous gate"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.eps
+                );
+                builder.arg(&packed);
+                builder.arg(&initial_state);
+                builder.arg(&gate);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match gate.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_apply_gated_f16"),
+            DType::F32 => launch!(f32, "linear_decode_apply_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_apply_gated_bf16"),
+            other => candle::bail!("cuda-linear-decode-apply-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
 impl candle::CustomOp2 for LinearDecodeApply {
     fn name(&self) -> &'static str {
         "linear-decode-apply"
@@ -4040,6 +4197,72 @@ fn linear_decode_step_cuda(
             num_v_heads,
             head_k_dim,
             head_v_dim,
+        },
+    )
+}
+
+fn linear_decode_step_cuda_gated(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_raw: &Tensor,
+    beta_raw: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    gate: &Tensor,
+    norm_weight: &Tensor,
+    eps: f64,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_raw = a_raw.contiguous()?;
+    let beta_raw = beta_raw.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let gate = gate.contiguous()?;
+    let norm_weight = norm_weight.contiguous()?;
+    let norm_weight = if norm_weight.dtype() == gate.dtype() {
+        norm_weight
+    } else {
+        norm_weight.to_dtype(gate.dtype())?
+    };
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    let packed = mixed_qkv.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &a_raw,
+        &beta_raw,
+        &value_cache_pack,
+        &CudaLinearDecodePreparePackedCache {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+        },
+    )?;
+    packed.apply_op4_no_bwd(
+        &initial_state,
+        &gate,
+        &norm_weight,
+        &CudaLinearDecodeApplyGated {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            eps: eps as f32,
         },
     )
 }
@@ -10897,7 +11120,7 @@ impl GatedDeltaNet {
                     head_repeat,
                 )?
             } else {
-                linear_decode_step_cuda(
+                linear_decode_step_cuda_gated(
                     &mixed_qkv.contiguous()?,
                     &prev_conv_state,
                     &weights,
@@ -10905,6 +11128,9 @@ impl GatedDeltaNet {
                     &beta_raw,
                     &value_cache_pack,
                     &initial_state,
+                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                    &self.norm.weight,
+                    self.norm.eps,
                     self.num_v_heads,
                     self.head_k_dim,
                     self.head_v_dim,
@@ -10926,14 +11152,6 @@ impl GatedDeltaNet {
             profile.linear_recurrent_loop_millis += kv_append_elapsed;
 
             let output_start = profile_start(device)?;
-            let core_attn_out = self
-                .norm
-                .forward(
-                    &core_attn_out
-                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                )?
-                .reshape((batch_size, seq_len, self.value_dim))?;
             let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
                 core_attn_out
             } else {
@@ -13890,6 +14108,80 @@ mod tests {
         )?
         .to_vec2::<f32>()?;
         assert_close(&output[0], &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_step_gated_matches_composed_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (2usize, 2usize), &device)?
+            .to_dtype(DType::F16)?;
+        let norm_weight =
+            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
+
+        let fused = linear_decode_step_cuda_gated(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            &gate,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+
+        let base = linear_decode_step_cuda(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?;
+        let expected_value = cuda_rms_norm_gated(
+            &base.narrow(1, 0, 4)?.reshape((2usize, 2usize))?,
+            &gate,
+            &norm_weight,
+            1e-6,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+        let expected_state = base
+            .narrow(1, 4, 8)?
+            .to_dtype(DType::F32)?
+            .to_vec2::<f32>()?;
+        let expected_value_flat: Vec<f32> = expected_value.into_iter().flatten().collect();
+        let expected_state_flat: Vec<f32> = expected_state.into_iter().flatten().collect();
+        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
+
+        assert_close(&fused_flat[0..4], &expected_value_flat, 5e-3);
+        assert_close(&fused_flat[4..12], &expected_state_flat, 5e-3);
         Ok(())
     }
 
