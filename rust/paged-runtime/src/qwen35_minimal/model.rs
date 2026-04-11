@@ -8581,7 +8581,7 @@ impl GatedDeltaNet {
     }
 
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
-        if mixed_qkv.device().is_hip() {
+        if mixed_qkv.device().is_hip() || mixed_qkv.device().is_cuda() {
             return self
                 .run_depthwise_conv_materialized_pack(mixed_qkv)?
                 .transpose(1, 2);
