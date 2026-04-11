@@ -7,7 +7,7 @@ pub(crate) use prepared::PreparedTensorSource;
 pub use model::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
     LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec, ModelForCausalLM,
-    TextConfig as MinimalQwen35TextConfig,
+    RuntimeProfile as MinimalQwen35RuntimeProfile, TextConfig as MinimalQwen35TextConfig,
 };
 
 use candle_core::{DType, Device, Tensor};

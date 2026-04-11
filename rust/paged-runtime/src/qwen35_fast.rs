@@ -8,7 +8,7 @@ use crate::{
     PreparedModelPackage, Result, RuntimeError,
 };
 
-use crate::qwen35_minimal::{ModelForCausalLM, PreparedTensorSource};
+use crate::qwen35_minimal::{MinimalQwen35RuntimeProfile, ModelForCausalLM, PreparedTensorSource};
 
 pub const SUPPORTED_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
 pub const BACKEND_IMPL: &str = "qwen35_fast_v1";
@@ -280,6 +280,37 @@ impl Qwen35FastRunner {
             input_ids.to_device(&self.device)?
         };
         Ok(self.model.hidden_states_from_input_ids(&input_ids)?)
+    }
+
+    pub fn input_ids_tensor(&self, input_ids: &[u32]) -> Result<Tensor> {
+        Tensor::from_slice(input_ids, (1, input_ids.len()), &self.device).map_err(Into::into)
+    }
+
+    pub fn clear_kv_cache(&mut self) {
+        self.model.clear_kv_cache();
+    }
+
+    pub fn prefill_prompt_profiled(
+        &mut self,
+        prompt_ids: &[u32],
+    ) -> Result<(Tensor, MinimalQwen35RuntimeProfile)> {
+        let input_ids = self.input_ids_tensor(prompt_ids)?;
+        let hidden_states = self.model.hidden_states_from_input_ids(&input_ids)?;
+        let (logits, profile) = self.model.forward_hidden_states_profiled(&hidden_states, 0)?;
+        Ok((logits.to_dtype(DType::F32)?, profile))
+    }
+
+    pub fn decode_token_profiled(
+        &mut self,
+        token_id: u32,
+    ) -> Result<(Tensor, MinimalQwen35RuntimeProfile)> {
+        let input_ids = self.input_ids_tensor(&[token_id])?;
+        let hidden_states = self.model.hidden_states_from_input_ids(&input_ids)?;
+        let seqlen_offset = self.model.cache_state().sequence_length();
+        let (logits, profile) = self
+            .model
+            .forward_hidden_states_profiled(&hidden_states, seqlen_offset)?;
+        Ok((logits.to_dtype(DType::F32)?, profile))
     }
 
     pub fn decode_from_hidden_state(

@@ -192,7 +192,7 @@ fn run_external_luce(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakernel
 #[cfg(feature = "qwen35-minimal")]
 fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<MegakernelControlRecord> {
     use candle_core::{DType, Device, IndexOp, Tensor};
-    use crate::{MinimalQwen35KvCache, Qwen35FastRunner};
+    use crate::Qwen35FastRunner;
     use serde_json::json;
     use std::time::Instant;
     use tokenizers::Tokenizer;
@@ -348,28 +348,19 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
         prompt_ids: &[u32],
         max_new_tokens: usize,
     ) -> Result<(String, usize, f64, f64, f64, ProfileSummary)> {
-        let input_ids = Tensor::from_vec(prompt_ids.to_vec(), (1, prompt_ids.len()), &Device::Cpu)?;
-        let hidden_states = runner.hidden_states_from_input_ids(&input_ids)?;
+        runner.clear_kv_cache();
         let prefill_started = Instant::now();
-        let (mut logits, mut profile) =
-            runner.model.forward_hidden_states_profiled(&hidden_states, 0)?;
+        let (mut logits, mut profile) = runner.prefill_prompt_profiled(prompt_ids)?;
         let prefill_millis = prefill_started.elapsed().as_secs_f64() * 1_000.0;
-        let mut cache: MinimalQwen35KvCache = runner.model.cache_state();
         let mut generated_ids = prompt_ids.to_vec();
 
         let decode_started = Instant::now();
         let mut next_token = argmax_last_token(&logits)?;
         for _ in 0..max_new_tokens {
             generated_ids.push(next_token);
-            let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &Device::Cpu)?;
-            let hidden_state_t = runner.hidden_states_from_input_ids(&decode_input)?;
-            let seqlen_offset = cache.sequence_length();
-            runner.model.restore_cache_state(&cache)?;
-            let (next_logits, step_profile) =
-                runner.model.forward_hidden_states_profiled(&hidden_state_t, seqlen_offset)?;
+            let (next_logits, step_profile) = runner.decode_token_profiled(next_token)?;
             logits = next_logits;
             profile.add_assign(&step_profile);
-            cache = runner.model.cache_state();
             next_token = argmax_last_token(&logits)?;
         }
         let decode_millis = decode_started.elapsed().as_secs_f64() * 1_000.0;
@@ -435,17 +426,15 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
 
     let mut warmup_millis = 0.0f64;
     for _ in 0..args.warmup_runs {
-        runner.model.clear_kv_cache();
         let warmup_started = Instant::now();
         let _ = run_once(&mut runner, &tokenizer, &prompt_ids, args.max_new_tokens)?;
         warmup_millis += warmup_started.elapsed().as_secs_f64() * 1_000.0;
-        runner.model.clear_kv_cache();
+        runner.clear_kv_cache();
     }
 
-    runner.model.clear_kv_cache();
     let (generated_text, generated_token_count, prefill_millis, decode_millis, total_millis, profile) =
         run_once(&mut runner, &tokenizer, &prompt_ids, args.max_new_tokens)?;
-    runner.model.clear_kv_cache();
+    runner.clear_kv_cache();
 
     let prefill_tps = if prefill_millis > 0.0 {
         prompt_ids.len() as f64 / (prefill_millis / 1_000.0)
