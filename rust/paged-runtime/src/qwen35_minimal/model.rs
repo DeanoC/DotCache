@@ -6,7 +6,10 @@ use super::prepared::PreparedTensorSource;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::{conv1d_no_bias, embedding, ops, Conv1d, Conv1dConfig, Embedding, VarBuilder};
+use candle_nn::{
+    conv1d_no_bias, embedding, kv_cache::KvCache, ops, Conv1d, Conv1dConfig, Embedding,
+    VarBuilder,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -7325,6 +7328,7 @@ struct FullAttention {
     attention_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     kv_cache: Option<(Tensor, Tensor)>,
+    kv_cache_store: Option<KvCache>,
 }
 
 impl FullAttention {
@@ -7343,6 +7347,7 @@ impl FullAttention {
 
     fn restore_cache_state(&mut self, state: &FullAttentionCacheState) {
         self.kv_cache = state.kv_cache.clone();
+        self.kv_cache_store = None;
     }
 
     fn causal_block_mask(
@@ -7622,6 +7627,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            kv_cache_store: None,
         })
     }
 
@@ -7661,6 +7667,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            kv_cache_store: None,
         })
     }
 
@@ -7734,24 +7741,39 @@ impl FullAttention {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
-        let (key_states, value_states): (Tensor, Tensor) = match &self.kv_cache {
-            Some((prev_k, prev_v)) if external_full_attention.is_none() => {
-                let prev_k = if prev_k.dtype() == key_states.dtype() {
-                    prev_k.clone()
-                } else {
-                    prev_k.to_dtype(key_states.dtype())?
-                };
-                let prev_v = if prev_v.dtype() == value_states.dtype() {
-                    prev_v.clone()
-                } else {
-                    prev_v.to_dtype(value_states.dtype())?
-                };
-                (
-                    Tensor::cat(&[&prev_k, &key_states], 2)?,
-                    Tensor::cat(&[&prev_v, &value_states], 2)?,
-                )
+        let (key_states, value_states): (Tensor, Tensor) = if external_full_attention.is_none() {
+            let initial_seq_len = self
+                .kv_cache
+                .as_ref()
+                .and_then(|(prev_k, _)| prev_k.dim(2).ok())
+                .unwrap_or_else(|| key_states.dim(2).unwrap_or(1))
+                .max(1);
+            let store = self
+                .kv_cache_store
+                .get_or_insert_with(|| KvCache::new(2, initial_seq_len));
+            if store.current_seq_len() == 0 {
+                if let Some((prev_k, prev_v)) = &self.kv_cache {
+                    let prev_k = if prev_k.dtype() == key_states.dtype() {
+                        prev_k.clone()
+                    } else {
+                        prev_k.to_dtype(key_states.dtype())?
+                    }
+                    .contiguous()?;
+                    let prev_v = if prev_v.dtype() == value_states.dtype() {
+                        prev_v.clone()
+                    } else {
+                        prev_v.to_dtype(value_states.dtype())?
+                    }
+                    .contiguous()?;
+                    store.append(&prev_k, &prev_v)?;
+                }
             }
-            _ => (key_states, value_states),
+            let key_states = key_states.contiguous()?;
+            let value_states = value_states.contiguous()?;
+            store.append(&key_states, &value_states)?
+        } else {
+            self.kv_cache_store = None;
+            (key_states, value_states)
         };
         profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
 
@@ -7972,6 +7994,7 @@ impl FullAttention {
 
     fn clear_kv_cache(&mut self) {
         self.kv_cache = None;
+        self.kv_cache_store = None;
     }
 }
 
