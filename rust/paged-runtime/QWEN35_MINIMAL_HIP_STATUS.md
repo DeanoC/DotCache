@@ -84,7 +84,7 @@ The runtime also accepts:
 
 On this host, `native` is the right default. Representative `0.8B` HIP load-bench numbers:
 
-- `native`: `load_millis≈3897`, `peak_rss_kib≈3287224`
+- `native`: `load_millis≈3268`, `peak_rss_kib≈3286752`
 - `direct`: `load_millis≈4849`, `peak_rss_kib≈3294900`
 
 Important constraint:
@@ -92,6 +92,16 @@ Important constraint:
 - peak RSS is still close to `direct`
 - the package bytes are mmap-backed, but backend execution storage still owns a separate live copy
 - true shared-weight execution on UMA is future backend work, not part of the current loader design
+
+Current package behavior on the native path:
+
+- if a qwen35-minimal tensor is fully replaced by a package-built prepacked form, the raw tensor is
+  no longer stored in the package
+- the current examples are:
+  - `conv1d.weight` -> `conv1d.weight.__dotcache_depthwise_squeezed`
+  - `dt_bias` -> `dt_bias.__dotcache_head_bias_reshaped`
+  - `A_log` -> `A_log.__dotcache_head_exp_reshaped`
+- that reduced native reuse load time materially without changing steady-state execution behavior
 
 ## Confirmed Model Size Ceiling On This Host
 
@@ -119,9 +129,9 @@ So the current practical upper bound to document for this specific machine/runti
 
 Representative native HIP load-bench results on this host:
 
-- `Qwen/Qwen3.5-0.8B`: `load_millis≈3897`, `peak_rss_kib≈3287224`
-- `Qwen/Qwen3.5-2B`: `load_millis≈14045`, `peak_rss_kib≈4473892`
-- `Qwen/Qwen3.5-4B`: `load_millis≈25809`, `peak_rss_kib≈5526108`
+- `Qwen/Qwen3.5-0.8B`: `load_millis≈3268`, `peak_rss_kib≈3286752`
+- `Qwen/Qwen3.5-2B`: `load_millis≈3936`, `peak_rss_kib≈4776208`
+- `Qwen/Qwen3.5-4B`: `load_millis≈8158`, `peak_rss_kib≈5518300`
 
 ## Long-Context Benchmark Tools
 

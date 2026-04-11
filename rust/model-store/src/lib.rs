@@ -667,7 +667,7 @@ impl ModelFamilyConverter for Qwen35MinimalConverter {
     }
 
     fn converter_version(&self) -> u32 {
-        2
+        3
     }
 
     fn build_package(
@@ -750,29 +750,33 @@ fn build_qwen35_minimal_package(
                     ),
                 })?;
             let dtype = PreparedDType::from_safetensors(view.dtype())?;
-            write_tensor_entry(
-                &mut weights_file,
-                &mut offset,
-                &mut tensors,
-                name,
-                view.shape(),
-                dtype,
-                TensorLayoutTag::StandardContiguous,
-                view.data(),
-            )?;
-
-            if let Some((prepared_name, prepared_shape, prepared_layout, prepared_bytes)) =
-                maybe_prepack_qwen35_tensor(name, &view, dtype)?
+            let prepacked = maybe_prepack_qwen35_tensor(name, &view, dtype)?;
+            if prepacked
+                .as_ref()
+                .map(|prepared| !prepared.replaces_raw)
+                .unwrap_or(true)
             {
                 write_tensor_entry(
                     &mut weights_file,
                     &mut offset,
                     &mut tensors,
-                    &prepared_name,
-                    &prepared_shape,
+                    name,
+                    view.shape(),
                     dtype,
-                    prepared_layout,
-                    &prepared_bytes,
+                    TensorLayoutTag::StandardContiguous,
+                    view.data(),
+                )?;
+            }
+            if let Some(prepared) = prepacked {
+                write_tensor_entry(
+                    &mut weights_file,
+                    &mut offset,
+                    &mut tensors,
+                    &prepared.name,
+                    &prepared.shape,
+                    dtype,
+                    prepared.layout,
+                    &prepared.bytes,
                 )?;
             }
         }
@@ -859,32 +863,42 @@ fn write_tensor_entry(
     Ok(())
 }
 
+struct PrepackedTensor {
+    name: String,
+    shape: Vec<usize>,
+    layout: TensorLayoutTag,
+    bytes: Vec<u8>,
+    replaces_raw: bool,
+}
+
 fn maybe_prepack_qwen35_tensor(
     name: &str,
     view: &safetensors::tensor::TensorView<'_>,
     dtype: PreparedDType,
-) -> Result<Option<(String, Vec<usize>, TensorLayoutTag, Vec<u8>)>> {
+) -> Result<Option<PrepackedTensor>> {
     if name.ends_with("conv1d.weight") {
         let shape = view.shape();
         if shape.len() == 3 && shape[1] == 1 {
             let prepared_name = format!("{name}.__dotcache_depthwise_squeezed");
-            return Ok(Some((
-                prepared_name,
-                vec![shape[0], shape[2]],
-                TensorLayoutTag::DepthwiseConvSqueezed,
-                view.data().to_vec(),
-            )));
+            return Ok(Some(PrepackedTensor {
+                name: prepared_name,
+                shape: vec![shape[0], shape[2]],
+                layout: TensorLayoutTag::DepthwiseConvSqueezed,
+                bytes: view.data().to_vec(),
+                replaces_raw: true,
+            }));
         }
     }
 
     if name.ends_with("dt_bias") {
         let prepared_name = format!("{name}.__dotcache_head_bias_reshaped");
-        return Ok(Some((
-            prepared_name,
-            vec![1, 1, view.shape()[0]],
-            TensorLayoutTag::HeadBiasReshaped,
-            view.data().to_vec(),
-        )));
+        return Ok(Some(PrepackedTensor {
+            name: prepared_name,
+            shape: vec![1, 1, view.shape()[0]],
+            layout: TensorLayoutTag::HeadBiasReshaped,
+            bytes: view.data().to_vec(),
+            replaces_raw: true,
+        }));
     }
 
     if name.ends_with("A_log") {
@@ -913,12 +927,13 @@ fn maybe_prepack_qwen35_tensor(
             }
             _ => return Ok(None),
         };
-        return Ok(Some((
-            prepared_name,
-            vec![1, 1, view.shape()[0]],
-            TensorLayoutTag::HeadExpReshaped,
-            prepared_bytes,
-        )));
+        return Ok(Some(PrepackedTensor {
+            name: prepared_name,
+            shape: vec![1, 1, view.shape()[0]],
+            layout: TensorLayoutTag::HeadExpReshaped,
+            bytes: prepared_bytes,
+            replaces_raw: true,
+        }));
     }
 
     Ok(None)
@@ -1259,6 +1274,7 @@ pub type ModelTarget = TargetSpec;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use safetensors::{tensor::TensorView, Dtype};
 
     #[test]
     fn sanitize_path_component_replaces_path_separators() {
@@ -1288,5 +1304,22 @@ mod tests {
     fn load_typed_tensor_rejects_misaligned_byte_lengths() {
         let err = load_typed_tensor::<u32>(&[1, 2, 3], &[1], &Device::Cpu).unwrap_err();
         assert!(format!("{err}").contains("not a multiple of element size"));
+    }
+
+    #[test]
+    fn qwen35_conv1d_prepack_replaces_raw_tensor() {
+        let view = TensorView::new(
+            Dtype::F16,
+            vec![8, 1, 4],
+            &[0u8; 8 * 1 * 4 * std::mem::size_of::<half::f16>()],
+        )
+        .unwrap();
+        let prepared =
+            maybe_prepack_qwen35_tensor("layer.linear_attn.conv1d.weight", &view, PreparedDType::F16)
+                .unwrap()
+                .expect("conv1d weight should be prepacked");
+        assert!(prepared.replaces_raw);
+        assert_eq!(prepared.layout, TensorLayoutTag::DepthwiseConvSqueezed);
+        assert_eq!(prepared.shape, vec![8, 4]);
     }
 }
