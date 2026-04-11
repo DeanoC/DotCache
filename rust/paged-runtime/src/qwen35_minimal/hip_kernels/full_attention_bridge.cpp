@@ -268,7 +268,8 @@ int linear_stateful_conv_value_decay_with_state_device(
     const size_t total_per_batch = static_cast<size_t>(seq_len) * out_width +
         static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
     const size_t out_elems = static_cast<size_t>(batch_size) * total_per_batch;
-    const int default_block = (kernel_size == 4 && state_len == 3 && seq_len >= 2048) ? 128 : 256;
+    const int default_block =
+        (kernel_size == 4 && state_len == 3) ? ((seq_len <= 4) ? 256 : 128) : 256;
     const int override_block = linear_prefill_block_override();
     const int block = override_block > 0 ? override_block : default_block;
     const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
