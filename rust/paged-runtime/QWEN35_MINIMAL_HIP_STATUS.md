@@ -174,6 +174,45 @@ So the current conclusion is:
 - it shifts too much cost into first prefill at `2B` and `4B`
 - it should remain experimental and opt-in until there is a better transport/storage path
 
+## Deferred Linear Weight Status
+
+There is now an additional experimental loader path for large MLP weights:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_LINEAR=1`
+
+This path does **not** run host-backed matmuls. Instead, it defers materialization of MLP linear
+weights and uploads them into normal HIP storage on first layer use.
+
+Current behavior:
+
+- scope: MLP `gate_proj`, `up_proj`, and `down_proj` only
+- large attention weights still load eagerly
+- deferred weight count observed in the load bench:
+  - `0.8B`: `72`
+  - `2B`: `72`
+  - `4B`: `96`
+
+Measured tradeoff on this host:
+
+- `0.8B`
+  - eager: `load_millis≈4123`, `first_prefill_millis≈2098`
+  - deferred: `load_millis≈4031`, `first_prefill_millis≈2247`
+- `2B`
+  - eager: `load_millis≈4255`, `first_prefill_millis≈2114`
+  - deferred: `load_millis≈3836`, `first_prefill_millis≈2523`
+- `4B`
+  - eager: `load_millis≈11188`, `first_prefill_millis≈4856`
+  - deferred: `load_millis≈6025`, `first_prefill_millis≈7109`
+
+So the current conclusion is:
+
+- deferred MLP upload is a real loader-side win
+- the benefit grows with model size
+- it meaningfully reduces eager weight materialization during native load
+- it pushes cost into first prefill, but on `4B` the total "load + first prefill" time is still
+  better than eager load
+- it should remain experimental until there is a clearer default policy by model size
+
 ## Long-Context Benchmark Tools
 
 These are the committed tools to use before touching the long-context fused prefill kernel again:

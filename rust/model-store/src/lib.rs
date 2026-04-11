@@ -691,9 +691,15 @@ impl CandleWeightProvider {
         let full_name = self.full_name(name);
         if !self.device.is_hip()
             || self.package.manifest.target_backend != BackendKind::Hip.as_str()
-            || full_name != "model.language_model.embed_tokens.weight"
             || !self.package.contains_tensor(&full_name)
         {
+            return Ok(None);
+        }
+        let immutable_supported = full_name == "model.language_model.embed_tokens.weight"
+            || full_name.ends_with(".mlp.gate_proj.weight")
+            || full_name.ends_with(".mlp.up_proj.weight")
+            || full_name.ends_with(".mlp.down_proj.weight");
+        if !immutable_supported {
             return Ok(None);
         }
         let handle = self

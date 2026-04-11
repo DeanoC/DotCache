@@ -29,6 +29,35 @@ fn prepared_linear_no_bias(source: &PreparedTensorSource) -> Result<Linear> {
     Ok(Linear::new(source.get("weight")?, None))
 }
 
+fn build_prepared_linear_source_no_bias(
+    source: &PreparedTensorSource,
+    in_dim: usize,
+    out_dim: usize,
+    immutable_requested: bool,
+) -> Result<LinearSource> {
+    let eager = || prepared_linear_no_bias(source).map(LinearSource::Materialized);
+    if !immutable_requested || !source.device().is_hip() {
+        return eager();
+    }
+    let Some(handle) = source.get_immutable("weight")? else {
+        return eager();
+    };
+    let shape = handle.shape().to_vec();
+    if shape.len() != 2 || shape[0] != out_dim || shape[1] != in_dim {
+        return eager();
+    }
+    if !matches!(
+        handle.layout(),
+        crate::model_package::TensorLayout::StandardContiguous
+    ) {
+        return eager();
+    }
+    Ok(LinearSource::Deferred(DeferredLinear::new(
+        handle,
+        source.device().clone(),
+    )))
+}
+
 fn prepared_linear_b(source: &PreparedTensorSource, bias: bool) -> Result<Linear> {
     let weight = source.get("weight")?;
     let bias = if bias { Some(source.get("bias")?) } else { None };
@@ -112,6 +141,13 @@ fn build_prepared_embedding_source(
 fn immutable_embedding_enabled() -> bool {
     matches!(
         std::env::var("DOTCACHE_QWEN35_IMMUTABLE_EMBED").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn immutable_linear_enabled() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_IMMUTABLE_LINEAR").as_deref(),
         Ok("1" | "true" | "TRUE" | "yes" | "YES")
     )
 }
@@ -292,6 +328,61 @@ impl OutputProjectionSource {
             Self::Materialized(linear) => hidden_states.apply(linear),
             Self::TiedImmutable(embedding) => immutable_output_projection(embedding, hidden_states),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeferredLinear {
+    handle: ImmutableWeightHandle,
+    device: Device,
+    state: Arc<Mutex<Option<Linear>>>,
+}
+
+impl DeferredLinear {
+    fn new(handle: ImmutableWeightHandle, device: Device) -> Self {
+        Self {
+            handle,
+            device,
+            state: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn ensure_materialized(&self) -> Result<Linear> {
+        let mut state = self.state.lock().expect("deferred linear state poisoned");
+        if let Some(linear) = &*state {
+            return Ok(linear.clone());
+        }
+        let linear = Linear::new(
+            self.handle
+                .materialize(&self.device)
+                .map_err(|err| candle::Error::Msg(err.to_string()))?,
+            None,
+        );
+        *state = Some(linear.clone());
+        Ok(linear)
+    }
+
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        xs.apply(&self.ensure_materialized()?)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LinearSource {
+    Materialized(Linear),
+    Deferred(DeferredLinear),
+}
+
+impl LinearSource {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => xs.apply(linear),
+            Self::Deferred(linear) => linear.forward(xs),
+        }
+    }
+
+    fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred(_))
     }
 }
 
@@ -1058,42 +1149,76 @@ impl Qwen35RmsNormGated {
 
 #[derive(Debug, Clone)]
 struct Mlp {
-    gate_proj: Linear,
-    up_proj: Linear,
-    down_proj: Linear,
+    gate_proj: LinearSource,
+    up_proj: LinearSource,
+    down_proj: LinearSource,
     act_fn: candle_nn::Activation,
 }
 
 impl Mlp {
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
-            up_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
-            down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
+            gate_proj: LinearSource::Materialized(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("gate_proj"),
+            )?),
+            up_proj: LinearSource::Materialized(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("up_proj"),
+            )?),
+            down_proj: LinearSource::Materialized(linear_no_bias(
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                vb.pp("down_proj"),
+            )?),
             act_fn: cfg.hidden_act,
         })
     }
 
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
+        let immutable_requested = immutable_linear_enabled();
         Ok(Self {
-            gate_proj: prepared_linear_no_bias(&source.pp("gate_proj"))?,
-            up_proj: prepared_linear_no_bias(&source.pp("up_proj"))?,
-            down_proj: prepared_linear_no_bias(&source.pp("down_proj"))?,
+            gate_proj: build_prepared_linear_source_no_bias(
+                &source.pp("gate_proj"),
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                immutable_requested,
+            )?,
+            up_proj: build_prepared_linear_source_no_bias(
+                &source.pp("up_proj"),
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                immutable_requested,
+            )?,
+            down_proj: build_prepared_linear_source_no_bias(
+                &source.pp("down_proj"),
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                immutable_requested,
+            )?,
             act_fn: cfg.hidden_act,
         })
+    }
+
+    fn deferred_linear_count(&self) -> usize {
+        usize::from(self.gate_proj.is_deferred())
+            + usize::from(self.up_proj.is_deferred())
+            + usize::from(self.down_proj.is_deferred())
     }
 }
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let gate = xs.apply(&self.gate_proj)?;
-        let up = xs.apply(&self.up_proj)?;
+        let gate = self.gate_proj.forward(xs)?;
+        let up = self.up_proj.forward(xs)?;
         let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
             hip_swiglu_mul(&gate, &up)?
         } else {
             (gate.apply(&self.act_fn)? * up)?
         };
-        hidden.apply(&self.down_proj)
+        self.down_proj.forward(&hidden)
     }
 }
 
@@ -10426,6 +10551,10 @@ impl DecoderLayer {
     pub fn layer_type(&self) -> &str {
         &self.layer_type
     }
+
+    fn deferred_linear_count(&self) -> usize {
+        self.mlp.deferred_linear_count()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -10438,6 +10567,8 @@ pub struct TextModel {
     immutable_embedding_requested: bool,
     immutable_embedding_active: bool,
     immutable_embedding_fallback_reason: Option<String>,
+    immutable_linear_requested: bool,
+    deferred_linear_count: usize,
 }
 
 impl TextModel {
@@ -10465,6 +10596,8 @@ impl TextModel {
             immutable_embedding_requested: false,
             immutable_embedding_active: false,
             immutable_embedding_fallback_reason: None,
+            immutable_linear_requested: false,
+            deferred_linear_count: 0,
         })
     }
 
@@ -10485,13 +10618,17 @@ impl TextModel {
         let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, source.device(), dtype)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let layers_source = model_source.pp("layers");
+        let immutable_linear_requested = immutable_linear_enabled();
+        let mut deferred_linear_count = 0usize;
         for layer_idx in 0..cfg.num_hidden_layers {
-            layers.push(DecoderLayer::from_prepared(
+            let layer = DecoderLayer::from_prepared(
                 &cfg,
                 layer_idx,
                 rotary_emb.clone(),
                 &layers_source.pp(layer_idx),
-            )?);
+            )?;
+            deferred_linear_count += layer.deferred_linear_count();
+            layers.push(layer);
         }
         Ok(Self {
             embed_tokens,
@@ -10502,6 +10639,8 @@ impl TextModel {
             immutable_embedding_requested,
             immutable_embedding_active,
             immutable_embedding_fallback_reason,
+            immutable_linear_requested,
+            deferred_linear_count,
         })
     }
 
@@ -10568,6 +10707,14 @@ impl TextModel {
                 layer.layer_type()
             ),
         }
+    }
+
+    pub fn immutable_linear_requested(&self) -> bool {
+        self.immutable_linear_requested
+    }
+
+    pub fn deferred_linear_count(&self) -> usize {
+        self.deferred_linear_count
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
@@ -11055,6 +11202,14 @@ impl ModelForCausalLM {
 
     pub fn immutable_embedding_runtime_mode(&self) -> &'static str {
         self.language_model.immutable_embedding_runtime_mode()
+    }
+
+    pub fn immutable_linear_requested(&self) -> bool {
+        self.language_model.immutable_linear_requested()
+    }
+
+    pub fn deferred_linear_count(&self) -> usize {
+        self.language_model.deferred_linear_count()
     }
 
     pub fn forward_hidden_states_profiled(

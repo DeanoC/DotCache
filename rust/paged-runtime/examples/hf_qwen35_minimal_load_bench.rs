@@ -169,6 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         immutable_embedding_active: Option<bool>,
         immutable_embedding_fallback_reason: Option<String>,
         immutable_embedding_runtime_mode: Option<String>,
+        immutable_linear_requested: Option<bool>,
+        deferred_linear_count: Option<usize>,
         first_prefill_millis: Option<f64>,
         tokenizer_path: String,
         revision: String,
@@ -319,6 +321,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         immutable_embedding_active,
         immutable_embedding_fallback_reason,
         immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
     ) = if let Some(MinimalQwen35LoadTrace {
         package_resolve_millis,
         config_parse_millis,
@@ -329,6 +333,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         immutable_embedding_active,
         immutable_embedding_fallback_reason,
         immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
         ..
     }) = load_trace
     {
@@ -376,11 +382,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(immutable_embedding_active),
             immutable_embedding_fallback_reason,
             Some(immutable_embedding_runtime_mode),
+            Some(immutable_linear_requested),
+            Some(deferred_linear_count),
         )
     } else {
         (
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None,
         )
     };
 
@@ -414,6 +422,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         immutable_embedding_active,
         immutable_embedding_fallback_reason,
         immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
         first_prefill_millis,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),

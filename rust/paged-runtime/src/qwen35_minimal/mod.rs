@@ -38,6 +38,8 @@ pub struct MinimalQwen35LoadTrace {
     pub immutable_embedding_active: bool,
     pub immutable_embedding_fallback_reason: Option<String>,
     pub immutable_embedding_runtime_mode: String,
+    pub immutable_linear_requested: bool,
+    pub deferred_linear_count: usize,
 }
 
 #[derive(Debug)]
@@ -158,6 +160,8 @@ impl MinimalQwen35Runner {
         let immutable_embedding_fallback_reason =
             model.immutable_embedding_fallback_reason().map(str::to_string);
         let immutable_embedding_runtime_mode = model.immutable_embedding_runtime_mode().to_string();
+        let immutable_linear_requested = model.immutable_linear_requested();
+        let deferred_linear_count = model.deferred_linear_count();
         let total_load_millis = total_started.elapsed().as_secs_f64() * 1000.0;
         Ok((
             Self {
@@ -182,6 +186,8 @@ impl MinimalQwen35Runner {
                 immutable_embedding_active,
                 immutable_embedding_fallback_reason,
                 immutable_embedding_runtime_mode,
+                immutable_linear_requested,
+                deferred_linear_count,
             },
         ))
     }
