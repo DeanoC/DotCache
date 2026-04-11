@@ -1713,6 +1713,7 @@ fn use_full_attention_prefill_megakernel(
     device: &Device,
     q_len: usize,
     kv_len: usize,
+    head_dim: usize,
     seqlen_offset: usize,
 ) -> bool {
     if kv_len != q_len + seqlen_offset {
@@ -1734,10 +1735,13 @@ fn use_full_attention_prefill_megakernel(
                 Err(_) => true,
             }
         }
-        DeviceLocation::Cuda { .. } => matches!(
-            std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        ),
+        DeviceLocation::Cuda { .. } => {
+            head_dim <= 128
+                && matches!(
+                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -1760,6 +1764,7 @@ fn use_full_attention_decode_megakernel(
     device: &Device,
     q_len: usize,
     kv_len: usize,
+    head_dim: usize,
     seqlen_offset: usize,
 ) -> bool {
     if q_len != 1 || kv_len != seqlen_offset + 1 {
@@ -1767,6 +1772,13 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
+        DeviceLocation::Cuda { .. } => {
+            head_dim <= 128
+                && matches!(
+                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -1833,7 +1845,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         candle::bail!("linear-prefill-conv-pack has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         mixed_qkv: &candle::CudaStorage,
@@ -2874,7 +2886,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         candle::bail!("full-attention-prefill-megakernel has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         query: &candle::CudaStorage,
@@ -3215,6 +3227,36 @@ fn full_attention_decode_megakernel(
     full_attention_prefill_megakernel(query, key, value, num_kv_groups, scale, seqlen_offset)
 }
 
+fn paged_attention_decode_fallback(
+    queries: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+) -> Result<Tensor> {
+    let (batch_queries, head_dim) = queries.dims2()?;
+    let (kv_len, _) = key.dims2()?;
+    let query = queries
+        .contiguous()?
+        .reshape((1, batch_queries, 1, head_dim))?
+        .to_dtype(DType::F32)?;
+    let key = key
+        .contiguous()?
+        .reshape((1, 1, kv_len, head_dim))?
+        .to_dtype(DType::F32)?;
+    let value = value
+        .contiguous()?
+        .reshape((1, 1, kv_len, head_dim))?
+        .to_dtype(DType::F32)?;
+    let key = repeat_kv(key, batch_queries)?.contiguous()?;
+    let value = repeat_kv(value, batch_queries)?.contiguous()?;
+    let key_t = key.transpose(2, 3)?.contiguous()?;
+    let attn_weights = ops::softmax_last_dim(
+        &((query.matmul(&key_t)?) * (1.0f64 / (head_dim as f64).sqrt()))?,
+    )?;
+    Ok(attn_weights
+        .matmul(&value)?
+        .reshape((batch_queries, head_dim))?)
+}
+
 pub fn paged_attention_decode_megakernel(
     queries: &Tensor,
     key: &Tensor,
@@ -3233,6 +3275,9 @@ pub fn paged_attention_decode_megakernel(
     }
     if batch_queries == 0 {
         candle::bail!("paged-attention-decode-megakernel requires at least one query row")
+    }
+    if matches!(queries.device().location(), DeviceLocation::Cuda { .. }) && head_dim > 128 {
+        return paged_attention_decode_fallback(queries, key, value);
     }
     let query = queries
         .contiguous()?
@@ -3389,7 +3434,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         candle::bail!("delta-state-scan has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -3665,7 +3710,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         candle::bail!("delta-chunk-fused has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -3927,7 +3972,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         candle::bail!("delta-recurrent-prefill has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -4419,7 +4464,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         candle::bail!("delta-chunk-step-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -4873,7 +4918,7 @@ impl candle::CustomOp6 for DeltaChunkStepWindowedRaw {
         candle::bail!("delta-chunk-step-windowed-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         prev_state: &candle::CudaStorage,
@@ -5704,7 +5749,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         candle::bail!("delta-chunk-scan-raw has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -6107,7 +6152,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         candle::bail!("delta-full-scan has no cpu implementation")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
     fn cuda_fwd(
         &self,
         initial_state: &candle::CudaStorage,
@@ -7582,7 +7627,13 @@ impl FullAttention {
                 profile.full_attention_millis += external_elapsed;
             }
             external.attn_output
-        } else if use_full_attention_decode_megakernel(device, q_len, kv_len, seqlen_offset) {
+        } else if use_full_attention_decode_megakernel(
+            device,
+            q_len,
+            kv_len,
+            self.head_dim,
+            seqlen_offset,
+        ) {
             let kernel_start = profile_start(device)?;
             let output = full_attention_decode_megakernel(
                 &query_states,
@@ -7595,7 +7646,13 @@ impl FullAttention {
             .to_dtype(DType::F32)?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
-        } else if use_full_attention_prefill_megakernel(device, q_len, kv_len, seqlen_offset) {
+        } else if use_full_attention_prefill_megakernel(
+            device,
+            q_len,
+            kv_len,
+            self.head_dim,
+            seqlen_offset,
+        ) {
             let kernel_start = profile_start(device)?;
             let output = full_attention_prefill_megakernel(
                 &query_states,
@@ -10394,12 +10451,12 @@ impl ModelForCausalLM {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     use std::ffi::OsString;
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn assert_close(lhs: &[f32], rhs: &[f32], tol: f32) {
         assert_eq!(lhs.len(), rhs.len());
         for (idx, (lhs, rhs)) in lhs.iter().zip(rhs.iter()).enumerate() {
@@ -10420,6 +10477,19 @@ mod tests {
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_test_guard() -> MutexGuard<'static, ()> {
         hip_env_lock().lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_test_guard() -> MutexGuard<'static, ()> {
+        cuda_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -10450,6 +10520,37 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     impl Drop for HipPersistentPrefillEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = self.saved.as_ref() {
+                    std::env::set_var(Self::KEY, value);
+                } else {
+                    std::env::remove_var(Self::KEY);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    struct CudaFullPrefillEnvGuard {
+        saved: Option<OsString>,
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    impl CudaFullPrefillEnvGuard {
+        const KEY: &'static str = "CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL";
+
+        fn set(value: &str) -> Self {
+            let saved = std::env::var_os(Self::KEY);
+            unsafe {
+                std::env::set_var(Self::KEY, value);
+            }
+            Self { saved }
+        }
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    impl Drop for CudaFullPrefillEnvGuard {
         fn drop(&mut self) {
             unsafe {
                 if let Some(value) = self.saved.as_ref() {
@@ -10751,7 +10852,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_full_attention_prefill_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
@@ -10856,7 +10957,7 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_full_attention_prefill_sample_qwen35_like(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
@@ -11732,6 +11833,59 @@ mod tests {
         )?;
         let output = output.flatten_all()?.to_vec1::<f32>()?;
 
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_full_attention_prefill_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let _env_guard = CudaFullPrefillEnvGuard::set("1");
+        let device = Device::new_cuda(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
+            hip_full_attention_prefill_sample(&device)?;
+        let output = full_attention_prefill_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_paged_attention_decode_falls_back_for_large_head_dim() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let _env_guard = CudaFullPrefillEnvGuard::set("1");
+        let device = Device::new_cuda(0)?;
+        let batch_queries = 2usize;
+        let kv_len = 5usize;
+        let head_dim = 256usize;
+        let query_data = (0..batch_queries * head_dim)
+            .map(|idx| (idx % 17) as f32 * 0.03125 - 0.25)
+            .collect::<Vec<_>>();
+        let key_data = (0..kv_len * head_dim)
+            .map(|idx| (idx % 19) as f32 * 0.015625 - 0.125)
+            .collect::<Vec<_>>();
+        let value_data = (0..kv_len * head_dim)
+            .map(|idx| (idx % 23) as f32 * 0.046875 - 0.5)
+            .collect::<Vec<_>>();
+        let queries = Tensor::from_vec(query_data, (batch_queries, head_dim), &device)?;
+        let key = Tensor::from_vec(key_data, (kv_len, head_dim), &device)?;
+        let value = Tensor::from_vec(value_data, (kv_len, head_dim), &device)?;
+        let expected = paged_attention_decode_fallback(&queries, &key, &value)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let output = paged_attention_decode_megakernel(&queries, &key, &value)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
         assert_close(&output, &expected, 1e-5);
         Ok(())
     }
