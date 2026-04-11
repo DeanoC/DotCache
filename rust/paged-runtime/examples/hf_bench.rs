@@ -721,12 +721,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         )?;
                     let record = control.record;
+                    let stage_metrics = RuntimeStageMetrics {
+                        qkv_projection_millis: json_f64_default(&record, "stage_qkv_projection_millis"),
+                        kv_append_write_millis: json_f64_default(&record, "stage_kv_append_write_millis"),
+                        layout_prepare_millis: json_f64_default(&record, "stage_layout_prepare_millis"),
+                        attention_score_millis: json_f64_default(&record, "stage_attention_score_millis"),
+                        attention_softmax_millis: json_f64_default(&record, "stage_attention_softmax_millis"),
+                        attention_mix_millis: json_f64_default(&record, "stage_attention_mix_millis"),
+                        output_projection_millis: json_f64_default(&record, "stage_output_projection_millis"),
+                        full_attention_mask_prepare_millis: json_f64_default(&record, "stage_full_attention_mask_prepare_millis"),
+                        full_attention_input_layout_millis: json_f64_default(&record, "stage_full_attention_input_layout_millis"),
+                        full_attention_kv_materialize_millis: json_f64_default(&record, "stage_full_attention_kv_materialize_millis"),
+                        full_attention_output_collect_millis: json_f64_default(&record, "stage_full_attention_output_collect_millis"),
+                        full_attention_output_reshape_millis: json_f64_default(&record, "stage_full_attention_output_reshape_millis"),
+                        full_attention_gate_millis: json_f64_default(&record, "stage_full_attention_gate_millis"),
+                        full_attention_kernel_execute_millis: json_f64_default(&record, "stage_full_attention_kernel_execute_millis"),
+                        scheduler_planning_millis: json_f64_default(&record, "stage_scheduler_planning_millis"),
+                        transfer_millis: json_f64_default(&record, "stage_transfer_millis"),
+                        linear_attention_millis: json_f64_default(&record, "stage_linear_attention_millis"),
+                        full_attention_millis: json_f64_default(&record, "stage_full_attention_millis"),
+                        mlp_millis: json_f64_default(&record, "stage_mlp_millis"),
+                        ..RuntimeStageMetrics::default()
+                    };
                     (
                         record.clone(),
                         Some(control.status),
                         control.warning_message,
-                        "luce_external_megakernel".to_string(),
-                        RuntimeStageMetrics::default(),
+                        control.attention_path,
+                        stage_metrics,
                         json_string_opt(&record, "generated_text").unwrap_or_default(),
                         json_usize(&record, "generated_token_count")?,
                         json_usize(&record, "generated_token_count")?,

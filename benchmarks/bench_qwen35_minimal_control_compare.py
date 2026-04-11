@@ -22,12 +22,13 @@ DEFAULT_MAX_NEW_TOKENS = 128
 DEFAULT_WARMUP_RUNS = 0
 DEFAULT_FAMILY = "qwen35"
 DEFAULT_MAIN_RUNTIME = "dense_control"
-DEFAULT_MAIN_CARGO_FEATURES = "candle-cuda"
+DEFAULT_MAIN_CARGO_FEATURES = "candle-cuda,qwen35-minimal-cuda"
 DEFAULT_MINIMAL_CARGO_FEATURES = "qwen35-minimal-cuda"
 DEFAULT_LANES = (
     "main_dense_control",
     "minimal_control",
     "minimal_megakernel",
+    "megakernel_control",
 )
 
 
@@ -122,7 +123,7 @@ def build_matrix(
     specs: list[RunSpec] = []
     lanes = list(DEFAULT_LANES)
     if luce_repo is not None:
-        lanes.append("megakernel_control")
+        lanes.append("luce_external_megakernel")
     for context in contexts:
         for lane in lanes:
             specs.append(
@@ -206,8 +207,6 @@ def command_for_run(
             "--sync-stage-profile",
         ]
     if spec.lane == "megakernel_control":
-        if luce_repo is None:
-            raise ValueError("megakernel_control lane requires --luce-repo")
         return [
             _cargo_bin(),
             "run",
@@ -226,14 +225,32 @@ def command_for_run(
             spec.dtype,
             "--runtime-mode",
             "megakernel_control",
-            "--luce-repo",
-            luce_repo,
             "--warmup-runs",
             str(spec.warmup_runs),
             "--max-new-tokens",
             str(spec.max_new_tokens),
             "--prompt-token-target",
             str(spec.prompt_token_count),
+        ]
+    if spec.lane == "luce_external_megakernel":
+        if luce_repo is None:
+            raise ValueError("luce_external_megakernel lane requires --luce-repo")
+        return [
+            sys.executable,
+            str(_repo_root() / "benchmarks" / "bench_qwen35_luce_external.py"),
+            spec.model_id,
+            spec.prompt_text,
+            str(out_prefix),
+            "--luce-repo",
+            luce_repo,
+            "--device",
+            spec.device,
+            "--prompt-token-target",
+            str(spec.prompt_token_count),
+            "--warmup-runs",
+            str(spec.warmup_runs),
+            "--max-new-tokens",
+            str(spec.max_new_tokens),
         ]
     raise ValueError(f"unknown lane {spec.lane}")
 
@@ -312,6 +329,20 @@ def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str,
             "total_tokens_per_second": summary.get("total_tokens_per_second"),
             "backend_status": summary.get("backend_status"),
             "warning_message": summary.get("warning_message"),
+            "invalid_token_id": summary.get("invalid_token_id"),
+            "invalid_token_step": summary.get("invalid_token_step"),
+            "terminated_due_to_invalid_token": summary.get("terminated_due_to_invalid_token"),
+        }
+    if lane == "luce_external_megakernel":
+        return {
+            "prompt_token_count": summary.get("prompt_token_count"),
+            "generated_token_count": summary.get("generated_token_count"),
+            "prefill_millis": summary.get("prefill_millis"),
+            "decode_millis": summary.get("decode_millis"),
+            "total_millis": summary.get("total_millis"),
+            "prefill_tokens_per_second": summary.get("prefill_tokens_per_second"),
+            "decode_tokens_per_second": summary.get("decode_tokens_per_second"),
+            "total_tokens_per_second": summary.get("total_tokens_per_second"),
             "invalid_token_id": summary.get("invalid_token_id"),
             "invalid_token_step": summary.get("invalid_token_step"),
             "terminated_due_to_invalid_token": summary.get("terminated_due_to_invalid_token"),
@@ -531,6 +562,14 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
                         lane_metrics.get("minimal_control"),
                         lane_metrics.get("megakernel_control"),
                     ),
+                    "luce_external_megakernel_vs_main": _comparison_payload(
+                        lane_metrics.get("main_dense_control"),
+                        lane_metrics.get("luce_external_megakernel"),
+                    ),
+                    "luce_external_megakernel_vs_megakernel_control": _comparison_payload(
+                        lane_metrics.get("megakernel_control"),
+                        lane_metrics.get("luce_external_megakernel"),
+                    ),
                 },
             }
         )
@@ -566,6 +605,7 @@ def render_report_markdown(report: dict[str, Any]) -> str:
                 "minimal_control",
                 "minimal_megakernel",
                 "megakernel_control",
+                "luce_external_megakernel",
             )
             if lane in group
         ]

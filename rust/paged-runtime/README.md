@@ -137,7 +137,7 @@ Qwen3.5 now has native Rust dense and paged lanes. The current support is:
 - `qwen35` + `paged_control`: supported
 - `qwen35` + `dotcache_experimental`: not implemented yet
 - `qwen35` + `torch_control`: supported through the external Python harness
-- `qwen35` + `megakernel_control`: benchmark-only external Luce control lane via `hf_bench`
+- `qwen35` + `megakernel_control`: benchmark-only fast backend via `hf_bench`
 
 `megakernel_control` is intentionally narrow right now:
 
@@ -146,10 +146,26 @@ Qwen3.5 now has native Rust dense and paged lanes. The current support is:
 - `hf_bench` only
 - no paged/page-mode/runtime serving knobs
 
+When built with `qwen35-minimal-cuda`, `megakernel_control` uses the in-tree minimal Qwen3.5
+backend by default. If `--luce-repo` is provided, it switches to the external Luce control path
+for comparison.
+
 Example:
 
 ```bash
-cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle-cuda --example hf_bench -- \
+cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle-cuda,qwen35-minimal-cuda --example hf_bench -- \
+  qwen35 Qwen/Qwen3.5-0.8B "hello" /tmp/qwen35-fast-control \
+  --device cuda:0 \
+  --runtime-mode megakernel_control \
+  --prompt-token-target 2048 \
+  --warmup-runs 0 \
+  --max-new-tokens 16
+```
+
+To force the external Luce control instead:
+
+```bash
+cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle-cuda,qwen35-minimal-cuda --example hf_bench -- \
   qwen35 Qwen/Qwen3.5-0.8B "hello" /tmp/qwen35-luce-control \
   --device cuda:0 \
   --runtime-mode megakernel_control \
@@ -159,9 +175,9 @@ cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle
   --max-new-tokens 16
 ```
 
-That path normalizes the external Luce summary into the same `.summary.json` schema used by
-`hf_bench`, and preserves warning metadata such as invalid token ids or early termination when the
-external lane exits non-cleanly after writing results.
+Both paths normalize their result into the same `.summary.json` schema used by `hf_bench`, and the
+external override preserves warning metadata such as invalid token ids or early termination when
+the Luce lane exits non-cleanly after writing results.
 
 Paged Qwen3.5 also has an explicit experimental compressed-page serving preset:
 
@@ -314,8 +330,8 @@ and reports Luce-style headline metrics in the summary:
 plus the minimal runtime stage buckets for the measured run.
 
 To compare that minimal-control lane directly against the main Rust/Candle dense-control runtime,
-and against a Luce-style megakernel lane that forces the minimal full-attention megakernel gates,
-use the joined harness:
+the forced minimal megakernel lane, and the in-tree `megakernel_control` runtime mode, use the
+joined harness:
 
 ```bash
 python benchmarks/bench_qwen35_minimal_control_compare.py --contexts 2048 8192
@@ -332,6 +348,7 @@ Each group in the report includes:
 - `main_dense_control`
 - `minimal_control`
 - `minimal_megakernel`
+- `megakernel_control`
 
 for the same model, device, prompt token count, and decode length.
 
@@ -343,8 +360,12 @@ for the same model, device, prompt token count, and decode length.
 On CUDA, this lane is still guarded by the model-side `head_dim <= 128` restriction, so
 `Qwen/Qwen3.5-0.8B` currently falls back rather than claiming unsupported megakernel coverage.
 
-To compare against the actual Luce external megakernel implementation instead of the in-tree
-minimal lane, point the harness at a checkout of `https://github.com/Luce-Org/luce-megakernel`:
+`megakernel_control` now defaults to an in-tree Qwen3.5 minimal backend when the harness is built
+with `qwen35-minimal-cuda`. It keeps the same `hf_bench --runtime-mode megakernel_control` CLI
+surface while using the in-repo runner instead of the external Luce adapter by default.
+
+To add the actual Luce external megakernel as a fifth control lane, point the harness at a
+checkout of `https://github.com/Luce-Org/luce-megakernel`:
 
 ```bash
 python benchmarks/bench_qwen35_minimal_control_compare.py \
@@ -352,13 +373,12 @@ python benchmarks/bench_qwen35_minimal_control_compare.py \
   --luce-repo /path/to/luce-megakernel
 ```
 
-That adds a fourth lane:
+That adds an extra lane:
 
-- `megakernel_control`
+- `luce_external_megakernel`
 
-This lane runs `hf_bench --runtime-mode megakernel_control`, which in turn delegates to the real
-Luce Python/CUDA extension and normalizes the result into the standard Rust benchmark summary.
-Current constraints:
+This lane runs the real Luce Python/CUDA extension directly as an external control. Current
+constraints:
 
 - CUDA only
 - `Qwen/Qwen3.5-0.8B` only
