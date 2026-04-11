@@ -287,6 +287,26 @@ and reports Luce-style headline metrics in the summary:
 
 plus the minimal runtime stage buckets for the measured run.
 
+To compare that minimal-control lane directly against the main Rust/Candle dense-control runtime,
+use the joined harness:
+
+```bash
+python benchmarks/bench_qwen35_minimal_control_compare.py --contexts 2048 8192
+```
+
+That writes one dated directory under `benchmarks/results/` containing:
+
+- `manifest.json`
+- `report.json`
+- `report.md`
+
+Each group in the report compares:
+
+- `main_dense_control`
+- `minimal_control`
+
+for the same model, device, prompt token count, and decode length.
+
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 
 ```bash
