@@ -693,25 +693,47 @@ int delta_local_attn_scan_device(
 ) {
     ScopedHipDevice scoped(device_ordinal);
     if (k_head_dim > 256 || chunk_size > 64) return 112;
-    constexpr int block = 256;
-    const size_t total =
-        static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
-        static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
-    const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
-    hipLaunchKernelGGL(
-        HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_kernel<T>),
-        dim3(grid),
-        dim3(block),
-        0,
-        0,
-        batch_heads,
-        num_chunks,
-        chunk_size,
-        k_head_dim,
-        static_cast<const T*>(query_scan),
-        static_cast<const T*>(key_scan),
-        static_cast<const T*>(exp_g_scan),
-        static_cast<T*>(out));
+    if (chunk_size <= 4) {
+        constexpr int block = 256;
+        const size_t total =
+            static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+            static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
+        const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_flat_kernel<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            static_cast<const T*>(query_scan),
+            static_cast<const T*>(key_scan),
+            static_cast<const T*>(exp_g_scan),
+            static_cast<T*>(out));
+    } else {
+        const unsigned int block = chunk_size <= 32 ? 32u : 64u;
+        const size_t total_rows =
+            static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+            static_cast<size_t>(chunk_size);
+        const unsigned int grid = static_cast<unsigned int>(total_rows);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_row_kernel<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            static_cast<const T*>(query_scan),
+            static_cast<const T*>(key_scan),
+            static_cast<const T*>(exp_g_scan),
+            static_cast<T*>(out));
+    }
     if (hipGetLastError() != hipSuccess) return 113;
     if (hipDeviceSynchronize() != hipSuccess) return 114;
     return 0;
