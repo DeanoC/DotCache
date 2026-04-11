@@ -293,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => f32::NAN,
     };
     let mut generated_ids = prompt_ids.clone();
-    let mut max_decode_delta = 0.0f32;
+    let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
     let mut cpu_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
     let mut next_token = match cpu_logits.as_ref() {
