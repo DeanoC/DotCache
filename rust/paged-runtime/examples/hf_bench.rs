@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_id: String,
         prompt: String,
         out_prefix: String,
+        luce_repo: Option<PathBuf>,
         prompt_token_target: Option<usize>,
         device: CandleDeviceSelector,
         dtype: DType,
@@ -108,6 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prefill_tokens_per_second: f64,
         decode_tokens_per_second: f64,
         total_tokens_per_second: f64,
+        backend_status: Option<String>,
+        warning_message: Option<String>,
+        invalid_token_id: Option<i64>,
+        invalid_token_step: Option<usize>,
+        terminated_due_to_invalid_token: bool,
         text: String,
         trace_jsonl_path: String,
     }
@@ -196,7 +202,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "m3-int8" => {
                 if matches!(
                     parsed.runtime_mode,
-                    RuntimeMode::DenseControl | RuntimeMode::TorchControl
+                    RuntimeMode::DenseControl
+                        | RuntimeMode::TorchControl
+                        | RuntimeMode::MegakernelControl
                 ) {
                     return Err("--serving-preset m3-int8 requires paged_control or dotcache_experimental".to_string());
                 }
@@ -232,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<BenchArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--serving-preset m3-int8] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
+            "usage: hf_bench <family> <model_id> <prompt> <out_prefix> [--prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control|megakernel_control] [--attention-path paged|fused] [--warmup-runs N] [--max-new-tokens N] [--tokens-per-page N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--serving-preset m3-int8] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--luce-repo PATH] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let prompt = args.next().ok_or_else(|| "missing prompt".to_string())?;
@@ -245,6 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model_id,
             prompt,
             out_prefix,
+            luce_repo: None,
             prompt_token_target: None,
             device: CandleDeviceSelector::Cpu,
             dtype: DType::F32,
@@ -407,6 +416,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .ok_or_else(|| format!("missing value for {flag}"))?,
                     );
                 }
+                "--luce-repo" => {
+                    parsed.luce_repo = Some(PathBuf::from(
+                        args.next()
+                            .ok_or_else(|| format!("missing value for {flag}"))?,
+                    ));
+                }
                 other => return Err(format!("unknown flag {other}")),
             }
         }
@@ -492,6 +507,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     fn json_f64_default(record: &Value, key: &str) -> f64 {
         record.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+    }
+
+    fn json_string_opt(record: &Value, key: &str) -> Option<String> {
+        record.get(key).and_then(Value::as_str).map(str::to_string)
+    }
+
+    fn json_i64_opt(record: &Value, key: &str) -> Option<i64> {
+        record.get(key).and_then(Value::as_i64)
+    }
+
+    fn json_usize_opt(record: &Value, key: &str) -> Option<usize> {
+        record.get(key).and_then(Value::as_u64).map(|value| value as usize)
+    }
+
+    fn json_bool_default(record: &Value, key: &str) -> bool {
+        record.get(key).and_then(Value::as_bool).unwrap_or(false)
     }
 
     fn json_u32_vec(record: &Value, key: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
@@ -597,68 +628,138 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
     let sync_stage_profile = stage_profile_sync_enabled(args.sync_stage_profile);
 
-    if args.runtime_mode == RuntimeMode::TorchControl {
+    if matches!(
+        args.runtime_mode,
+        RuntimeMode::TorchControl | RuntimeMode::MegakernelControl
+    ) {
         if args.family != ModelFamily::Qwen35 {
-            return Err("torch_control currently supports qwen35 only".into());
-        }
-        let record = dotcache_paged_runtime::torch_control::run_qwen35_text_bench(
-            &args.model_id,
-            &args.prompt,
-            args.prompt_token_target,
-            &args.device,
-            args.dtype,
-            args.warmup_runs,
-            args.max_new_tokens,
-            true,
-        )?;
-        if record.get("status").and_then(Value::as_str) == Some("error") {
             return Err(format!(
-                "python torch_control bench failed: {}",
-                json_string(&record, "error_message")
-                    .unwrap_or_else(|_| "unknown error".to_string())
+                "{} currently supports qwen35 only",
+                args.runtime_mode
             )
             .into());
         }
+        if args.runtime_mode == RuntimeMode::MegakernelControl {
+            if args.attention_path.is_some() {
+                return Err("--attention-path is not supported with megakernel_control".into());
+            }
+            if args.serving_preset.is_some()
+                || args.default_key_page_mode.is_some()
+                || args.default_value_page_mode.is_some()
+                || args.key_layer_page_modes.is_some()
+                || args.value_layer_page_modes.is_some()
+            {
+                return Err(
+                    "page-mode controls are not supported with megakernel_control".into(),
+                );
+            }
+        }
 
-        let prompt_token_count = json_usize(&record, "prompt_length")?;
-        let decode_steps = json_usize(&record, "decode_steps")?;
-        let generated_token_ids = json_u32_vec(&record, "dense_generated_ids")?;
-        let prefill_millis = json_f64(&record, "prefill_ms")?;
-        let decode_millis =
-            json_f64_default(&record, "dense_decode_ms_per_step") * decode_steps as f64;
-        let total_millis = prefill_millis + decode_millis;
+        let (record, backend_status, warning_message, attention_path, stage_metrics, text, generated_token_count, decode_request_count, prefill_millis, decode_millis, total_millis) =
+            match args.runtime_mode {
+                RuntimeMode::TorchControl => {
+                    let record = dotcache_paged_runtime::torch_control::run_qwen35_text_bench(
+                        &args.model_id,
+                        &args.prompt,
+                        args.prompt_token_target,
+                        &args.device,
+                        args.dtype,
+                        args.warmup_runs,
+                        args.max_new_tokens,
+                        true,
+                    )?;
+                    if record.get("status").and_then(Value::as_str) == Some("error") {
+                        return Err(format!(
+                            "python torch_control bench failed: {}",
+                            json_string(&record, "error_message")
+                                .unwrap_or_else(|_| "unknown error".to_string())
+                        )
+                        .into());
+                    }
+                    let decode_steps = json_usize(&record, "decode_steps")?;
+                    let generated_token_ids = json_u32_vec(&record, "dense_generated_ids")?;
+                    let prefill_millis = json_f64(&record, "prefill_ms")?;
+                    let decode_millis =
+                        json_f64_default(&record, "dense_decode_ms_per_step") * decode_steps as f64;
+                    let total_millis = prefill_millis + decode_millis;
+                    let stage_metrics = RuntimeStageMetrics {
+                        qkv_projection_millis: python_stage_sum(&record, "qkv_projection"),
+                        kv_append_write_millis: python_stage_sum(&record, "kv_append_write"),
+                        output_projection_millis: python_stage_sum(&record, "output_projection"),
+                        linear_attention_millis: python_stage_sum(&record, "linear_attention"),
+                        full_attention_millis: python_stage_sum(&record, "full_attention"),
+                        mlp_millis: python_stage_sum(&record, "mlp"),
+                        ..RuntimeStageMetrics::default()
+                    };
+                    let text = json_string_opt(&record, "dense_text").unwrap_or_default();
+                    (
+                        record,
+                        None,
+                        None,
+                        "native_torch".to_string(),
+                        stage_metrics,
+                        text,
+                        generated_token_ids.len(),
+                        decode_steps,
+                        prefill_millis,
+                        decode_millis,
+                        total_millis,
+                    )
+                }
+                RuntimeMode::MegakernelControl => {
+                    let control =
+                        dotcache_paged_runtime::megakernel_control::run_qwen35_text_bench(
+                            &dotcache_paged_runtime::megakernel_control::MegakernelControlBenchArgs {
+                                model_id: &args.model_id,
+                                prompt: &args.prompt,
+                                out_prefix: std::path::Path::new(&args.out_prefix),
+                                prompt_token_target: args.prompt_token_target,
+                                device: &args.device,
+                                warmup_runs: args.warmup_runs,
+                                max_new_tokens: args.max_new_tokens,
+                                luce_repo: args.luce_repo.as_deref(),
+                            },
+                        )?;
+                    let record = control.record;
+                    (
+                        record.clone(),
+                        Some(control.status),
+                        control.warning_message,
+                        "luce_external_megakernel".to_string(),
+                        RuntimeStageMetrics::default(),
+                        json_string_opt(&record, "generated_text").unwrap_or_default(),
+                        json_usize(&record, "generated_token_count")?,
+                        json_usize(&record, "generated_token_count")?,
+                        json_f64(&record, "prefill_millis")?,
+                        json_f64(&record, "decode_millis")?,
+                        json_f64(&record, "total_millis")?,
+                    )
+                }
+                _ => unreachable!(),
+            };
+
+        let prompt_token_count = if args.runtime_mode == RuntimeMode::TorchControl {
+            json_usize(&record, "prompt_length")?
+        } else {
+            json_usize(&record, "prompt_token_count")?
+        };
         let trace_path = PathBuf::from(format!("{}.trace.jsonl", args.out_prefix));
         let summary_path = PathBuf::from(format!("{}.summary.json", args.out_prefix));
         std::fs::write(&trace_path, "")?;
 
-        let stage_metrics = RuntimeStageMetrics {
-            qkv_projection_millis: python_stage_sum(&record, "qkv_projection"),
-            kv_append_write_millis: python_stage_sum(&record, "kv_append_write"),
-            output_projection_millis: python_stage_sum(&record, "output_projection"),
-            linear_attention_millis: python_stage_sum(&record, "linear_attention"),
-            full_attention_millis: python_stage_sum(&record, "full_attention"),
-            mlp_millis: python_stage_sum(&record, "mlp"),
-            ..RuntimeStageMetrics::default()
-        };
-        let text = record
-            .get("dense_text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-
         let summary = BenchmarkSummary {
-            model_id: json_string(&record, "model_id")?,
+            model_id: json_string_opt(&record, "model_id").unwrap_or_else(|| args.model_id.clone()),
             family: args.family.as_str().to_string(),
             device: args.device.to_string(),
             dtype: format!("{:?}", args.dtype).to_lowercase(),
-            runtime_mode: RuntimeMode::TorchControl.to_string(),
-            attention_path: "native_torch".to_string(),
+            runtime_mode: args.runtime_mode.to_string(),
+            attention_path,
             prompt: args.prompt.clone(),
             prompt_token_count,
             prompt_token_target: args.prompt_token_target,
-            generated_token_count: generated_token_ids.len(),
+            generated_token_count,
             warmup_runs: json_usize(&record, "warmup_runs")?,
-            warmup_millis: json_f64(&record, "warmup_ms")?,
+            warmup_millis: json_f64(&record, "warmup_millis")?,
             max_new_tokens: args.max_new_tokens,
             tokens_per_page: args.tokens_per_page,
             resident_page_budget: None,
@@ -669,9 +770,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             default_value_page_mode: "exact".to_string(),
             key_layer_page_mode_overrides: Vec::new(),
             value_layer_page_mode_overrides: Vec::new(),
-            request_count: 1 + decode_steps,
+            request_count: 1 + decode_request_count,
             prefill_request_count: 1,
-            decode_request_count: decode_steps,
+            decode_request_count,
             batch_decode_request_count: 0,
             spill_count: 0,
             restore_count: 0,
@@ -715,13 +816,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             decode_millis,
             total_millis,
             prefill_tokens_per_second: tokens_per_second_millis(prompt_token_count, prefill_millis),
-            decode_tokens_per_second: tokens_per_second_millis(
-                generated_token_ids.len(),
-                decode_millis,
-            ),
+            decode_tokens_per_second: tokens_per_second_millis(generated_token_count, decode_millis),
             total_tokens_per_second: tokens_per_second_millis(
-                prompt_token_count + generated_token_ids.len(),
+                prompt_token_count + generated_token_count,
                 total_millis,
+            ),
+            backend_status,
+            warning_message,
+            invalid_token_id: json_i64_opt(&record, "invalid_token_id"),
+            invalid_token_step: json_usize_opt(&record, "invalid_token_step"),
+            terminated_due_to_invalid_token: json_bool_default(
+                &record,
+                "terminated_due_to_invalid_token",
             ),
             text: text.clone(),
             trace_jsonl_path: trace_path.display().to_string(),
@@ -733,8 +839,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "device={} runtime_mode={} attention_path={}",
             args.device,
-            RuntimeMode::TorchControl,
-            "native_torch"
+            args.runtime_mode,
+            summary.attention_path
         );
         eprintln!(
             "warmup runs={} warmup_ms={:.3}",
@@ -750,6 +856,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             summary.decode_tokens_per_second,
             summary.total_tokens_per_second,
         );
+        if let Some(status) = summary.backend_status.as_deref() {
+            eprintln!("backend_status={status}");
+        }
+        if let Some(warning) = summary.warning_message.as_deref() {
+            eprintln!("warning={warning}");
+        }
         return Ok(());
     }
 
@@ -928,6 +1040,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prompt_token_ids.len() + run.generated_token_ids.len(),
             run.total_elapsed,
         ),
+        backend_status: None,
+        warning_message: None,
+        invalid_token_id: None,
+        invalid_token_step: None,
+        terminated_due_to_invalid_token: false,
         text: text.clone(),
         trace_jsonl_path: trace_path.display().to_string(),
     };

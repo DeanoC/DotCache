@@ -15,6 +15,8 @@ pub mod model;
 pub mod page;
 pub mod page_mode;
 #[cfg(feature = "candle")]
+pub mod megakernel_control;
+#[cfg(feature = "candle")]
 pub mod policy;
 #[cfg(feature = "qwen35-minimal")]
 pub mod qwen35_minimal;

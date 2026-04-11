@@ -119,7 +119,7 @@ and prints compact timing/throughput stats for the run.
 The summary also records `warmup_runs` and `warmup_millis`, and the measured timings exclude that
 warmup phase.
 
-The benchmark and workload entrypoints also accept `--runtime-mode dense_control|paged_control|dotcache_experimental`.
+The benchmark and workload entrypoints also accept `--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control|megakernel_control`.
 For example, to run the new dense control lane instead of the paged runtime:
 
 ```bash
@@ -136,6 +136,32 @@ Qwen3.5 now has native Rust dense and paged lanes. The current support is:
 - `qwen35` + `dense_control`: supported
 - `qwen35` + `paged_control`: supported
 - `qwen35` + `dotcache_experimental`: not implemented yet
+- `qwen35` + `torch_control`: supported through the external Python harness
+- `qwen35` + `megakernel_control`: benchmark-only external Luce control lane via `hf_bench`
+
+`megakernel_control` is intentionally narrow right now:
+
+- CUDA only
+- `Qwen/Qwen3.5-0.8B` only
+- `hf_bench` only
+- no paged/page-mode/runtime serving knobs
+
+Example:
+
+```bash
+cargo run --manifest-path rust/paged-runtime/Cargo.toml --features candle,candle-cuda --example hf_bench -- \
+  qwen35 Qwen/Qwen3.5-0.8B "hello" /tmp/qwen35-luce-control \
+  --device cuda:0 \
+  --runtime-mode megakernel_control \
+  --luce-repo /tmp/luce-megakernel \
+  --prompt-token-target 2048 \
+  --warmup-runs 0 \
+  --max-new-tokens 16
+```
+
+That path normalizes the external Luce summary into the same `.summary.json` schema used by
+`hf_bench`, and preserves warning metadata such as invalid token ids or early termination when the
+external lane exits non-cleanly after writing results.
 
 Paged Qwen3.5 also has an explicit experimental compressed-page serving preset:
 

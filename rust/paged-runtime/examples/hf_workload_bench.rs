@@ -246,7 +246,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "m3-int8" => {
                 if matches!(
                     parsed.runtime_mode,
-                    RuntimeMode::DenseControl | RuntimeMode::TorchControl
+                    RuntimeMode::DenseControl
+                        | RuntimeMode::TorchControl
+                        | RuntimeMode::MegakernelControl
                 ) {
                     return Err("--serving-preset m3-int8 requires paged_control or dotcache_experimental".to_string());
                 }
@@ -282,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parse_args() -> Result<WorkloadArgs, String> {
         let mut args = std::env::args().skip(1);
         let family = args.next().ok_or_else(|| {
-            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--serving-preset m3-int8] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
+            "usage: hf_workload_bench <family> <model_id> <shared_prompt> <out_prefix> [--shared-prompt-token-target N] [--device cpu|metal[:ordinal]|cuda[:ordinal]|hip[:ordinal]] [--dtype f16|bf16|f32] [--runtime-mode dense_control|paged_control|dotcache_experimental|torch_control|megakernel_control] [--attention-path paged|fused] [--warmup-runs N] [--total-sessions N] [--wave-size N] [--decode-rounds-per-wave N] [--max-new-tokens N] [--tokens-per-page N] [--suffix-prefix TEXT] [--stress] [--stress-suffix-repeats N] [--resident-page-budget N] [--resident-byte-budget N] [--restore-cooldown N] [--serving-preset m3-int8] [--default-key-page-mode SPEC] [--default-value-page-mode SPEC] [--key-layer-page-modes LAYER=SPEC,...] [--value-layer-page-modes LAYER=SPEC,...] [--sync-stage-profile]".to_string()
         })?;
         let model_id = args.next().ok_or_else(|| "missing model_id".to_string())?;
         let shared_prompt = args
@@ -881,6 +883,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args =
         parse_args().map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
     let sync_stage_profile = stage_profile_sync_enabled(args.sync_stage_profile);
+
+    if args.runtime_mode == RuntimeMode::MegakernelControl {
+        return Err(
+            "megakernel_control is benchmark-only for now and is not supported by hf_workload_bench"
+                .into(),
+        );
+    }
 
     if args.runtime_mode == RuntimeMode::TorchControl {
         if args.family != ModelFamily::Qwen35 {
