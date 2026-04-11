@@ -1,5 +1,6 @@
 #include "full_attention.hip"
 
+#include <cstdlib>
 #include <hip/hip_runtime.h>
 #include <stdint.h>
 
@@ -23,6 +24,25 @@ struct ScopedHipDevice {
         }
     }
 };
+
+int linear_prefill_block_override() {
+    const char* value = std::getenv("DOTCACHE_QWEN35_HIP_FUSED_PREFILL_BLOCK");
+    if (value == nullptr || *value == '\0') {
+        return 0;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || parsed <= 0) {
+        return 0;
+    }
+    if (parsed < 32) {
+        return 32;
+    }
+    if (parsed > 512) {
+        return 512;
+    }
+    return static_cast<int>(parsed);
+}
 
 template <typename T>
 int full_attention_prefill_device(
@@ -248,7 +268,9 @@ int linear_stateful_conv_value_decay_with_state_device(
     const size_t total_per_batch = static_cast<size_t>(seq_len) * out_width +
         static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
     const size_t out_elems = static_cast<size_t>(batch_size) * total_per_batch;
-    const int block = (kernel_size == 4 && state_len == 3) ? 128 : 256;
+    const int default_block = 256;
+    const int override_block = linear_prefill_block_override();
+    const int block = override_block > 0 ? override_block : default_block;
     const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
     if (kernel_size == 4 && state_len == 3) {
         hipLaunchKernelGGL(
