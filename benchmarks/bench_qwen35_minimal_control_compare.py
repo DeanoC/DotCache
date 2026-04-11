@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
@@ -22,6 +23,7 @@ DEFAULT_FAMILY = "qwen35"
 DEFAULT_MAIN_RUNTIME = "dense_control"
 DEFAULT_MAIN_CARGO_FEATURES = "candle-cuda"
 DEFAULT_MINIMAL_CARGO_FEATURES = "qwen35-minimal-cuda"
+DEFAULT_LANES = ("main_dense_control", "minimal_control", "minimal_megakernel")
 
 
 @dataclass(frozen=True)
@@ -112,31 +114,29 @@ def build_matrix(
 ) -> list[RunSpec]:
     specs: list[RunSpec] = []
     for context in contexts:
-        specs.append(
-            RunSpec(
-                model_id=model_id,
-                prompt_token_count=context,
-                lane="minimal_control",
-                device=device,
-                warmup_runs=warmup_runs,
-                max_new_tokens=max_new_tokens,
-                prompt_text=prompt_text,
-                dtype=dtype,
+        for lane in DEFAULT_LANES:
+            specs.append(
+                RunSpec(
+                    model_id=model_id,
+                    prompt_token_count=context,
+                    lane=lane,
+                    device=device,
+                    warmup_runs=warmup_runs,
+                    max_new_tokens=max_new_tokens,
+                    prompt_text=prompt_text,
+                    dtype=dtype,
+                )
             )
-        )
-        specs.append(
-            RunSpec(
-                model_id=model_id,
-                prompt_token_count=context,
-                lane="main_dense_control",
-                device=device,
-                warmup_runs=warmup_runs,
-                max_new_tokens=max_new_tokens,
-                prompt_text=prompt_text,
-                dtype=dtype,
-            )
-        )
     return specs
+
+
+def env_for_run(spec: RunSpec) -> dict[str, str]:
+    if spec.lane != "minimal_megakernel":
+        return {}
+    env = {"CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL": "1"}
+    if spec.device.lower().startswith("hip"):
+        env["CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL"] = "1"
+    return env
 
 
 def command_for_run(
@@ -146,7 +146,7 @@ def command_for_run(
     minimal_cargo_features: str,
     main_cargo_features: str,
 ) -> list[str]:
-    if spec.lane == "minimal_control":
+    if spec.lane in {"minimal_control", "minimal_megakernel"}:
         return [
             _cargo_bin(),
             "run",
@@ -226,6 +226,7 @@ def _run_config_signature(
         "prompt_text_sha256": hashlib.sha256(spec.prompt_text.encode("utf-8")).hexdigest(),
         "minimal_cargo_features": minimal_cargo_features,
         "main_cargo_features": main_cargo_features,
+        "env_overrides": env_for_run(spec),
     }
 
 
@@ -239,7 +240,7 @@ def _can_resume_existing_run(config_path: Path, expected_signature: dict[str, An
 
 
 def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str, Any]:
-    if lane == "minimal_control":
+    if lane in {"minimal_control", "minimal_megakernel"}:
         return {
             "prompt_token_count": summary.get("prompt_token_count"),
             "generated_token_count": summary.get("generated_token_count"),
@@ -249,6 +250,12 @@ def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str,
             "prefill_tokens_per_second": summary.get("prefill_tokens_per_second"),
             "decode_tokens_per_second": summary.get("decode_tokens_per_second"),
             "total_tokens_per_second": summary.get("total_tokens_per_second"),
+            "full_prefill_megakernel_requested": summary.get(
+                "full_prefill_megakernel_requested"
+            ),
+            "hip_persistent_full_prefill_requested": summary.get(
+                "hip_persistent_full_prefill_requested"
+            ),
         }
     return {
         "prompt_token_count": summary.get("prompt_token_count"),
@@ -299,6 +306,7 @@ def execute_run(
         "warmup_runs": spec.warmup_runs,
         "max_new_tokens": spec.max_new_tokens,
         "command": command,
+        "env_overrides": env_for_run(spec),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "summary_path": str(summary_path),
@@ -326,9 +334,12 @@ def execute_run(
     with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr_handle:
+        child_env = dict(os.environ)
+        child_env.update(record["env_overrides"])
         completed = subprocess.run(
             command,
             cwd=_runtime_dir(),
+            env=child_env,
             stdout=stdout_handle,
             stderr=stderr_handle,
             text=True,
@@ -352,6 +363,41 @@ def execute_run(
     return record
 
 
+def _comparison_payload(
+    baseline_metrics: dict[str, Any] | None, candidate_metrics: dict[str, Any] | None
+) -> dict[str, Any]:
+    comparison = {
+        "delta_total_millis": None,
+        "total_millis_ratio": None,
+        "delta_prefill_millis": None,
+        "prefill_millis_ratio": None,
+        "delta_decode_millis": None,
+        "decode_millis_ratio": None,
+        "delta_total_tokens_per_second": None,
+        "total_tokens_per_second_ratio": None,
+    }
+    if baseline_metrics is None or candidate_metrics is None:
+        return comparison
+    for metric in ("total_millis", "prefill_millis", "decode_millis", "total_tokens_per_second"):
+        baseline_value = baseline_metrics.get(metric)
+        candidate_value = candidate_metrics.get(metric)
+        if baseline_value is None or candidate_value is None or baseline_value == 0:
+            continue
+        if metric == "total_millis":
+            comparison["delta_total_millis"] = candidate_value - baseline_value
+            comparison["total_millis_ratio"] = candidate_value / baseline_value
+        elif metric == "prefill_millis":
+            comparison["delta_prefill_millis"] = candidate_value - baseline_value
+            comparison["prefill_millis_ratio"] = candidate_value / baseline_value
+        elif metric == "decode_millis":
+            comparison["delta_decode_millis"] = candidate_value - baseline_value
+            comparison["decode_millis_ratio"] = candidate_value / baseline_value
+        elif metric == "total_tokens_per_second":
+            comparison["delta_total_tokens_per_second"] = candidate_value - baseline_value
+            comparison["total_tokens_per_second_ratio"] = candidate_value / baseline_value
+    return comparison
+
+
 def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
@@ -364,57 +410,42 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     for key in sorted(grouped):
         model_id, prompt_token_count = key
         entries = grouped[key]
-        baseline = next((entry for entry in entries if entry["lane"] == "main_dense_control"), None)
-        minimal = next((entry for entry in entries if entry["lane"] == "minimal_control"), None)
-        baseline_metrics = baseline.get("summary_metrics") if baseline is not None else None
-        minimal_metrics = minimal.get("summary_metrics") if minimal is not None else None
-        comparison = {
-            "delta_total_millis_vs_main": None,
-            "total_millis_ratio_vs_main": None,
-            "delta_prefill_millis_vs_main": None,
-            "prefill_millis_ratio_vs_main": None,
-            "delta_decode_millis_vs_main": None,
-            "decode_millis_ratio_vs_main": None,
-            "delta_total_tokens_per_second_vs_main": None,
-            "total_tokens_per_second_ratio_vs_main": None,
+        lane_entries = {
+            lane: next((entry for entry in entries if entry["lane"] == lane), None)
+            for lane in DEFAULT_LANES
         }
-        if baseline_metrics is not None and minimal_metrics is not None:
-            for metric in ("total_millis", "prefill_millis", "decode_millis", "total_tokens_per_second"):
-                baseline_value = baseline_metrics.get(metric)
-                minimal_value = minimal_metrics.get(metric)
-                if baseline_value is None or minimal_value is None or baseline_value == 0:
-                    continue
-                if metric == "total_millis":
-                    comparison["delta_total_millis_vs_main"] = minimal_value - baseline_value
-                    comparison["total_millis_ratio_vs_main"] = minimal_value / baseline_value
-                elif metric == "prefill_millis":
-                    comparison["delta_prefill_millis_vs_main"] = minimal_value - baseline_value
-                    comparison["prefill_millis_ratio_vs_main"] = minimal_value / baseline_value
-                elif metric == "decode_millis":
-                    comparison["delta_decode_millis_vs_main"] = minimal_value - baseline_value
-                    comparison["decode_millis_ratio_vs_main"] = minimal_value / baseline_value
-                elif metric == "total_tokens_per_second":
-                    comparison["delta_total_tokens_per_second_vs_main"] = minimal_value - baseline_value
-                    comparison["total_tokens_per_second_ratio_vs_main"] = minimal_value / baseline_value
+        lane_metrics = {
+            lane: None if entry is None else entry.get("summary_metrics")
+            for lane, entry in lane_entries.items()
+        }
         groups.append(
             {
                 "model_id": model_id,
                 "prompt_token_count": prompt_token_count,
-                "main_dense_control": None
-                if baseline is None
-                else {
-                    "run_id": baseline["run_id"],
-                    "status": baseline["status"],
-                    "summary_metrics": baseline_metrics,
+                **{
+                    lane: None
+                    if lane_entries[lane] is None
+                    else {
+                        "run_id": lane_entries[lane]["run_id"],
+                        "status": lane_entries[lane]["status"],
+                        "summary_metrics": lane_metrics[lane],
+                    }
+                    for lane in DEFAULT_LANES
                 },
-                "minimal_control": None
-                if minimal is None
-                else {
-                    "run_id": minimal["run_id"],
-                    "status": minimal["status"],
-                    "summary_metrics": minimal_metrics,
+                "comparisons": {
+                    "minimal_control_vs_main": _comparison_payload(
+                        lane_metrics["main_dense_control"],
+                        lane_metrics["minimal_control"],
+                    ),
+                    "minimal_megakernel_vs_main": _comparison_payload(
+                        lane_metrics["main_dense_control"],
+                        lane_metrics["minimal_megakernel"],
+                    ),
+                    "minimal_megakernel_vs_minimal_control": _comparison_payload(
+                        lane_metrics["minimal_control"],
+                        lane_metrics["minimal_megakernel"],
+                    ),
                 },
-                "comparison": comparison,
             }
         )
     return {"generated_at": _utc_now(), "group_count": len(groups), "groups": groups}
@@ -438,38 +469,45 @@ def render_report_markdown(report: dict[str, Any]) -> str:
             [
                 f"## {group['model_id']} | ctx={group['prompt_token_count']}",
                 "",
-                "| Lane | Status | Prefill ms | Decode ms | Total ms | Total tok/s |",
-                "| --- | --- | ---: | ---: | ---: | ---: |",
+                "| Lane | Status | Prefill ms | Decode ms | Total ms | Total tok/s | Megakernel env |",
+                "| --- | --- | ---: | ---: | ---: | ---: | --- |",
             ]
         )
-        for lane in ("main_dense_control", "minimal_control"):
+        for lane in DEFAULT_LANES:
             entry = group[lane]
             if entry is None:
-                lines.append(f"| {lane} | missing | - | - | - | - |")
+                lines.append(f"| {lane} | missing | - | - | - | - | - |")
                 continue
             metrics = entry["summary_metrics"] or {}
             lines.append(
-                "| {lane} | {status} | {prefill} | {decode} | {total} | {tps} |".format(
+                "| {lane} | {status} | {prefill} | {decode} | {total} | {tps} | {megakernel} |".format(
                     lane=lane,
                     status=entry["status"],
                     prefill=_fmt_float(metrics.get("prefill_millis")),
                     decode=_fmt_float(metrics.get("decode_millis")),
                     total=_fmt_float(metrics.get("total_millis")),
                     tps=_fmt_float(metrics.get("total_tokens_per_second")),
+                    megakernel=metrics.get("full_prefill_megakernel_requested", "-"),
                 )
             )
-        comparison = group["comparison"]
+        for name, comparison in group["comparisons"].items():
+            lines.extend(
+                [
+                    "",
+                    f"### {name}",
+                    "",
+                    f"- `delta_total_millis`: {_fmt_float(comparison['delta_total_millis'])}",
+                    f"- `total_millis_ratio`: {_fmt_float(comparison['total_millis_ratio'])}",
+                    f"- `delta_prefill_millis`: {_fmt_float(comparison['delta_prefill_millis'])}",
+                    f"- `prefill_millis_ratio`: {_fmt_float(comparison['prefill_millis_ratio'])}",
+                    f"- `delta_decode_millis`: {_fmt_float(comparison['delta_decode_millis'])}",
+                    f"- `decode_millis_ratio`: {_fmt_float(comparison['decode_millis_ratio'])}",
+                    f"- `delta_total_tokens_per_second`: {_fmt_float(comparison['delta_total_tokens_per_second'])}",
+                    f"- `total_tokens_per_second_ratio`: {_fmt_float(comparison['total_tokens_per_second_ratio'])}",
+                ]
+            )
         lines.extend(
             [
-                "",
-                f"- `delta_total_millis_vs_main`: {_fmt_float(comparison['delta_total_millis_vs_main'])}",
-                f"- `total_millis_ratio_vs_main`: {_fmt_float(comparison['total_millis_ratio_vs_main'])}",
-                f"- `delta_prefill_millis_vs_main`: {_fmt_float(comparison['delta_prefill_millis_vs_main'])}",
-                f"- `prefill_millis_ratio_vs_main`: {_fmt_float(comparison['prefill_millis_ratio_vs_main'])}",
-                f"- `delta_decode_millis_vs_main`: {_fmt_float(comparison['delta_decode_millis_vs_main'])}",
-                f"- `decode_millis_ratio_vs_main`: {_fmt_float(comparison['decode_millis_ratio_vs_main'])}",
-                f"- `delta_total_tokens_per_second_vs_main`: {_fmt_float(comparison['delta_total_tokens_per_second_vs_main'])}",
-                f"- `total_tokens_per_second_ratio_vs_main`: {_fmt_float(comparison['total_tokens_per_second_ratio_vs_main'])}",
                 "",
             ]
         )

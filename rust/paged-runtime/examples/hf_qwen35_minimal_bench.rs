@@ -153,6 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct Summary {
         model_id: String,
         device: String,
+        full_prefill_megakernel_requested: bool,
+        hip_persistent_full_prefill_requested: bool,
         prompt: String,
         prompt_token_count: usize,
         prompt_token_target: Option<usize>,
@@ -187,6 +189,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stage_full_attention_millis: f64,
         stage_mlp_millis: f64,
         generated_text: String,
+    }
+
+    fn env_flag_truthy(key: &str) -> bool {
+        matches!(
+            std::env::var(key).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
+        )
     }
 
     fn parse_args() -> Result<BenchArgs, String> {
@@ -419,6 +428,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let summary = Summary {
         model_id: runner.weights.model_id.clone(),
         device: args.device.to_string(),
+        full_prefill_megakernel_requested: env_flag_truthy("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL"),
+        hip_persistent_full_prefill_requested: env_flag_truthy(
+            "CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL"
+        ),
         prompt: args.prompt.clone(),
         prompt_token_count: prompt_ids.len(),
         prompt_token_target: args.prompt_token_target,

@@ -288,6 +288,7 @@ and reports Luce-style headline metrics in the summary:
 plus the minimal runtime stage buckets for the measured run.
 
 To compare that minimal-control lane directly against the main Rust/Candle dense-control runtime,
+and against a Luce-style megakernel lane that forces the minimal full-attention megakernel gates,
 use the joined harness:
 
 ```bash
@@ -300,12 +301,21 @@ That writes one dated directory under `benchmarks/results/` containing:
 - `report.json`
 - `report.md`
 
-Each group in the report compares:
+Each group in the report includes:
 
 - `main_dense_control`
 - `minimal_control`
+- `minimal_megakernel`
 
 for the same model, device, prompt token count, and decode length.
+
+`minimal_megakernel` sets:
+
+- `CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL=1`
+- `CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL=1` on HIP only
+
+On CUDA, this lane is still guarded by the model-side `head_dim <= 128` restriction, so
+`Qwen/Qwen3.5-0.8B` currently falls back rather than claiming unsupported megakernel coverage.
 
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 

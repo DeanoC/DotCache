@@ -7,6 +7,7 @@ from benchmarks.bench_qwen35_minimal_control_compare import (
     DEFAULT_MODEL,
     RunSpec,
     _can_resume_existing_run,
+    env_for_run,
     _run_config_signature,
     build_matrix,
     build_report,
@@ -16,14 +17,19 @@ from benchmarks.bench_qwen35_minimal_control_compare import (
 
 def test_build_matrix_locks_default_compare_run_count() -> None:
     specs = build_matrix()
-    assert len(specs) == 4
-    assert {spec.lane for spec in specs} == {"minimal_control", "main_dense_control"}
+    assert len(specs) == 6
+    assert {spec.lane for spec in specs} == {
+        "minimal_control",
+        "minimal_megakernel",
+        "main_dense_control",
+    }
     assert {spec.prompt_token_count for spec in specs} == {2048, 8192}
 
 
 def test_command_for_run_emits_lane_specific_examples(tmp_path) -> None:
     specs = build_matrix(model_id=DEFAULT_MODEL, contexts=(2048,), max_new_tokens=4)
     minimal = next(spec for spec in specs if spec.lane == "minimal_control")
+    megakernel = next(spec for spec in specs if spec.lane == "minimal_megakernel")
     main = next(spec for spec in specs if spec.lane == "main_dense_control")
 
     minimal_command = command_for_run(
@@ -42,6 +48,9 @@ def test_command_for_run_emits_lane_specific_examples(tmp_path) -> None:
         "--",
     ]
     assert "--prompt-token-target" in minimal_command
+    assert env_for_run(minimal) == {}
+
+    assert env_for_run(megakernel) == {"CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL": "1"}
 
     main_command = command_for_run(
         main,
@@ -90,6 +99,20 @@ def test_build_report_compares_minimal_to_main() -> None:
                 "total_tokens_per_second": 44.0,
             },
         },
+        {
+            "run_id": "megakernel",
+            "model_id": DEFAULT_MODEL,
+            "prompt_token_count": 2048,
+            "lane": "minimal_megakernel",
+            "status": "completed",
+            "summary_metrics": {
+                "prefill_millis": 850.0,
+                "decode_millis": 550.0,
+                "total_millis": 1400.0,
+                "total_tokens_per_second": 46.0,
+                "full_prefill_megakernel_requested": True,
+            },
+        },
     ]
 
     report = build_report(records)
@@ -97,9 +120,14 @@ def test_build_report_compares_minimal_to_main() -> None:
     group = report["groups"][0]
     assert group["main_dense_control"]["run_id"] == "main"
     assert group["minimal_control"]["run_id"] == "minimal"
-    assert group["comparison"]["delta_prefill_millis_vs_main"] == -100.0
-    assert group["comparison"]["decode_millis_ratio_vs_main"] == 1.2
-    assert group["comparison"]["total_tokens_per_second_ratio_vs_main"] == 1.1
+    assert group["minimal_megakernel"]["run_id"] == "megakernel"
+    assert group["comparisons"]["minimal_control_vs_main"]["delta_prefill_millis"] == -100.0
+    assert group["comparisons"]["minimal_control_vs_main"]["decode_millis_ratio"] == 1.2
+    assert (
+        group["comparisons"]["minimal_control_vs_main"]["total_tokens_per_second_ratio"] == 1.1
+    )
+    assert group["comparisons"]["minimal_megakernel_vs_main"]["delta_total_millis"] == -100.0
+    assert group["comparisons"]["minimal_megakernel_vs_minimal_control"]["delta_total_millis"] == -100.0
 
 
 def test_resume_requires_matching_run_configuration(tmp_path) -> None:
