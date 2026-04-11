@@ -191,7 +191,7 @@ fn run_external_luce(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakernel
 
 #[cfg(feature = "qwen35-minimal")]
 fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<MegakernelControlRecord> {
-    use candle_core::{DType, Device, IndexOp, Tensor};
+    use candle_core::{Device, IndexOp, Tensor};
     use crate::Qwen35FastRunner;
     use serde_json::json;
     use std::time::Instant;
@@ -321,25 +321,7 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
                 })
             }
         };
-        let values = last_token
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        let mut best: Option<(usize, f32)> = None;
-        for (index, value) in values.iter().copied().enumerate() {
-            if value.is_nan() {
-                continue;
-            }
-            match best {
-                Some((_, best_value)) if value <= best_value => {}
-                _ => best = Some((index, value)),
-            }
-        }
-        let (index, _) = best.ok_or_else(|| RuntimeError::External {
-            context: "megakernel_control",
-            message: "all logits were NaN".to_string(),
-        })?;
-        Ok(index as u32)
+        last_token.argmax(candle_core::D::Minus1)?.to_scalar::<u32>().map_err(Into::into)
     }
 
     fn run_once(

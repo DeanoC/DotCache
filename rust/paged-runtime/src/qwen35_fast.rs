@@ -296,8 +296,7 @@ impl Qwen35FastRunner {
     ) -> Result<(Tensor, MinimalQwen35RuntimeProfile)> {
         let input_ids = self.input_ids_tensor(prompt_ids)?;
         let hidden_states = self.model.hidden_states_from_input_ids(&input_ids)?;
-        let (logits, profile) = self.model.forward_hidden_states_profiled(&hidden_states, 0)?;
-        Ok((logits.to_dtype(DType::F32)?, profile))
+        Ok(self.model.forward_hidden_states_profiled(&hidden_states, 0)?)
     }
 
     pub fn decode_token_profiled(
@@ -307,10 +306,9 @@ impl Qwen35FastRunner {
         let input_ids = self.input_ids_tensor(&[token_id])?;
         let hidden_states = self.model.hidden_states_from_input_ids(&input_ids)?;
         let seqlen_offset = self.model.cache_state().sequence_length();
-        let (logits, profile) = self
+        Ok(self
             .model
-            .forward_hidden_states_profiled(&hidden_states, seqlen_offset)?;
-        Ok((logits.to_dtype(DType::F32)?, profile))
+            .forward_hidden_states_profiled(&hidden_states, seqlen_offset)?)
     }
 
     pub fn decode_from_hidden_state(
