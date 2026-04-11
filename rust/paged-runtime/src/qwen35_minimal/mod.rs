@@ -13,8 +13,9 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::{HfHubModelSource, ModelPackage, Result};
+use crate::{HfHubModelSource, ModelPackage, PreparedPackageSummary, Result};
 use prepared::PreparedTensorSource;
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,15 @@ pub struct MinimalQwen35Weights {
     pub revision: String,
     pub tokenizer_path: PathBuf,
     pub package_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct MinimalQwen35LoadTrace {
+    pub package_resolve_millis: Option<f64>,
+    pub config_parse_millis: f64,
+    pub model_build_millis: f64,
+    pub total_load_millis: f64,
+    pub package_stats: Option<PreparedPackageSummary>,
 }
 
 #[derive(Debug)]
@@ -82,6 +92,15 @@ impl MinimalQwen35Runner {
     }
 
     pub fn load_native_for_device(model_id: &str, device: &Device) -> Result<Self> {
+        Ok(Self::load_native_for_device_profiled(model_id, device)?.0)
+    }
+
+    pub fn load_native_for_device_profiled(
+        model_id: &str,
+        device: &Device,
+    ) -> Result<(Self, MinimalQwen35LoadTrace)> {
+        let total_started = Instant::now();
+        let package_started = Instant::now();
         let package = Arc::new(
             ModelPackage::resolve_or_build_qwen35_minimal(model_id, device).map_err(|err| {
                 crate::RuntimeError::External {
@@ -90,23 +109,42 @@ impl MinimalQwen35Runner {
                 }
             })?,
         );
+        let package_resolve_millis = package_started.elapsed().as_secs_f64() * 1000.0;
+        let package_stats = package.stats().map_err(|err| crate::RuntimeError::External {
+            context: "model-store",
+            message: err.to_string(),
+        })?;
+        let config_started = Instant::now();
         let config: MinimalQwen35Config =
             serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+        let config_parse_millis = config_started.elapsed().as_secs_f64() * 1000.0;
+        let model_started = Instant::now();
         let model = ModelForCausalLM::from_prepared(
             &config,
             PreparedTensorSource::new(package.clone(), device.clone()),
         )?;
-        Ok(Self {
-            config,
-            weights: MinimalQwen35Weights {
-                model_id: package.manifest().model_id.clone(),
-                revision: package.manifest().revision.clone(),
-                tokenizer_path: package.tokenizer_path(),
-                package_root: package.root().to_path_buf(),
+        let model_build_millis = model_started.elapsed().as_secs_f64() * 1000.0;
+        let total_load_millis = total_started.elapsed().as_secs_f64() * 1000.0;
+        Ok((
+            Self {
+                config,
+                weights: MinimalQwen35Weights {
+                    model_id: package.manifest().model_id.clone(),
+                    revision: package.manifest().revision.clone(),
+                    tokenizer_path: package.tokenizer_path(),
+                    package_root: package.root().to_path_buf(),
+                },
+                model,
+                device: device.clone(),
             },
-            model,
-            device: device.clone(),
-        })
+            MinimalQwen35LoadTrace {
+                package_resolve_millis: Some(package_resolve_millis),
+                config_parse_millis,
+                model_build_millis,
+                total_load_millis,
+                package_stats: Some(package_stats),
+            },
+        ))
     }
 
     pub fn load_with_mode(

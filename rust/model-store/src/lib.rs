@@ -225,6 +225,18 @@ struct PreparedPackageAlias {
     package_root: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedPackageStats {
+    pub tensor_count: usize,
+    pub payload_bytes: u64,
+    pub weights_blob_bytes: u64,
+    pub total_package_bytes: u64,
+    pub standard_tensor_count: usize,
+    pub standard_bytes: u64,
+    pub prepacked_tensor_count: usize,
+    pub prepacked_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct WeightView<'a> {
     entry: &'a PreparedTensorEntry,
@@ -383,6 +395,65 @@ impl PreparedPackage {
 
     pub fn config_path(&self) -> PathBuf {
         self.root.join(&self.manifest.config_filename)
+    }
+
+    pub fn stats(&self) -> Result<PreparedPackageStats> {
+        let mut payload_bytes = 0u64;
+        let mut standard_tensor_count = 0usize;
+        let mut standard_bytes = 0u64;
+        let mut prepacked_tensor_count = 0usize;
+        let mut prepacked_bytes = 0u64;
+
+        for entry in &self.manifest.tensors {
+            payload_bytes += entry.byte_len;
+            match entry.layout {
+                TensorLayoutTag::StandardContiguous => {
+                    standard_tensor_count += 1;
+                    standard_bytes += entry.byte_len;
+                }
+                _ => {
+                    prepacked_tensor_count += 1;
+                    prepacked_bytes += entry.byte_len;
+                }
+            }
+        }
+
+        let weights_blob_bytes = fs::metadata(self.root.join(WEIGHTS_FILENAME))
+            .map_err(|err| ModelStoreError::External {
+                context: "model-store",
+                message: format!("failed to stat weights blob: {err}"),
+            })?
+            .len();
+        let total_package_bytes = weights_blob_bytes
+            + fs::metadata(self.root.join(MANIFEST_FILENAME))
+                .map_err(|err| ModelStoreError::External {
+                    context: "model-store",
+                    message: format!("failed to stat manifest: {err}"),
+                })?
+                .len()
+            + fs::metadata(self.root.join(CONFIG_FILENAME))
+                .map_err(|err| ModelStoreError::External {
+                    context: "model-store",
+                    message: format!("failed to stat config: {err}"),
+                })?
+                .len()
+            + fs::metadata(self.root.join(TOKENIZER_FILENAME))
+                .map_err(|err| ModelStoreError::External {
+                    context: "model-store",
+                    message: format!("failed to stat tokenizer: {err}"),
+                })?
+                .len();
+
+        Ok(PreparedPackageStats {
+            tensor_count: self.manifest.tensors.len(),
+            payload_bytes,
+            weights_blob_bytes,
+            total_package_bytes,
+            standard_tensor_count,
+            standard_bytes,
+            prepacked_tensor_count,
+            prepacked_bytes,
+        })
     }
 
     pub fn contains_tensor(&self, name: &str) -> bool {
@@ -1275,6 +1346,7 @@ fn release_mmap_range(mmap: &Mmap, start: usize, len: usize) {
 
 pub type PreparedModelPackage = PreparedPackage;
 pub type PreparedModelManifest = PreparedPackageManifest;
+pub type PreparedPackageSummary = PreparedPackageStats;
 pub type PreparedTensorLayout = TensorLayoutTag;
 pub type ModelTarget = TargetSpec;
 

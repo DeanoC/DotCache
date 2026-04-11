@@ -2,7 +2,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::Device;
     use dotcache_paged_runtime::{
-        MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
+        MinimalQwen35LoadTrace, MinimalQwen35Runner, Result, RuntimeError,
     };
     use serde::Serialize;
     use std::path::Path;
@@ -144,10 +144,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device: String,
         load_mode: String,
         load_millis: f64,
+        package_resolve_millis: Option<f64>,
+        config_parse_millis: Option<f64>,
+        model_build_millis: Option<f64>,
         tokenizer_load_millis: f64,
         peak_rss_kib: u64,
         current_rss_kib: u64,
         package_root: Option<String>,
+        package_tensor_count: Option<usize>,
+        package_payload_bytes: Option<u64>,
+        package_weights_blob_bytes: Option<u64>,
+        package_total_bytes: Option<u64>,
+        package_standard_tensor_count: Option<usize>,
+        package_standard_bytes: Option<u64>,
+        package_prepacked_tensor_count: Option<usize>,
+        package_prepacked_bytes: Option<u64>,
         tokenizer_path: String,
         revision: String,
     }
@@ -219,16 +230,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = parse_args()?;
     let device = args.device.resolve()?;
-    let load_started = Instant::now();
-    let runner = match args.mode {
-        LoadMode::Native => MinimalQwen35Runner::load_with_mode(
-            &args.model_id,
-            &device,
-            MinimalQwen35LoadMode::NativeStore,
-        )?,
-        LoadMode::Direct => MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?,
+    let (runner, load_millis, load_trace) = match args.mode {
+        LoadMode::Native => {
+            let (runner, trace) =
+                MinimalQwen35Runner::load_native_for_device_profiled(&args.model_id, &device)?;
+            (runner, trace.total_load_millis, Some(trace))
+        }
+        LoadMode::Direct => {
+            let load_started = Instant::now();
+            let runner = MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?;
+            let load_millis = load_started.elapsed().as_secs_f64() * 1000.0;
+            (runner, load_millis, None)
+        }
     };
-    let load_millis = load_started.elapsed().as_secs_f64() * 1000.0;
     let tokenizer_started = Instant::now();
     let _tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
     let tokenizer_load_millis = tokenizer_started.elapsed().as_secs_f64() * 1000.0;
@@ -245,15 +259,63 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     };
 
+    let (
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
+        package_tensor_count,
+        package_payload_bytes,
+        package_weights_blob_bytes,
+        package_total_bytes,
+        package_standard_tensor_count,
+        package_standard_bytes,
+        package_prepacked_tensor_count,
+        package_prepacked_bytes,
+    ) = if let Some(MinimalQwen35LoadTrace {
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
+        package_stats,
+        ..
+    }) = load_trace
+    {
+        (
+            package_resolve_millis,
+            Some(config_parse_millis),
+            Some(model_build_millis),
+            package_stats.as_ref().map(|stats| stats.tensor_count),
+            package_stats.as_ref().map(|stats| stats.payload_bytes),
+            package_stats.as_ref().map(|stats| stats.weights_blob_bytes),
+            package_stats.as_ref().map(|stats| stats.total_package_bytes),
+            package_stats.as_ref().map(|stats| stats.standard_tensor_count),
+            package_stats.as_ref().map(|stats| stats.standard_bytes),
+            package_stats.as_ref().map(|stats| stats.prepacked_tensor_count),
+            package_stats.as_ref().map(|stats| stats.prepacked_bytes),
+        )
+    } else {
+        (None, None, None, None, None, None, None, None, None, None, None)
+    };
+
     let summary = Summary {
         model_id: runner.weights.model_id.clone(),
         device: args.device.to_string(),
         load_mode: args.mode.to_string(),
         load_millis,
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
         tokenizer_load_millis,
         peak_rss_kib,
         current_rss_kib,
         package_root,
+        package_tensor_count,
+        package_payload_bytes,
+        package_weights_blob_bytes,
+        package_total_bytes,
+        package_standard_tensor_count,
+        package_standard_bytes,
+        package_prepacked_tensor_count,
+        package_prepacked_bytes,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),
     };

@@ -1,7 +1,7 @@
 pub use dotcache_model_store::{
     BackendKind, CandleWeightProvider, ModelFamilyConverter, ModelStoreError, PackageKey,
-    PreparedDType, PreparedTensorEncoding, PreparedTensorEntry, TargetSpec, WeightProvider,
-    WeightView,
+    PreparedDType, PreparedPackageSummary, PreparedTensorEncoding, PreparedTensorEntry,
+    TargetSpec, WeightProvider, WeightView,
 };
 
 pub use dotcache_model_store::{
