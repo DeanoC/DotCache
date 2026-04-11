@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runtime-m0-pages", type=int, default=0)
     parser.add_argument("--runtime-m3-pages", type=int, default=0)
+    parser.add_argument("--direct-m0-crossover-sweep-pages", default="")
     parser.add_argument("--output-format", choices=["pretty", "json"], default="pretty")
     return parser.parse_args()
 
@@ -558,6 +559,106 @@ def _runtime_score_breakdown_result(
     return result
 
 
+def _parse_positive_int_csv(value: str) -> list[int]:
+    parts = [part.strip() for part in str(value or "").split(",")]
+    resolved: list[int] = []
+    for part in parts:
+        if not part:
+            continue
+        count = int(part)
+        if count <= 0:
+            continue
+        resolved.append(count)
+    return resolved
+
+
+def _direct_m0_crossover_sweep_result(
+    *,
+    device: str,
+    head_dim: int,
+    num_key_value_heads: int,
+    query_count: int,
+    tokens_per_page: int,
+    group_size: int,
+    bits_k: int,
+    quant_scheme_k: str,
+    warmup_iters: int,
+    bench_iters: int,
+    page_counts: list[int],
+) -> dict[str, Any] | None:
+    if not page_counts:
+        return None
+    rows: list[dict[str, Any]] = []
+    for page_count in page_counts:
+        breakdown = _runtime_score_breakdown_result(
+            device=device,
+            head_dim=head_dim,
+            num_key_value_heads=num_key_value_heads,
+            query_count=query_count,
+            tokens_per_page=tokens_per_page,
+            group_size=group_size,
+            bits_k=bits_k,
+            quant_scheme_k=quant_scheme_k,
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+            m0_pages=int(page_count),
+            m3_pages=0,
+        )
+        assert breakdown is not None
+        flat_ms = float(breakdown["direct_m0_score_ms"])
+        transposed_ms = float(breakdown["direct_m0_transposed_score_ms"])
+        winner = "flat" if flat_ms <= transposed_ms else "transposed"
+        rows.append(
+            {
+                "m0_pages": int(page_count),
+                "selected_tokens": int(page_count) * int(tokens_per_page),
+                "flat_ms": flat_ms,
+                "transposed_ms": transposed_ms,
+                "winner": winner,
+                "speedup": (
+                    transposed_ms / max(flat_ms, 1e-9)
+                    if winner == "flat"
+                    else flat_ms / max(transposed_ms, 1e-9)
+                ),
+                "flat_vs_dense_score_max_abs_error": float(breakdown["direct_vs_dense_score_max_abs_error"]),
+                "transposed_vs_dense_score_max_abs_error": float(
+                    breakdown["direct_m0_transposed_vs_dense_score_max_abs_error"]
+                ),
+            }
+        )
+    first_transposed = next((row for row in rows if row["winner"] == "transposed"), None)
+    consistent_transposed = None
+    for row_index, row in enumerate(rows):
+        if row["winner"] != "transposed":
+            continue
+        if all(next_row["winner"] == "transposed" for next_row in rows[row_index:]):
+            consistent_transposed = row
+            break
+    return {
+        "enabled": True,
+        "page_counts": [int(row["m0_pages"]) for row in rows],
+        "rows": rows,
+        "first_transposed_winner_m0_pages": (
+            None if first_transposed is None else int(first_transposed["m0_pages"])
+        ),
+        "first_transposed_winner_selected_tokens": (
+            None if first_transposed is None else int(first_transposed["selected_tokens"])
+        ),
+        "first_consistent_transposed_winner_m0_pages": (
+            None if consistent_transposed is None else int(consistent_transposed["m0_pages"])
+        ),
+        "first_consistent_transposed_winner_selected_tokens": (
+            None if consistent_transposed is None else int(consistent_transposed["selected_tokens"])
+        ),
+        "recommended_custom_kernel_layout": (
+            "transposed" if consistent_transposed is not None else "flat"
+        ),
+        "recommended_custom_kernel_min_selected_tokens": (
+            None if consistent_transposed is None else int(consistent_transposed["selected_tokens"])
+        ),
+    }
+
+
 def main() -> None:
     args = parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -905,6 +1006,21 @@ def main() -> None:
     )
     if runtime_score_breakdown is not None:
         result["runtime_score_breakdown"] = runtime_score_breakdown
+    crossover_sweep = _direct_m0_crossover_sweep_result(
+        device=device,
+        head_dim=head_dim,
+        num_key_value_heads=num_key_value_heads,
+        query_count=query_count,
+        tokens_per_page=token_count,
+        group_size=int(args.group_size),
+        bits_k=int(args.bits_k),
+        quant_scheme_k=str(args.quant_scheme_k),
+        warmup_iters=int(args.warmup_iters),
+        bench_iters=int(args.bench_iters),
+        page_counts=_parse_positive_int_csv(args.direct_m0_crossover_sweep_pages),
+    )
+    if crossover_sweep is not None:
+        result["direct_m0_crossover_sweep"] = crossover_sweep
 
     if args.output_format == "json":
         print(json.dumps(result, sort_keys=True), flush=True)

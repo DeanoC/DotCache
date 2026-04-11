@@ -101,3 +101,51 @@ def test_bench_torch_decode_micro_emits_runtime_shaped_breakdown() -> None:
     assert breakdown["direct_vs_dense_score_max_abs_error"] >= 0.0
     assert breakdown["direct_m0_transposed_vs_dense_score_max_abs_error"] >= 0.0
     assert breakdown["combined_vs_dense_mix_max_abs_error"] >= 0.0
+
+
+def test_bench_torch_decode_micro_emits_direct_m0_crossover_sweep() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "benchmarks" / "bench_torch_decode_micro.py"),
+            "--device",
+            "cpu",
+            "--head-dim",
+            "64",
+            "--num-key-value-heads",
+            "1",
+            "--query-count",
+            "1",
+            "--tokens-per-page",
+            "16",
+            "--prompt-length",
+            "32",
+            "--bits-k",
+            "8",
+            "--direct-m0-crossover-sweep-pages",
+            "1,2,4",
+            "--warmup-iters",
+            "0",
+            "--bench-iters",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    sweep = payload["direct_m0_crossover_sweep"]
+
+    assert sweep["enabled"] is True
+    assert sweep["page_counts"] == [1, 2, 4]
+    assert len(sweep["rows"]) == 3
+    assert sweep["rows"][0]["selected_tokens"] == 16
+    assert sweep["rows"][1]["flat_ms"] >= 0.0
+    assert sweep["rows"][1]["transposed_ms"] >= 0.0
+    assert sweep["rows"][1]["winner"] in {"flat", "transposed"}
+    assert sweep["recommended_custom_kernel_layout"] in {"flat", "transposed"}
