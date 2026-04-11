@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Tensor};
+use candle_core::{D, DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -198,6 +198,20 @@ pub struct Qwen35FastRunner {
 }
 
 impl Qwen35FastRunner {
+    fn argmax_last_token(logits: &Tensor) -> Result<u32> {
+        let last_token = match logits.dims() {
+            [1, _vocab] => logits.i(0)?,
+            [1, seq, _vocab] => logits.i((0, seq - 1))?,
+            dims => {
+                return Err(RuntimeError::External {
+                    context: "qwen35_fast",
+                    message: format!("unexpected logits shape {dims:?}"),
+                })
+            }
+        };
+        last_token.argmax(D::Minus1)?.to_scalar::<u32>().map_err(Into::into)
+    }
+
     fn hidden_states_on_runner_device(&self, hidden_states: &Tensor) -> Result<Tensor> {
         if hidden_states.device().same_device(&self.device) {
             Ok(hidden_states.clone())
@@ -299,16 +313,32 @@ impl Qwen35FastRunner {
         Ok(self.model.forward_hidden_states_profiled(&hidden_states, 0)?)
     }
 
+    pub fn prefill_next_token_profiled(
+        &mut self,
+        prompt_ids: &[u32],
+    ) -> Result<(u32, MinimalQwen35RuntimeProfile)> {
+        let (logits, profile) = self.prefill_prompt_profiled(prompt_ids)?;
+        Ok((Self::argmax_last_token(&logits)?, profile))
+    }
+
     pub fn decode_token_profiled(
         &mut self,
         token_id: u32,
     ) -> Result<(Tensor, MinimalQwen35RuntimeProfile)> {
         let input_ids = self.input_ids_tensor(&[token_id])?;
         let hidden_states = self.model.hidden_states_from_input_ids(&input_ids)?;
-        let seqlen_offset = self.model.cache_state().sequence_length();
+        let seqlen_offset = self.model.sequence_length();
         Ok(self
             .model
             .forward_hidden_states_profiled(&hidden_states, seqlen_offset)?)
+    }
+
+    pub fn decode_next_token_profiled(
+        &mut self,
+        token_id: u32,
+    ) -> Result<(u32, MinimalQwen35RuntimeProfile)> {
+        let (logits, profile) = self.decode_token_profiled(token_id)?;
+        Ok((Self::argmax_last_token(&logits)?, profile))
     }
 
     pub fn decode_from_hidden_state(

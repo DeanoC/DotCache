@@ -191,7 +191,7 @@ fn run_external_luce(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakernel
 
 #[cfg(feature = "qwen35-minimal")]
 fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<MegakernelControlRecord> {
-    use candle_core::{Device, IndexOp, Tensor};
+    use candle_core::Device;
     use crate::Qwen35FastRunner;
     use serde_json::json;
     use std::time::Instant;
@@ -310,20 +310,6 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
         Ok(token_ids)
     }
 
-    fn argmax_last_token(logits: &Tensor) -> Result<u32> {
-        let last_token = match logits.dims() {
-            [1, _vocab] => logits.i(0)?,
-            [1, seq, _vocab] => logits.i((0, seq - 1))?,
-            dims => {
-                return Err(RuntimeError::External {
-                    context: "megakernel_control",
-                    message: format!("unexpected logits shape {dims:?}"),
-                })
-            }
-        };
-        last_token.argmax(candle_core::D::Minus1)?.to_scalar::<u32>().map_err(Into::into)
-    }
-
     fn run_once(
         runner: &mut Qwen35FastRunner,
         tokenizer: &Tokenizer,
@@ -332,18 +318,16 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
     ) -> Result<(String, usize, f64, f64, f64, ProfileSummary)> {
         runner.clear_kv_cache();
         let prefill_started = Instant::now();
-        let (mut logits, mut profile) = runner.prefill_prompt_profiled(prompt_ids)?;
+        let (mut next_token, mut profile) = runner.prefill_next_token_profiled(prompt_ids)?;
         let prefill_millis = prefill_started.elapsed().as_secs_f64() * 1_000.0;
         let mut generated_ids = prompt_ids.to_vec();
 
         let decode_started = Instant::now();
-        let mut next_token = argmax_last_token(&logits)?;
         for _ in 0..max_new_tokens {
             generated_ids.push(next_token);
-            let (next_logits, step_profile) = runner.decode_token_profiled(next_token)?;
-            logits = next_logits;
+            let (decoded_token, step_profile) = runner.decode_next_token_profiled(next_token)?;
             profile.add_assign(&step_profile);
-            next_token = argmax_last_token(&logits)?;
+            next_token = decoded_token;
         }
         let decode_millis = decode_started.elapsed().as_secs_f64() * 1_000.0;
         let total_millis = prefill_millis + decode_millis;

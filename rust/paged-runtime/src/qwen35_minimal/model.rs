@@ -7328,6 +7328,13 @@ struct FullAttention {
 }
 
 impl FullAttention {
+    fn sequence_length(&self) -> usize {
+        self.kv_cache
+            .as_ref()
+            .and_then(|(key, _)| key.dims4().ok().map(|(_, _, seq_len, _)| seq_len))
+            .unwrap_or(0)
+    }
+
     fn cache_state(&self) -> FullAttentionCacheState {
         FullAttentionCacheState {
             kv_cache: self.kv_cache.clone(),
@@ -10068,6 +10075,13 @@ impl DecoderLayer {
         }
     }
 
+    fn sequence_length(&self) -> usize {
+        match &self.token_mixer {
+            LayerKind::Linear(_) => 0,
+            LayerKind::Full(self_attn) => self_attn.sequence_length(),
+        }
+    }
+
     fn cache_state(&self) -> LayerCacheState {
         match &self.token_mixer {
             LayerKind::Linear(linear_attn) => LayerCacheState::Linear(linear_attn.cache_state()),
@@ -10548,6 +10562,14 @@ impl TextModel {
         }
     }
 
+    pub fn sequence_length(&self) -> usize {
+        self.layers
+            .iter()
+            .map(DecoderLayer::sequence_length)
+            .find(|&seq_len| seq_len != 0)
+            .unwrap_or(0)
+    }
+
     pub fn cache_state(&self) -> CacheState {
         CacheState {
             layers: self.layers.iter().map(DecoderLayer::cache_state).collect(),
@@ -10746,6 +10768,10 @@ impl ModelForCausalLM {
 
     pub fn clear_kv_cache(&mut self) {
         self.language_model.clear_kv_cache()
+    }
+
+    pub fn sequence_length(&self) -> usize {
+        self.language_model.sequence_length()
     }
 
     pub fn cache_state(&self) -> CacheState {
