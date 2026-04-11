@@ -2,6 +2,10 @@
 
 This is a minimal page-native Rust runtime skeleton for DotCache experiments.
 
+For the current status of the DotCache-local Qwen3.5 minimal HIP path, including what has landed,
+what the benchmark tools are, and which long-context kernel directions were already tried and
+rejected, see [QWEN35_MINIMAL_HIP_STATUS.md](/home/deano/DotCache/rust/paged-runtime/QWEN35_MINIMAL_HIP_STATUS.md).
+
 It deliberately starts smaller than `llama.cpp`:
 
 - append-only per-sequence page tables
