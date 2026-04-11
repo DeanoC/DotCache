@@ -8673,7 +8673,7 @@ impl GatedDeltaNet {
             )?,
         };
 
-        if device.is_hip() && k_head_dim <= 256 {
+        if (device.is_hip() || (device.is_cuda() && seq_len == 1)) && k_head_dim <= 256 {
             let batch_heads = batch_size * num_heads;
             let pack_start = profile_start(device)?;
             let initial_state = recurrent_state
@@ -12245,6 +12245,78 @@ mod tests {
         let output = paged_attention_decode_megakernel(&queries, &key, &value)?
             .flatten_all()?
             .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_delta_recurrent_prefill_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let batch_heads = 1usize;
+        let seq_len = 1usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state_data = vec![0.1f32, -0.2, 0.05, 0.3];
+        let query_data = vec![0.2f32, -0.1];
+        let key_data = vec![0.1f32, 0.2];
+        let value_data = vec![0.3f32, -0.1];
+        let beta_data = vec![0.5f32];
+        let g_data = vec![0.0f32];
+
+        let initial_state = Tensor::from_vec(
+            initial_state_data.clone(),
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_heads, seq_len, v_head_dim),
+            &device,
+        )?;
+        let beta = Tensor::from_vec(beta_data.clone(), (batch_heads, seq_len), &device)?;
+        let g = Tensor::from_vec(g_data.clone(), (batch_heads, seq_len), &device)?;
+
+        let output = delta_recurrent_prefill(&initial_state, &query, &key, &value, &beta, &g)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let g_t = g_data[0].exp();
+        let mut state_col0 = initial_state_data[0] * g_t;
+        let mut state_col1 = initial_state_data[2] * g_t;
+        let kv_mem_0 = state_col0 * key_data[0] + state_col1 * key_data[1];
+        let delta_0 = (value_data[0] - kv_mem_0) * beta_data[0];
+        state_col0 += key_data[0] * delta_0;
+        state_col1 += key_data[1] * delta_0;
+        let out_0 = state_col0 * query_data[0] + state_col1 * query_data[1];
+
+        let mut state_col0_b = initial_state_data[1] * g_t;
+        let mut state_col1_b = initial_state_data[3] * g_t;
+        let kv_mem_1 = state_col0_b * key_data[0] + state_col1_b * key_data[1];
+        let delta_1 = (value_data[1] - kv_mem_1) * beta_data[0];
+        state_col0_b += key_data[0] * delta_1;
+        state_col1_b += key_data[1] * delta_1;
+        let out_1 = state_col0_b * query_data[0] + state_col1_b * query_data[1];
+
+        let expected = vec![
+            out_0,
+            out_1,
+            state_col0,
+            state_col0_b,
+            state_col1,
+            state_col1_b,
+        ];
         assert_close(&output, &expected, 1e-5);
         Ok(())
     }
