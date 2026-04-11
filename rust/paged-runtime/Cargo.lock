@@ -596,6 +596,9 @@ dependencies = [
  "candle-transformers",
  "half",
  "hf-hub",
+ "libc",
+ "memmap2",
+ "safetensors 0.5.3",
  "serde",
  "serde_json",
  "tokenizers",
@@ -2394,6 +2397,16 @@ name = "safetensors"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44560c11236a6130a46ce36c836a62936dc81ebf8c36a37947423571be0e55b6"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "safetensors"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc0cdb7198d738a111f6df8fef42cb175412c311d0c4ac9126ff4e550ad1a0e8"
 dependencies = [
  "serde",
  "serde_json",
