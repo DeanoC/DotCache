@@ -869,7 +869,7 @@ impl Mlp {
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let (gate, up) = if let Some(gate_up_pack_proj) = &self.gate_up_pack_proj {
-            let packed = gate_up_pack_proj.forward(xs)?;
+            let packed = fast_linear_decode(xs, gate_up_pack_proj)?;
             let intermediate = self.down_proj.weight().dims2()?.1;
             let gate = packed.narrow(D::Minus1, 0, intermediate)?;
             let up = packed.narrow(D::Minus1, intermediate, intermediate)?;
@@ -896,7 +896,7 @@ impl Module for Mlp {
         } else {
             (gate.apply(&self.act_fn)? * up)?
         };
-        hidden.apply(&self.down_proj)
+        fast_linear_decode(&hidden, &self.down_proj)
     }
 }
 
@@ -1084,6 +1084,146 @@ impl candle::CustomOp2 for CudaSwigluMul {
 
 fn cuda_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     gate.apply_op2_no_bwd(up, &CudaSwigluMul)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeGemv {
+    rows: usize,
+    out_dim: usize,
+    in_dim: usize,
+}
+
+impl candle::CustomOp2 for CudaLinearDecodeGemv {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-gemv"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _xs: &candle::CpuStorage,
+        _xs_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-gemv has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        xs: &candle::CudaStorage,
+        xs_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+            candle::bail!("cuda-linear-decode-gemv requires contiguous inputs")
+        }
+        if xs.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-linear-decode-gemv requires matching dtypes, got xs={:?} weight={:?}",
+                xs.dtype(),
+                weight.dtype()
+            )
+        }
+        let weight_dims = weight_layout.shape().dims();
+        if weight_dims != [self.out_dim, self.in_dim] {
+            candle::bail!(
+                "cuda-linear-decode-gemv expected weight shape [{}, {}], got {:?}",
+                self.out_dim,
+                self.in_dim,
+                weight_dims
+            )
+        }
+        if xs_layout.shape().elem_count() != self.rows * self.in_dim {
+            candle::bail!(
+                "cuda-linear-decode-gemv expected xs elem_count {}, got shape {:?}",
+                self.rows * self.in_dim,
+                xs_layout.shape().dims()
+            )
+        }
+
+        let device = xs.device().clone();
+        let mut out_dims = xs_layout.shape().dims().to_vec();
+        *out_dims
+            .last_mut()
+            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))? =
+            self.out_dim;
+        let out_shape = candle::Shape::from(out_dims);
+        let cfg = LaunchConfig {
+            grid_dim: (self.out_dim as u32, self.rows as u32, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = xs.as_cuda_slice::<$ty>()?;
+                let xs = match xs_layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous xs"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(self.rows * self.out_dim) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.rows, self.out_dim, self.in_dim);
+                builder.arg(&xs);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match xs.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_gemv_f16"),
+            DType::F32 => launch!(f32, "linear_decode_gemv_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_gemv_bf16"),
+            other => candle::bail!("cuda-linear-decode-gemv unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_linear_no_bias_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let weight = linear.weight().contiguous()?;
+    let in_dim = *xs
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))?;
+    let out_dim = weight.dim(0)?;
+    let rows = xs.elem_count() / in_dim;
+    xs.apply_op2_no_bwd(
+        &weight,
+        &CudaLinearDecodeGemv {
+            rows,
+            out_dim,
+            in_dim,
+        },
+    )
+}
+
+fn fast_linear_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
+    let use_cuda_fast = xs.device().is_cuda()
+        && linear.bias().is_none()
+        && xs.dims().len() >= 2
+        && xs.dims()[xs.dims().len() - 2] == 1;
+    if use_cuda_fast {
+        cuda_linear_no_bias_decode(xs, linear)
+    } else {
+        linear.forward(xs)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -8656,7 +8796,7 @@ impl FullAttention {
         let q_gate_out = self.num_heads * self.head_dim * 2;
         let kv_out = self.num_kv_heads * self.head_dim;
         let (q_and_gate, key_states, value_states) = if let Some(qkv_pack_proj) = &self.qkv_pack_proj {
-            let packed = qkv_pack_proj.forward(xs)?;
+            let packed = fast_linear_decode(xs, qkv_pack_proj)?;
             let q_and_gate = packed
                 .narrow(D::Minus1, 0, q_gate_out)?
                 .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
@@ -8928,7 +9068,7 @@ impl FullAttention {
         let gated = attn_output.broadcast_mul(&ops::sigmoid(&gate)?)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = gated.apply(&self.o_proj)?;
+        let output = fast_linear_decode(&gated, &self.o_proj)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -10610,9 +10750,9 @@ impl GatedDeltaNet {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let qkv_start = profile_start(device)?;
-        let mixed_qkv = self.in_proj_qkv.forward(&hidden_states)?.transpose(1, 2)?;
+        let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
         let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
-            let packed = in_proj_zba_pack.forward(&hidden_states)?;
+            let packed = fast_linear_decode(&hidden_states, in_proj_zba_pack)?;
             let z = packed.narrow(D::Minus1, 0, self.value_dim)?.reshape((
                 batch_size,
                 seq_len,
@@ -10763,7 +10903,7 @@ impl GatedDeltaNet {
             } else {
                 core_attn_out.to_dtype(hidden_states.dtype())?
             };
-            let output = self.out_proj.forward(&core_attn_out)?;
+            let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
             profile.output_projection_millis += profile_elapsed(output_start, device)?;
             profile.linear_attention_millis += profile_elapsed(total_start, device)?;
             return Ok((output, recurrent_state, profile));
@@ -10936,7 +11076,7 @@ impl GatedDeltaNet {
         } else {
             core_attn_out.to_dtype(hidden_states.dtype())?
         };
-        let output = self.out_proj.forward(&core_attn_out)?;
+        let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.linear_attention_millis +=
             profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
@@ -12653,6 +12793,40 @@ mod tests {
         Ok((gate, up, expected))
     }
 
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
+    fn linear_decode_gemv_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
+        let xs_data = vec![
+            0.2f32, -0.3, 0.4, 0.1, -0.2, 0.5, 0.7, -0.6,
+            0.6, 0.2, -0.1, 0.3, 0.4, -0.5, 0.8, 0.9,
+        ];
+        let weight_data = vec![
+            0.1f32, 0.0, 0.2, -0.1, 0.3, -0.4, 0.5, -0.2,
+            -0.2, 0.5, 0.1, 0.0, -0.3, 0.4, 0.2, 0.6,
+            0.7, -0.1, 0.3, 0.4, 0.2, 0.1, -0.5, 0.2,
+            0.0, -0.6, 0.8, 0.5, -0.1, 0.7, 0.4, -0.3,
+            0.4, 0.2, -0.2, 0.6, 0.3, -0.5, 0.1, 0.0,
+        ];
+        let xs = Tensor::from_vec(xs_data.clone(), (2usize, 1usize, 8usize), device)?
+            .to_dtype(DType::F16)?;
+        let weight = Tensor::from_vec(weight_data.clone(), (5usize, 8usize), device)?
+            .to_dtype(DType::F16)?;
+        let mut expected = Vec::with_capacity(2 * 5);
+        for row in 0..2usize {
+            let row_slice = &xs_data[row * 8..(row + 1) * 8];
+            for out_idx in 0..5usize {
+                let w = &weight_data[out_idx * 8..(out_idx + 1) * 8];
+                expected.push(
+                    row_slice
+                        .iter()
+                        .zip(w.iter())
+                        .map(|(x, ww)| x * ww)
+                        .sum::<f32>(),
+                );
+            }
+        }
+        Ok((xs, weight, expected))
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_embedding_lookup_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
         let embeddings_data = vec![
@@ -13770,6 +13944,21 @@ mod tests {
             .flatten_all()?
             .to_vec1::<f32>()?;
         assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_gemv_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, weight, expected) = linear_decode_gemv_sample(&device)?;
+        let linear = Linear::new(weight, None);
+        let output = cuda_linear_no_bias_decode(&xs, &linear)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-4);
         Ok(())
     }
 
