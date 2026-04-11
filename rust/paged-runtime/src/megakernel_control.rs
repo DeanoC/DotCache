@@ -192,7 +192,7 @@ fn run_external_luce(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakernel
 #[cfg(feature = "qwen35-minimal")]
 fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<MegakernelControlRecord> {
     use candle_core::{DType, Device, IndexOp, Tensor};
-    use crate::{HfHubModelSource, MinimalQwen35KvCache, MinimalQwen35Runner};
+    use crate::{MinimalQwen35KvCache, Qwen35FastRunner};
     use serde_json::json;
     use std::time::Instant;
     use tokenizers::Tokenizer;
@@ -343,7 +343,7 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
     }
 
     fn run_once(
-        runner: &mut MinimalQwen35Runner,
+        runner: &mut Qwen35FastRunner,
         tokenizer: &Tokenizer,
         prompt_ids: &[u32],
         max_new_tokens: usize,
@@ -410,17 +410,18 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
         ))
     }
 
-    if args.model_id != "Qwen/Qwen3.5-0.8B" {
+    if !Qwen35FastRunner::supports_model_id(args.model_id) {
         return Err(RuntimeError::External {
             context: "megakernel_control",
             message: format!(
-                "in-tree megakernel_control currently supports only Qwen/Qwen3.5-0.8B, got {}",
+                "in-tree megakernel_control currently supports only {}, got {}",
+                crate::qwen35_fast::SUPPORTED_MODEL_ID,
                 args.model_id
             ),
         });
     }
 
-    let source = HfHubModelSource::new()?;
+    let source = crate::HfHubModelSource::new()?;
     let artifacts = source.snapshot(args.model_id)?;
     let tokenizer = Tokenizer::from_file(&artifacts.tokenizer_path).map_err(|err| {
         RuntimeError::External {
@@ -432,7 +433,7 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
     let device = resolve_minimal_device(args.device)?;
 
     let load_started = Instant::now();
-    let mut runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(args.model_id, &device)?;
+    let mut runner = Qwen35FastRunner::load_qwen35_0_8b_f16(args.model_id, &device)?;
     let load_millis = load_started.elapsed().as_secs_f64() * 1_000.0;
 
     let mut warmup_millis = 0.0f64;
@@ -466,50 +467,124 @@ fn run_in_tree_minimal(args: &MegakernelControlBenchArgs<'_>) -> Result<Megakern
         0.0
     };
 
+    let mut record = serde_json::Map::new();
+    record.insert("model_id".to_string(), json!(runner.weights.model_id));
+    record.insert("device".to_string(), json!(args.device.to_string()));
+    record.insert(
+        "backend_impl".to_string(),
+        json!(crate::qwen35_fast::BACKEND_IMPL),
+    );
+    record.insert("backend_status".to_string(), json!("completed"));
+    record.insert(
+        "full_prefill_megakernel_requested".to_string(),
+        json!(env_flag_truthy("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL")),
+    );
+    record.insert(
+        "hip_persistent_full_prefill_requested".to_string(),
+        json!(env_flag_truthy("CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL")),
+    );
+    record.insert("prompt_token_count".to_string(), json!(prompt_ids.len()));
+    record.insert(
+        "prompt_token_target".to_string(),
+        json!(args.prompt_token_target),
+    );
+    record.insert(
+        "generated_token_count".to_string(),
+        json!(generated_token_count),
+    );
+    record.insert("warmup_runs".to_string(), json!(args.warmup_runs));
+    record.insert("warmup_millis".to_string(), json!(warmup_millis));
+    record.insert("max_new_tokens".to_string(), json!(args.max_new_tokens));
+    record.insert("load_millis".to_string(), json!(load_millis));
+    record.insert("prefill_millis".to_string(), json!(prefill_millis));
+    record.insert("decode_millis".to_string(), json!(decode_millis));
+    record.insert("total_millis".to_string(), json!(total_millis));
+    record.insert("prefill_tokens_per_second".to_string(), json!(prefill_tps));
+    record.insert("decode_tokens_per_second".to_string(), json!(decode_tps));
+    record.insert("total_tokens_per_second".to_string(), json!(total_tps));
+    record.insert(
+        "stage_qkv_projection_millis".to_string(),
+        json!(profile.qkv_projection_millis),
+    );
+    record.insert(
+        "stage_kv_append_write_millis".to_string(),
+        json!(profile.kv_append_write_millis),
+    );
+    record.insert(
+        "stage_layout_prepare_millis".to_string(),
+        json!(profile.layout_prepare_millis),
+    );
+    record.insert(
+        "stage_attention_score_millis".to_string(),
+        json!(profile.attention_score_millis),
+    );
+    record.insert(
+        "stage_attention_softmax_millis".to_string(),
+        json!(profile.attention_softmax_millis),
+    );
+    record.insert(
+        "stage_attention_mix_millis".to_string(),
+        json!(profile.attention_mix_millis),
+    );
+    record.insert(
+        "stage_output_projection_millis".to_string(),
+        json!(profile.output_projection_millis),
+    );
+    record.insert(
+        "stage_full_attention_mask_prepare_millis".to_string(),
+        json!(profile.full_attention_mask_prepare_millis),
+    );
+    record.insert(
+        "stage_full_attention_input_layout_millis".to_string(),
+        json!(profile.full_attention_input_layout_millis),
+    );
+    record.insert(
+        "stage_full_attention_kv_materialize_millis".to_string(),
+        json!(profile.full_attention_kv_materialize_millis),
+    );
+    record.insert(
+        "stage_full_attention_output_collect_millis".to_string(),
+        json!(profile.full_attention_output_collect_millis),
+    );
+    record.insert(
+        "stage_full_attention_output_reshape_millis".to_string(),
+        json!(profile.full_attention_output_reshape_millis),
+    );
+    record.insert(
+        "stage_full_attention_gate_millis".to_string(),
+        json!(profile.full_attention_gate_millis),
+    );
+    record.insert(
+        "stage_full_attention_kernel_execute_millis".to_string(),
+        json!(profile.full_attention_kernel_execute_millis),
+    );
+    record.insert(
+        "stage_scheduler_planning_millis".to_string(),
+        json!(profile.scheduler_planning_millis),
+    );
+    record.insert(
+        "stage_transfer_millis".to_string(),
+        json!(profile.transfer_millis),
+    );
+    record.insert(
+        "stage_linear_attention_millis".to_string(),
+        json!(profile.linear_attention_millis),
+    );
+    record.insert(
+        "stage_full_attention_millis".to_string(),
+        json!(profile.full_attention_millis),
+    );
+    record.insert("stage_mlp_millis".to_string(), json!(profile.mlp_millis));
+    record.insert("generated_text".to_string(), json!(generated_text));
+    record.insert("invalid_token_id".to_string(), serde_json::Value::Null);
+    record.insert("invalid_token_step".to_string(), serde_json::Value::Null);
+    record.insert(
+        "terminated_due_to_invalid_token".to_string(),
+        json!(false),
+    );
+
     Ok(MegakernelControlRecord {
-        record: json!({
-            "model_id": runner.weights.model_id,
-            "device": args.device.to_string(),
-            "backend_status": "completed",
-            "full_prefill_megakernel_requested": env_flag_truthy("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL"),
-            "hip_persistent_full_prefill_requested": env_flag_truthy("CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL"),
-            "prompt_token_count": prompt_ids.len(),
-            "prompt_token_target": args.prompt_token_target,
-            "generated_token_count": generated_token_count,
-            "warmup_runs": args.warmup_runs,
-            "warmup_millis": warmup_millis,
-            "max_new_tokens": args.max_new_tokens,
-            "load_millis": load_millis,
-            "prefill_millis": prefill_millis,
-            "decode_millis": decode_millis,
-            "total_millis": total_millis,
-            "prefill_tokens_per_second": prefill_tps,
-            "decode_tokens_per_second": decode_tps,
-            "total_tokens_per_second": total_tps,
-            "stage_qkv_projection_millis": profile.qkv_projection_millis,
-            "stage_kv_append_write_millis": profile.kv_append_write_millis,
-            "stage_layout_prepare_millis": profile.layout_prepare_millis,
-            "stage_attention_score_millis": profile.attention_score_millis,
-            "stage_attention_softmax_millis": profile.attention_softmax_millis,
-            "stage_attention_mix_millis": profile.attention_mix_millis,
-            "stage_output_projection_millis": profile.output_projection_millis,
-            "stage_full_attention_mask_prepare_millis": profile.full_attention_mask_prepare_millis,
-            "stage_full_attention_input_layout_millis": profile.full_attention_input_layout_millis,
-            "stage_full_attention_kv_materialize_millis": profile.full_attention_kv_materialize_millis,
-            "stage_full_attention_output_collect_millis": profile.full_attention_output_collect_millis,
-            "stage_full_attention_output_reshape_millis": profile.full_attention_output_reshape_millis,
-            "stage_full_attention_gate_millis": profile.full_attention_gate_millis,
-            "stage_full_attention_kernel_execute_millis": profile.full_attention_kernel_execute_millis,
-            "stage_scheduler_planning_millis": profile.scheduler_planning_millis,
-            "stage_transfer_millis": profile.transfer_millis,
-            "stage_linear_attention_millis": profile.linear_attention_millis,
-            "stage_full_attention_millis": profile.full_attention_millis,
-            "stage_mlp_millis": profile.mlp_millis,
-            "generated_text": generated_text,
-            "invalid_token_id": serde_json::Value::Null,
-            "invalid_token_step": serde_json::Value::Null,
-            "terminated_due_to_invalid_token": false
-        }),
+        record: serde_json::Value::Object(record),
         status: "completed".to_string(),
         warning_message: None,
         attention_path: "in_tree_megakernel_control".to_string(),
