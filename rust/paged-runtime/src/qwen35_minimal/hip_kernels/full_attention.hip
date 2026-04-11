@@ -42,6 +42,39 @@ __device__ inline hip_bfloat16 dotcache_qwen35_from_float<hip_bfloat16>(float va
     return hip_bfloat16(value);
 }
 
+template <typename T>
+__device__ inline float dotcache_qwen35_dot_row(
+    const T* lhs,
+    const T* rhs,
+    int size
+) {
+    float dot = 0.0f;
+    for (int idx = 0; idx < size; ++idx) {
+        dot += dotcache_qwen35_to_float(lhs[idx]) * dotcache_qwen35_to_float(rhs[idx]);
+    }
+    return dot;
+}
+
+template <>
+__device__ inline float dotcache_qwen35_dot_row<__half>(
+    const __half* lhs,
+    const __half* rhs,
+    int size
+) {
+    float dot = 0.0f;
+    int idx = 0;
+    for (; idx + 1 < size; idx += 2) {
+        const __half2 lhs2 = __halves2half2(lhs[idx], lhs[idx + 1]);
+        const __half2 rhs2 = __halves2half2(rhs[idx], rhs[idx + 1]);
+        const float2 prod = __half22float2(__hmul2(lhs2, rhs2));
+        dot += prod.x + prod.y;
+    }
+    if (idx < size) {
+        dot += __half2float(lhs[idx]) * __half2float(rhs[idx]);
+    }
+    return dot;
+}
+
 __device__ inline float dotcache_qwen35_exp_fast(float x) {
     return __expf(x);
 }
@@ -1325,11 +1358,10 @@ __global__ void dotcache_qwen35_delta_local_attn_scan_flat_kernel(
     const int row_base =
         ((bh * num_chunks + chunk) * chunk_size + row_in_chunk) * k_head_dim;
     const int col_base = ((bh * num_chunks + chunk) * chunk_size + col) * k_head_dim;
-    float dot = 0.0f;
-    for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
-        dot += dotcache_qwen35_to_float(query_scan[row_base + k_idx]) *
-               dotcache_qwen35_to_float(key_scan[col_base + k_idx]);
-    }
+    const float dot = dotcache_qwen35_dot_row(
+        query_scan + row_base,
+        key_scan + col_base,
+        k_head_dim);
 
     const int exp_base = (bh * num_chunks + chunk) * chunk_size;
     const float exp_g_t = dotcache_qwen35_to_float(exp_g_scan[exp_base + row_in_chunk]);
@@ -1349,7 +1381,7 @@ __global__ void dotcache_qwen35_delta_local_attn_scan_row_kernel(
     const T* exp_g_scan,
     T* out
 ) {
-    __shared__ float query_row[256];
+    __shared__ T query_row[256];
 
     const int row_idx = static_cast<int>(blockIdx.x);
     const int total_rows = batch_heads * num_chunks * chunk_size;
@@ -1365,7 +1397,7 @@ __global__ void dotcache_qwen35_delta_local_attn_scan_row_kernel(
         ((bh * num_chunks + chunk) * chunk_size + row_in_chunk) * k_head_dim;
 
     for (int k_idx = lane; k_idx < k_head_dim; k_idx += blockDim.x) {
-        query_row[k_idx] = dotcache_qwen35_to_float(query_scan[row_base + k_idx]);
+        query_row[k_idx] = query_scan[row_base + k_idx];
     }
     __syncthreads();
 
@@ -1381,10 +1413,10 @@ __global__ void dotcache_qwen35_delta_local_attn_scan_row_kernel(
         }
 
         const int col_base = ((bh * num_chunks + chunk) * chunk_size + col) * k_head_dim;
-        float dot = 0.0f;
-        for (int k_idx = 0; k_idx < k_head_dim; ++k_idx) {
-            dot += query_row[k_idx] * dotcache_qwen35_to_float(key_scan[col_base + k_idx]);
-        }
+        const float dot = dotcache_qwen35_dot_row(
+            query_row,
+            key_scan + col_base,
+            k_head_dim);
 
         const float exp_g_s = dotcache_qwen35_to_float(exp_g_scan[exp_base + col]);
         const float decay = exp_g_s != 0.0f ? (exp_g_t / exp_g_s) : 0.0f;
