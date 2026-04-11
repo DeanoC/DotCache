@@ -3233,52 +3233,38 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             compression_rerank=compression_rerank,
             dense_fallback=dense_fallback,
         )
-        if bool(dense_fallback) or len(selected_block_ids) >= int(full_block_count):
-            layer_key_cache, layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
+        if bool(dense_fallback):
+            _layer_key_cache, _layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
                 self.layer_idx
             )
-            selected_key_states = layer_key_cache
-            selected_value_states = layer_value_cache
             selected_block_token_counts = [
                 int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in full_block_ids
             ]
             selected_block_ids = full_block_ids
             selected_token_count = int(full_token_count)
         else:
-            selected_key_states, selected_value_states, selected_block_token_counts = runtime_state.gather_full_attention_selected_blocks(
-                self.layer_idx,
-                selected_block_ids,
-            )
+            selected_block_token_counts = [
+                int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in selected_block_ids
+            ]
             selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
             full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
-        full_key_states = selected_key_states.to(dtype=query_states.dtype, device=hidden_states.device).unsqueeze(0)
-        full_value_states = selected_value_states.to(dtype=value_states.dtype, device=hidden_states.device).unsqueeze(0)
-        selected_attention_mask = attention_mask if selected_token_count == full_token_count else None
-        attention_interface = qwen35_mod.ALL_ATTENTION_FUNCTIONS.get_interface(
-            self.base_attention.config._attn_implementation,
-            qwen35_mod.eager_attention_forward,
-        )
-        attention_result, decode_ms = _timed_call(
-            lambda: attention_interface(
-                self.base_attention,
-                query_states,
-                full_key_states,
-                full_value_states,
-                selected_attention_mask,
-                dropout=0.0 if not self.training else self.base_attention.attention_dropout,
-                scaling=self.base_attention.scaling,
-                **kwargs,
+        (selected_context, _attn_weights, _selected_block_token_counts, _executed_mode_counts), decode_ms = _timed_call(
+            lambda: runtime_state.decode_full_attention_selected_blocks(
+                self.layer_idx,
+                block_ids=selected_block_ids,
+                query=query_step,
+                query_scale=float(self.base_attention.scaling),
+                config_override=final_config,
             ),
             device=hidden_states.device,
         )
-        attn_output, _attn_weights = attention_result
         runtime_state.update_full_attention_block_attention_ema(
             self.layer_idx,
             selected_block_ids=selected_block_ids,
             selected_block_token_counts=selected_block_token_counts,
             attn_weights=_attn_weights,
         )
-        context_states = attn_output.reshape(*input_shape, -1).contiguous()
+        context_states = selected_context.reshape(*input_shape, -1).contiguous()
         runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
         runtime_state.full_attention.telemetry.require_layer(self.layer_idx).decode_ms_total += float(decode_ms)
         self.adapter.persistent_full_attention_decode_ms_total += float(decode_ms)
@@ -8786,16 +8772,18 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         stop_on_certificate=False,
         policy_choice=shortlist_policy_choice,
     )
-    selected_keys, selected_values, selected_block_token_counts = runtime.gather_selected_blocks(0, selected_block_ids)
-    full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
-    selected_output = runtime.executor.decode_exact(
+    (
+        selected_output,
+        _selected_attn_weights,
+        selected_block_token_counts,
+        executed_k_mode_counts,
+    ) = runtime.decode_selected_blocks(
+        0,
+        block_ids=selected_block_ids,
         query=query_tensor,
-        key_cache=selected_keys,
-        value_cache=selected_values,
-        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
         query_scale=resolved_query_scale,
-        block_size=int(resolved_config.block_size),
     )
+    full_output = runtime.decode_layer(0, query_tensor, query_scale=resolved_query_scale)
     abs_error = (selected_output - full_output).abs()
     rel_error = abs_error / full_output.abs().clamp_min(1e-8)
     streaming_output = streaming["output"]
@@ -8825,6 +8813,8 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         "selected_token_count": int(sum(int(count) for count in selected_block_token_counts)),
         "selected_m0_metadata_block_count": int(selected_k_mode_counts.get("M0", 0)),
         "selected_m3_metadata_block_count": int(selected_k_mode_counts.get("M3", 0)),
+        "executed_m0_block_count": int(executed_k_mode_counts.get("M0", 0)),
+        "executed_m3_block_count": int(executed_k_mode_counts.get("M3", 0)),
         "compression_invalid_block_count": int(len(selection.get("compression_invalid_block_ids", []))),
         "full_block_count": int(len(runtime.layers[0].block_token_starts)),
         "full_token_count": int(key_history.shape[0]),
@@ -10219,6 +10209,9 @@ def run_qwen35_attention_subset_persistent_serving_harness(
         ),
         "persistent_runtime_enable_linear_attention_persistent_compute": bool(
             adapter.persistent_serving_config.enable_linear_attention_persistent_compute
+        ),
+        "persistent_runtime_enable_full_attention_mixed_mode_execution": bool(
+            adapter.persistent_serving_config.enable_full_attention_mixed_mode_execution
         ),
         "persistent_runtime_enable_compression": bool(adapter.persistent_serving_config.enable_compression),
         "persistent_runtime_mode_cost_weight": float(adapter.persistent_serving_config.full_attention_mode_cost_weight),

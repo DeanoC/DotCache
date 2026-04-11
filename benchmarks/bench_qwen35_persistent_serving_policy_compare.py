@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--decode-steps", type=int, default=8)
+    parser.add_argument("--enable-full-attention-mixed-mode-execution", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--enable-full-attention-mixed-mode-execution-allow-value-m0", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--full-attention-mixed-mode-execution-strategy",
+        choices=["cached_reconstruct", "blockwise_qdq", "direct_m0", "direct_m0_metal_packed"],
+        default="cached_reconstruct",
+    )
+    parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error", default="0.10")
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--prompt-files", nargs="*", default=[])
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
@@ -47,6 +55,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
     return parser.parse_args()
+
+
+def _parse_optional_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"", "none", "null"}:
+        return None
+    return float(text)
 
 
 def _build_prompt_text_inputs(
@@ -107,9 +124,21 @@ def _resolve_prompt_records(
     return sorted(deduped.values(), key=lambda record: str(record["case_tag"]))
 
 
-def _persistent_base_config(policy_path: str | None = None) -> PersistentServingConfig:
+def _persistent_base_config(
+    policy_path: str | None = None,
+    *,
+    enable_mixed_execution: bool = False,
+    mixed_execution_strategy: str = "cached_reconstruct",
+    allow_value_m0: bool = False,
+    max_k_comp_error: float | None = 0.10,
+) -> PersistentServingConfig:
     return PersistentServingConfig(
         enable_priority=True,
+        enable_compression=bool(enable_mixed_execution),
+        enable_full_attention_mixed_mode_execution=bool(enable_mixed_execution),
+        full_attention_mixed_mode_execution_strategy=str(mixed_execution_strategy),
+        full_attention_mixed_mode_execution_allow_value_m0=bool(allow_value_m0),
+        full_attention_mixed_mode_execution_max_k_comp_error=max_k_comp_error,
         full_attention_sink_block_count=1,
         full_attention_recent_block_count=64,
         full_attention_mandatory_recent_block_count=16,
@@ -170,6 +199,14 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_compression_selection_ms_per_case": 0.0,
             "hand_tuned_policy_bias_ms_per_case": 0.0,
             "bias_policy_bias_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_assembly_ms_per_case": 0.0,
+            "bias_direct_m0_assembly_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_score_ms_per_case": 0.0,
+            "bias_direct_m0_score_ms_per_case": 0.0,
+            "hand_tuned_exact_m3_score_ms_per_case": 0.0,
+            "bias_exact_m3_score_ms_per_case": 0.0,
+            "hand_tuned_final_mix_ms_per_case": 0.0,
+            "bias_final_mix_ms_per_case": 0.0,
         }
     case_count = len(records)
     return {
@@ -235,6 +272,30 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_policy_bias_ms_per_case": float(
             sum(float(record["bias_policy_bias_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_direct_m0_assembly_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_assembly_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_assembly_ms_per_case": float(
+            sum(float(record["bias_direct_m0_assembly_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_direct_m0_score_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_score_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_score_ms_per_case": float(
+            sum(float(record["bias_direct_m0_score_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_exact_m3_score_ms_per_case": float(
+            sum(float(record["hand_tuned_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
+        "bias_exact_m3_score_ms_per_case": float(
+            sum(float(record["bias_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_final_mix_ms_per_case": float(
+            sum(float(record["hand_tuned_final_mix_ms_total"]) for record in records) / case_count
+        ),
+        "bias_final_mix_ms_per_case": float(
+            sum(float(record["bias_final_mix_ms_total"]) for record in records) / case_count
+        ),
     }
 
 
@@ -272,6 +333,16 @@ def _render_markdown(*, records: list[dict[str, Any]], summary: dict[str, Any], 
     )
     lines.append(f"- hand-tuned policy-bias ms/case: {float(summary['hand_tuned_policy_bias_ms_per_case']):.4f}")
     lines.append(f"- bias policy-bias ms/case: {float(summary['bias_policy_bias_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned direct-M0 assembly ms/case: {float(summary['hand_tuned_direct_m0_assembly_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias direct-M0 assembly ms/case: {float(summary['bias_direct_m0_assembly_ms_per_case']):.4f}")
+    lines.append(f"- hand-tuned direct-M0 score ms/case: {float(summary['hand_tuned_direct_m0_score_ms_per_case']):.4f}")
+    lines.append(f"- bias direct-M0 score ms/case: {float(summary['bias_direct_m0_score_ms_per_case']):.4f}")
+    lines.append(f"- hand-tuned exact-M3 score ms/case: {float(summary['hand_tuned_exact_m3_score_ms_per_case']):.4f}")
+    lines.append(f"- bias exact-M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}")
+    lines.append(f"- hand-tuned final-mix ms/case: {float(summary['hand_tuned_final_mix_ms_per_case']):.4f}")
+    lines.append(f"- bias final-mix ms/case: {float(summary['bias_final_mix_ms_per_case']):.4f}")
     lines.append("\n## Cases\n")
     for record in records:
         lines.append(
@@ -304,6 +375,9 @@ def main() -> None:
     )
     if not prompt_records:
         raise SystemExit("no prompt records resolved; provide --manifest-path or --prompt-files")
+    allow_value_m0 = bool(args.enable_full_attention_mixed_mode_execution_allow_value_m0)
+    mixed_execution_strategy = str(args.full_attention_mixed_mode_execution_strategy)
+    max_k_comp_error = _parse_optional_float(args.full_attention_mixed_mode_execution_max_k_comp_error)
 
     dense_model, dense_tokenizer = load_qwen35_text_only_from_pretrained(
         args.model_id,
@@ -328,7 +402,13 @@ def main() -> None:
     persistent_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
         model=persistent_model,
         dotcache_config=dotcache_config,
-        persistent_serving_config=_persistent_base_config(policy_path=None),
+        persistent_serving_config=_persistent_base_config(
+            policy_path=None,
+            enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
+            mixed_execution_strategy=mixed_execution_strategy,
+            allow_value_m0=allow_value_m0,
+            max_k_comp_error=max_k_comp_error,
+        ),
         backend=str(args.backend),
     )
     records: list[dict[str, Any]] = []
@@ -357,7 +437,13 @@ def main() -> None:
             max_new_tokens=int(args.decode_steps),
             tokenizer=dense_tokenizer,
         )
-        persistent_adapter.persistent_serving_config = _persistent_base_config(policy_path=None)
+        persistent_adapter.persistent_serving_config = _persistent_base_config(
+            policy_path=None,
+            enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
+            mixed_execution_strategy=mixed_execution_strategy,
+            allow_value_m0=allow_value_m0,
+            max_k_comp_error=max_k_comp_error,
+        )
         hand_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
             persistent_adapter,
@@ -367,7 +453,13 @@ def main() -> None:
             decode_steps=int(args.decode_steps),
             persistent_policy_prompt_family=str(prompt_record["case_tag"]),
         )
-        persistent_adapter.persistent_serving_config = _persistent_base_config(policy_path=str(args.shortlist_policy_path))
+        persistent_adapter.persistent_serving_config = _persistent_base_config(
+            policy_path=str(args.shortlist_policy_path),
+            enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
+            mixed_execution_strategy=mixed_execution_strategy,
+            allow_value_m0=allow_value_m0,
+            max_k_comp_error=max_k_comp_error,
+        )
         bias_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
             persistent_adapter,
@@ -483,6 +575,78 @@ def main() -> None:
                     for value in bias_result.get("persistent_full_attention_policy_bias_ms_total_by_layer", {}).values()
                 )
             ),
+            "hand_tuned_direct_m0_assembly_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_assembly_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_assembly_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_assembly_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_direct_m0_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_final_mix_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_final_mix_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
         }
         records.append(record)
         print(json.dumps(record, sort_keys=True), flush=True)
@@ -500,6 +664,10 @@ def main() -> None:
             "shortlist_policy_path": str(args.shortlist_policy_path),
             "persistent_shortlist_policy_mode_default": "bias",
             "persistent_shortlist_policy_bias_weight_default": 0.10,
+            "enable_full_attention_mixed_mode_execution": bool(args.enable_full_attention_mixed_mode_execution),
+            "full_attention_mixed_mode_execution_strategy": mixed_execution_strategy,
+            "enable_full_attention_mixed_mode_execution_allow_value_m0": bool(allow_value_m0),
+            "full_attention_mixed_mode_execution_max_k_comp_error": max_k_comp_error,
         },
         "records": records,
         "summary": summary,

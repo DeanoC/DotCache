@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import math
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -9,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from ...modes.m0_affine import dequantize_groups, quantize_tensor
+from ...packing import pack_bits
 from .persistent_types import (
     PersistentFullAttentionLayerState,
     PersistentLayerTelemetry,
@@ -33,6 +38,413 @@ def _load_torch_functional():
     return torch, F
 
 
+def _synchronize_torch_device(value: Any) -> None:
+    torch = _load_torch()
+    device = getattr(value, "device", value)
+    device_type = str(getattr(device, "type", device))
+    if device_type == "mps" and torch.backends.mps.is_available():
+        torch.mps.synchronize()
+    elif device_type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _load_torch_mixed_execution_ops():
+    from ..torch_mps import (
+        _mix_m0_contribution_fused_torch,
+        _score_exact_logits_flat_torch,
+        _score_m0_logits_fused_torch,
+    )
+
+    return _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch, _score_exact_logits_flat_torch
+
+
+def _metal_direct_m0_probe_script_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "benchmarks" / "metal_direct_m0_probe.swift"
+
+
+def _load_metal_pyobjc():
+    import Foundation  # type: ignore
+    import Metal  # type: ignore
+    import objc  # type: ignore # noqa: F401
+
+    return Foundation, Metal
+
+
+def _write_float_tensor_raw(path: Path, tensor: Any) -> None:
+    torch = _load_torch()
+    np.asarray(
+        (tensor.detach() if torch.is_tensor(tensor) else torch.as_tensor(tensor))
+        .to(dtype=torch.float32, device="cpu")
+        .contiguous()
+        .numpy(),
+        dtype=np.float32,
+    ).tofile(path)
+
+
+def _write_uint32_array_raw(path: Path, array: np.ndarray) -> None:
+    np.asarray(array, dtype=np.uint32).tofile(path)
+
+
+class _MetalPackedDirectM0Executor:
+    def __init__(self) -> None:
+        _Foundation, Metal = _load_metal_pyobjc()
+        source_path = Path(__file__).with_name("persistent_attention.metal")
+        source = source_path.read_text(encoding="utf-8")
+        device = Metal.MTLCreateSystemDefaultDevice()
+        if device is None:
+            raise RuntimeError("No Metal device available")
+        library, library_error = device.newLibraryWithSource_options_error_(source, None, None)
+        if library is None:
+            raise RuntimeError(str(library_error or "Unable to compile Metal library"))
+        function = library.newFunctionWithName_("direct_m0_logits_packed_group_major_affine_8bit")
+        if function is None:
+            raise RuntimeError("Missing direct_m0_logits_packed_group_major_affine_8bit")
+        pipeline, pipeline_error = device.newComputePipelineStateWithFunction_error_(function, None)
+        if pipeline is None:
+            raise RuntimeError(str(pipeline_error or "Unable to create Metal pipeline"))
+        command_queue = device.newCommandQueue()
+        if command_queue is None:
+            raise RuntimeError("Unable to create Metal command queue")
+        self._metal = Metal
+        self._device = device
+        self._pipeline = pipeline
+        self._command_queue = command_queue
+
+    def _buffer_from_bytes(self, payload: bytes):
+        return self._device.newBufferWithBytes_length_options_(payload, len(payload), 0)
+
+    def _scalar_u32_buffer(self, value: int):
+        array = np.asarray([value], dtype=np.uint32)
+        return self._buffer_from_bytes(array.tobytes())
+
+    def _scalar_f32_buffer(self, value: float):
+        array = np.asarray([value], dtype=np.float32)
+        return self._buffer_from_bytes(array.tobytes())
+
+    def run(
+        self,
+        *,
+        query_padded: np.ndarray,
+        query_group_sums: np.ndarray,
+        payload_words: np.ndarray,
+        scales: np.ndarray,
+        bias: np.ndarray,
+        query_scale: float,
+    ) -> np.ndarray:
+        Metal = self._metal
+        query_padded = np.asarray(query_padded, dtype=np.float32, order="C")
+        query_group_sums = np.asarray(query_group_sums, dtype=np.float32, order="C")
+        payload_words = np.asarray(payload_words, dtype=np.uint32, order="C")
+        scales = np.asarray(scales, dtype=np.float32, order="C")
+        bias = np.asarray(bias, dtype=np.float32, order="C")
+        batch_count, query_count, _padded_head_dim = map(int, query_padded.shape)
+        _payload_batch, num_groups, token_count, words_per_group = map(int, payload_words.shape)
+        output = np.zeros((batch_count, query_count, token_count), dtype=np.float32)
+        queries_buffer = self._buffer_from_bytes(query_padded.tobytes())
+        query_group_sums_buffer = self._buffer_from_bytes(query_group_sums.tobytes())
+        payload_buffer = self._buffer_from_bytes(payload_words.tobytes())
+        scales_buffer = self._buffer_from_bytes(scales.tobytes())
+        bias_buffer = self._buffer_from_bytes(bias.tobytes())
+        output_buffer = self._device.newBufferWithLength_options_(int(output.nbytes), 0)
+        token_count_buffer = self._scalar_u32_buffer(token_count)
+        query_count_buffer = self._scalar_u32_buffer(query_count)
+        num_groups_buffer = self._scalar_u32_buffer(num_groups)
+        words_per_group_buffer = self._scalar_u32_buffer(words_per_group)
+        query_scale_buffer = self._scalar_f32_buffer(float(query_scale))
+        threads_per_group_width = min(max(1, int(self._pipeline.threadExecutionWidth())), token_count)
+        max_threads = max(1, int(self._pipeline.maxTotalThreadsPerThreadgroup()))
+        threads_per_group_height = max(1, min(query_count, max_threads // threads_per_group_width))
+        threads_per_threadgroup = Metal.MTLSizeMake(threads_per_group_width, threads_per_group_height, 1)
+        threads_per_grid = Metal.MTLSizeMake(token_count, query_count, 1)
+        command_buffer = self._command_queue.commandBuffer()
+        encoder = command_buffer.computeCommandEncoder()
+        encoder.setComputePipelineState_(self._pipeline)
+        query_stride = int(query_count * query_padded.shape[2] * np.dtype(np.float32).itemsize)
+        group_sum_stride = int(query_count * num_groups * np.dtype(np.float32).itemsize)
+        payload_stride = int(num_groups * token_count * words_per_group * np.dtype(np.uint32).itemsize)
+        scale_bias_stride = int(token_count * num_groups * np.dtype(np.float32).itemsize)
+        output_stride = int(query_count * token_count * np.dtype(np.float32).itemsize)
+        for batch_index in range(batch_count):
+            encoder.setBuffer_offset_atIndex_(queries_buffer, batch_index * query_stride, 0)
+            encoder.setBuffer_offset_atIndex_(query_group_sums_buffer, batch_index * group_sum_stride, 1)
+            encoder.setBuffer_offset_atIndex_(payload_buffer, batch_index * payload_stride, 2)
+            encoder.setBuffer_offset_atIndex_(scales_buffer, batch_index * scale_bias_stride, 3)
+            encoder.setBuffer_offset_atIndex_(bias_buffer, batch_index * scale_bias_stride, 4)
+            encoder.setBuffer_offset_atIndex_(output_buffer, batch_index * output_stride, 5)
+            encoder.setBuffer_offset_atIndex_(token_count_buffer, 0, 6)
+            encoder.setBuffer_offset_atIndex_(query_count_buffer, 0, 7)
+            encoder.setBuffer_offset_atIndex_(num_groups_buffer, 0, 8)
+            encoder.setBuffer_offset_atIndex_(words_per_group_buffer, 0, 9)
+            encoder.setBuffer_offset_atIndex_(query_scale_buffer, 0, 10)
+            encoder.dispatchThreads_threadsPerThreadgroup_(threads_per_grid, threads_per_threadgroup)
+        encoder.endEncoding()
+        command_buffer.commit()
+        command_buffer.waitUntilCompleted()
+        status = int(command_buffer.status())
+        if status not in (4, 5):
+            raise RuntimeError(f"Metal command buffer failed with status {status}: {command_buffer.error()}")
+        output_bytes = output_buffer.contents().as_buffer(int(output.nbytes))
+        output_view = np.frombuffer(output_bytes, dtype=np.float32, count=int(output.size)).copy()
+        return output_view.reshape(batch_count, query_count, token_count)
+
+
+_METAL_PACKED_DIRECT_M0_EXECUTOR: _MetalPackedDirectM0Executor | bool | None = None
+
+
+def _get_metal_packed_direct_m0_executor() -> _MetalPackedDirectM0Executor | None:
+    global _METAL_PACKED_DIRECT_M0_EXECUTOR
+    if _METAL_PACKED_DIRECT_M0_EXECUTOR is False:
+        return None
+    if _METAL_PACKED_DIRECT_M0_EXECUTOR is None:
+        try:
+            _METAL_PACKED_DIRECT_M0_EXECUTOR = _MetalPackedDirectM0Executor()
+        except Exception:
+            _METAL_PACKED_DIRECT_M0_EXECUTOR = False
+            return None
+    return _METAL_PACKED_DIRECT_M0_EXECUTOR
+
+
+def _prepare_packed_group_major_m0_inputs_from_tensor(
+    *,
+    values: Any,
+    group_size: int,
+    bits: int,
+    scheme: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    torch = _load_torch()
+    values_tensor = values.detach() if torch.is_tensor(values) else torch.as_tensor(values)
+    values_cpu = values_tensor.to(dtype=torch.float32, device="cpu")
+    if int(values_cpu.ndim) != 3:
+        raise ValueError("values must have shape [kv_heads, token_count, head_dim]")
+    kv_heads, token_count, _head_dim = map(int, values_cpu.shape)
+    payload_rows: list[np.ndarray] = []
+    scales_rows: list[np.ndarray] = []
+    bias_rows: list[np.ndarray] = []
+    for kv_head_idx in range(kv_heads):
+        head_values = np.asarray(values_cpu[kv_head_idx].numpy(), dtype=np.float32)
+        codes, scales, bias, _padded_head_dim = quantize_tensor(
+            head_values,
+            group_size=group_size,
+            bits=bits,
+            scheme=scheme,
+        )
+        packed = pack_bits(codes, bits=bits).transpose(1, 0, 2).astype(np.uint32, copy=False)
+        payload_rows.append(packed)
+        scales_rows.append(np.asarray(scales, dtype=np.float32))
+        bias_rows.append(np.asarray(bias, dtype=np.float32))
+    payload = np.stack(payload_rows, axis=0)
+    scales = np.stack(scales_rows, axis=0)
+    bias = np.stack(bias_rows, axis=0)
+    kv_heads, num_groups, token_count, words_per_group = map(int, payload.shape)
+    payload = payload.reshape(kv_heads, num_groups, token_count, words_per_group)
+    scales = scales.reshape(kv_heads, token_count, num_groups)
+    bias = bias.reshape(kv_heads, token_count, num_groups)
+    return payload, scales, bias
+
+
+def _packed_direct_m0_cache_spec(
+    dotcache_config: Any | None,
+    *,
+    kind: str = "K",
+) -> tuple[int, int, str] | None:
+    if dotcache_config is None:
+        return None
+    if str(kind).upper() == "K":
+        bits = int(getattr(dotcache_config, "bits_k", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_k", "affine")).strip().lower()
+    else:
+        bits = int(getattr(dotcache_config, "bits_v", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_v", "affine")).strip().lower()
+    group_size = int(getattr(dotcache_config, "group_size", 0))
+    if bits != 8 or group_size <= 0 or scheme != "affine":
+        return None
+    words_per_group = max((int(group_size) * int(bits) + 31) // 32, 1)
+    return int(group_size), int(words_per_group), str(scheme)
+
+
+def _prepare_direct_m0_execution_artifacts(
+    *,
+    tensor_slice: Any,
+    mode: Any,
+    kind: str,
+    dotcache_config: Any | None,
+) -> tuple[Any | None, Any | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, bool]:
+    torch = _load_torch()
+    resolved = tensor_slice.to(dtype=torch.float32)
+    if _normalize_stage8_mode_name(mode) != "M0" or dotcache_config is None:
+        return None, None, None, None, None, False
+    if str(kind).upper() == "K":
+        bits = int(getattr(dotcache_config, "bits_k", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_k", "affine")).strip().lower()
+    else:
+        bits = int(getattr(dotcache_config, "bits_v", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_v", "affine")).strip().lower()
+    group_size = int(getattr(dotcache_config, "group_size", 0))
+    if group_size <= 0 or bits <= 0 or scheme not in {"affine", "symmetric"}:
+        return None, None, None, None, None, False
+    values = np.asarray(resolved.detach().cpu().numpy(), dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] <= 0:
+        return None, None, None, None, None, False
+    try:
+        codes, scales, bias, padded_head_dim = quantize_tensor(
+            values,
+            group_size=group_size,
+            bits=bits,
+            scheme=scheme,
+        )
+    except Exception:
+        return None, None, None, None, None, False
+    num_groups = int(codes.shape[1])
+    fused_scaled = np.concatenate(
+        [
+            np.asarray(codes[:, group_index, :], dtype=np.float32) * np.asarray(scales[:, group_index], dtype=np.float32)[:, None]
+            for group_index in range(num_groups)
+        ],
+        axis=-1,
+    )
+    if bias is None:
+        bias_groups = np.zeros((int(values.shape[0]), num_groups), dtype=np.float32)
+    else:
+        bias_groups = np.asarray(bias, dtype=np.float32)
+    if fused_scaled.shape[-1] < int(padded_head_dim):
+        fused_scaled = np.pad(
+            fused_scaled,
+            ((0, 0), (0, int(padded_head_dim) - int(fused_scaled.shape[-1]))),
+            mode="constant",
+        )
+    packed_payload = None
+    packed_scales = None
+    packed_bias = None
+    if bits == 8 and scheme == "affine":
+        packed_payload = pack_bits(codes, bits=bits).transpose(1, 0, 2).astype(np.uint32, copy=False)
+        packed_scales = np.asarray(scales, dtype=np.float32)
+        packed_bias = np.asarray(bias_groups, dtype=np.float32)
+    return (
+        torch.as_tensor(fused_scaled, dtype=torch.float32, device=resolved.device),
+        torch.as_tensor(bias_groups, dtype=torch.float32, device=resolved.device),
+        packed_payload,
+        packed_scales,
+        packed_bias,
+        True,
+    )
+
+
+def _score_direct_m0_logits_metal_packed(
+    *,
+    query_padded: Any,
+    query_group_sums: Any,
+    payload_words: Any,
+    scales: Any,
+    bias: Any,
+    bits: int,
+    scheme: str,
+    group_size: int,
+) -> Any | None:
+    torch = _load_torch()
+    device_type = str(getattr(query_padded.device, "type", query_padded.device))
+    if device_type != "mps":
+        return None
+    if int(bits) != 8 or int(group_size) != 32 or str(scheme).strip().lower() != "affine":
+        return None
+    swift_path = shutil.which("swift")
+    script_path = _metal_direct_m0_probe_script_path()
+    metal_source_path = Path(__file__).with_name("persistent_attention.metal")
+    if swift_path is None or not script_path.exists() or not metal_source_path.exists():
+        return None
+    payload_words = np.asarray(payload_words, dtype=np.uint32, order="C")
+    scales = np.asarray(scales, dtype=np.float32, order="C")
+    bias = np.asarray(bias, dtype=np.float32, order="C")
+    if int(getattr(query_padded, "ndim", 0)) == 2:
+        query_padded = query_padded.unsqueeze(0)
+    if int(getattr(query_group_sums, "ndim", 0)) == 2:
+        query_group_sums = query_group_sums.unsqueeze(0)
+    executor = _get_metal_packed_direct_m0_executor()
+    if executor is not None:
+        try:
+            query_padded_np = np.asarray(
+                query_padded.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy(),
+                dtype=np.float32,
+            )
+            query_group_sums_np = np.asarray(
+                query_group_sums.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy(),
+                dtype=np.float32,
+            )
+            logits = executor.run(
+                query_padded=query_padded_np,
+                query_group_sums=query_group_sums_np,
+                payload_words=payload_words,
+                scales=scales,
+                bias=bias,
+                query_scale=1.0,
+            )
+            return torch.as_tensor(logits, dtype=torch.float32, device=query_padded.device)
+        except Exception:
+            pass
+    batch_count, query_count, padded_head_dim = map(int, query_padded.shape)
+    _payload_batch, num_groups, token_count, words_per_group = map(int, payload_words.shape)
+    with tempfile.TemporaryDirectory(prefix="dotcache-metal-runtime-directm0-") as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        queries_path = tmpdir_path / "queries.bin"
+        query_group_sums_path = tmpdir_path / "query_group_sums.bin"
+        payload_path = tmpdir_path / "payload.bin"
+        scales_path = tmpdir_path / "scales.bin"
+        bias_path = tmpdir_path / "bias.bin"
+        output_path = tmpdir_path / "logits.bin"
+        _write_float_tensor_raw(queries_path, query_padded)
+        _write_float_tensor_raw(query_group_sums_path, query_group_sums)
+        _write_uint32_array_raw(payload_path, payload_words)
+        np.asarray(scales, dtype=np.float32).tofile(scales_path)
+        np.asarray(bias, dtype=np.float32).tofile(bias_path)
+        completed = subprocess.run(
+            [
+                swift_path,
+                str(script_path),
+                "--metal-source",
+                str(metal_source_path),
+                "--kernel",
+                "packed_group_major_8bit",
+                "--queries",
+                str(queries_path),
+                "--query-group-sums",
+                str(query_group_sums_path),
+                "--payload",
+                str(payload_path),
+                "--scales",
+                str(scales_path),
+                "--bias",
+                str(bias_path),
+                "--output",
+                str(output_path),
+                "--batch-count",
+                str(batch_count),
+                "--query-count",
+                str(query_count),
+                "--padded-head-dim",
+                str(padded_head_dim),
+                "--token-count",
+                str(token_count),
+                "--num-groups",
+                str(num_groups),
+                "--words-per-group",
+                str(words_per_group),
+                "--query-scale",
+                "1.0",
+                "--warmup-iters",
+                "0",
+                "--bench-iters",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            return None
+        _payload = json.loads(completed.stdout)
+        logits = np.fromfile(output_path, dtype=np.float32).reshape(batch_count, query_count, token_count)
+        return torch.as_tensor(logits, dtype=torch.float32, device=query_padded.device)
+
+
 def _torch_dtype_bytes(dtype: Any) -> int:
     torch = _load_torch()
     probe = torch.empty((), dtype=dtype)
@@ -52,6 +464,23 @@ def _clone_tensor_like(value: Any, *, dtype=None, device=None):
         return target.clone()
     target = torch.as_tensor(np.asarray(value), dtype=dtype, device=device)
     return target.clone()
+
+
+def _resolve_mixed_score_dtype(*, config: PersistentServingConfig, device: Any):
+    torch = _load_torch()
+    requested = str(getattr(config, "full_attention_mixed_mode_score_dtype", "auto") or "auto").strip().lower()
+    device_type = str(getattr(device, "type", device))
+    if requested in {"float32", "fp32"}:
+        return torch.float32
+    if requested in {"float16", "fp16", "half"}:
+        if device_type in {"mps", "cuda"}:
+            return torch.float16
+        return torch.float32
+    if requested != "auto":
+        raise ValueError(f"unsupported full_attention_mixed_mode_score_dtype: {requested}")
+    if device_type in {"mps", "cuda"}:
+        return torch.float16
+    return torch.float32
 
 
 def _nbytes_tensor_like(value: Any) -> int:
@@ -455,11 +884,12 @@ def _recompute_full_attention_block_metadata(
     *,
     state: PersistentFullAttentionLayerState,
     block_indices: list[int] | np.ndarray,
+    config: PersistentServingConfig | None = None,
     dotcache_config: Any | None = None,
-) -> None:
+) -> float:
     torch = _load_torch()
     if len(block_indices) == 0:
-        return
+        return 0.0
     for block_idx in [int(i) for i in block_indices]:
         token_start = int(state.block_token_starts[block_idx])
         token_count = int(state.block_token_counts[block_idx])
@@ -521,6 +951,15 @@ def _recompute_full_attention_block_metadata(
                 compression_valid = 0.0
             state.block_compression_metadata_valid[block_idx, int(kv_head_idx)] = float(compression_valid)
         state.metadata_valid[block_idx] = 1.0
+    cache_refresh_ms = 0.0
+    if bool(getattr(config, "enable_full_attention_mixed_mode_execution", False)):
+        cache_refresh_ms = _refresh_cached_mixed_execution_blocks(
+            state=state,
+            block_indices=block_indices,
+            config=config,
+            dotcache_config=dotcache_config,
+        )
+    return float(cache_refresh_ms)
 
 
 def _evenly_spaced_probe_offsets(*, token_count: int, sample_count: int) -> list[int]:
@@ -885,20 +1324,26 @@ def _rank_optional_block_ids(
 ) -> list[int]:
     if not candidate_block_ids:
         return []
+    def _score_values_array(value: Any) -> np.ndarray:
+        if isinstance(value, np.ndarray):
+            return value.astype(np.float32, copy=False)
+        if hasattr(value, "detach"):
+            torch = _load_torch()
+            return value.detach().to(device="cpu", dtype=torch.float32).numpy()
+        return np.asarray(value, dtype=np.float32)
+    candidate_ids_np = np.asarray(candidate_block_ids, dtype=np.int64)
+    priority_values = _score_values_array(priority_scores)
+    upper_values = _score_values_array(upper_bounds)
     if bool(use_upper_bounds_first):
-        return sorted(
-            candidate_block_ids,
-            key=lambda block_id: (
-                float(upper_bounds[int(block_id)].item()),
-                float(priority_scores[int(block_id)].item()),
-            ),
-            reverse=True,
+        order = np.lexsort(
+            (
+                priority_values[candidate_ids_np],
+                upper_values[candidate_ids_np],
+            )
         )
-    return sorted(
-        candidate_block_ids,
-        key=lambda block_id: float(priority_scores[int(block_id)].item()),
-        reverse=True,
-    )
+        return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
+    order = np.argsort(priority_values[candidate_ids_np], kind="stable")
+    return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
 
 
 def _policy_preference_bonus(
@@ -910,10 +1355,14 @@ def _policy_preference_bonus(
 ) -> float:
     if float(bias_weight) <= 0.0 or not candidate_block_ids or not preferred_block_ids:
         return 0.0
-    score_values = np.asarray(
-        [float(score_tensor[int(block_id)].item()) for block_id in candidate_block_ids],
-        dtype=np.float32,
-    )
+    if isinstance(score_tensor, np.ndarray):
+        score_tensor_values = score_tensor.astype(np.float32, copy=False)
+    elif hasattr(score_tensor, "detach"):
+        torch = _load_torch()
+        score_tensor_values = score_tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+    else:
+        score_tensor_values = np.asarray(score_tensor, dtype=np.float32)
+    score_values = score_tensor_values[np.asarray(candidate_block_ids, dtype=np.int64)]
     if score_values.size == 0:
         return 0.0
     scale = float(np.std(score_values))
@@ -971,11 +1420,35 @@ def _select_diverse_block_ids(
 
         resolved_strategy = str(strategy or "greedy").strip().lower()
         if resolved_strategy == "window_suppress":
-            ranked_once = sorted(
-                [int(block_id) for block_id in ranked_candidate_ids],
-                key=_composite_key,
-                reverse=True,
+            candidate_ids_np = np.asarray(ranked_candidate_ids, dtype=np.int64)
+            if isinstance(primary_scores, np.ndarray):
+                primary_values = primary_scores.astype(np.float32, copy=False)
+            elif hasattr(primary_scores, "detach"):
+                torch = _load_torch()
+                primary_values = primary_scores.detach().to(device="cpu", dtype=torch.float32).numpy()
+            else:
+                primary_values = np.asarray(primary_scores, dtype=np.float32)
+            if isinstance(secondary_scores, np.ndarray):
+                secondary_values = secondary_scores.astype(np.float32, copy=False)
+            elif hasattr(secondary_scores, "detach"):
+                torch = _load_torch()
+                secondary_values = secondary_scores.detach().to(device="cpu", dtype=torch.float32).numpy()
+            else:
+                secondary_values = np.asarray(secondary_scores, dtype=np.float32)
+            preferred_mask = np.asarray(
+                [int(block_id) in preferred_ids for block_id in candidate_ids_np.tolist()],
+                dtype=np.float32,
             )
+            composite_values = primary_values[candidate_ids_np] + preferred_mask * float(preferred_bonus)
+            ranked_once = candidate_ids_np[
+                np.lexsort(
+                    (
+                        secondary_values[candidate_ids_np],
+                        primary_values[candidate_ids_np],
+                        composite_values,
+                    )
+                )[::-1]
+            ].tolist()
             max_block_id = max([0] + ranked_once + selected_anchor_ids)
             blocked = np.zeros((max_block_id + radius + 1,), dtype=np.bool_)
 
@@ -1046,6 +1519,7 @@ def _select_optional_block_ids(
     preferred_bias_weight: float = 0.0,
     timing_accumulator: dict[str, float] | None = None,
 ) -> list[int]:
+    torch = _load_torch()
     selection_start = time.perf_counter()
     if top_k <= 0 or not candidate_block_ids:
         result: list[int] = []
@@ -1054,16 +1528,23 @@ def _select_optional_block_ids(
                 (time.perf_counter() - selection_start) * 1000.0
             )
         return result
+    priority_values = priority_scores.detach().to(device="cpu", dtype=torch.float32).numpy()
+    upper_values = upper_bounds.detach().to(device="cpu", dtype=torch.float32).numpy()
+    region_values = (
+        region_ids.detach().to(device="cpu", dtype=torch.int64).numpy()
+        if hasattr(region_ids, "detach")
+        else np.asarray(region_ids, dtype=np.int64)
+    )
     ranked_by_upper = _rank_optional_block_ids(
         candidate_block_ids=candidate_block_ids,
-        priority_scores=priority_scores,
-        upper_bounds=upper_bounds,
+        priority_scores=priority_values,
+        upper_bounds=upper_values,
         use_upper_bounds_first=True,
     )
     ranked_by_priority = _rank_optional_block_ids(
         candidate_block_ids=candidate_block_ids,
-        priority_scores=priority_scores,
-        upper_bounds=upper_bounds,
+        priority_scores=priority_values,
+        upper_bounds=upper_values,
         use_upper_bounds_first=False,
     )
     selected: list[int] = []
@@ -1072,8 +1553,8 @@ def _select_optional_block_ids(
         selected.extend(
             _select_diverse_block_ids(
                 ranked_candidate_ids=ranked_by_upper,
-                primary_scores=upper_bounds,
-                secondary_scores=priority_scores,
+                primary_scores=upper_values,
+                secondary_scores=priority_values,
                 count=max(int(top_k) - len(selected), 0),
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
@@ -1089,7 +1570,7 @@ def _select_optional_block_ids(
         upper_selected = _select_diverse_block_ids(
             ranked_candidate_ids=ranked_by_upper,
             primary_scores=upper_bounds,
-            secondary_scores=priority_scores,
+            secondary_scores=priority_values,
             count=reserved,
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
@@ -1113,12 +1594,12 @@ def _select_optional_block_ids(
             region_ranked = [
                 int(block_id)
                 for block_id in ranked_by_priority
-                if int(block_id) not in selected_set and int(region_ids[int(block_id)]) == int(region_id)
+                if int(block_id) not in selected_set and int(region_values[int(block_id)]) == int(region_id)
             ]
             region_selected = _select_diverse_block_ids(
                 ranked_candidate_ids=region_ranked,
-                primary_scores=priority_scores,
-                secondary_scores=upper_bounds,
+                primary_scores=priority_values,
+                secondary_scores=upper_values,
                 count=quota,
                 seed_block_ids=seed_block_ids + selected,
                 diversity_weight=float(diversity_weight),
@@ -1136,8 +1617,8 @@ def _select_optional_block_ids(
         spill_ranked = [int(block_id) for block_id in ranked_by_priority if int(block_id) not in selected_set]
         spill_selected = _select_diverse_block_ids(
             ranked_candidate_ids=spill_ranked,
-            primary_scores=priority_scores,
-            secondary_scores=upper_bounds,
+            primary_scores=priority_values,
+            secondary_scores=upper_values,
             count=max(int(top_k) - len(selected), 0),
             seed_block_ids=seed_block_ids + selected,
             diversity_weight=float(diversity_weight),
@@ -1160,7 +1641,7 @@ def _select_optional_block_ids(
     far_candidates = [
         int(block_id)
         for block_id in ranked_by_priority
-        if int(block_id) not in set(selected) and int(region_ids[int(block_id)]) == 0
+        if int(block_id) not in set(selected) and int(region_values[int(block_id)]) == 0
     ]
     if not far_candidates:
         if timing_accumulator is not None:
@@ -1177,21 +1658,21 @@ def _select_optional_block_ids(
         preferred_weak_ids = [
             int(block_id)
             for block_id in selected
-            if int(region_ids[int(block_id)]) != 0
+            if int(region_values[int(block_id)]) != 0
         ]
         weak_pool = preferred_weak_ids if preferred_weak_ids else [int(block_id) for block_id in selected]
         weakest_selected_id = min(
             weak_pool,
             key=lambda block_id: (
-                float(priority_scores[int(block_id)].item()),
-                float(upper_bounds[int(block_id)].item()),
+                float(priority_values[int(block_id)]),
+                float(upper_values[int(block_id)]),
             ),
         )
-        priority_gain = float(priority_scores[int(candidate_id)].item()) - float(
-            priority_scores[int(weakest_selected_id)].item()
+        priority_gain = float(priority_values[int(candidate_id)]) - float(
+            priority_values[int(weakest_selected_id)]
         )
-        upper_gain = float(upper_bounds[int(candidate_id)].item()) - float(
-            upper_bounds[int(weakest_selected_id)].item()
+        upper_gain = float(upper_values[int(candidate_id)]) - float(
+            upper_values[int(weakest_selected_id)]
         )
         if (
             priority_gain < float(far_anchor_priority_margin)
@@ -1402,6 +1883,681 @@ def _gather_selected_block_tensors(
     return gathered_keys, gathered_values, token_counts
 
 
+def _quantize_dequantize_execution_slice(
+    *,
+    tensor_slice: Any,
+    mode: Any,
+    kind: str,
+    dotcache_config: Any | None,
+):
+    torch = _load_torch()
+    resolved = tensor_slice.to(dtype=torch.float32)
+    if _normalize_stage8_mode_name(mode) != "M0" or dotcache_config is None:
+        return resolved, False
+    if str(kind).upper() == "K":
+        bits = int(getattr(dotcache_config, "bits_k", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_k", "affine")).strip().lower()
+    else:
+        bits = int(getattr(dotcache_config, "bits_v", 0))
+        scheme = str(getattr(dotcache_config, "quant_scheme_v", "affine")).strip().lower()
+    group_size = int(getattr(dotcache_config, "group_size", 0))
+    if group_size <= 0 or bits <= 0 or scheme not in {"affine", "symmetric"}:
+        return resolved, False
+    values = np.asarray(resolved.detach().cpu().numpy(), dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] <= 0:
+        return resolved, False
+    try:
+        codes, scales, bias, _padded_head_dim = quantize_tensor(
+            values,
+            group_size=group_size,
+            bits=bits,
+            scheme=scheme,
+        )
+        reconstructed = dequantize_groups(
+            codes,
+            scales=scales,
+            bias=bias,
+            bits=bits,
+            scheme=scheme,
+        ).reshape(values.shape[0], -1)[:, : values.shape[1]]
+    except Exception:
+        return resolved, False
+    return torch.as_tensor(reconstructed, dtype=torch.float32, device=resolved.device), True
+
+
+def _prepare_direct_m0_execution_slice(
+    *,
+    tensor_slice: Any,
+    mode: Any,
+    kind: str,
+    dotcache_config: Any | None,
+):
+    fused_scaled, bias_groups, _packed_payload, _packed_scales, _packed_bias, valid = _prepare_direct_m0_execution_artifacts(
+        tensor_slice=tensor_slice,
+        mode=mode,
+        kind=kind,
+        dotcache_config=dotcache_config,
+    )
+    return fused_scaled, bias_groups, valid
+
+
+def _pad_queries_for_direct_m0(
+    *,
+    query_slice: Any,
+    padded_head_dim: int,
+    group_size: int,
+):
+    torch = _load_torch()
+    q_slice = query_slice if torch.is_tensor(query_slice) else torch.as_tensor(query_slice)
+    if not torch.is_floating_point(q_slice):
+        q_slice = q_slice.to(dtype=torch.float32)
+    if int(padded_head_dim) <= int(q_slice.shape[-1]):
+        padded = q_slice[:, : int(padded_head_dim)]
+    else:
+        padded = torch.nn.functional.pad(q_slice, (0, int(padded_head_dim) - int(q_slice.shape[-1])))
+    num_groups = max(int(padded_head_dim) // max(int(group_size), 1), 1)
+    query_group_sums = padded.reshape(int(padded.shape[0]), num_groups, int(group_size)).sum(dim=-1)
+    return padded, query_group_sums
+
+
+def _build_block_token_index_arrays(
+    *,
+    token_starts: np.ndarray,
+    token_counts: np.ndarray,
+    local_starts: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    token_starts_np = np.asarray(token_starts, dtype=np.int64).reshape(-1)
+    token_counts_np = np.asarray(token_counts, dtype=np.int64).reshape(-1)
+    if token_starts_np.size == 0:
+        empty = np.empty((0,), dtype=np.int64)
+        return empty, empty
+    max_count = int(token_counts_np.max(initial=0))
+    if max_count <= 0:
+        empty = np.empty((0,), dtype=np.int64)
+        return empty, empty
+    offsets = np.arange(max_count, dtype=np.int64)[None, :]
+    valid_mask = offsets < token_counts_np[:, None]
+    if local_starts is None:
+        local_starts_np = np.cumsum(
+            np.concatenate((np.asarray([0], dtype=np.int64), token_counts_np[:-1])),
+            dtype=np.int64,
+        )
+    else:
+        local_starts_np = np.asarray(local_starts, dtype=np.int64).reshape(-1)
+    global_indices = (token_starts_np[:, None] + offsets)[valid_mask]
+    local_indices = (local_starts_np[:, None] + offsets)[valid_mask]
+    return global_indices.astype(np.int64, copy=False), local_indices.astype(np.int64, copy=False)
+
+
+def _mixed_mode_execution_enabled_for_slice(
+    *,
+    config: PersistentServingConfig,
+    mode: Any,
+    kind: str,
+    k_comp_error: float | None = None,
+) -> bool:
+    normalized_mode = _normalize_stage8_mode_name(mode)
+    if normalized_mode != "M0":
+        return False
+    if str(kind).upper() == "V" and not bool(
+        getattr(config, "full_attention_mixed_mode_execution_allow_value_m0", False)
+    ):
+        return False
+    if str(kind).upper() == "K":
+        max_k_comp_error = getattr(config, "full_attention_mixed_mode_execution_max_k_comp_error", None)
+        if max_k_comp_error is not None and float(k_comp_error or 0.0) > float(max_k_comp_error):
+            return False
+    return True
+
+
+def _can_use_direct_m0_execution(
+    *,
+    state: PersistentFullAttentionLayerState,
+    config: PersistentServingConfig,
+) -> bool:
+    strategy = str(getattr(config, "full_attention_mixed_mode_execution_strategy", "cached_reconstruct") or "cached_reconstruct").strip().lower()
+    return (
+        strategy in {"direct_m0", "direct_m0_metal_packed"}
+        and state.mixed_key_fused_scaled_cache is not None
+        and state.mixed_key_bias_cache is not None
+        and not bool(getattr(config, "full_attention_mixed_mode_execution_allow_value_m0", False))
+    )
+
+
+def _refresh_cached_mixed_execution_blocks(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_indices: list[int] | np.ndarray,
+    config: PersistentServingConfig,
+    dotcache_config: Any | None,
+) -> float:
+    torch = _load_torch()
+    if (
+        state.mixed_key_cache is None
+        or state.mixed_value_cache is None
+        or state.mixed_key_score_cache is None
+        or state.mixed_key_fused_scaled_cache is None
+        or state.mixed_key_bias_cache is None
+        or state.mixed_key_fused_scaled_score_cache is None
+        or state.mixed_key_bias_score_cache is None
+        or state.mixed_value_fused_scaled_cache is None
+        or state.mixed_value_bias_cache is None
+    ):
+        return 0.0
+    score_dtype = _resolve_mixed_score_dtype(config=config, device=state.key_cache.device)
+    start = time.perf_counter()
+    kv_head_count = int(state.key_cache.shape[0])
+    for block_idx in [int(value) for value in block_indices]:
+        token_start = int(state.block_token_starts[int(block_idx)])
+        token_count = int(state.block_token_counts[int(block_idx)])
+        if token_count <= 0:
+            continue
+        for kv_head_idx in range(kv_head_count):
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :]
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :]
+            key_mode = state.block_k_mode[int(block_idx), int(kv_head_idx)]
+            value_mode = state.block_v_mode[int(block_idx), int(kv_head_idx)]
+            key_comp_error = float(state.block_k_comp_error[int(block_idx), int(kv_head_idx)].item())
+            prepared_key_slice, _key_used_m0 = _quantize_dequantize_execution_slice(
+                tensor_slice=key_slice,
+                mode=(key_mode if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=key_mode,
+                    kind="K",
+                    k_comp_error=key_comp_error,
+                ) else "M3"),
+                kind="K",
+                dotcache_config=dotcache_config,
+            )
+            prepared_value_slice, _value_used_m0 = _quantize_dequantize_execution_slice(
+                tensor_slice=value_slice,
+                mode=(value_mode if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=value_mode,
+                    kind="V",
+                ) else "M3"),
+                kind="V",
+                dotcache_config=dotcache_config,
+            )
+            state.mixed_key_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                prepared_key_slice.to(dtype=torch.float32, device=state.key_cache.device)
+            )
+            state.mixed_value_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                prepared_value_slice.to(dtype=torch.float32, device=state.value_cache.device)
+            )
+            state.mixed_key_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                key_slice.to(dtype=score_dtype, device=state.key_cache.device)
+            )
+            state.mixed_key_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            if (
+                state.mixed_key_packed_payload_cache is not None
+                and state.mixed_key_packed_scales_cache is not None
+                and state.mixed_key_packed_bias_cache is not None
+            ):
+                state.mixed_key_packed_payload_cache[kv_head_idx, :, token_start : token_start + token_count, :].fill(0)
+                state.mixed_key_packed_scales_cache[kv_head_idx, token_start : token_start + token_count, :].fill(0.0)
+                state.mixed_key_packed_bias_cache[kv_head_idx, token_start : token_start + token_count, :].fill(0.0)
+            direct_key_slice, direct_key_bias, packed_key_payload, packed_key_scales, packed_key_bias, direct_key_valid = _prepare_direct_m0_execution_artifacts(
+                tensor_slice=key_slice,
+                mode=key_mode,
+                kind="K",
+                dotcache_config=dotcache_config,
+            )
+            direct_value_slice, direct_value_bias, direct_value_valid = _prepare_direct_m0_execution_slice(
+                tensor_slice=value_slice,
+                mode=value_mode,
+                kind="V",
+                dotcache_config=dotcache_config,
+            )
+            if direct_key_valid and direct_key_slice is not None and direct_key_bias is not None:
+                state.mixed_key_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_slice.to(dtype=torch.float32, device=state.key_cache.device)
+                )
+                state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_bias.to(dtype=torch.float32, device=state.key_cache.device)
+                )
+                state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_slice.to(dtype=score_dtype, device=state.key_cache.device)
+                )
+                state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device)
+                )
+                if (
+                    packed_key_payload is not None
+                    and packed_key_scales is not None
+                    and packed_key_bias is not None
+                    and state.mixed_key_packed_payload_cache is not None
+                    and state.mixed_key_packed_scales_cache is not None
+                    and state.mixed_key_packed_bias_cache is not None
+                ):
+                    state.mixed_key_packed_payload_cache[
+                        kv_head_idx, :, token_start : token_start + token_count, :
+                    ] = packed_key_payload
+                    state.mixed_key_packed_scales_cache[
+                        kv_head_idx, token_start : token_start + token_count, :
+                    ] = packed_key_scales
+                    state.mixed_key_packed_bias_cache[
+                        kv_head_idx, token_start : token_start + token_count, :
+                    ] = packed_key_bias
+            if direct_value_valid and direct_value_slice is not None and direct_value_bias is not None:
+                state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_value_slice.to(dtype=torch.float32, device=state.value_cache.device)
+                )
+                state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
+                    direct_value_bias.to(dtype=torch.float32, device=state.value_cache.device)
+                )
+    return (time.perf_counter() - start) * 1000.0
+
+
+def _prepare_selected_block_execution_tensors(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    config: PersistentServingConfig,
+    dotcache_config: Any | None,
+):
+    torch = _load_torch()
+    resolved_block_ids = [int(block_id) for block_id in block_ids]
+    if not resolved_block_ids:
+        raise ValueError("selected block ids must not be empty")
+    if not (
+        bool(getattr(config, "enable_full_attention_mixed_mode_execution", False))
+        and bool(getattr(config, "enable_compression", False))
+    ):
+        gathered_keys, gathered_values, token_counts = _gather_selected_block_tensors(
+            state=state,
+            block_ids=resolved_block_ids,
+        )
+        return gathered_keys, gathered_values, token_counts, {"M0": 0, "M3": int(len(resolved_block_ids))}
+    strategy = str(getattr(config, "full_attention_mixed_mode_execution_strategy", "cached_reconstruct") or "cached_reconstruct").strip().lower()
+    if strategy in {"cached_reconstruct", "direct_m0"} and state.mixed_key_cache is not None and state.mixed_value_cache is not None:
+        key_slices = []
+        value_slices = []
+        token_counts: list[int] = []
+        executed_m0_count = 0
+        executed_m3_count = 0
+        kv_head_count = int(state.key_cache.shape[0])
+        for block_id in resolved_block_ids:
+            token_start = int(state.block_token_starts[block_id])
+            token_count = int(state.block_token_counts[block_id])
+            token_counts.append(token_count)
+            key_slices.append(state.mixed_key_cache[:, token_start : token_start + token_count, :])
+            value_slices.append(state.mixed_value_cache[:, token_start : token_start + token_count, :])
+            block_used_m0 = False
+            for kv_head_idx in range(kv_head_count):
+                if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=state.block_k_mode[block_id, kv_head_idx],
+                    kind="K",
+                    k_comp_error=float(state.block_k_comp_error[block_id, kv_head_idx].item()),
+                ):
+                    block_used_m0 = True
+                    break
+                if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=state.block_v_mode[block_id, kv_head_idx],
+                    kind="V",
+                ):
+                    block_used_m0 = True
+                    break
+            if block_used_m0:
+                executed_m0_count += 1
+            else:
+                executed_m3_count += 1
+        gathered_keys = torch.cat(key_slices, dim=1)
+        gathered_values = torch.cat(value_slices, dim=1)
+        return gathered_keys, gathered_values, token_counts, {"M0": int(executed_m0_count), "M3": int(executed_m3_count)}
+    key_slices = []
+    value_slices = []
+    token_counts: list[int] = []
+    executed_m0_count = 0
+    executed_m3_count = 0
+    kv_head_count = int(state.key_cache.shape[0])
+    for block_id in resolved_block_ids:
+        token_start = int(state.block_token_starts[block_id])
+        token_count = int(state.block_token_counts[block_id])
+        token_counts.append(token_count)
+        block_key_heads = []
+        block_value_heads = []
+        block_used_m0 = False
+        for kv_head_idx in range(kv_head_count):
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :]
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :]
+            key_mode = state.block_k_mode[block_id, kv_head_idx]
+            value_mode = state.block_v_mode[block_id, kv_head_idx]
+            key_comp_error = float(state.block_k_comp_error[block_id, kv_head_idx].item())
+            prepared_key_slice, key_used_m0 = _quantize_dequantize_execution_slice(
+                tensor_slice=key_slice,
+                mode=(key_mode if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=key_mode,
+                    kind="K",
+                    k_comp_error=key_comp_error,
+                ) else "M3"),
+                kind="K",
+                dotcache_config=dotcache_config,
+            )
+            prepared_value_slice, value_used_m0 = _quantize_dequantize_execution_slice(
+                tensor_slice=value_slice,
+                mode=(value_mode if _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=value_mode,
+                    kind="V",
+                ) else "M3"),
+                kind="V",
+                dotcache_config=dotcache_config,
+            )
+            block_used_m0 = bool(block_used_m0 or key_used_m0 or value_used_m0)
+            block_key_heads.append(prepared_key_slice.unsqueeze(0))
+            block_value_heads.append(prepared_value_slice.unsqueeze(0))
+        key_slices.append(torch.cat(block_key_heads, dim=0))
+        value_slices.append(torch.cat(block_value_heads, dim=0))
+        if block_used_m0:
+            executed_m0_count += 1
+        else:
+            executed_m3_count += 1
+    gathered_keys = torch.cat(key_slices, dim=1)
+    gathered_values = torch.cat(value_slices, dim=1)
+    return gathered_keys, gathered_values, token_counts, {"M0": int(executed_m0_count), "M3": int(executed_m3_count)}
+
+
+def _decode_selected_block_tensors_exact_torch(
+    *,
+    query: Any,
+    key_cache: Any,
+    value_cache: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+):
+    torch = _load_torch()
+    query_tensor = query.to(dtype=torch.float32)
+    key_tensor = key_cache.to(dtype=torch.float32)
+    value_tensor = value_cache.to(dtype=torch.float32)
+    q_head_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    total_tokens = int(key_tensor.shape[1])
+    output = torch.empty((query_tensor.shape[0], value_tensor.shape[-1]), dtype=torch.float32, device=query_tensor.device)
+    attn_weights = torch.zeros(
+        (1, int(query_tensor.shape[0]), 1, total_tokens),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
+        head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
+        if head_ids.size == 0:
+            continue
+        head_index_tensor = torch.as_tensor(head_ids, dtype=torch.int64, device=query_tensor.device)
+        q_slice = query_tensor[head_index_tensor]
+        k_slice = key_tensor[int(kv_head)]
+        v_slice = value_tensor[int(kv_head)]
+        logits = torch.matmul(q_slice, k_slice.transpose(0, 1)) * float(query_scale)
+        weights = torch.softmax(logits, dim=-1)
+        output[head_index_tensor] = torch.matmul(weights.to(dtype=torch.float32), v_slice)
+        attn_weights[0, head_index_tensor, 0, :] = weights.to(dtype=torch.float32)
+    return output, attn_weights
+
+
+def _decode_selected_blocks_direct_m0_torch(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    query: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+    config: PersistentServingConfig,
+    dotcache_config: Any | None = None,
+):
+    torch = _load_torch()
+    _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch, score_exact_logits_flat_torch = _load_torch_mixed_execution_ops()
+    query_tensor = query.to(dtype=torch.float32)
+    q_head_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    resolved_block_ids = [int(block_id) for block_id in block_ids]
+    resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
+    token_starts_np = np.asarray(state.block_token_starts[resolved_block_ids_np], dtype=np.int64)
+    token_counts_np = np.asarray(state.block_token_counts[resolved_block_ids_np], dtype=np.int64)
+    local_starts_np = np.cumsum(
+        np.concatenate((np.asarray([0], dtype=np.int64), token_counts_np[:-1])),
+        dtype=np.int64,
+    )
+    token_counts = [int(value) for value in token_counts_np.tolist()]
+    selected_global_indices_np, _selected_local_indices_np = _build_block_token_index_arrays(
+        token_starts=token_starts_np,
+        token_counts=token_counts_np,
+        local_starts=local_starts_np,
+    )
+    selected_global_indices = torch.as_tensor(
+        selected_global_indices_np,
+        dtype=torch.int64,
+        device=state.value_cache.device,
+    )
+    gathered_values = state.value_cache.index_select(1, selected_global_indices).to(
+        device=query_tensor.device,
+        dtype=torch.float32,
+    )
+    total_tokens = int(gathered_values.shape[1])
+    score_dtype = _resolve_mixed_score_dtype(config=config, device=query_tensor.device)
+    use_fast_score_cache = (
+        state.mixed_key_score_cache is not None
+        and state.mixed_key_fused_scaled_score_cache is not None
+        and state.mixed_key_bias_score_cache is not None
+        and score_dtype == state.mixed_key_score_cache.dtype
+    )
+    strategy = str(getattr(config, "full_attention_mixed_mode_execution_strategy", "cached_reconstruct") or "cached_reconstruct").strip().lower()
+    output = torch.empty(
+        (query_tensor.shape[0], gathered_values.shape[-1]),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    attn_weights = torch.zeros(
+        (1, int(query_tensor.shape[0]), 1, total_tokens),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    timing = {
+        "direct_m0_assembly_ms": 0.0,
+        "direct_m0_score_ms": 0.0,
+        "exact_m3_score_ms": 0.0,
+        "final_mix_ms": 0.0,
+    }
+    executed_m0_blocks: set[int] = set()
+    for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
+        head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
+        if head_ids.size == 0:
+            continue
+        head_index_tensor = torch.as_tensor(head_ids, dtype=torch.int64, device=query_tensor.device)
+        q_slice = query_tensor[head_index_tensor]
+        _synchronize_torch_device(q_slice)
+        assembly_start = time.perf_counter()
+        logits = torch.empty((int(q_slice.shape[0]), total_tokens), dtype=torch.float32, device=query_tensor.device)
+        key_modes = np.asarray(state.block_k_mode[resolved_block_ids_np, int(kv_head)], dtype=object)
+        key_comp_errors = (
+            state.block_k_comp_error[resolved_block_ids_np, int(kv_head)]
+            .detach()
+            .to(device="cpu", dtype=torch.float32)
+            .numpy()
+        )
+        m0_block_mask = np.fromiter(
+            (
+                _mixed_mode_execution_enabled_for_slice(
+                    config=config,
+                    mode=mode,
+                    kind="K",
+                    k_comp_error=float(comp_error),
+                )
+                for mode, comp_error in zip(key_modes.tolist(), key_comp_errors.tolist(), strict=False)
+            ),
+            dtype=bool,
+            count=int(len(resolved_block_ids)),
+        )
+        m3_block_mask = np.logical_not(m0_block_mask)
+        direct_padded_head_dim = (
+            int(state.mixed_key_fused_scaled_cache.shape[-1])
+            if state.mixed_key_fused_scaled_cache is not None
+            else None
+        )
+        direct_group_size = (
+            max(
+                int(direct_padded_head_dim // max(int(state.mixed_key_bias_cache.shape[-1]), 1)),
+                1,
+            )
+            if direct_padded_head_dim is not None and state.mixed_key_bias_cache is not None
+            else None
+        )
+        m0_global_indices_np, m0_local_indices_np = _build_block_token_index_arrays(
+            token_starts=token_starts_np[m0_block_mask],
+            token_counts=token_counts_np[m0_block_mask],
+            local_starts=local_starts_np[m0_block_mask],
+        )
+        m3_global_indices_np, m3_local_indices_np = _build_block_token_index_arrays(
+            token_starts=token_starts_np[m3_block_mask],
+            token_counts=token_counts_np[m3_block_mask],
+            local_starts=local_starts_np[m3_block_mask],
+        )
+        if bool(np.any(m0_block_mask)):
+            executed_m0_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m0_block_mask].tolist())
+        _synchronize_torch_device(q_slice)
+        timing["direct_m0_assembly_ms"] += (time.perf_counter() - assembly_start) * 1000.0
+        if m0_global_indices_np.size > 0:
+            assert direct_group_size is not None
+            assert direct_padded_head_dim is not None
+            _synchronize_torch_device(q_slice)
+            direct_m0_score_start = time.perf_counter()
+            if score_dtype == query_tensor.dtype:
+                q_slice_score = q_slice
+            else:
+                q_slice_score = q_slice.to(dtype=score_dtype)
+            query_padded, query_group_sums = _pad_queries_for_direct_m0(
+                query_slice=q_slice_score,
+                padded_head_dim=direct_padded_head_dim,
+                group_size=direct_group_size,
+            )
+            m0_global_indices = torch.as_tensor(
+                m0_global_indices_np,
+                dtype=torch.int64,
+                device=(
+                    state.mixed_key_fused_scaled_score_cache.device
+                    if use_fast_score_cache
+                    else state.mixed_key_fused_scaled_cache.device
+                ),
+            )
+            m0_local_indices = torch.as_tensor(
+                m0_local_indices_np,
+                dtype=torch.int64,
+                device=query_tensor.device,
+            )
+            if use_fast_score_cache:
+                fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+            else:
+                fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
+            m0_logits = None
+            if strategy == "direct_m0_metal_packed" and dotcache_config is not None:
+                packed_payload = None
+                packed_scales = None
+                packed_bias = None
+                if (
+                    state.mixed_key_packed_payload_cache is not None
+                    and state.mixed_key_packed_scales_cache is not None
+                    and state.mixed_key_packed_bias_cache is not None
+                ):
+                    packed_payload = np.asarray(
+                        np.take(
+                            state.mixed_key_packed_payload_cache[int(kv_head)],
+                            m0_global_indices_np,
+                            axis=1,
+                        ),
+                        dtype=np.uint32,
+                    )[None, ...]
+                    packed_scales = np.asarray(
+                        state.mixed_key_packed_scales_cache[int(kv_head), m0_global_indices_np, :],
+                        dtype=np.float32,
+                    )[None, ...]
+                    packed_bias = np.asarray(
+                        state.mixed_key_packed_bias_cache[int(kv_head), m0_global_indices_np, :],
+                        dtype=np.float32,
+                    )[None, ...]
+                else:
+                    metal_key_values = state.key_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                    packed_payload, packed_scales, packed_bias = _prepare_packed_group_major_m0_inputs_from_tensor(
+                        values=metal_key_values,
+                        group_size=int(getattr(dotcache_config, "group_size", 0)),
+                        bits=int(getattr(dotcache_config, "bits_k", 0)),
+                        scheme=str(getattr(dotcache_config, "quant_scheme_k", "affine")),
+                    )
+                m0_logits = _score_direct_m0_logits_metal_packed(
+                    query_padded=query_padded,
+                    query_group_sums=query_group_sums,
+                    payload_words=packed_payload,
+                    scales=packed_scales,
+                    bias=packed_bias,
+                    bits=int(getattr(dotcache_config, "bits_k", 0)),
+                    scheme=str(getattr(dotcache_config, "quant_scheme_k", "affine")),
+                    group_size=int(getattr(dotcache_config, "group_size", 0)),
+                )
+            if m0_logits is None:
+                m0_logits = score_m0_logits_fused_torch(
+                    fused_concat,
+                    query_padded,
+                    bias_concat.transpose(0, 1).unsqueeze(0),
+                    query_group_sums,
+                )
+            if int(getattr(m0_logits, "ndim", 0)) == 3 and int(m0_logits.shape[0]) == 1:
+                m0_logits = m0_logits.squeeze(0)
+            _synchronize_torch_device(q_slice)
+            timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
+            logits.index_copy_(1, m0_local_indices, m0_logits.to(dtype=torch.float32))
+        if m3_global_indices_np.size > 0:
+            _synchronize_torch_device(q_slice)
+            exact_m3_score_start = time.perf_counter()
+            if score_dtype == query_tensor.dtype:
+                q_slice_score = q_slice
+            else:
+                q_slice_score = q_slice.to(dtype=score_dtype)
+            m3_global_indices = torch.as_tensor(
+                m3_global_indices_np,
+                dtype=torch.int64,
+                device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
+            )
+            m3_local_indices = torch.as_tensor(
+                m3_local_indices_np,
+                dtype=torch.int64,
+                device=query_tensor.device,
+            )
+            if use_fast_score_cache:
+                m3_keys = state.mixed_key_score_cache[int(kv_head)].index_select(0, m3_global_indices).to(
+                    device=query_tensor.device,
+                    dtype=score_dtype,
+                )
+            else:
+                m3_keys = state.key_cache[int(kv_head)].index_select(0, m3_global_indices).to(
+                    device=query_tensor.device,
+                    dtype=score_dtype,
+                )
+            m3_logits = score_exact_logits_flat_torch(m3_keys, q_slice_score)
+            _synchronize_torch_device(q_slice)
+            timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
+            logits.index_copy_(1, m3_local_indices, m3_logits)
+        _synchronize_torch_device(q_slice)
+        final_mix_start = time.perf_counter()
+        logits = logits * float(query_scale)
+        weights = torch.softmax(logits, dim=-1).to(dtype=torch.float32)
+        context = torch.matmul(weights, gathered_values[int(kv_head)])
+        _synchronize_torch_device(q_slice)
+        timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+        output[head_index_tensor] = context
+        attn_weights[0, head_index_tensor, 0, :] = weights
+    executed_mode_counts = {
+        "M0": int(len(executed_m0_blocks)),
+        "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
+    }
+    return output, attn_weights, token_counts, executed_mode_counts, timing
+
+
 def _update_block_prev_attention_ema(
     *,
     state: PersistentFullAttentionLayerState,
@@ -1470,6 +2626,13 @@ class PersistentFullAttentionState:
                 raise ValueError("persistent full-attention runtime only supports batch=1")
             kv_keys = keys[0].contiguous()
             kv_values = values[0].contiguous()
+            head_dim = int(kv_keys.shape[-1])
+            group_size = max(
+                int(getattr(dotcache_config, "group_size", head_dim)) if dotcache_config is not None else head_dim,
+                1,
+            )
+            padded_head_dim = int(math.ceil(head_dim / group_size) * group_size)
+            num_groups = max(int(padded_head_dim // group_size), 1)
             token_count = int(kv_keys.shape[1])
             block_token_starts, block_token_counts, metadata_valid = _build_block_layout(
                 token_count=token_count,
@@ -1513,10 +2676,109 @@ class PersistentFullAttentionState:
                 )
                 initial_comp_error = None
             block_compression_metadata_valid[...] = initial_compression_valid
+            packed_key_cache_spec = _packed_direct_m0_cache_spec(dotcache_config, kind="K")
             layers[int(layer_id)] = PersistentFullAttentionLayerState(
                 layer_id=int(layer_id),
                 key_cache=kv_keys,
                 value_cache=kv_values,
+                mixed_key_cache=(kv_keys.clone() if bool(config.enable_full_attention_mixed_mode_execution) else None),
+                mixed_value_cache=(kv_values.clone() if bool(config.enable_full_attention_mixed_mode_execution) else None),
+                mixed_key_score_cache=(
+                    kv_keys.to(dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device))
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_fused_scaled_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_bias_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), num_groups),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_fused_scaled_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_bias_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), num_groups),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_key_packed_payload_cache=(
+                    np.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            num_groups,
+                            int(kv_keys.shape[1]),
+                            int(packed_key_cache_spec[1]),
+                        ),
+                        dtype=np.uint32,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution) and packed_key_cache_spec is not None
+                    else None
+                ),
+                mixed_key_packed_scales_cache=(
+                    np.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            int(kv_keys.shape[1]),
+                            num_groups,
+                        ),
+                        dtype=np.float32,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution) and packed_key_cache_spec is not None
+                    else None
+                ),
+                mixed_key_packed_bias_cache=(
+                    np.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            int(kv_keys.shape[1]),
+                            num_groups,
+                        ),
+                        dtype=np.float32,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution) and packed_key_cache_spec is not None
+                    else None
+                ),
+                mixed_value_fused_scaled_cache=(
+                    torch.zeros(
+                        (int(kv_values.shape[0]), int(kv_values.shape[1]), padded_head_dim),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
+                mixed_value_bias_cache=(
+                    torch.zeros(
+                        (int(kv_values.shape[0]), int(kv_values.shape[1]), num_groups),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
                 block_token_starts=block_token_starts,
                 block_token_counts=block_token_counts,
                 block_k_center=block_k_center,
@@ -1534,16 +2796,27 @@ class PersistentFullAttentionState:
                 block_compression_metadata_valid=block_compression_metadata_valid,
                 metadata_valid=metadata_valid,
             )
-            _recompute_full_attention_block_metadata(
+            cache_refresh_ms = _recompute_full_attention_block_metadata(
                 state=layers[int(layer_id)],
                 block_indices=np.arange(num_blocks, dtype=np.int64),
+                config=config,
                 dotcache_config=dotcache_config,
             )
+            if cache_refresh_ms > 0.0:
+                telemetry.require_layer(int(layer_id)).mixed_execution_cache_refresh_ms_total += float(cache_refresh_ms)
             if initial_comp_error is not None:
                 layers[int(layer_id)].block_k_comp_error.copy_(
                     torch.as_tensor(initial_comp_error, dtype=torch.float32, device=resolved_device)
                 )
                 layers[int(layer_id)].block_compression_metadata_valid[...] = initial_compression_valid
+                if bool(config.enable_full_attention_mixed_mode_execution):
+                    cache_refresh_ms = _refresh_cached_mixed_execution_blocks(
+                        state=layers[int(layer_id)],
+                        block_indices=np.arange(num_blocks, dtype=np.int64),
+                        config=config,
+                        dotcache_config=dotcache_config,
+                    )
+                    telemetry.require_layer(int(layer_id)).mixed_execution_cache_refresh_ms_total += float(cache_refresh_ms)
         return cls(
             device=resolved_device,
             config=config,
@@ -1568,6 +2841,161 @@ class PersistentFullAttentionState:
         start = time.perf_counter()
         state.key_cache = torch.cat([state.key_cache, key_tensor], dim=1)
         state.value_cache = torch.cat([state.value_cache, value_tensor], dim=1)
+        if state.mixed_key_cache is not None and state.mixed_value_cache is not None:
+            state.mixed_key_cache = torch.cat([state.mixed_key_cache, key_tensor.to(dtype=torch.float32)], dim=1)
+            state.mixed_value_cache = torch.cat([state.mixed_value_cache, value_tensor.to(dtype=torch.float32)], dim=1)
+        if state.mixed_key_score_cache is not None:
+            state.mixed_key_score_cache = torch.cat(
+                [
+                    state.mixed_key_score_cache,
+                    key_tensor.to(
+                        dtype=_resolve_mixed_score_dtype(config=self.config, device=self.device),
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+        if state.mixed_key_fused_scaled_cache is not None and state.mixed_key_bias_cache is not None:
+            state.mixed_key_fused_scaled_cache = torch.cat(
+                [
+                    state.mixed_key_fused_scaled_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_fused_scaled_cache.shape[-1]),
+                        ),
+                        dtype=torch.float32,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_bias_cache = torch.cat(
+                [
+                    state.mixed_key_bias_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_bias_cache.shape[-1]),
+                        ),
+                        dtype=torch.float32,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+        if state.mixed_key_fused_scaled_score_cache is not None and state.mixed_key_bias_score_cache is not None:
+            state.mixed_key_fused_scaled_score_cache = torch.cat(
+                [
+                    state.mixed_key_fused_scaled_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_fused_scaled_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_fused_scaled_score_cache.dtype,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_bias_score_cache = torch.cat(
+                [
+                    state.mixed_key_bias_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_bias_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_bias_score_cache.dtype,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+        if (
+            state.mixed_key_packed_payload_cache is not None
+            and state.mixed_key_packed_scales_cache is not None
+            and state.mixed_key_packed_bias_cache is not None
+        ):
+            state.mixed_key_packed_payload_cache = np.concatenate(
+                [
+                    state.mixed_key_packed_payload_cache,
+                    np.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(state.mixed_key_packed_payload_cache.shape[1]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_payload_cache.shape[-1]),
+                        ),
+                        dtype=np.uint32,
+                    ),
+                ],
+                axis=2,
+            )
+            state.mixed_key_packed_scales_cache = np.concatenate(
+                [
+                    state.mixed_key_packed_scales_cache,
+                    np.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_scales_cache.shape[-1]),
+                        ),
+                        dtype=np.float32,
+                    ),
+                ],
+                axis=1,
+            )
+            state.mixed_key_packed_bias_cache = np.concatenate(
+                [
+                    state.mixed_key_packed_bias_cache,
+                    np.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_bias_cache.shape[-1]),
+                        ),
+                        dtype=np.float32,
+                    ),
+                ],
+                axis=1,
+            )
+        if state.mixed_value_fused_scaled_cache is not None and state.mixed_value_bias_cache is not None:
+            state.mixed_value_fused_scaled_cache = torch.cat(
+                [
+                    state.mixed_value_fused_scaled_cache,
+                    torch.zeros(
+                        (
+                            int(value_tensor.shape[0]),
+                            int(value_tensor.shape[1]),
+                            int(state.mixed_value_fused_scaled_cache.shape[-1]),
+                        ),
+                        dtype=torch.float32,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_value_bias_cache = torch.cat(
+                [
+                    state.mixed_value_bias_cache,
+                    torch.zeros(
+                        (
+                            int(value_tensor.shape[0]),
+                            int(value_tensor.shape[1]),
+                            int(state.mixed_value_bias_cache.shape[-1]),
+                        ),
+                        dtype=torch.float32,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
         state.append_count += 1
         token_count = int(state.key_cache.shape[1])
         block_token_starts, block_token_counts, metadata_valid = _build_block_layout(
@@ -1651,15 +3079,17 @@ class PersistentFullAttentionState:
         else:
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             recompute_block_indices = np.asarray([new_num_blocks - 1], dtype=np.int64)
-        _recompute_full_attention_block_metadata(
+        cache_refresh_ms = _recompute_full_attention_block_metadata(
             state=state,
             block_indices=recompute_block_indices,
+            config=self.config,
             dotcache_config=self.dotcache_config,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self.telemetry.append_update_ms_total += elapsed_ms
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.append_ms_total += elapsed_ms
+        layer_telemetry.mixed_execution_cache_refresh_ms_total += float(cache_refresh_ms)
         layer_telemetry.mutation_count += 1
         del token_index
 
@@ -1843,6 +3273,85 @@ class PersistentFullAttentionState:
     def gather_selected_blocks(self, layer_id: int, block_ids: list[int]):
         state = self.layers[int(layer_id)]
         return _gather_selected_block_tensors(state=state, block_ids=block_ids)
+
+    def prepare_selected_execution_tensors(
+        self,
+        layer_id: int,
+        block_ids: list[int],
+        *,
+        config_override: PersistentServingConfig | None = None,
+    ):
+        state = self.layers[int(layer_id)]
+        start = time.perf_counter()
+        gathered_keys, gathered_values, token_counts, executed_mode_counts = _prepare_selected_block_execution_tensors(
+            state=state,
+            block_ids=block_ids,
+            config=config_override or self.config,
+            dotcache_config=self.dotcache_config,
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
+        layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
+        layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        return gathered_keys, gathered_values, token_counts, executed_mode_counts
+
+    def decode_selected_blocks(
+        self,
+        layer_id: int,
+        *,
+        block_ids: list[int],
+        query: Any,
+        query_scale: float,
+        config_override: PersistentServingConfig | None = None,
+    ):
+        state = self.layers[int(layer_id)]
+        resolved_config = config_override or self.config
+        start = time.perf_counter()
+        timing = {
+            "direct_m0_assembly_ms": 0.0,
+            "direct_m0_score_ms": 0.0,
+            "exact_m3_score_ms": 0.0,
+            "final_mix_ms": 0.0,
+        }
+        if (
+            bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
+            and bool(getattr(resolved_config, "enable_compression", False))
+            and _can_use_direct_m0_execution(state=state, config=resolved_config)
+        ):
+            output, attn_weights, token_counts, executed_mode_counts, timing = _decode_selected_blocks_direct_m0_torch(
+                state=state,
+                block_ids=block_ids,
+                query=query,
+                q_head_to_kv_head=self.q_head_to_kv_head,
+                query_scale=float(query_scale),
+                config=resolved_config,
+                dotcache_config=self.dotcache_config,
+            )
+        else:
+            gathered_keys, gathered_values, token_counts, executed_mode_counts = _prepare_selected_block_execution_tensors(
+                state=state,
+                block_ids=block_ids,
+                config=resolved_config,
+                dotcache_config=self.dotcache_config,
+            )
+            output, attn_weights = _decode_selected_block_tensors_exact_torch(
+                query=query,
+                key_cache=gathered_keys,
+                value_cache=gathered_values,
+                q_head_to_kv_head=self.q_head_to_kv_head,
+                query_scale=float(query_scale),
+            )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
+        layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(timing.get("direct_m0_assembly_ms", 0.0))
+        layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(timing.get("direct_m0_score_ms", 0.0))
+        layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(timing.get("exact_m3_score_ms", 0.0))
+        layer_telemetry.mixed_execution_final_mix_ms_total += float(timing.get("final_mix_ms", 0.0))
+        layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
+        layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        return output, attn_weights, token_counts, executed_mode_counts
 
     def full_layer_tensors(self, layer_id: int):
         state = self.layers[int(layer_id)]
@@ -2131,6 +3640,15 @@ class PersistentFullAttentionState:
         for state in self.layers.values():
             total += _nbytes_tensor_like(state.key_cache)
             total += _nbytes_tensor_like(state.value_cache)
+            total += _nbytes_tensor_like(state.mixed_key_cache)
+            total += _nbytes_tensor_like(state.mixed_value_cache)
+            total += _nbytes_tensor_like(state.mixed_key_fused_scaled_cache)
+            total += _nbytes_tensor_like(state.mixed_key_bias_cache)
+            total += _nbytes_tensor_like(state.mixed_key_packed_payload_cache)
+            total += _nbytes_tensor_like(state.mixed_key_packed_scales_cache)
+            total += _nbytes_tensor_like(state.mixed_key_packed_bias_cache)
+            total += _nbytes_tensor_like(state.mixed_value_fused_scaled_cache)
+            total += _nbytes_tensor_like(state.mixed_value_bias_cache)
         return int(total)
 
     def summary(self) -> dict[str, Any]:
@@ -2208,12 +3726,44 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).policy_bias_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_mixed_execution_prepare_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_prepare_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_direct_m0_assembly_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_assembly_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_score_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_exact_m3_score_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_cache_refresh_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_cache_refresh_ms_total)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_full_attention_selected_m0_metadata_block_count_total_by_layer": {
                 str(layer_id): int(self.telemetry.require_layer(layer_id).selected_m0_metadata_block_count_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_selected_m3_metadata_block_count_total_by_layer": {
                 str(layer_id): int(self.telemetry.require_layer(layer_id).selected_m3_metadata_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_executed_m0_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).executed_m0_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_executed_m3_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).executed_m3_block_count_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_last_fallback_rung_by_layer": {
@@ -2581,6 +4131,36 @@ class PersistentHybridRuntimeState:
     def gather_full_attention_selected_blocks(self, layer_id: int, block_ids: list[int]):
         return self.full_attention.gather_selected_blocks(layer_id, block_ids)
 
+    def prepare_full_attention_selected_execution_tensors(
+        self,
+        layer_id: int,
+        block_ids: list[int],
+        *,
+        config_override: PersistentServingConfig | None = None,
+    ):
+        return self.full_attention.prepare_selected_execution_tensors(
+            layer_id,
+            block_ids,
+            config_override=config_override,
+        )
+
+    def decode_full_attention_selected_blocks(
+        self,
+        layer_id: int,
+        *,
+        block_ids: list[int],
+        query: Any,
+        query_scale: float,
+        config_override: PersistentServingConfig | None = None,
+    ):
+        return self.full_attention.decode_selected_blocks(
+            layer_id,
+            block_ids=block_ids,
+            query=query,
+            query_scale=query_scale,
+            config_override=config_override,
+        )
+
     def gather_full_attention_layer_tensors(self, layer_id: int):
         return self.full_attention.full_layer_tensors(layer_id)
 
@@ -2670,6 +4250,12 @@ class PersistentHybridRuntimeState:
                 ),
                 "persistent_runtime_enable_linear_attention_persistent_compute": bool(
                     self.config.enable_linear_attention_persistent_compute
+                ),
+                "persistent_runtime_enable_full_attention_mixed_mode_execution": bool(
+                    self.config.enable_full_attention_mixed_mode_execution
+                ),
+                "persistent_runtime_full_attention_mixed_mode_execution_strategy": str(
+                    self.config.full_attention_mixed_mode_execution_strategy
                 ),
                 "persistent_runtime_enable_priority": bool(self.config.enable_priority),
                 "persistent_runtime_enable_early_exit": bool(self.config.enable_early_exit),
