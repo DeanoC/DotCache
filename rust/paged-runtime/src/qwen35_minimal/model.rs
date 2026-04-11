@@ -1054,6 +1054,85 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         }
         Ok((output, out_shape))
     }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        embeddings: &candle::CudaStorage,
+        embeddings_layout: &candle::Layout,
+        indexes: &candle::CudaStorage,
+        indexes_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
+            candle::bail!("cuda-embedding-lookup requires contiguous inputs")
+        }
+        let dims = embeddings_layout.shape().dims();
+        if dims.len() != 2 {
+            candle::bail!(
+                "cuda-embedding-lookup expected [vocab, hidden] embeddings, got {:?}",
+                dims
+            )
+        }
+        if dims[0] != self.vocab_size || dims[1] != self.hidden_size {
+            candle::bail!(
+                "cuda-embedding-lookup embedding shape mismatch got {:?} expected [{}, {}]",
+                dims,
+                self.vocab_size,
+                self.hidden_size
+            )
+        }
+        if indexes.dtype() != DType::U32 {
+            candle::bail!(
+                "cuda-embedding-lookup currently requires U32 indexes, got {:?}",
+                indexes.dtype()
+            )
+        }
+
+        let mut out_dims = indexes_layout.shape().dims().to_vec();
+        out_dims.push(self.hidden_size);
+        let out_shape = candle::Shape::from(out_dims);
+        let device = embeddings.device().clone();
+        let token_count = indexes_layout.shape().elem_count();
+        let elem_count = out_shape.elem_count();
+        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let embeddings = embeddings.as_cuda_slice::<$ty>()?;
+                let embeddings = match embeddings_layout.contiguous_offsets() {
+                    Some((o1, o2)) => embeddings.slice(o1..o2),
+                    None => candle::bail!("cuda-embedding-lookup requires contiguous embeddings"),
+                };
+                let indexes = indexes.as_cuda_slice::<u32>()?;
+                let indexes = match indexes_layout.contiguous_offsets() {
+                    Some((o1, o2)) => indexes.slice(o1..o2),
+                    None => candle::bail!("cuda-embedding-lookup requires contiguous indexes"),
+                };
+                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, token_count, self.vocab_size, self.hidden_size);
+                builder.arg(&embeddings);
+                builder.arg(&indexes);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match embeddings.dtype() {
+            DType::F16 => launch!(half::f16, "embedding_lookup_u32_f16"),
+            DType::F32 => launch!(f32, "embedding_lookup_u32_f32"),
+            DType::BF16 => launch!(half::bf16, "embedding_lookup_u32_bf16"),
+            other => candle::bail!("cuda-embedding-lookup unsupported dtype {other:?}"),
+        }
+    }
 }
 
 fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor> {
@@ -10526,6 +10605,9 @@ impl TextModel {
         if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
             return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
         }
+        if self.embed_tokens.embeddings().device().is_cuda() && input_ids.device().is_cuda() {
+            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
+        }
         self.embed_tokens.forward(input_ids)
     }
 
@@ -12912,6 +12994,32 @@ mod tests {
         assert_eq!(output.dtype(), embeddings.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_embedding_lookup_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let vocab_size = 5usize;
+        let hidden_size = 4usize;
+        let embeddings_data = vec![
+            0.0f32, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 22.0, 23.0, 30.0, 31.0,
+            32.0, 33.0, 40.0, 41.0, 42.0, 43.0,
+        ];
+        let index_data = vec![3u32, 1, 4, 0];
+        let expected = vec![
+            30.0f32, 31.0, 32.0, 33.0, 10.0, 11.0, 12.0, 13.0, 40.0, 41.0, 42.0, 43.0, 0.0,
+            1.0, 2.0, 3.0,
+        ];
+        let embeddings = Tensor::from_vec(embeddings_data, (vocab_size, hidden_size), &device)?;
+        let indexes = Tensor::from_vec(index_data, (2, 2), &device)?;
+        let output = hip_embedding_lookup(&embeddings, &indexes)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
         Ok(())
     }
 
