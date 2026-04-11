@@ -3319,6 +3319,17 @@ struct LinearDecodePrepare {
     head_repeat: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodePreparePackedCache {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+}
+
 impl candle::CustomOp6 for LinearDecodePrepare {
     fn name(&self) -> &'static str {
         "linear-decode-prepare"
@@ -3518,6 +3529,147 @@ impl candle::CustomOp6 for LinearDecodePrepare {
     }
 }
 
+impl candle::CustomOp6 for CudaLinearDecodePreparePackedCache {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-prepare-packed-cache"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-prepare-packed-cache has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        mixed_qkv: &candle::CudaStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        a_raw: &candle::CudaStorage,
+        a_raw_layout: &candle::Layout,
+        beta_raw: &candle::CudaStorage,
+        beta_raw_layout: &candle::Layout,
+        value_cache_pack: &candle::CudaStorage,
+        value_cache_pack_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_raw_layout.is_contiguous()
+            && beta_raw_layout.is_contiguous()
+            && value_cache_pack_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs")
+        }
+
+        let device = mixed_qkv.device().clone();
+        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
+        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_k_dim.max(self.head_v_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
+                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
+                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let a_raw = a_raw.as_cuda_slice::<$ty>()?;
+                let a_raw = match a_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_raw.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let beta_raw = beta_raw.as_cuda_slice::<$ty>()?;
+                let beta_raw = match beta_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => beta_raw.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
+                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
+                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device.get_or_load_func(
+                    $kernel,
+                    &candle::cuda_backend::kernels::QWEN35_DELTA,
+                )?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32
+                );
+                builder.arg(&mixed_qkv);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&a_raw);
+                builder.arg(&beta_raw);
+                builder.arg(&value_cache_pack);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match mixed_qkv.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_prepare_packed_cache_f16"),
+            DType::F32 => launch!(f32, "linear_decode_prepare_packed_cache_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_packed_cache_bf16"),
+            other => candle::bail!(
+                "cuda-linear-decode-prepare-packed-cache unsupported dtype {other:?}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LinearDecodeApply {
     batch_size: usize,
@@ -3709,9 +3861,9 @@ fn linear_decode_step_cuda(
     mixed_qkv: &Tensor,
     prev_conv_state: &Tensor,
     weights: &Tensor,
-    a_beta_raw: &Tensor,
-    dt_bias: &Tensor,
-    a_log_exp: &Tensor,
+    a_raw: &Tensor,
+    beta_raw: &Tensor,
+    value_cache_pack: &Tensor,
     initial_state: &Tensor,
     num_v_heads: usize,
     head_k_dim: usize,
@@ -3722,9 +3874,9 @@ fn linear_decode_step_cuda(
     let mixed_qkv = mixed_qkv.contiguous()?;
     let prev_conv_state = prev_conv_state.contiguous()?;
     let weights = weights.contiguous()?;
-    let a_beta_raw = a_beta_raw.contiguous()?;
-    let dt_bias = dt_bias.contiguous()?;
-    let a_log_exp = a_log_exp.contiguous()?;
+    let a_raw = a_raw.contiguous()?;
+    let beta_raw = beta_raw.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
     let initial_state = initial_state.contiguous()?;
     let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (_, _, state_len) = prev_conv_state.dims3()?;
@@ -3734,10 +3886,10 @@ fn linear_decode_step_cuda(
     let packed = mixed_qkv.apply_op6_no_bwd(
         &prev_conv_state,
         &weights,
-        &a_beta_raw,
-        &dt_bias,
-        &a_log_exp,
-        &LinearDecodePrepare {
+        &a_raw,
+        &beta_raw,
+        &value_cache_pack,
+        &CudaLinearDecodePreparePackedCache {
             batch_size,
             num_v_heads,
             head_k_dim,
@@ -8860,6 +9012,7 @@ struct LinearValueCache {
     device_location: DeviceLocation,
     dt_bias: Tensor,
     a_log_exp: Tensor,
+    packed: Tensor,
 }
 
 impl GatedDeltaNet {
@@ -9041,6 +9194,7 @@ impl GatedDeltaNet {
             self.value_cache = Some(LinearValueCache {
                 dtype,
                 device_location,
+                packed: Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?.contiguous()?,
                 dt_bias,
                 a_log_exp,
             });
@@ -10518,8 +10672,13 @@ impl GatedDeltaNet {
             } else {
                 beta_raw.to_dtype(target_dtype)?
             };
-            let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+            let value_cache_pack = self
+                .value_cache
+                .as_ref()
+                .expect("linear value cache must be initialized")
+                .packed
+                .clone();
             let initial_state = match &self.recurrent_state {
                 Some(state) => {
                     let state = if state.rank() == 3 {
@@ -10546,6 +10705,7 @@ impl GatedDeltaNet {
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
             let fused = if device.is_hip() {
+                let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
                 linear_decode_step_hip(
                     &mixed_qkv.contiguous()?,
                     &prev_conv_state,
@@ -10565,9 +10725,9 @@ impl GatedDeltaNet {
                     &mixed_qkv.contiguous()?,
                     &prev_conv_state,
                     &weights,
-                    &a_beta_raw,
-                    &dt_bias,
-                    &a_log_exp,
+                    &a,
+                    &beta_raw,
+                    &value_cache_pack,
                     &initial_state,
                     self.num_v_heads,
                     self.head_k_dim,
