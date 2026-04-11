@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{HfHubModelSource, Result, RuntimeError};
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
-const PACKAGE_CONVERTER_VERSION: u32 = 5;
+const PACKAGE_CONVERTER_VERSION: u32 = 6;
 const PACKAGE_ALIGNMENT: u64 = 4096;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const WEIGHTS_FILENAME: &str = "weights.bin";
@@ -81,6 +81,7 @@ pub enum PreparedTensorLayout {
     HeadExpReshaped,
     FullAttentionQkvPacked,
     LinearAuxPacked,
+    LinearDecodeQkvAuxPacked,
     MlpGateUpPacked,
 }
 
@@ -352,6 +353,8 @@ fn build_qwen35_minimal_package(
     let mut offset = 0u64;
     let mut full_attn_qkv_packs = BTreeMap::<String, FullAttentionQkvPackCandidate>::new();
     let mut linear_aux_packs = BTreeMap::<String, LinearAuxPackCandidate>::new();
+    let mut linear_decode_qkv_aux_packs =
+        BTreeMap::<String, LinearDecodeQkvAuxPackCandidate>::new();
     let mut mlp_gate_up_packs = BTreeMap::<String, MlpGateUpPackCandidate>::new();
 
     for weight_path in &artifacts.weight_paths {
@@ -391,6 +394,13 @@ fn build_qwen35_minimal_package(
             );
             collect_linear_aux_candidate(
                 &mut linear_aux_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
+            collect_linear_decode_qkv_aux_candidate(
+                &mut linear_decode_qkv_aux_packs,
                 name,
                 view.shape(),
                 dtype,
@@ -449,6 +459,21 @@ fn build_qwen35_minimal_package(
                 &shape,
                 dtype,
                 PreparedTensorLayout::LinearAuxPacked,
+                &bytes,
+            )?;
+        }
+    }
+
+    for (prefix, candidate) in linear_decode_qkv_aux_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.qkv_zba_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::LinearDecodeQkvAuxPacked,
                 &bytes,
             )?;
         }
@@ -525,6 +550,14 @@ struct MlpGateUpPackCandidate {
 
 #[derive(Default)]
 struct LinearAuxPackCandidate {
+    z_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    b_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    a_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct LinearDecodeQkvAuxPackCandidate {
+    qkv_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
     z_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
     b_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
     a_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
@@ -610,6 +643,38 @@ impl LinearAuxPackCandidate {
     }
 }
 
+impl LinearDecodeQkvAuxPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((qkv_shape, qkv_dtype, mut qkv_bytes)) = self.qkv_weight else {
+            return Ok(None);
+        };
+        let Some((z_shape, z_dtype, z_bytes)) = self.z_weight else {
+            return Ok(None);
+        };
+        let Some((b_shape, b_dtype, b_bytes)) = self.b_weight else {
+            return Ok(None);
+        };
+        let Some((a_shape, a_dtype, a_bytes)) = self.a_weight else {
+            return Ok(None);
+        };
+        if qkv_dtype != z_dtype || qkv_dtype != b_dtype || qkv_dtype != a_dtype {
+            return Ok(None);
+        }
+        if qkv_shape.len() != 2 || z_shape.len() != 2 || b_shape.len() != 2 || a_shape.len() != 2 {
+            return Ok(None);
+        }
+        if qkv_shape[1] != z_shape[1] || qkv_shape[1] != b_shape[1] || qkv_shape[1] != a_shape[1] {
+            return Ok(None);
+        }
+        let out_dim = qkv_shape[0] + z_shape[0] + b_shape[0] + a_shape[0];
+        let in_dim = qkv_shape[1];
+        qkv_bytes.extend_from_slice(&z_bytes);
+        qkv_bytes.extend_from_slice(&b_bytes);
+        qkv_bytes.extend_from_slice(&a_bytes);
+        Ok(Some((vec![out_dim, in_dim], qkv_dtype, qkv_bytes)))
+    }
+}
+
 fn collect_full_attention_qkv_candidate(
     candidates: &mut BTreeMap<String, FullAttentionQkvPackCandidate>,
     name: &str,
@@ -635,6 +700,38 @@ fn collect_full_attention_qkv_candidate(
         "q" => candidate.q_weight = Some(payload),
         "k" => candidate.k_weight = Some(payload),
         "v" => candidate.v_weight = Some(payload),
+        _ => {}
+    }
+}
+
+fn collect_linear_decode_qkv_aux_candidate(
+    candidates: &mut BTreeMap<String, LinearDecodeQkvAuxPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".in_proj_qkv.weight") {
+        Some((prefix.to_string(), "qkv"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_z.weight") {
+        Some((prefix.to_string(), "z"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_b.weight") {
+        Some((prefix.to_string(), "b"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_a.weight") {
+        Some((prefix.to_string(), "a"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "qkv" => candidate.qkv_weight = Some(payload),
+        "z" => candidate.z_weight = Some(payload),
+        "b" => candidate.b_weight = Some(payload),
+        "a" => candidate.a_weight = Some(payload),
         _ => {}
     }
 }

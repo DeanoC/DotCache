@@ -9358,6 +9358,7 @@ impl FullAttention {
 #[derive(Debug, Clone)]
 struct GatedDeltaNet {
     in_proj_qkv: Linear,
+    in_proj_qkv_zba_pack: Option<Linear>,
     in_proj_z: Option<Linear>,
     in_proj_b: Option<Linear>,
     in_proj_a: Option<Linear>,
@@ -9433,6 +9434,7 @@ impl GatedDeltaNet {
         )?;
         Ok(Self {
             in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
+            in_proj_qkv_zba_pack: None,
             in_proj_z: Some(linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?),
             in_proj_b: Some(linear_no_bias(
                 cfg.hidden_size,
@@ -9487,8 +9489,13 @@ impl GatedDeltaNet {
             .contains_tensor("zba_pack.weight")
             .then(|| prepared_linear_no_bias(&source.pp("zba_pack")))
             .transpose()?;
+        let in_proj_qkv_zba_pack = source
+            .contains_tensor("qkv_zba_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("qkv_zba_pack")))
+            .transpose()?;
         Ok(Self {
             in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
+            in_proj_qkv_zba_pack,
             in_proj_z: if in_proj_zba_pack.is_none() {
                 Some(prepared_linear_no_bias(&source.pp("in_proj_z"))?)
             } else {
@@ -11009,8 +11016,34 @@ impl GatedDeltaNet {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let qkv_start = profile_start(device)?;
-        let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
-        let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
+        let (mixed_qkv, z, beta_raw, a) = if seq_len == 1
+            && hidden_states.device().is_cuda()
+            && self.in_proj_qkv_zba_pack.is_some()
+        {
+            let packed = fast_linear_decode(
+                &hidden_states,
+                self.in_proj_qkv_zba_pack
+                    .as_ref()
+                    .expect("qkv_zba pack checked above"),
+            )?;
+            let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
+            let z = packed
+                .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
+                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
+            let beta_raw = packed.narrow(
+                D::Minus1,
+                self.conv_dim() + self.value_dim,
+                self.num_v_heads,
+            )?;
+            let a = packed.narrow(
+                D::Minus1,
+                self.conv_dim() + self.value_dim + self.num_v_heads,
+                self.num_v_heads,
+            )?;
+            (mixed_qkv, z, beta_raw, a)
+        } else {
+            let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
+            let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
             let packed = fast_linear_decode(&hidden_states, in_proj_zba_pack)?;
             let z = packed.narrow(D::Minus1, 0, self.value_dim)?.reshape((
                 batch_size,
@@ -11039,6 +11072,8 @@ impl GatedDeltaNet {
                 .expect("in_proj_a missing without packed zba")
                 .forward(&hidden_states)?;
             (z, beta_raw, a)
+            };
+            (mixed_qkv, z, beta_raw, a)
         };
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
