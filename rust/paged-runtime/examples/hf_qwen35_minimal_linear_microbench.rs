@@ -313,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let device = args.device.resolve()?;
     let load_started = Instant::now();
-    let mut runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&args.model_id, &device)?;
+    let mut runner = MinimalQwen35Runner::load_from_hf_f16(&args.model_id, &device)?;
     let load_elapsed = load_started.elapsed().as_secs_f64() * 1_000.0;
 
     let linear_layer_ids = runner.model.linear_attention_layer_ids();

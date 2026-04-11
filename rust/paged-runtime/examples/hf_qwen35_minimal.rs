@@ -197,15 +197,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--device-only]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
+    let mut device_only = false;
     while let Some(arg) = args.next() {
         if arg == "--device" {
             let value = args.next().ok_or("missing value for --device")?;
             device_selector = value.parse()?;
+        } else if arg == "--device-only" {
+            device_only = true;
         } else {
             positional.push(arg);
         }
@@ -226,20 +229,32 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let cpu_device = Device::Cpu;
     let target_device = device_selector.resolve()?;
-    let cpu_load_started = Instant::now();
-    let mut cpu_runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &cpu_device)?;
-    let cpu_load_elapsed = cpu_load_started.elapsed();
+    let (mut cpu_runner, cpu_load_elapsed) = if device_only {
+        (None, std::time::Duration::ZERO)
+    } else {
+        let cpu_load_started = Instant::now();
+        let cpu_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &cpu_device)?;
+        (Some(cpu_runner), cpu_load_started.elapsed())
+    };
 
     let device_load_started = Instant::now();
-    let mut device_runner = MinimalQwen35Runner::load_from_hf_0_8b_f16(&model_id, &target_device)?;
+    let mut device_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &target_device)?;
     let device_load_elapsed = device_load_started.elapsed();
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
-    let hidden_states = cpu_runner.hidden_states_from_input_ids(&input_ids)?;
+    let hidden_states = if let Some(cpu_runner) = cpu_runner.as_ref() {
+        cpu_runner.hidden_states_from_input_ids(&input_ids)?
+    } else {
+        device_runner.hidden_states_from_input_ids(&input_ids)?
+    };
 
-    let cpu_prefill_started = Instant::now();
-    let (mut cpu_logits, mut cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
-    let cpu_prefill_elapsed = cpu_prefill_started.elapsed();
+    let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) = if let Some(cpu_runner) = cpu_runner.as_mut() {
+        let cpu_prefill_started = Instant::now();
+        let (cpu_logits, cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
+        (Some(cpu_logits), Some(cpu_cache), cpu_prefill_started.elapsed())
+    } else {
+        (None, None, std::time::Duration::ZERO)
+    };
 
     #[cfg(feature = "qwen35-minimal-hip")]
     if target_device.is_hip() {
@@ -258,32 +273,44 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         print_hip_counters("prefill");
     }
-    let cpu_prefill_nans = logit_nan_count(&cpu_logits)?;
+    let cpu_prefill_nans = match cpu_logits.as_ref() {
+        Some(cpu_logits) => logit_nan_count(cpu_logits)?,
+        None => 0,
+    };
     let device_prefill_nans = logit_nan_count(&device_logits)?;
     if cpu_prefill_nans > 0 || device_prefill_nans > 0 {
         eprintln!(
             "warning: prefill logits contain NaNs cpu={} device={}",
             cpu_prefill_nans, device_prefill_nans
         );
-        report_linear_nan_trace(&mut cpu_runner, &input_ids)?;
+        if let Some(cpu_runner) = cpu_runner.as_mut() {
+            report_linear_nan_trace(cpu_runner, &input_ids)?;
+        }
     }
 
-    let prefill_delta = max_logit_delta(&cpu_logits, &device_logits)?;
+    let prefill_delta = match cpu_logits.as_ref() {
+        Some(cpu_logits) => max_logit_delta(cpu_logits, &device_logits)?,
+        None => f32::NAN,
+    };
     let mut generated_ids = prompt_ids.clone();
-    let mut max_decode_delta = 0.0f32;
+    let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
     let mut cpu_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
-    let mut next_token = argmax_last_token(&cpu_logits)?;
+    let mut next_token = match cpu_logits.as_ref() {
+        Some(cpu_logits) => argmax_last_token(cpu_logits)?,
+        None => argmax_last_token(&device_logits)?,
+    };
     for _ in 0..max_new_tokens {
         generated_ids.push(next_token);
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
-        let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
         let device_hidden_state = device_runner.hidden_states_from_input_ids(&decode_input)?;
-
-        let cpu_decode_started = Instant::now();
-        cpu_logits = cpu_runner.decode_from_hidden_state(&cpu_hidden_state, &mut cpu_cache)?;
-        cpu_decode_elapsed += cpu_decode_started.elapsed();
+        if let (Some(cpu_runner), Some(cpu_cache)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
+            let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
+            let cpu_decode_started = Instant::now();
+            cpu_logits = Some(cpu_runner.decode_from_hidden_state(&cpu_hidden_state, cpu_cache)?);
+            cpu_decode_elapsed += cpu_decode_started.elapsed();
+        }
 
         #[cfg(feature = "qwen35-minimal-hip")]
         if target_device.is_hip() {
@@ -302,7 +329,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             print_hip_counters("decode-step");
         }
-        let cpu_decode_nans = logit_nan_count(&cpu_logits)?;
+        let cpu_decode_nans = match cpu_logits.as_ref() {
+            Some(cpu_logits) => logit_nan_count(cpu_logits)?,
+            None => 0,
+        };
         let device_decode_nans = logit_nan_count(&device_logits)?;
         if cpu_decode_nans > 0 || device_decode_nans > 0 {
             eprintln!(
@@ -311,14 +341,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
         }
 
-        max_decode_delta = max_decode_delta.max(max_logit_delta(&cpu_logits, &device_logits)?);
-        next_token = argmax_last_token(&cpu_logits)?;
+        if let Some(cpu_logits) = cpu_logits.as_ref() {
+            max_decode_delta = max_decode_delta.max(max_logit_delta(cpu_logits, &device_logits)?);
+            next_token = argmax_last_token(cpu_logits)?;
+        } else {
+            next_token = argmax_last_token(&device_logits)?;
+        }
     }
 
     let generated_text = tokenizer.decode(&generated_ids, true)?;
     println!("{generated_text}");
     eprintln!(
-        "device={device_selector} prompt_tokens={} generated_tokens={} cpu_load_ms={:.2} device_load_ms={:.2} cpu_prefill_ms={:.2} device_prefill_ms={:.2} cpu_decode_ms={:.2} device_decode_ms={:.2} prefill_max_delta={:.6} decode_max_delta={:.6}",
+        "device={device_selector} device_only={} prompt_tokens={} generated_tokens={} cpu_load_ms={:.2} device_load_ms={:.2} cpu_prefill_ms={:.2} device_prefill_ms={:.2} cpu_decode_ms={:.2} device_decode_ms={:.2} prefill_max_delta={:.6} decode_max_delta={:.6}",
+        device_only,
         prompt_ids.len(),
         generated_ids.len().saturating_sub(prompt_ids.len()),
         cpu_load_elapsed.as_secs_f64() * 1000.0,
