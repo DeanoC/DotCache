@@ -551,7 +551,13 @@ def _copy_full_attention_block_metadata_prefix(
     state.block_k_subradii[prefix].copy_(previous["block_k_subradii"][prefix])
     state.block_v_center[prefix].copy_(previous["block_v_center"][prefix])
     state.block_v_radius[prefix].copy_(previous["block_v_radius"][prefix])
+    state.block_v_subcenters[prefix].copy_(previous["block_v_subcenters"][prefix])
+    state.block_v_subradii[prefix].copy_(previous["block_v_subradii"][prefix])
+    state.block_v_sub_norm_max[prefix].copy_(previous["block_v_sub_norm_max"][prefix])
+    state.block_v_subtoken_counts[prefix].copy_(previous["block_v_subtoken_counts"][prefix])
     state.block_v_norm_max[prefix].copy_(previous["block_v_norm_max"][prefix])
+    state.block_v_pos_sum[prefix].copy_(previous["block_v_pos_sum"][prefix])
+    state.block_v_neg_sum[prefix].copy_(previous["block_v_neg_sum"][prefix])
     state.block_prev_attention_ema[prefix].copy_(previous["block_prev_attention_ema"][prefix])
     state.block_k_comp_error[prefix].copy_(previous["block_k_comp_error"][prefix])
     state.block_k_mode[prefix] = previous["block_k_mode"][prefix]
@@ -844,6 +850,7 @@ def _allocate_full_attention_block_metadata(
     num_blocks: int,
     device: Any,
     key_centroid_count: int,
+    value_centroid_count: int,
 ):
     torch = _load_torch()
     kv_heads = int(key_cache.shape[0])
@@ -862,7 +869,29 @@ def _allocate_full_attention_block_metadata(
     )
     block_v_center = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_v_radius = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_v_subcenters = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1), head_dim),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_subradii = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1)),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_sub_norm_max = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1)),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_subtoken_counts = torch.zeros(
+        (num_blocks, max(int(value_centroid_count), 1)),
+        dtype=torch.int32,
+        device=device,
+    )
     block_v_norm_max = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_v_pos_sum = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
+    block_v_neg_sum = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_prev_attention_ema = torch.zeros((num_blocks,), dtype=torch.float32, device=device)
     block_k_comp_error = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
     block_compression_metadata_valid = np.ones((num_blocks, kv_heads), dtype=np.float32)
@@ -873,11 +902,55 @@ def _allocate_full_attention_block_metadata(
         block_k_subradii,
         block_v_center,
         block_v_radius,
+        block_v_subcenters,
+        block_v_subradii,
+        block_v_sub_norm_max,
+        block_v_subtoken_counts,
         block_v_norm_max,
+        block_v_pos_sum,
+        block_v_neg_sum,
         block_prev_attention_ema,
         block_k_comp_error,
         block_compression_metadata_valid,
     )
+
+
+def _resolve_layer_key_centroid_count(
+    config: PersistentServingConfig | None,
+    layer_id: int,
+    *,
+    default: int = 1,
+) -> int:
+    resolved = max(int(default), 1)
+    if config is None:
+        return resolved
+    resolved = max(int(getattr(config, "full_attention_key_centroid_count", resolved)), 1)
+    by_layer = getattr(config, "full_attention_key_centroid_count_by_layer", None)
+    if by_layer:
+        try:
+            resolved = max(int(by_layer.get(int(layer_id), resolved)), 1)
+        except Exception:
+            resolved = max(int(resolved), 1)
+    return resolved
+
+
+def _resolve_layer_value_centroid_count(
+    config: PersistentServingConfig | None,
+    layer_id: int,
+    *,
+    default: int = 1,
+) -> int:
+    resolved = max(int(default), 1)
+    if config is None:
+        return resolved
+    resolved = max(int(getattr(config, "full_attention_value_centroid_count", resolved)), 1)
+    by_layer = getattr(config, "full_attention_value_centroid_count_by_layer", None)
+    if by_layer:
+        try:
+            resolved = max(int(by_layer.get(int(layer_id), resolved)), 1)
+        except Exception:
+            resolved = max(int(resolved), 1)
+    return resolved
 
 
 def _recompute_full_attention_block_metadata(
@@ -901,7 +974,13 @@ def _recompute_full_attention_block_metadata(
             state.block_k_subradii[block_idx].zero_()
             state.block_v_center[block_idx].zero_()
             state.block_v_radius[block_idx].zero_()
+            state.block_v_subcenters[block_idx].zero_()
+            state.block_v_subradii[block_idx].zero_()
+            state.block_v_sub_norm_max[block_idx].zero_()
+            state.block_v_subtoken_counts[block_idx].zero_()
             state.block_v_norm_max[block_idx].zero_()
+            state.block_v_pos_sum[block_idx].zero_()
+            state.block_v_neg_sum[block_idx].zero_()
             state.block_k_comp_error[block_idx].zero_()
             state.block_compression_metadata_valid[block_idx] = 0.0
             continue
@@ -910,10 +989,20 @@ def _recompute_full_attention_block_metadata(
         center = key_slice.mean(dim=1)
         distances = torch.linalg.vector_norm(key_slice - center[:, None, :], dim=-1)
         state.block_k_subcenters[block_idx].copy_(center[:, None, :].expand_as(state.block_k_subcenters[block_idx]))
-        state.block_k_subradii[block_idx].copy_(distances.max(dim=1).values[:, None].expand_as(state.block_k_subradii[block_idx]))
-        centroid_count = int(state.block_k_subcenters.shape[2])
-        if centroid_count > 1:
-            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), centroid_count)
+        state.block_k_subradii[block_idx].copy_(
+            distances.max(dim=1).values[:, None].expand_as(state.block_k_subradii[block_idx])
+        )
+        allocated_centroid_count = int(state.block_k_subcenters.shape[2])
+        active_centroid_count = min(
+            _resolve_layer_key_centroid_count(
+                config,
+                int(state.layer_id),
+                default=int(allocated_centroid_count),
+            ),
+            int(allocated_centroid_count),
+        )
+        if active_centroid_count > 1:
+            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), active_centroid_count)
             for centroid_idx, token_ids in enumerate(token_partitions):
                 if len(token_ids) <= 0:
                     continue
@@ -926,11 +1015,51 @@ def _recompute_full_attention_block_metadata(
         value_center = value_slice.mean(dim=1)
         value_distances = torch.linalg.vector_norm(value_slice - value_center[:, None, :], dim=-1)
         value_norms = torch.linalg.vector_norm(value_slice, dim=-1)
+        value_pos_sum = value_slice.clamp_min(0.0).sum(dim=1)
+        value_neg_sum = value_slice.clamp_max(0.0).sum(dim=1)
         state.block_k_center[block_idx].copy_(center)
         state.block_k_radius[block_idx].copy_(distances.max(dim=1).values)
         state.block_v_center[block_idx].copy_(value_center)
         state.block_v_radius[block_idx].copy_(value_distances.max(dim=1).values)
+        state.block_v_subcenters[block_idx].copy_(value_center[:, None, :].expand_as(state.block_v_subcenters[block_idx]))
+        state.block_v_subradii[block_idx].copy_(
+            value_distances.max(dim=1).values[:, None].expand_as(state.block_v_subradii[block_idx])
+        )
+        state.block_v_sub_norm_max[block_idx].copy_(
+            value_norms.max(dim=1).values[:, None].expand_as(state.block_v_sub_norm_max[block_idx])
+        )
+        state.block_v_subtoken_counts[block_idx].zero_()
+        state.block_v_subtoken_counts[block_idx, 0] = int(token_count)
+        allocated_value_centroid_count = int(state.block_v_subcenters.shape[2])
+        active_value_centroid_count = min(
+            _resolve_layer_value_centroid_count(
+                config,
+                int(state.layer_id),
+                default=int(allocated_value_centroid_count),
+            ),
+            int(allocated_value_centroid_count),
+        )
+        if active_value_centroid_count > 1:
+            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), active_value_centroid_count)
+            state.block_v_subcenters[block_idx].zero_()
+            state.block_v_subradii[block_idx].zero_()
+            state.block_v_sub_norm_max[block_idx].zero_()
+            state.block_v_subtoken_counts[block_idx].zero_()
+            for centroid_idx, token_ids in enumerate(token_partitions):
+                if len(token_ids) <= 0:
+                    continue
+                token_index_tensor = torch.as_tensor(token_ids, dtype=torch.int64, device=value_slice.device)
+                sub_value_slice = value_slice.index_select(1, token_index_tensor)
+                sub_center = sub_value_slice.mean(dim=1)
+                sub_distances = torch.linalg.vector_norm(sub_value_slice - sub_center[:, None, :], dim=-1)
+                sub_norms = torch.linalg.vector_norm(sub_value_slice, dim=-1)
+                state.block_v_subcenters[block_idx, :, centroid_idx, :].copy_(sub_center)
+                state.block_v_subradii[block_idx, :, centroid_idx].copy_(sub_distances.max(dim=1).values)
+                state.block_v_sub_norm_max[block_idx, :, centroid_idx].copy_(sub_norms.max(dim=1).values)
+                state.block_v_subtoken_counts[block_idx, centroid_idx] = int(len(token_ids))
         state.block_v_norm_max[block_idx].copy_(value_norms.max(dim=1).values)
+        state.block_v_pos_sum[block_idx].copy_(value_pos_sum)
+        state.block_v_neg_sum[block_idx].copy_(value_neg_sum)
         state.block_k_comp_error[block_idx].zero_()
         for kv_head_idx in range(int(key_slice.shape[0])):
             key_mode = _normalize_stage8_mode_name(state.block_k_mode[block_idx, kv_head_idx])
@@ -1077,6 +1206,24 @@ def _residual_value_upper_for_blocks(
     residual_cluster_count: int,
 ) -> tuple[float, float]:
     torch = _load_torch()
+    global_weighted_center_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_positive_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_negative_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_radius_upper = 0.0
+    global_norm_upper = 0.0
+    global_mass_upper = 0.0
     grouped_block_ids: list[list[int]]
     if int(residual_cluster_count) > 0:
         grouped_block_ids = _cluster_block_ids_by_key_envelope(
@@ -1101,6 +1248,16 @@ def _residual_value_upper_for_blocks(
             dtype=torch.float32,
             device=state.value_cache.device,
         )
+        positive_sum = torch.zeros(
+            (int(state.value_cache.shape[-1]),),
+            dtype=torch.float32,
+            device=state.value_cache.device,
+        )
+        negative_sum = torch.zeros(
+            (int(state.value_cache.shape[-1]),),
+            dtype=torch.float32,
+            device=state.value_cache.device,
+        )
         block_mass_upper = 0.0
         block_radius_upper = 0.0
         block_norm_upper = 0.0
@@ -1117,22 +1274,88 @@ def _residual_value_upper_for_blocks(
             )
             current_block_mass = float(block_token_count) * scaled
             block_mass_upper += current_block_mass
-            weighted_center_sum = weighted_center_sum + (
-                state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
-                * float(current_block_mass)
+            global_mass_upper += current_block_mass
+            active_value_centroids = int(state.block_v_subcenters.shape[2])
+            subtoken_counts = state.block_v_subtoken_counts[int(remaining_block_id), :active_value_centroids]
+            use_value_subcentroids = bool(int((subtoken_counts > 0).sum().item()) > 1)
+            if use_value_subcentroids:
+                active_sub_count = min(active_value_centroids, int((subtoken_counts > 0).sum().item()))
+                for sub_idx in range(active_sub_count):
+                    sub_token_count = int(subtoken_counts[sub_idx].item())
+                    if sub_token_count <= 0:
+                        continue
+                    current_sub_mass = float(sub_token_count) * scaled
+                    weighted_center_sum = weighted_center_sum + (
+                        state.block_v_subcenters[int(remaining_block_id), int(kv_head_idx), sub_idx].to(dtype=torch.float32)
+                        * float(current_sub_mass)
+                    )
+                    global_weighted_center_sum = global_weighted_center_sum + (
+                        state.block_v_subcenters[int(remaining_block_id), int(kv_head_idx), sub_idx].to(dtype=torch.float32)
+                        * float(current_sub_mass)
+                    )
+                    block_radius_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_subradii[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    global_radius_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_subradii[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    block_norm_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_sub_norm_max[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    global_norm_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_sub_norm_max[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+            else:
+                weighted_center_sum = weighted_center_sum + (
+                    state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                    * float(current_block_mass)
+                )
+                global_weighted_center_sum = global_weighted_center_sum + (
+                    state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                    * float(current_block_mass)
+                )
+                block_radius_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                global_radius_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                block_norm_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                global_norm_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+            positive_sum = positive_sum + (
+                state.block_v_pos_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
-            block_radius_upper += (
-                float(current_block_mass)
-                * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+            negative_sum = negative_sum + (
+                state.block_v_neg_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
-            block_norm_upper += (
-                float(current_block_mass)
-                * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+            global_positive_sum = global_positive_sum + (
+                state.block_v_pos_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
+            )
+            global_negative_sum = global_negative_sum + (
+                state.block_v_neg_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
         block_value_upper = min(
             float(torch.linalg.vector_norm(weighted_center_sum).item()) + float(block_radius_upper),
             float(block_norm_upper),
         )
+        block_box_upper = float(torch.linalg.vector_norm(torch.maximum(positive_sum.abs(), negative_sum.abs())).item())
+        block_value_upper = min(float(block_value_upper), float(block_box_upper))
         if not use_group_caps or not token_spans:
             residual_mass_upper += float(block_mass_upper)
             residual_value_upper += float(block_value_upper)
@@ -1155,13 +1378,456 @@ def _residual_value_upper_for_blocks(
         )
         residual_mass_upper += min(float(block_mass_upper), float(cluster_mass_cap))
         residual_value_upper += min(float(block_value_upper), float(cluster_value_norm_cap))
-    return float(residual_mass_upper), float(residual_value_upper)
+    global_value_upper = min(
+        float(torch.linalg.vector_norm(global_weighted_center_sum).item()) + float(global_radius_upper),
+        float(global_norm_upper),
+    )
+    global_box_upper = float(
+        torch.linalg.vector_norm(torch.maximum(global_positive_sum.abs(), global_negative_sum.abs())).item()
+    )
+    global_value_upper = min(float(global_value_upper), float(global_box_upper))
+    resolved_mass_upper = float(global_mass_upper if not use_group_caps else residual_mass_upper)
+    resolved_value_upper = min(float(residual_value_upper), float(global_value_upper))
+    return float(resolved_mass_upper), float(resolved_value_upper)
+
+
+@dataclass(slots=True)
+class _StreamingResidualUpperTracker:
+    upper_bounds: np.ndarray
+    token_counts: np.ndarray
+    block_region_indices: np.ndarray
+    block_v_centers_by_q_head: np.ndarray
+    block_v_positive_sum_by_q_head: np.ndarray
+    block_v_negative_sum_by_q_head: np.ndarray
+    block_v_radii_by_q_head: np.ndarray
+    block_v_norm_max_by_q_head: np.ndarray
+    active_mask: np.ndarray
+    residual_mass_by_q_head_region: np.ndarray
+    residual_center_sum_by_q_head_region: np.ndarray
+    residual_positive_sum_by_q_head_region: np.ndarray
+    residual_negative_sum_by_q_head_region: np.ndarray
+    residual_radius_sum_by_q_head_region: np.ndarray
+    residual_norm_sum_by_q_head_region: np.ndarray
+    residual_center_sum_by_q_head_global: np.ndarray
+    residual_positive_sum_by_q_head_global: np.ndarray
+    residual_negative_sum_by_q_head_global: np.ndarray
+    residual_radius_sum_by_q_head_global: np.ndarray
+    residual_norm_sum_by_q_head_global: np.ndarray
+    current_m_by_q_head: np.ndarray
+    initialized_q_heads: np.ndarray
+    remaining_token_count: int
+
+    @classmethod
+    def from_state(
+        cls,
+        *,
+        state: PersistentFullAttentionLayerState,
+        q_head_to_kv_head: np.ndarray,
+        upper_bounds: Any,
+        num_heads: int,
+    ) -> "_StreamingResidualUpperTracker":
+        torch = _load_torch()
+        upper_bounds_np = np.asarray(
+            (upper_bounds.detach() if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds))
+            .to(dtype=torch.float32, device="cpu")
+            .numpy(),
+            dtype=np.float64,
+        )
+        token_counts = np.asarray(state.block_token_counts, dtype=np.float64)
+        active_mask = np.asarray(token_counts > 0.0, dtype=bool)
+        block_region_ids = np.asarray(state.block_region_ids, dtype=np.int64)
+        unique_region_ids = sorted(set(int(region_id) for region_id in block_region_ids.tolist()))
+        region_index_map = {int(region_id): int(index) for index, region_id in enumerate(unique_region_ids)}
+        block_region_indices = np.asarray(
+            [int(region_index_map[int(region_id)]) for region_id in block_region_ids.tolist()],
+            dtype=np.int64,
+        )
+        q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+        block_v_centers_by_q_head = np.stack(
+            [
+                np.asarray(
+                    state.block_v_center[:, int(q_to_kv[q_head_idx]), :].detach().cpu().numpy(),
+                    dtype=np.float64,
+                )
+                for q_head_idx in range(int(num_heads))
+            ],
+            axis=0,
+        )
+        block_v_positive_sum_by_q_head = np.stack(
+            [
+                np.asarray(
+                    state.block_v_pos_sum[:, int(q_to_kv[q_head_idx]), :].detach().cpu().numpy(),
+                    dtype=np.float64,
+                )
+                for q_head_idx in range(int(num_heads))
+            ],
+            axis=0,
+        )
+        block_v_negative_sum_by_q_head = np.stack(
+            [
+                np.asarray(
+                    state.block_v_neg_sum[:, int(q_to_kv[q_head_idx]), :].detach().cpu().numpy(),
+                    dtype=np.float64,
+                )
+                for q_head_idx in range(int(num_heads))
+            ],
+            axis=0,
+        )
+        block_v_radii_by_q_head = np.stack(
+            [
+                np.asarray(
+                    state.block_v_radius[:, int(q_to_kv[q_head_idx])].detach().cpu().numpy(),
+                    dtype=np.float64,
+                )
+                for q_head_idx in range(int(num_heads))
+            ],
+            axis=0,
+        )
+        block_v_norm_max_by_q_head = np.stack(
+            [
+                np.asarray(
+                    state.block_v_norm_max[:, int(q_to_kv[q_head_idx])].detach().cpu().numpy(),
+                    dtype=np.float64,
+                )
+                for q_head_idx in range(int(num_heads))
+            ],
+            axis=0,
+        )
+        num_regions = max(len(unique_region_ids), 1)
+        value_dim = int(state.value_cache.shape[-1])
+        return cls(
+            upper_bounds=upper_bounds_np,
+            token_counts=token_counts,
+            block_region_indices=block_region_indices,
+            block_v_centers_by_q_head=block_v_centers_by_q_head,
+            block_v_positive_sum_by_q_head=block_v_positive_sum_by_q_head,
+            block_v_negative_sum_by_q_head=block_v_negative_sum_by_q_head,
+            block_v_radii_by_q_head=block_v_radii_by_q_head,
+            block_v_norm_max_by_q_head=block_v_norm_max_by_q_head,
+            active_mask=active_mask,
+            residual_mass_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_center_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_positive_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_negative_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_radius_sum_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_norm_sum_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_center_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_positive_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_negative_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_radius_sum_by_q_head_global=np.zeros((int(num_heads),), dtype=np.float64),
+            residual_norm_sum_by_q_head_global=np.zeros((int(num_heads),), dtype=np.float64),
+            current_m_by_q_head=np.full((int(num_heads),), float("-inf"), dtype=np.float64),
+            initialized_q_heads=np.zeros((int(num_heads),), dtype=bool),
+            remaining_token_count=int(np.sum(token_counts[active_mask])),
+        )
+
+    def _initialize_q_head(self, q_head_idx: int, *, m_value: float) -> None:
+        self.current_m_by_q_head[int(q_head_idx)] = float(m_value)
+        self.initialized_q_heads[int(q_head_idx)] = True
+        self.residual_mass_by_q_head_region[int(q_head_idx), :] = 0.0
+        self.residual_center_sum_by_q_head_region[int(q_head_idx), :, :] = 0.0
+        self.residual_positive_sum_by_q_head_region[int(q_head_idx), :, :] = 0.0
+        self.residual_negative_sum_by_q_head_region[int(q_head_idx), :, :] = 0.0
+        self.residual_radius_sum_by_q_head_region[int(q_head_idx), :] = 0.0
+        self.residual_norm_sum_by_q_head_region[int(q_head_idx), :] = 0.0
+        self.residual_center_sum_by_q_head_global[int(q_head_idx), :] = 0.0
+        self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] = 0.0
+        self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] = 0.0
+        self.residual_radius_sum_by_q_head_global[int(q_head_idx)] = 0.0
+        self.residual_norm_sum_by_q_head_global[int(q_head_idx)] = 0.0
+        if not np.any(self.active_mask):
+            return
+        if math.isfinite(float(m_value)):
+            scaled = np.exp(np.minimum(self.upper_bounds[self.active_mask] - float(m_value), 80.0))
+        else:
+            scaled = np.exp(np.minimum(self.upper_bounds[self.active_mask], 80.0))
+        mass_terms = self.token_counts[self.active_mask] * scaled
+        active_block_ids = np.flatnonzero(self.active_mask)
+        active_region_indices = self.block_region_indices[active_block_ids]
+        for position, block_id in enumerate(active_block_ids.tolist()):
+            region_index = int(active_region_indices[int(position)])
+            mass_value = float(mass_terms[int(position)])
+            self.residual_mass_by_q_head_region[int(q_head_idx), region_index] += mass_value
+            self.residual_center_sum_by_q_head_region[int(q_head_idx), region_index, :] += (
+                self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * mass_value
+            )
+            self.residual_positive_sum_by_q_head_region[int(q_head_idx), region_index, :] += (
+                self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * float(scaled[int(position)])
+            )
+            self.residual_negative_sum_by_q_head_region[int(q_head_idx), region_index, :] += (
+                self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * float(scaled[int(position)])
+            )
+            self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index] += (
+                self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+            )
+            self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index] += (
+                self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+            )
+            self.residual_center_sum_by_q_head_global[int(q_head_idx), :] += (
+                self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * mass_value
+            )
+            self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] += (
+                self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * float(scaled[int(position)])
+            )
+            self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] += (
+                self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * float(scaled[int(position)])
+            )
+            self.residual_radius_sum_by_q_head_global[int(q_head_idx)] += (
+                self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+            )
+            self.residual_norm_sum_by_q_head_global[int(q_head_idx)] += (
+                self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+            )
+
+    def mark_processed_blocks(self, block_ids: list[int], *, m_values: list[float]) -> None:
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids
+            if 0 <= int(block_id) < int(self.active_mask.shape[0]) and bool(self.active_mask[int(block_id)])
+        ]
+        if not resolved_block_ids:
+            return
+        resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
+        token_counts = self.token_counts[resolved_block_ids_np]
+        upper_values = self.upper_bounds[resolved_block_ids_np]
+        region_indices = self.block_region_indices[resolved_block_ids_np]
+        for q_head_idx, m_value in enumerate(m_values):
+            resolved_m_value = float(m_value)
+            if not bool(self.initialized_q_heads[int(q_head_idx)]):
+                self._initialize_q_head(int(q_head_idx), m_value=resolved_m_value)
+            previous_m_value = float(self.current_m_by_q_head[int(q_head_idx)])
+            if math.isfinite(previous_m_value) and math.isfinite(resolved_m_value):
+                rescale = math.exp(max(min(previous_m_value - resolved_m_value, 0.0), -80.0))
+            elif math.isfinite(resolved_m_value):
+                rescale = 0.0
+            else:
+                rescale = 1.0
+            self.residual_mass_by_q_head_region[int(q_head_idx), :] *= float(rescale)
+            self.residual_center_sum_by_q_head_region[int(q_head_idx), :, :] *= float(rescale)
+            self.residual_positive_sum_by_q_head_region[int(q_head_idx), :, :] *= float(rescale)
+            self.residual_negative_sum_by_q_head_region[int(q_head_idx), :, :] *= float(rescale)
+            self.residual_radius_sum_by_q_head_region[int(q_head_idx), :] *= float(rescale)
+            self.residual_norm_sum_by_q_head_region[int(q_head_idx), :] *= float(rescale)
+            self.residual_center_sum_by_q_head_global[int(q_head_idx), :] *= float(rescale)
+            self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] *= float(rescale)
+            self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] *= float(rescale)
+            self.residual_radius_sum_by_q_head_global[int(q_head_idx)] *= float(rescale)
+            self.residual_norm_sum_by_q_head_global[int(q_head_idx)] *= float(rescale)
+            if math.isfinite(resolved_m_value):
+                scaled = np.exp(np.minimum(upper_values - float(resolved_m_value), 80.0))
+            else:
+                scaled = np.exp(np.minimum(upper_values, 80.0))
+            processed_masses = token_counts * scaled
+            for position, block_id in enumerate(resolved_block_ids):
+                region_index = int(region_indices[int(position)])
+                mass_value = float(processed_masses[int(position)])
+                self.residual_mass_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(self.residual_mass_by_q_head_region[int(q_head_idx), region_index] - mass_value),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * mass_value
+                )
+                self.residual_positive_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :]
+                    * float(scaled[int(position)])
+                )
+                self.residual_negative_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :]
+                    * float(scaled[int(position)])
+                )
+                self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+                    ),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * mass_value
+                )
+                self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :]
+                    * float(scaled[int(position)])
+                )
+                self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :]
+                    * float(scaled[int(position)])
+                )
+                self.residual_radius_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * mass_value
+                    ),
+                    0.0,
+                )
+            self.current_m_by_q_head[int(q_head_idx)] = float(resolved_m_value)
+        self.active_mask[resolved_block_ids_np] = False
+        self.remaining_token_count = max(
+            int(self.remaining_token_count - int(np.sum(token_counts))),
+            0,
+        )
+
+    def tighten_upper_bounds(self, block_ids: list[int], *, new_upper_bounds: np.ndarray) -> None:
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids
+            if 0 <= int(block_id) < int(self.active_mask.shape[0]) and bool(self.active_mask[int(block_id)])
+        ]
+        if not resolved_block_ids:
+            return
+        resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
+        updated_upper_bounds = np.asarray(new_upper_bounds, dtype=np.float64)[resolved_block_ids_np]
+        previous_upper_bounds = self.upper_bounds[resolved_block_ids_np].copy()
+        self.upper_bounds[resolved_block_ids_np] = np.minimum(previous_upper_bounds, updated_upper_bounds)
+        region_indices = self.block_region_indices[resolved_block_ids_np]
+        token_counts = self.token_counts[resolved_block_ids_np]
+        for q_head_idx in range(int(self.current_m_by_q_head.shape[0])):
+            if not bool(self.initialized_q_heads[int(q_head_idx)]):
+                continue
+            m_value = float(self.current_m_by_q_head[int(q_head_idx)])
+            if math.isfinite(m_value):
+                previous_scaled = np.exp(np.minimum(previous_upper_bounds - m_value, 80.0))
+                updated_scaled = np.exp(np.minimum(self.upper_bounds[resolved_block_ids_np] - m_value, 80.0))
+            else:
+                previous_scaled = np.exp(np.minimum(previous_upper_bounds, 80.0))
+                updated_scaled = np.exp(np.minimum(self.upper_bounds[resolved_block_ids_np], 80.0))
+            scaled_delta = np.maximum(previous_scaled - updated_scaled, 0.0)
+            if not np.any(scaled_delta > 0.0):
+                continue
+            mass_delta = token_counts * scaled_delta
+            for position, block_id in enumerate(resolved_block_ids):
+                delta_scaled = float(scaled_delta[int(position)])
+                if delta_scaled <= 0.0:
+                    continue
+                delta_mass = float(mass_delta[int(position)])
+                region_index = int(region_indices[int(position)])
+                self.residual_mass_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(self.residual_mass_by_q_head_region[int(q_head_idx), region_index] - delta_mass),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * delta_mass
+                )
+                self.residual_positive_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_negative_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * delta_mass
+                )
+                self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_radius_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+
+    def bounds_for_q_head(self, q_head_idx: int) -> tuple[float, float]:
+        if not np.any(self.active_mask):
+            return 0.0, 0.0
+        if not bool(self.initialized_q_heads[int(q_head_idx)]):
+            return 0.0, 0.0
+        residual_mass = float(np.sum(self.residual_mass_by_q_head_region[int(q_head_idx), :]))
+        residual_value = 0.0
+        for region_index in range(int(self.residual_mass_by_q_head_region.shape[1])):
+            region_mass = float(self.residual_mass_by_q_head_region[int(q_head_idx), int(region_index)])
+            if region_mass <= 0.0:
+                continue
+            center_norm = float(
+                np.linalg.norm(self.residual_center_sum_by_q_head_region[int(q_head_idx), int(region_index), :])
+            )
+            box_norm = float(
+                np.linalg.norm(
+                    np.maximum(
+                        np.abs(self.residual_positive_sum_by_q_head_region[int(q_head_idx), int(region_index), :]),
+                        np.abs(self.residual_negative_sum_by_q_head_region[int(q_head_idx), int(region_index), :]),
+                    )
+                )
+            )
+            radius_sum = float(self.residual_radius_sum_by_q_head_region[int(q_head_idx), int(region_index)])
+            norm_sum = float(self.residual_norm_sum_by_q_head_region[int(q_head_idx), int(region_index)])
+            residual_value += min(center_norm + radius_sum, norm_sum, box_norm)
+        global_center_norm = float(
+            np.linalg.norm(self.residual_center_sum_by_q_head_global[int(q_head_idx), :])
+        )
+        global_box_norm = float(
+            np.linalg.norm(
+                np.maximum(
+                    np.abs(self.residual_positive_sum_by_q_head_global[int(q_head_idx), :]),
+                    np.abs(self.residual_negative_sum_by_q_head_global[int(q_head_idx), :]),
+                )
+            )
+        )
+        global_value = min(
+            global_center_norm + float(self.residual_radius_sum_by_q_head_global[int(q_head_idx)]),
+            float(self.residual_norm_sum_by_q_head_global[int(q_head_idx)]),
+            global_box_norm,
+        )
+        return (
+            float(max(residual_mass, 0.0)),
+            float(max(min(residual_value, global_value), 0.0)),
+        )
 
 
 def _resolve_block_score_inputs(
     *,
     state: PersistentFullAttentionLayerState,
     config: PersistentServingConfig,
+    layer_id: int,
     query: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
@@ -1239,6 +1905,12 @@ def _resolve_block_score_inputs(
             if probe_upper is not None and math.isfinite(probe_upper):
                 upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(probe_upper))
     refine_top_k = max(int(getattr(config, "full_attention_refine_top_k", 0)), 0)
+    refine_top_k_by_layer = getattr(config, "full_attention_refine_top_k_by_layer", None)
+    if refine_top_k_by_layer:
+        try:
+            refine_top_k = max(int(refine_top_k_by_layer.get(int(layer_id), refine_top_k)), 0)
+        except Exception:
+            refine_top_k = max(int(refine_top_k), 0)
     if refine_top_k > 0 and num_blocks > 0:
         ranked_block_ids = sorted(
             range(num_blocks),
@@ -1344,6 +2016,210 @@ def _rank_optional_block_ids(
         return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
     order = np.argsort(priority_values[candidate_ids_np], kind="stable")
     return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
+
+
+def _resolve_streaming_proxy_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    config: PersistentServingConfig,
+    q_head_to_kv_head: np.ndarray,
+    upper_bounds: Any,
+    layer_id: int,
+    mode: str = "residual_proxy",
+) -> Any:
+    torch = _load_torch()
+    upper_tensor = upper_bounds if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds)
+    device = upper_tensor.device
+    dtype = torch.float32
+    upper = upper_tensor.to(device=device, dtype=dtype)
+    token_counts = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.float32),
+        dtype=dtype,
+        device=device,
+    ).clamp_min(1.0)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    kv_value_norms = [
+        state.block_v_norm_max[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        for kv_head_idx in q_to_kv.tolist()
+    ]
+    if kv_value_norms:
+        value_norm = torch.stack(kv_value_norms, dim=0).max(dim=0).values.clamp_min(1e-8)
+    else:
+        value_norm = torch.ones_like(token_counts)
+    if str(mode).strip().lower() == "residual_proxy_envelope":
+        kv_value_centers = [
+            torch.linalg.vector_norm(
+                state.block_v_center[:, int(kv_head_idx), :].to(device=device, dtype=dtype),
+                dim=-1,
+            )
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        kv_value_radii = [
+            state.block_v_radius[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        kv_value_boxes = [
+            torch.linalg.vector_norm(
+                torch.maximum(
+                    state.block_v_pos_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                    state.block_v_neg_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                ),
+                dim=-1,
+            )
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        if kv_value_centers and kv_value_radii and kv_value_boxes:
+            center_radius = (
+                torch.stack(kv_value_centers, dim=0).max(dim=0).values
+                + torch.stack(kv_value_radii, dim=0).max(dim=0).values
+            ).clamp_min(1e-8)
+            box_norm_per_token = (
+                torch.stack(kv_value_boxes, dim=0).max(dim=0).values / token_counts
+            ).clamp_min(1e-8)
+            value_norm = torch.minimum(value_norm, center_radius)
+            value_norm = torch.minimum(value_norm, box_norm_per_token)
+    token_weight = float(getattr(config, "full_attention_streaming_proxy_token_weight", 1.0))
+    value_weight = float(getattr(config, "full_attention_streaming_proxy_value_weight", 1.0))
+    value_weight_by_layer = getattr(config, "full_attention_streaming_proxy_value_weight_by_layer", None)
+    if value_weight_by_layer:
+        try:
+            value_weight = float(value_weight_by_layer.get(int(layer_id), value_weight))
+        except Exception:
+            value_weight = float(value_weight)
+    return upper + token_weight * torch.log(token_counts) + value_weight * torch.log(value_norm)
+
+
+def _resolve_streaming_value_upper_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    q_head_to_kv_head: np.ndarray,
+    upper_bounds: Any,
+) -> Any:
+    torch = _load_torch()
+    upper_tensor = upper_bounds if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds)
+    device = upper_tensor.device
+    dtype = torch.float32
+    upper = upper_tensor.to(device=device, dtype=dtype)
+    token_counts = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.float32),
+        dtype=dtype,
+        device=device,
+    ).clamp_min(1.0)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    block_value_upper_terms = []
+    for kv_head_idx in q_to_kv.tolist():
+        center_norm = torch.linalg.vector_norm(
+            state.block_v_center[:, int(kv_head_idx), :].to(device=device, dtype=dtype),
+            dim=-1,
+        )
+        radius = state.block_v_radius[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        norm_max = state.block_v_norm_max[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        box_norm = torch.linalg.vector_norm(
+            torch.maximum(
+                state.block_v_pos_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                state.block_v_neg_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+            ),
+            dim=-1,
+        )
+        block_value_upper = torch.minimum(
+            token_counts * (center_norm + radius),
+            token_counts * norm_max,
+        )
+        block_value_upper = torch.minimum(block_value_upper, box_norm).clamp_min(1e-8)
+        block_value_upper_terms.append(block_value_upper)
+    if block_value_upper_terms:
+        value_upper = torch.stack(block_value_upper_terms, dim=0).max(dim=0).values
+    else:
+        value_upper = torch.ones_like(token_counts)
+    return upper + torch.log(value_upper.clamp_min(1e-8))
+
+
+def _resolve_streaming_exact_value_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    query_tensor: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+    m_values: Any,
+    l_values: Any,
+) -> Any:
+    torch = _load_torch()
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    device = query_fp32.device
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    num_blocks = int(len(state.block_token_starts))
+    scores = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=device)
+    m_fp32 = m_values.to(device=device, dtype=torch.float32)
+    l_fp32 = l_values.to(device=device, dtype=torch.float32)
+    for block_id in [int(value) for value in block_ids]:
+        token_start = int(state.block_token_starts[int(block_id)])
+        token_count = int(state.block_token_counts[int(block_id)])
+        if token_count <= 0:
+            continue
+        best_score = 0.0
+        for q_head_idx in range(int(query_fp32.shape[0])):
+            kv_head_idx = int(q_to_kv[q_head_idx])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=device,
+                dtype=torch.float32,
+            )
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=device,
+                dtype=torch.float32,
+            )
+            if int(key_slice.shape[0]) <= 0:
+                continue
+            logits = torch.matmul(key_slice, query_fp32[q_head_idx]) * float(query_scale)
+            m_value = float(m_fp32[q_head_idx].item())
+            if math.isfinite(m_value):
+                scaled = torch.exp(logits - m_value)
+            else:
+                local_max = float(logits.max().item())
+                scaled = torch.exp(logits - local_max)
+            block_mass = float(scaled.sum().item())
+            denom = float(l_fp32[q_head_idx].item() + block_mass)
+            if denom <= 0.0:
+                continue
+            contribution = torch.sum(scaled[:, None] * value_slice, dim=0)
+            value_score = float(torch.linalg.vector_norm(contribution).item() / denom)
+            best_score = max(best_score, value_score)
+        scores[int(block_id)] = float(best_score)
+    return scores
+
+
+def _refine_upper_bounds_exact_for_block_ids(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    query_tensor: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+    upper_bounds: Any,
+) -> None:
+    torch = _load_torch()
+    if not block_ids:
+        return
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    for block_id in [int(value) for value in block_ids]:
+        token_start = int(state.block_token_starts[int(block_id)])
+        token_count = int(state.block_token_counts[int(block_id)])
+        if token_count <= 0:
+            continue
+        exact_max = float("-inf")
+        for q_head_idx in range(int(query_fp32.shape[0])):
+            kv_head_idx = int(q_to_kv[q_head_idx])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=query_fp32.device,
+                dtype=torch.float32,
+            )
+            if int(key_slice.shape[0]) == 0:
+                continue
+            logits = torch.matmul(key_slice, query_fp32[q_head_idx]) * float(query_scale)
+            exact_max = max(exact_max, float(logits.max().item()))
+        if math.isfinite(exact_max):
+            upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(exact_max))
 
 
 def _policy_preference_bonus(
@@ -2646,7 +3522,13 @@ class PersistentFullAttentionState:
                 block_k_subradii,
                 block_v_center,
                 block_v_radius,
+                block_v_subcenters,
+                block_v_subradii,
+                block_v_sub_norm_max,
+                block_v_subtoken_counts,
                 block_v_norm_max,
+                block_v_pos_sum,
+                block_v_neg_sum,
                 block_prev_attention_ema,
                 block_k_comp_error,
                 block_compression_metadata_valid,
@@ -2656,7 +3538,8 @@ class PersistentFullAttentionState:
                     value_cache=kv_values,
                     num_blocks=num_blocks,
                     device=resolved_device,
-                    key_centroid_count=int(config.full_attention_key_centroid_count),
+                    key_centroid_count=_resolve_layer_key_centroid_count(config, int(layer_id)),
+                    value_centroid_count=_resolve_layer_value_centroid_count(config, int(layer_id)),
                 )
             )
             if layer_prefill_metadata is not None:
@@ -2787,7 +3670,13 @@ class PersistentFullAttentionState:
                 block_k_subradii=block_k_subradii,
                 block_v_center=block_v_center,
                 block_v_radius=block_v_radius,
+                block_v_subcenters=block_v_subcenters,
+                block_v_subradii=block_v_subradii,
+                block_v_sub_norm_max=block_v_sub_norm_max,
+                block_v_subtoken_counts=block_v_subtoken_counts,
                 block_v_norm_max=block_v_norm_max,
+                block_v_pos_sum=block_v_pos_sum,
+                block_v_neg_sum=block_v_neg_sum,
                 block_prev_attention_ema=block_prev_attention_ema,
                 block_region_ids=_build_block_region_ids(num_blocks=num_blocks),
                 block_k_mode=block_k_mode,
@@ -3016,7 +3905,13 @@ class PersistentFullAttentionState:
                 "block_k_subradii": state.block_k_subradii.clone(),
                 "block_v_center": state.block_v_center.clone(),
                 "block_v_radius": state.block_v_radius.clone(),
+                "block_v_subcenters": state.block_v_subcenters.clone(),
+                "block_v_subradii": state.block_v_subradii.clone(),
+                "block_v_sub_norm_max": state.block_v_sub_norm_max.clone(),
+                "block_v_subtoken_counts": state.block_v_subtoken_counts.clone(),
                 "block_v_norm_max": state.block_v_norm_max.clone(),
+                "block_v_pos_sum": state.block_v_pos_sum.clone(),
+                "block_v_neg_sum": state.block_v_neg_sum.clone(),
                 "block_prev_attention_ema": state.block_prev_attention_ema.clone(),
                 "block_k_comp_error": state.block_k_comp_error.clone(),
                 "block_region_ids": np.asarray(state.block_region_ids, dtype=np.int32).copy(),
@@ -3035,7 +3930,13 @@ class PersistentFullAttentionState:
                 state.block_k_subradii,
                 state.block_v_center,
                 state.block_v_radius,
+                state.block_v_subcenters,
+                state.block_v_subradii,
+                state.block_v_sub_norm_max,
+                state.block_v_subtoken_counts,
                 state.block_v_norm_max,
+                state.block_v_pos_sum,
+                state.block_v_neg_sum,
                 state.block_prev_attention_ema,
                 state.block_k_comp_error,
                 state.block_compression_metadata_valid,
@@ -3044,7 +3945,8 @@ class PersistentFullAttentionState:
                 value_cache=state.value_cache,
                 num_blocks=new_num_blocks,
                 device=self.device,
-                key_centroid_count=int(self.config.full_attention_key_centroid_count),
+                key_centroid_count=int(state.block_k_subcenters.shape[2]),
+                value_centroid_count=int(state.block_v_subcenters.shape[2]),
             )
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             (
@@ -3107,6 +4009,7 @@ class PersistentFullAttentionState:
         priority_scores, upper_bounds = _resolve_block_score_inputs(
             state=state,
             config=resolved_config,
+            layer_id=int(layer_id),
             query=query,
             q_head_to_kv_head=self.q_head_to_kv_head,
             query_scale=float(query_scale),
@@ -3416,35 +4319,106 @@ class PersistentFullAttentionState:
         query: Any,
         *,
         query_scale: float,
+        config_override: PersistentServingConfig | None = None,
         check_interval: int | None = None,
         stop_on_certificate: bool = False,
         policy_choice: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         torch = _load_torch()
         state = self.layers[int(layer_id)]
+        resolved_config = config_override or self.config
         selection = self.select_blocks(
             layer_id,
             query,
             query_scale=query_scale,
+            config_override=resolved_config,
             policy_choice=policy_choice,
         )
         priority_scores = selection["priority_scores"]
-        upper_bounds = selection["upper_bounds"]
-        selected_processing_ids = [int(block_id) for block_id in selection.get("processing_block_ids", [])]
-        selected_seen = set(selected_processing_ids)
-        remainder_candidates = [
-            int(block_id)
-            for block_id in range(int(len(state.block_token_starts)))
-            if int(block_id) not in selected_seen
+        upper_bounds = selection["upper_bounds"].clone()
+        mandatory_ids = [int(block_id) for block_id in selection.get("mandatory_block_ids", [])]
+        exploration_ids = [int(block_id) for block_id in selection.get("exploration_block_ids", [])]
+        optional_ids = [int(block_id) for block_id in selection.get("optional_block_ids", [])]
+        mandatory_block_id_set = set(int(block_id) for block_id in mandatory_ids)
+        ranked_optional_candidate_ids = [
+            int(block_id) for block_id in selection.get("ranked_optional_candidate_ids", [])
         ]
-        remainder_ranked = _rank_optional_block_ids(
-            candidate_block_ids=remainder_candidates,
-            priority_scores=priority_scores,
-            upper_bounds=upper_bounds,
-            use_upper_bounds_first=bool(self.config.full_attention_optional_use_upper_bounds_first),
+        selected_processing_ids: list[int] = []
+        selected_seen: set[int] = set()
+
+        def _append_processing_ids(block_ids: list[int]) -> None:
+            for block_id in block_ids:
+                if int(block_id) in selected_seen:
+                    continue
+                selected_processing_ids.append(int(block_id))
+                selected_seen.add(int(block_id))
+
+        _append_processing_ids(mandatory_ids)
+        _append_processing_ids(exploration_ids)
+        _append_processing_ids(
+            [int(block_id) for block_id in ranked_optional_candidate_ids if int(block_id) in set(optional_ids)]
         )
-        processing_order = [*selected_processing_ids, *remainder_ranked]
+        _append_processing_ids(optional_ids)
+        streaming_order_mode = str(
+            getattr(resolved_config, "full_attention_streaming_order_mode", "shortlist") or "shortlist"
+        ).strip().lower()
+        if bool(resolved_config.enable_early_exit) and streaming_order_mode in {
+            "residual_proxy",
+            "residual_proxy_envelope",
+            "residual_value_upper",
+            "priority_value_hybrid",
+        }:
+            non_mandatory_candidates = [
+                int(block_id)
+                for block_id in range(int(len(state.block_token_starts)))
+                if int(block_id) not in mandatory_block_id_set
+            ]
+            if streaming_order_mode == "residual_value_upper":
+                proxy_scores = _resolve_streaming_value_upper_scores(
+                    state=state,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                )
+            elif streaming_order_mode == "priority_value_hybrid":
+                value_upper_scores = _resolve_streaming_value_upper_scores(
+                    state=state,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                )
+                proxy_scores = priority_scores + float(
+                    getattr(resolved_config, "full_attention_streaming_priority_value_upper_weight", 0.25)
+                ) * value_upper_scores
+            else:
+                proxy_scores = _resolve_streaming_proxy_scores(
+                    state=state,
+                    config=resolved_config,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                    layer_id=int(layer_id),
+                    mode=streaming_order_mode,
+                )
+            ranked_non_mandatory = _rank_optional_block_ids(
+                candidate_block_ids=non_mandatory_candidates,
+                priority_scores=proxy_scores,
+                upper_bounds=proxy_scores,
+                use_upper_bounds_first=True,
+            )
+            processing_order = [*mandatory_ids, *ranked_non_mandatory]
+        else:
+            remainder_candidates = [
+                int(block_id)
+                for block_id in range(int(len(state.block_token_starts)))
+                if int(block_id) not in selected_seen
+            ]
+            remainder_ranked = _rank_optional_block_ids(
+                candidate_block_ids=remainder_candidates,
+                priority_scores=priority_scores,
+                upper_bounds=upper_bounds,
+                use_upper_bounds_first=bool(resolved_config.full_attention_optional_use_upper_bounds_first),
+            )
+            processing_order = [*selected_processing_ids, *remainder_ranked]
         query_tensor = query.to(dtype=torch.float32)
+        query_norm = torch.linalg.vector_norm(query_tensor, dim=-1)
         q_to_kv = np.asarray(self.q_head_to_kv_head, dtype=np.int64)
         num_heads = int(query_tensor.shape[0])
         value_dim = int(state.value_cache.shape[-1])
@@ -3462,37 +4436,93 @@ class PersistentFullAttentionState:
         checkpoints: list[dict[str, Any]] = []
         first_certified_stop: dict[str, Any] | None = None
         unresolved_block_ids = set(int(block_id) for block_id in processing_order)
+        per_head_processed_logits: list[list[Any]] = [[] for _ in range(num_heads)]
+        processed_block_token_counts: list[int] = []
         resolved_check_interval = max(
-            int(self.config.full_attention_check_interval if check_interval is None else check_interval),
+            int(resolved_config.full_attention_check_interval if check_interval is None else check_interval),
             1,
         )
+        streaming_refine_top_k = max(int(getattr(resolved_config, "full_attention_streaming_refine_top_k", 0)), 0)
+        exact_value_rerank_layers = getattr(resolved_config, "full_attention_streaming_exact_value_rerank_layers", None)
+        exact_value_rerank_enabled = False
+        if bool(resolved_config.enable_early_exit) and exact_value_rerank_layers:
+            try:
+                exact_value_rerank_enabled = int(layer_id) in {
+                    int(value) for value in list(exact_value_rerank_layers)
+                }
+            except Exception:
+                exact_value_rerank_enabled = False
+        exact_value_rerank_max_remaining_blocks = getattr(
+            resolved_config,
+            "full_attention_streaming_exact_value_rerank_max_remaining_blocks",
+            None,
+        )
+        if exact_value_rerank_max_remaining_blocks is not None:
+            try:
+                exact_value_rerank_max_remaining_blocks = max(int(exact_value_rerank_max_remaining_blocks), 0)
+            except Exception:
+                exact_value_rerank_max_remaining_blocks = None
+        residual_tracker: _StreamingResidualUpperTracker | None = None
+        if (
+            not bool(resolved_config.full_attention_region_residual_caps)
+            and int(resolved_config.full_attention_residual_cluster_count) <= 0
+        ):
+            residual_tracker = _StreamingResidualUpperTracker.from_state(
+                state=state,
+                q_head_to_kv_head=q_to_kv,
+                upper_bounds=upper_bounds,
+                num_heads=num_heads,
+            )
 
-        for order_index, block_id in enumerate(processing_order, start=1):
-            token_start = int(state.block_token_starts[int(block_id)])
-            token_count = int(state.block_token_counts[int(block_id)])
-            unresolved_block_ids.discard(int(block_id))
-            if token_count <= 0:
+        next_block_index = 0
+        while next_block_index < len(processing_order):
+            tranche_block_ids = [
+                int(block_id)
+                for block_id in processing_order[next_block_index : next_block_index + int(resolved_check_interval)]
+            ]
+            next_block_index += int(len(tranche_block_ids))
+            tranche_active_block_ids = [
+                int(block_id)
+                for block_id in tranche_block_ids
+                if int(state.block_token_counts[int(block_id)]) > 0
+            ]
+            for block_id in tranche_block_ids:
+                unresolved_block_ids.discard(int(block_id))
+            if not tranche_active_block_ids:
                 continue
-            processed_block_ids.append(int(block_id))
-            processed_token_count += int(token_count)
+            gathered_keys, gathered_values, tranche_token_counts = _gather_selected_block_tensors(
+                state=state,
+                block_ids=tranche_active_block_ids,
+            )
+            tranche_token_total = int(sum(int(token_count) for token_count in tranche_token_counts))
+            processed_block_ids.extend(int(block_id) for block_id in tranche_active_block_ids)
+            processed_block_token_counts.extend(int(token_count) for token_count in tranche_token_counts)
+            processed_token_count += int(tranche_token_total)
             for q_head_idx in range(num_heads):
                 kv_head_idx = int(q_to_kv[q_head_idx])
                 q_vec = query_tensor[q_head_idx]
-                k_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
-                    device=query_tensor.device,
-                    dtype=torch.float32,
-                )
-                v_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
-                    device=query_tensor.device,
-                    dtype=torch.float32,
-                )
+                k_slice = gathered_keys[kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+                v_slice = gathered_values[kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
                 logits = torch.matmul(k_slice, q_vec) * float(query_scale)
                 if int(logits.numel()) == 0:
                     continue
-                block_max = float(logits.max().item())
-                max_bound_excess = max(max_bound_excess, block_max - float(upper_bounds[int(block_id)].item()))
+                per_head_processed_logits[q_head_idx].append(logits.to(dtype=torch.float32))
+                block_offset = 0
+                for block_id, block_token_count in zip(tranche_active_block_ids, tranche_token_counts):
+                    resolved_block_token_count = int(block_token_count)
+                    if resolved_block_token_count <= 0:
+                        continue
+                    block_logits = logits[block_offset : block_offset + resolved_block_token_count]
+                    if int(block_logits.numel()) > 0:
+                        block_max = float(block_logits.max().item())
+                        max_bound_excess = max(
+                            max_bound_excess,
+                            block_max - float(upper_bounds[int(block_id)].item()),
+                        )
+                    block_offset += resolved_block_token_count
+                tranche_max = float(logits.max().item())
                 m_old = float(m[q_head_idx].item())
-                m_new = float(max(m_old, block_max))
+                m_new = float(max(m_old, tranche_max))
                 rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
                 exp_scores = torch.exp(logits - float(m_new))
                 l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
@@ -3501,33 +4531,66 @@ class PersistentFullAttentionState:
                     dim=0,
                 )
                 m[q_head_idx] = float(m_new)
+            if residual_tracker is not None:
+                final_m_values = [float(m[q_head_idx].item()) for q_head_idx in range(num_heads)]
+                residual_tracker.mark_processed_blocks(
+                    tranche_active_block_ids,
+                    m_values=final_m_values,
+                )
+            if streaming_refine_top_k > 0 and unresolved_block_ids:
+                refine_candidates = sorted(
+                    [int(block_id) for block_id in unresolved_block_ids],
+                    key=lambda block_id: float(upper_bounds[int(block_id)].item()),
+                    reverse=True,
+                )[: min(int(streaming_refine_top_k), len(unresolved_block_ids))]
+                if refine_candidates:
+                    refine_candidates_np = np.asarray(refine_candidates, dtype=np.int64)
+                    _refine_upper_bounds_exact_for_block_ids(
+                        state=state,
+                        block_ids=refine_candidates,
+                        query_tensor=query_tensor,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        query_scale=float(query_scale),
+                        upper_bounds=upper_bounds,
+                    )
+                    if residual_tracker is not None:
+                        residual_tracker.tighten_upper_bounds(
+                            refine_candidates,
+                            new_upper_bounds=np.asarray(
+                                upper_bounds.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                                dtype=np.float64,
+                            ),
+                        )
 
-            if order_index % int(resolved_check_interval) != 0 and order_index != len(processing_order):
-                continue
             per_head = []
             residual_mass_upper = 0.0
             residual_value_upper = 0.0
             beta_upper = 0.0
             delta_upper = 0.0
-            remaining_token_count = int(
-                sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids)
+            remaining_token_count = (
+                int(residual_tracker.remaining_token_count)
+                if residual_tracker is not None
+                else int(sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids))
             )
             for q_head_idx in range(num_heads):
                 kv_head_idx = int(q_to_kv[q_head_idx])
                 m_value = float(m[q_head_idx].item())
                 l_value = float(l[q_head_idx].item())
-                head_residual_mass, head_residual_value = _residual_value_upper_for_blocks(
-                    state=state,
-                    block_ids=unresolved_block_ids,
-                    kv_head_idx=kv_head_idx,
-                    q_vec=query_tensor[q_head_idx],
-                    q_norm=float(torch.linalg.vector_norm(query_tensor[q_head_idx]).item()),
-                    query_scale=float(query_scale),
-                    m_value=m_value,
-                    upper_bounds=upper_bounds,
-                    use_region_caps=bool(self.config.full_attention_region_residual_caps),
-                    residual_cluster_count=int(self.config.full_attention_residual_cluster_count),
-                )
+                if residual_tracker is not None:
+                    head_residual_mass, head_residual_value = residual_tracker.bounds_for_q_head(int(q_head_idx))
+                else:
+                    head_residual_mass, head_residual_value = _residual_value_upper_for_blocks(
+                        state=state,
+                        block_ids=unresolved_block_ids,
+                        kv_head_idx=kv_head_idx,
+                        q_vec=query_tensor[q_head_idx],
+                        q_norm=float(query_norm[q_head_idx].item()),
+                        query_scale=float(query_scale),
+                        m_value=m_value,
+                        upper_bounds=upper_bounds,
+                        use_region_caps=bool(resolved_config.full_attention_region_residual_caps),
+                        residual_cluster_count=int(resolved_config.full_attention_residual_cluster_count),
+                    )
                 denom = float(l_value + head_residual_mass)
                 head_beta = float(head_residual_mass / denom) if denom > 0.0 else 0.0
                 head_delta = float(head_residual_value / denom) if denom > 0.0 else 0.0
@@ -3550,14 +4613,17 @@ class PersistentFullAttentionState:
             instability_reasons: list[str] = []
             if metadata_invalid_block_ids:
                 instability_reasons.append("invalid_metadata")
-            if float(max_bound_excess) > float(self.config.full_attention_bound_eps):
+            if float(max_bound_excess) > float(resolved_config.full_attention_bound_eps):
                 instability_reasons.append("bound_exceeded")
             instability_flag = bool(instability_reasons)
+            mandatory_complete = mandatory_block_id_set.issubset(processed_block_ids)
             certified_can_stop = (
-                int(len(processed_block_ids)) >= max(int(self.config.full_attention_min_processed_blocks), 1)
+                bool(mandatory_complete)
+                and
+                int(len(processed_block_ids)) >= max(int(resolved_config.full_attention_min_processed_blocks), 1)
                 and not instability_flag
-                and float(beta_upper) < float(self.config.full_attention_mass_eps)
-                and float(delta_upper) < float(self.config.full_attention_value_eps)
+                and float(beta_upper) < float(resolved_config.full_attention_mass_eps)
+                and float(delta_upper) < float(resolved_config.full_attention_value_eps)
             )
             checkpoint = {
                 "processed_block_count": int(len(processed_block_ids)),
@@ -3568,6 +4634,7 @@ class PersistentFullAttentionState:
                 "delta_upper": float(delta_upper),
                 "residual_mass_upper": float(residual_mass_upper),
                 "residual_value_upper": float(residual_value_upper),
+                "mandatory_complete": bool(mandatory_complete),
                 "max_bound_excess": float(max(0.0, max_bound_excess)),
                 "instability_flag": bool(instability_flag),
                 "instability_reasons": instability_reasons,
@@ -3577,8 +4644,8 @@ class PersistentFullAttentionState:
                     or (
                         len(unresolved_block_ids) > 0
                         and (
-                            float(beta_upper) >= float(self.config.full_attention_mass_eps)
-                            or float(delta_upper) >= float(self.config.full_attention_value_eps)
+                            float(beta_upper) >= float(resolved_config.full_attention_mass_eps)
+                            or float(delta_upper) >= float(resolved_config.full_attention_value_eps)
                         )
                     )
                 ),
@@ -3589,17 +4656,73 @@ class PersistentFullAttentionState:
                 first_certified_stop = checkpoint
             if bool(stop_on_certificate) and bool(certified_can_stop):
                 break
+            if bool(exact_value_rerank_enabled) and next_block_index < len(processing_order):
+                remaining_block_ids = [int(block_id) for block_id in processing_order[next_block_index:]]
+                if (
+                    exact_value_rerank_max_remaining_blocks is not None
+                    and len(remaining_block_ids) > int(exact_value_rerank_max_remaining_blocks)
+                ):
+                    continue
+                remaining_mandatory_ids = [
+                    int(block_id)
+                    for block_id in remaining_block_ids
+                    if int(block_id) in mandatory_block_id_set
+                ]
+                remaining_non_mandatory_ids = [
+                    int(block_id)
+                    for block_id in remaining_block_ids
+                    if int(block_id) not in mandatory_block_id_set
+                ]
+                if remaining_non_mandatory_ids:
+                    exact_value_scores = _resolve_streaming_exact_value_scores(
+                        state=state,
+                        block_ids=remaining_non_mandatory_ids,
+                        query_tensor=query_tensor,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        query_scale=float(query_scale),
+                        m_values=m,
+                        l_values=l,
+                    )
+                    reranked_non_mandatory_ids = _rank_optional_block_ids(
+                        candidate_block_ids=remaining_non_mandatory_ids,
+                        priority_scores=exact_value_scores,
+                        upper_bounds=exact_value_scores,
+                        use_upper_bounds_first=True,
+                    )
+                    processing_order = [
+                        *processing_order[:next_block_index],
+                        *remaining_mandatory_ids,
+                        *reranked_non_mandatory_ids,
+                    ]
         output = h_accum / l[:, None].clamp_min(1e-8)
+        attn_weights = torch.zeros(
+            (1, int(num_heads), 1, int(processed_token_count)),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        for q_head_idx in range(num_heads):
+            if not per_head_processed_logits[q_head_idx]:
+                continue
+            head_logits = torch.cat(per_head_processed_logits[q_head_idx], dim=0)
+            head_weights = torch.exp(head_logits - m[q_head_idx]) / l[q_head_idx].clamp_min(1e-8)
+            attn_weights[0, q_head_idx, 0, : int(head_logits.shape[0])] = head_weights.to(dtype=torch.float32)
+        final_checkpoint = checkpoints[-1] if checkpoints else None
+        state.last_first_certified_stop = None if first_certified_stop is None else dict(first_certified_stop)
+        state.last_checkpoint_count = int(len(checkpoints))
+        if final_checkpoint is not None:
+            state.last_residual_certificate = final_checkpoint
         return {
             "output": output,
+            "attn_weights": attn_weights,
             "selection": selection,
             "processing_order_block_ids": [int(block_id) for block_id in processing_order],
             "processed_block_ids": [int(block_id) for block_id in processed_block_ids],
+            "processed_block_token_counts": [int(token_count) for token_count in processed_block_token_counts],
             "processed_block_count": int(len(processed_block_ids)),
             "processed_token_count": int(processed_token_count),
             "checkpoint_records": checkpoints,
             "first_certified_stop": first_certified_stop,
-            "final_checkpoint": checkpoints[-1] if checkpoints else None,
+            "final_checkpoint": final_checkpoint,
         }
 
     def update_block_attention_ema(
@@ -3814,11 +4937,71 @@ class PersistentFullAttentionState:
                 )
                 for layer_id, state in sorted(self.layers.items())
             },
+            "persistent_full_attention_last_processed_block_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else int(state.last_residual_certificate.get("processed_block_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_block_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else int(state.last_first_certified_stop.get("processed_block_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_token_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else int(state.last_first_certified_stop.get("processed_token_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_beta_upper_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else float(state.last_first_certified_stop.get("beta_upper", 0.0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_delta_upper_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else float(state.last_first_certified_stop.get("delta_upper", 0.0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_checkpoint_count_by_layer": {
+                str(layer_id): int(state.last_checkpoint_count)
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_mandatory_complete_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else bool(state.last_residual_certificate.get("mandatory_complete", True))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_certified_can_stop_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else bool(state.last_residual_certificate.get("certified_can_stop", False))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
             "persistent_full_attention_fallback_recommended_by_layer": {
                 str(layer_id): (
                     None
                     if state.last_residual_certificate is None
-                    else bool(state.last_residual_certificate["fallback_recommended"])
+                    else bool(state.last_residual_certificate.get("fallback_recommended", False))
                 )
                 for layer_id, state in sorted(self.layers.items())
             },
@@ -4159,6 +5342,27 @@ class PersistentHybridRuntimeState:
             query=query,
             query_scale=query_scale,
             config_override=config_override,
+        )
+
+    def stream_full_attention_layer(
+        self,
+        layer_id: int,
+        query: Any,
+        *,
+        query_scale: float,
+        config_override: PersistentServingConfig | None = None,
+        check_interval: int | None = None,
+        stop_on_certificate: bool = False,
+        policy_choice: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.full_attention.stream_decode_layer(
+            layer_id,
+            query,
+            query_scale=query_scale,
+            config_override=config_override,
+            check_interval=check_interval,
+            stop_on_certificate=stop_on_certificate,
+            policy_choice=policy_choice,
         )
 
     def gather_full_attention_layer_tensors(self, layer_id: int):

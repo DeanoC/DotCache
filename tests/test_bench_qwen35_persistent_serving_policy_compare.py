@@ -143,8 +143,55 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
 
 
 def test_persistent_base_config_enables_compression_for_mixed_execution() -> None:
-    config = _persistent_base_config(enable_mixed_execution=True, mixed_execution_strategy="direct_m0")
+    config = _persistent_base_config(
+        enable_early_exit=True,
+        full_attention_region_residual_caps=True,
+        full_attention_residual_cluster_count=8,
+        enable_mixed_execution=True,
+        mixed_execution_strategy="direct_m0",
+    )
 
+    assert config.enable_early_exit is True
+    assert config.full_attention_region_residual_caps is True
+    assert config.full_attention_residual_cluster_count == 8
     assert config.enable_full_attention_mixed_mode_execution is True
     assert config.enable_compression is True
     assert config.full_attention_mixed_mode_execution_strategy == "direct_m0"
+
+
+def test_persistent_base_config_applies_streaming_refine_settings() -> None:
+    config = _persistent_base_config(
+        enable_early_exit=True,
+        full_attention_check_interval=8,
+        full_attention_streaming_order_mode="residual_proxy",
+        full_attention_streaming_priority_value_upper_weight=0.5,
+        full_attention_streaming_exact_value_rerank_layers=[19, 23],
+        full_attention_streaming_exact_value_rerank_max_remaining_blocks=32,
+        full_attention_refine_top_k=32,
+        full_attention_refine_top_k_by_layer={23: 128},
+        full_attention_streaming_refine_top_k=16,
+        full_attention_probe_refine_top_k=24,
+        full_attention_probe_sample_count=6,
+        full_attention_key_centroid_count=4,
+        full_attention_key_centroid_count_by_layer={23: 16},
+        full_attention_value_centroid_count=2,
+        full_attention_value_centroid_count_by_layer={23: 8},
+        full_attention_streaming_proxy_value_weight_by_layer={23: 8.0},
+    )
+
+    assert config.enable_early_exit is True
+    assert config.full_attention_check_interval == 8
+    assert config.full_attention_streaming_order_mode == "residual_proxy"
+    assert config.full_attention_streaming_priority_value_upper_weight == 0.5
+    assert config.full_attention_streaming_exact_value_rerank_layers == [19, 23]
+    assert config.full_attention_streaming_exact_value_rerank_max_remaining_blocks == 32
+    assert config.full_attention_refine_top_k == 32
+    assert config.full_attention_refine_top_k_by_layer == {23: 128}
+    assert config.full_attention_streaming_refine_top_k == 16
+    assert config.full_attention_probe_refine_top_k == 24
+    assert config.full_attention_probe_sample_count == 6
+    assert config.full_attention_key_centroid_count == 4
+    assert config.full_attention_key_centroid_count_by_layer == {23: 16}
+    assert config.full_attention_value_centroid_count == 2
+    assert config.full_attention_value_centroid_count_by_layer == {23: 8}
+    assert config.full_attention_streaming_proxy_value_weight_by_layer == {23: 8.0}
