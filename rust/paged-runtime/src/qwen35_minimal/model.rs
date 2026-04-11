@@ -10166,48 +10166,6 @@ impl GatedDeltaNet {
         Ok(())
     }
 
-    fn update_depthwise_conv_state_from_projected(&mut self, projected: &Tensor) -> Result<()> {
-        let state_len = self.conv_kernel_size.saturating_sub(1);
-        if state_len == 0 {
-            self.conv_state = None;
-            return Ok(());
-        }
-
-        let seq_len = projected.dim(1)?;
-        let mixed_qkv = projected
-            .narrow(D::Minus1, 0, self.conv_dim())?
-            .transpose(1, 2)?;
-        if seq_len == 1 {
-            let target_dtype = mixed_qkv.dtype();
-            let state = match &self.conv_state {
-                Some(prev_state) => {
-                    if prev_state.dtype() == target_dtype {
-                        prev_state.clone()
-                    } else {
-                        prev_state.to_dtype(target_dtype)?
-                    }
-                }
-                None => Tensor::zeros(
-                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
-                    target_dtype,
-                    mixed_qkv.device(),
-                )?,
-            };
-            let prev_state_len = state.dim(2)?;
-            if prev_state_len == state_len {
-                if state_len > 1 {
-                    let tail = state.narrow(2, 1, state_len - 1)?.contiguous()?;
-                    state.slice_set(&tail, 2, 0)?;
-                }
-                state.slice_set(&mixed_qkv.contiguous()?, 2, state_len - 1)?;
-                self.conv_state = Some(state);
-                return Ok(());
-            }
-        }
-
-        self.update_depthwise_conv_state_from_raw(&mixed_qkv)
-    }
-
     fn depthwise_conv_from_state(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         let kernel = self.conv_kernel_size;
         let seq_len = mixed_qkv.dim(2)?;
@@ -11360,10 +11318,10 @@ impl GatedDeltaNet {
             };
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
-            let prev_conv_state = match &self.conv_state {
-                Some(prev_state) => {
-                    if prev_state.dtype() == target_dtype {
-                        prev_state.clone()
+                let prev_conv_state = match &self.conv_state {
+                    Some(prev_state) => {
+                        if prev_state.dtype() == target_dtype {
+                            prev_state.clone()
                     } else {
                         prev_state.to_dtype(target_dtype)?
                     }
@@ -11506,7 +11464,7 @@ impl GatedDeltaNet {
                 )?
             };
             if let Some(packed_qkv_zba) = &packed_qkv_zba {
-                self.update_depthwise_conv_state_from_projected(packed_qkv_zba)?;
+                self.conv_state = Some(prev_conv_state);
             } else {
                 self.update_depthwise_conv_state_from_raw(
                     mixed_qkv
@@ -14606,9 +14564,18 @@ mod tests {
         let fused_state = Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
         let expected_initial_state =
             Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
+        let prev_conv_shape = prev_conv_state.shape().clone();
+        let prev_conv_values = prev_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let fused_conv_state = Tensor::from_slice(&prev_conv_values, prev_conv_shape.clone(), &device)?
+            .to_dtype(DType::F16)?;
+        let expected_prev_conv_state =
+            Tensor::from_slice(&prev_conv_values, prev_conv_shape, &device)?.to_dtype(DType::F16)?;
         let fused = linear_decode_step_cuda_from_projected_gated(
             &projected,
-            &prev_conv_state,
+            &fused_conv_state,
             &weights,
             &value_cache_pack,
             &fused_state,
@@ -14648,11 +14615,27 @@ mod tests {
             .reshape((1usize, 2usize, 2usize, 2usize))?
             .flatten_all()?
             .to_vec1::<f32>()?;
+        let expected_conv_state = {
+            let mixed_qkv = projected.narrow(D::Minus1, 0, 8)?.transpose(1, 2)?;
+            let state_len = expected_prev_conv_state.dim(2)?;
+            let state = expected_prev_conv_state.clone();
+            if state_len > 1 {
+                let tail = state.narrow(2, 1, state_len - 1)?.contiguous()?;
+                state.slice_set(&tail, 2, 0)?;
+            }
+            state.slice_set(&mixed_qkv.contiguous()?, 2, state_len - 1)?;
+            state.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?
+        };
 
         let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
         let expected_flat: Vec<f32> = expected_out.into_iter().flatten().collect();
+        let fused_conv_state = fused_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
         assert_close(&fused_flat, &expected_flat, 5e-3);
         assert_close(&fused_state, &expected_state, 5e-3);
+        assert_close(&fused_conv_state, &expected_conv_state, 5e-3);
         Ok(())
     }
 
