@@ -9606,11 +9606,17 @@ impl GatedDeltaNet {
         let device = hidden_states.device();
         let total_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
-        let compute_dtype =
-            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype());
         let layout_start = profile_start(device)?;
         let hidden_states = self.apply_mask_to_padding_states(hidden_states, attention_mask)?;
         let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        let compute_dtype = if hidden_states.device().is_cuda() && seq_len == 1 {
+            match hidden_states.dtype() {
+                DType::F16 | DType::BF16 => hidden_states.dtype(),
+                _ => linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype()),
+            }
+        } else {
+            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype())
+        };
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let qkv_start = profile_start(device)?;
