@@ -11,6 +11,7 @@ pub use model::{
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use dotcache_model_store::PreparedPackage;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,6 +32,13 @@ pub struct MinimalQwen35Runner {
     pub weights: MinimalQwen35Weights,
     pub model: ModelForCausalLM,
     pub device: Device,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinimalQwen35LoadMode {
+    DirectHf,
+    PreparedCandle,
+    NativeStore,
 }
 
 impl MinimalQwen35Runner {
@@ -65,9 +73,14 @@ impl MinimalQwen35Runner {
     }
 
     pub fn load_prepared_for_device(model_id: &str, device: &Device) -> Result<Self> {
-        let package = Arc::new(PreparedModelPackage::resolve_or_build_qwen35_minimal(
-            model_id, device,
-        )?);
+        let package = Arc::new(
+            PreparedModelPackage::resolve_or_build_qwen35_minimal(model_id, device).map_err(
+                |err| crate::RuntimeError::External {
+                    context: "model-store",
+                    message: err.to_string(),
+                },
+            )?,
+        );
         let config: MinimalQwen35Config =
             serde_json::from_slice(&std::fs::read(package.config_path())?)?;
         let model = ModelForCausalLM::from_prepared(
@@ -87,6 +100,48 @@ impl MinimalQwen35Runner {
         })
     }
 
+    pub fn load_native_for_device(model_id: &str, device: &Device) -> Result<Self> {
+        let package = Arc::new(
+            PreparedPackage::resolve_or_build_qwen35_minimal(model_id, device).map_err(|err| {
+                crate::RuntimeError::External {
+                    context: "model-store",
+                    message: err.to_string(),
+                }
+            })?,
+        );
+        let config: MinimalQwen35Config =
+            serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+        let model = ModelForCausalLM::from_prepared(
+            &config,
+            PreparedTensorSource::new(package.clone(), device.clone()),
+        )?;
+        Ok(Self {
+            config,
+            weights: MinimalQwen35Weights {
+                model_id: package.manifest().model_id.clone(),
+                revision: package.manifest().revision.clone(),
+                tokenizer_path: package.tokenizer_path(),
+                prepared_package_root: package.root().to_path_buf(),
+            },
+            model,
+            device: device.clone(),
+        })
+    }
+
+    pub fn load_with_mode(
+        model_id: &str,
+        device: &Device,
+        mode: MinimalQwen35LoadMode,
+    ) -> Result<Self> {
+        match mode {
+            MinimalQwen35LoadMode::DirectHf => Self::load_from_hf_direct_f16(model_id, device),
+            MinimalQwen35LoadMode::PreparedCandle => {
+                Self::load_prepared_for_device(model_id, device)
+            }
+            MinimalQwen35LoadMode::NativeStore => Self::load_native_for_device(model_id, device),
+        }
+    }
+
     pub fn load_from_hf_f16(model_id: &str, device: &Device) -> Result<Self> {
         if matches!(
             std::env::var("DOTCACHE_QWEN35_DISABLE_PREPARED_LOAD").as_deref(),
@@ -94,7 +149,7 @@ impl MinimalQwen35Runner {
         ) {
             Self::load_from_hf_direct_f16(model_id, device)
         } else {
-            Self::load_prepared_for_device(model_id, device)
+            Self::load_with_mode(model_id, device, MinimalQwen35LoadMode::PreparedCandle)
         }
     }
 

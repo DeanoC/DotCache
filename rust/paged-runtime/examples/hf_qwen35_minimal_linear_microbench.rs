@@ -2,7 +2,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::{Device, Tensor};
     use dotcache_paged_runtime::{
-        MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35Runner, RuntimeError,
+        MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LoadMode, MinimalQwen35Runner,
+        RuntimeError,
     };
     use serde::Serialize;
     use std::time::Instant;
@@ -109,6 +110,42 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         repeats: usize,
         warmup_repeats: usize,
         device: DeviceSelector,
+        load_mode: LoadMode,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum LoadMode {
+        Prepared,
+        Native,
+        Direct,
+    }
+
+    impl LoadMode {
+        fn runner_mode(self) -> Option<MinimalQwen35LoadMode> {
+            match self {
+                Self::Prepared => Some(MinimalQwen35LoadMode::PreparedCandle),
+                Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
+                Self::Direct => None,
+            }
+        }
+    }
+
+    impl std::str::FromStr for LoadMode {
+        type Err = RuntimeError;
+
+        fn from_str(value: &str) -> dotcache_paged_runtime::Result<Self> {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "prepared" => Ok(Self::Prepared),
+                "native" => Ok(Self::Native),
+                "direct" => Ok(Self::Direct),
+                other => Err(RuntimeError::External {
+                    context: "load-mode",
+                    message: format!(
+                        "unsupported load mode `{other}`, expected prepared, native, or direct"
+                    ),
+                }),
+            }
+        }
     }
 
     #[derive(Debug, Serialize)]
@@ -186,8 +223,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let kernel_size = spec.kernel_size as u64;
         let out_width = conv_dim + num_heads;
 
-        let unique_input_bytes =
-            batch * ((conv_dim * seq) + (conv_dim * state_len) + (conv_dim * kernel_size) + (num_heads * seq) + (2 * num_heads)) * dtype_bytes;
+        let unique_input_bytes = batch
+            * ((conv_dim * seq)
+                + (conv_dim * state_len)
+                + (conv_dim * kernel_size)
+                + (num_heads * seq)
+                + (2 * num_heads))
+            * dtype_bytes;
         let unique_output_bytes =
             batch * ((seq * out_width) + (conv_dim * state_len)) * dtype_bytes;
 
@@ -253,7 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fn parse_args() -> Result<Args, Box<dyn std::error::Error + Send + Sync>> {
         let mut args = std::env::args().skip(1);
         let model_id = args.next().ok_or(
-            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|cuda[:ordinal]|hip[:ordinal]]",
+            "usage: hf_qwen35_minimal_linear_microbench <model_id> <prompt> [--layer-id N] [--prompt-token-target N] [--repeats N] [--warmup-repeats N] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode prepared|native|direct]",
         )?;
         let prompt = args.next().ok_or("missing prompt")?;
         let mut parsed = Args {
@@ -264,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             repeats: 5,
             warmup_repeats: 1,
             device: DeviceSelector::Cpu,
+            load_mode: LoadMode::Prepared,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -299,6 +342,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .ok_or("missing value for --device")?
                         .parse::<DeviceSelector>()?;
                 }
+                "--load-mode" => {
+                    parsed.load_mode = args
+                        .next()
+                        .ok_or("missing value for --load-mode")?
+                        .parse::<LoadMode>()?;
+                }
                 other => return Err(format!("unexpected argument {other:?}").into()),
             }
         }
@@ -308,7 +357,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args()?;
     let device = args.device.resolve()?;
     let load_started = Instant::now();
-    let mut runner = MinimalQwen35Runner::load_from_hf_f16(&args.model_id, &device)?;
+    let mut runner = match args.load_mode.runner_mode() {
+        Some(mode) => MinimalQwen35Runner::load_with_mode(&args.model_id, &device, mode)?,
+        None => MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?,
+    };
     let load_elapsed = load_started.elapsed().as_secs_f64() * 1_000.0;
     let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
     let prompt_ids = build_prompt_ids(&tokenizer, args.prompt.as_str(), args.prompt_token_target)?;
@@ -327,13 +379,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &device)?;
     let capture_started = Instant::now();
     if args.warmup_repeats > 0 {
-        let _ = runner
-            .model
-            .bench_linear_attention_layer(&input_ids, layer_id, 0, args.warmup_repeats)?;
+        let _ = runner.model.bench_linear_attention_layer(
+            &input_ids,
+            layer_id,
+            0,
+            args.warmup_repeats,
+        )?;
     }
-    let result = runner
-        .model
-        .bench_linear_attention_layer(&input_ids, layer_id, 0, args.repeats)?;
+    let result =
+        runner
+            .model
+            .bench_linear_attention_layer(&input_ids, layer_id, 0, args.repeats)?;
     let capture_elapsed = capture_started.elapsed().as_secs_f64() * 1_000.0;
 
     let dtype_bytes = 2u64;

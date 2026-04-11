@@ -1,7 +1,9 @@
 #[cfg(feature = "qwen35-minimal")]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::Device;
-    use dotcache_paged_runtime::{MinimalQwen35Runner, Result, RuntimeError};
+    use dotcache_paged_runtime::{
+        MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
+    };
     use serde::Serialize;
     use std::path::Path;
     use std::time::Instant;
@@ -102,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[derive(Clone, Copy, Debug)]
     enum LoadMode {
         Prepared,
+        Native,
         Direct,
     }
 
@@ -109,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Prepared => f.write_str("prepared"),
+                Self::Native => f.write_str("native"),
                 Self::Direct => f.write_str("direct"),
             }
         }
@@ -120,10 +124,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         fn from_str(value: &str) -> Result<Self> {
             match value.trim().to_ascii_lowercase().as_str() {
                 "prepared" => Ok(Self::Prepared),
+                "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!("unsupported load mode `{other}`, expected prepared or direct"),
+                    message: format!(
+                        "unsupported load mode `{other}`, expected prepared, native, or direct"
+                    ),
                 }),
             }
         }
@@ -155,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let model_id = args.next().ok_or_else(|| RuntimeError::External {
             context: "hf_qwen35_minimal_load_bench",
             message:
-                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode prepared|direct]"
+                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode prepared|native|direct]"
                     .to_string(),
         })?;
         let mut device = DeviceSelector::Cpu;
@@ -219,7 +226,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let device = args.device.resolve()?;
     let load_started = Instant::now();
     let runner = match args.mode {
-        LoadMode::Prepared => MinimalQwen35Runner::load_prepared_for_device(&args.model_id, &device)?,
+        LoadMode::Prepared => MinimalQwen35Runner::load_with_mode(
+            &args.model_id,
+            &device,
+            MinimalQwen35LoadMode::PreparedCandle,
+        )?,
+        LoadMode::Native => MinimalQwen35Runner::load_with_mode(
+            &args.model_id,
+            &device,
+            MinimalQwen35LoadMode::NativeStore,
+        )?,
         LoadMode::Direct => MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?,
     };
     let load_millis = load_started.elapsed().as_secs_f64() * 1000.0;

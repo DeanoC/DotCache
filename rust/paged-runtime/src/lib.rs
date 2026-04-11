@@ -12,12 +12,12 @@ mod instrumented_qwen2;
 #[cfg(feature = "candle")]
 mod instrumented_qwen35;
 pub mod model;
+#[cfg(feature = "qwen35-minimal")]
+pub mod model_package;
 pub mod page;
 pub mod page_mode;
 #[cfg(feature = "candle")]
 pub mod policy;
-#[cfg(feature = "qwen35-minimal")]
-pub mod model_package;
 #[cfg(feature = "qwen35-minimal")]
 pub mod qwen35_minimal;
 pub mod session;
@@ -41,6 +41,8 @@ pub use decode::{
 pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 pub use model::{greedy_generate, CausalLm, GreedyGeneration, ModelArchitecture, ModelFamily};
 pub use model::{RuntimeMode, RuntimeStageMetrics};
+#[cfg(feature = "qwen35-minimal")]
+pub use model_package::{ModelTarget, PreparedModelPackage};
 pub use page::{KvPage, PageId};
 pub use page_mode::{
     PageEscapeDType, PageModePolicy, PageModeSpec, PageModeTag, PageQuantScheme, PageSideKind,
@@ -48,11 +50,9 @@ pub use page_mode::{
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
 #[cfg(feature = "qwen35-minimal")]
-pub use model_package::{ModelTarget, PreparedModelPackage};
-#[cfg(feature = "qwen35-minimal")]
 pub use qwen35_minimal::{
     MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionLayerSpec,
-    MinimalQwen35Runner, MinimalQwen35Weights,
+    MinimalQwen35LoadMode, MinimalQwen35Runner, MinimalQwen35Weights,
 };
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;

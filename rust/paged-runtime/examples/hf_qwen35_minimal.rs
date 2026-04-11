@@ -3,7 +3,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Instant;
 
     use candle_core::{DType, Device, IndexOp, Tensor};
-    use dotcache_paged_runtime::{MinimalQwen35Runner, Result, RuntimeError};
+    use dotcache_paged_runtime::{
+        MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
+    };
     use tokenizers::Tokenizer;
 
     #[derive(Clone, Debug)]
@@ -98,6 +100,41 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum LoadMode {
+        Prepared,
+        Native,
+        Direct,
+    }
+
+    impl LoadMode {
+        fn runner_mode(self) -> Option<MinimalQwen35LoadMode> {
+            match self {
+                Self::Prepared => Some(MinimalQwen35LoadMode::PreparedCandle),
+                Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
+                Self::Direct => None,
+            }
+        }
+    }
+
+    impl std::str::FromStr for LoadMode {
+        type Err = RuntimeError;
+
+        fn from_str(value: &str) -> Result<Self> {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "prepared" => Ok(Self::Prepared),
+                "native" => Ok(Self::Native),
+                "direct" => Ok(Self::Direct),
+                other => Err(RuntimeError::External {
+                    context: "load-mode",
+                    message: format!(
+                        "unsupported load mode `{other}`, expected prepared, native, or direct"
+                    ),
+                }),
+            }
+        }
+    }
+
     fn argmax_last_token(logits: &Tensor) -> Result<u32> {
         let last_token = match logits.dims() {
             [1, _vocab] => logits.i(0)?,
@@ -160,16 +197,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     fn logit_nan_count(logits: &Tensor) -> Result<usize> {
-        let values = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let values = logits
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
         Ok(values.iter().filter(|value| value.is_nan()).count())
     }
 
-    fn report_linear_nan_trace(
-        runner: &mut MinimalQwen35Runner,
-        input_ids: &Tensor,
-    ) -> Result<()> {
+    fn report_linear_nan_trace(runner: &mut MinimalQwen35Runner, input_ids: &Tensor) -> Result<()> {
         for layer_id in runner.model.linear_attention_layer_ids() {
-            let trace = runner.model.trace_linear_attention_layer(input_ids, layer_id, 0)?;
+            let trace = runner
+                .model
+                .trace_linear_attention_layer(input_ids, layer_id, 0)?;
             let output_nans = logit_nan_count(&trace.layer_output)?;
             let state_nans = logit_nan_count(&trace.recurrent_state)?;
             if output_nans > 0 || state_nans > 0 {
@@ -197,16 +236,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--device-only]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode prepared|native|direct] [--device-only]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
+    let mut load_mode = LoadMode::Prepared;
     let mut device_only = false;
     while let Some(arg) = args.next() {
         if arg == "--device" {
             let value = args.next().ok_or("missing value for --device")?;
             device_selector = value.parse()?;
+        } else if arg == "--load-mode" {
+            let value = args.next().ok_or("missing value for --load-mode")?;
+            load_mode = value.parse()?;
         } else if arg == "--device-only" {
             device_only = true;
         } else {
@@ -225,12 +268,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         (None, std::time::Duration::ZERO)
     } else {
         let cpu_load_started = Instant::now();
-        let cpu_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &cpu_device)?;
+        let cpu_runner = match load_mode.runner_mode() {
+            Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &cpu_device, mode)?,
+            None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &cpu_device)?,
+        };
         (Some(cpu_runner), cpu_load_started.elapsed())
     };
 
     let device_load_started = Instant::now();
-    let mut device_runner = MinimalQwen35Runner::load_from_hf_f16(&model_id, &target_device)?;
+    let mut device_runner = match load_mode.runner_mode() {
+        Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &target_device, mode)?,
+        None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &target_device)?,
+    };
     let device_load_elapsed = device_load_started.elapsed();
     let tokenizer = Tokenizer::from_file(&device_runner.weights.tokenizer_path)?;
     let prompt_ids = tokenizer.encode(prompt.as_str(), true)?.get_ids().to_vec();
@@ -245,13 +294,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device_runner.hidden_states_from_input_ids(&input_ids)?
     };
 
-    let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) = if let Some(cpu_runner) = cpu_runner.as_mut() {
-        let cpu_prefill_started = Instant::now();
-        let (cpu_logits, cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
-        (Some(cpu_logits), Some(cpu_cache), cpu_prefill_started.elapsed())
-    } else {
-        (None, None, std::time::Duration::ZERO)
-    };
+    let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) =
+        if let Some(cpu_runner) = cpu_runner.as_mut() {
+            let cpu_prefill_started = Instant::now();
+            let (cpu_logits, cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
+            (
+                Some(cpu_logits),
+                Some(cpu_cache),
+                cpu_prefill_started.elapsed(),
+            )
+        } else {
+            (None, None, std::time::Duration::ZERO)
+        };
 
     #[cfg(feature = "qwen35-minimal-hip")]
     if target_device.is_hip() {

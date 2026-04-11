@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "model-store",
+    "paged-runtime",
+]
+resolver = "2"
