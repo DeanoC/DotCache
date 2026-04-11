@@ -165,6 +165,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         weight_tensor_load_millis: Option<f64>,
         weight_top_by_bytes: Option<Vec<TensorLoadSummary>>,
         weight_top_by_millis: Option<Vec<TensorLoadSummary>>,
+        immutable_embedding_requested: Option<bool>,
+        immutable_embedding_active: Option<bool>,
+        immutable_embedding_fallback_reason: Option<String>,
+        immutable_embedding_runtime_mode: Option<String>,
+        first_prefill_millis: Option<f64>,
         tokenizer_path: String,
         revision: String,
     }
@@ -244,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = parse_args()?;
     let device = args.device.resolve()?;
-    let (runner, load_millis, load_trace) = match args.mode {
+    let (mut runner, load_millis, load_trace) = match args.mode {
         LoadMode::Native => {
             let (runner, trace) =
                 MinimalQwen35Runner::load_native_for_device_profiled(&args.model_id, &device)?;
@@ -258,8 +263,27 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
     let tokenizer_started = Instant::now();
-    let _tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
+    let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
     let tokenizer_load_millis = tokenizer_started.elapsed().as_secs_f64() * 1000.0;
+    let first_prefill_millis = {
+        let encoded = tokenizer
+            .encode("Hello from DotCache", true)
+            .map_err(|err| RuntimeError::External {
+                context: "tokenizer",
+                message: err.to_string(),
+            })?;
+        let ids = encoded
+            .get_ids()
+            .iter()
+            .copied()
+            .map(i64::from)
+            .collect::<Vec<_>>();
+        let input_ids = candle_core::Tensor::new(ids, &Device::Cpu)?.reshape((1, encoded.len()))?;
+        let prefill_started = Instant::now();
+        let hidden_states = runner.hidden_states_from_input_ids(&input_ids)?;
+        let _ = runner.prefill_from_hidden_states(&hidden_states)?;
+        Some(prefill_started.elapsed().as_secs_f64() * 1000.0)
+    };
     let peak_rss_kib = read_proc_status_value_kib("VmHWM:")?;
     let current_rss_kib = read_proc_status_value_kib("VmRSS:")?;
 
@@ -291,12 +315,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         weight_tensor_load_millis,
         weight_top_by_bytes,
         weight_top_by_millis,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
     ) = if let Some(MinimalQwen35LoadTrace {
         package_resolve_millis,
         config_parse_millis,
         model_build_millis,
         package_stats,
         weight_load_stats,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
         ..
     }) = load_trace
     {
@@ -340,11 +372,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     })
                     .collect::<Vec<_>>()
             }),
+            Some(immutable_embedding_requested),
+            Some(immutable_embedding_active),
+            immutable_embedding_fallback_reason,
+            Some(immutable_embedding_runtime_mode),
         )
     } else {
         (
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None,
+            None, None, None, None, None, None, None,
         )
     };
 
@@ -374,6 +410,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         weight_tensor_load_millis,
         weight_top_by_bytes,
         weight_top_by_millis,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
+        first_prefill_millis,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),
     };

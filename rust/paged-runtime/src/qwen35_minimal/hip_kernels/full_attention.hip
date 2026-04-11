@@ -1468,6 +1468,31 @@ __global__ void dotcache_qwen35_embedding_lookup_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_output_projection_lookup_kernel(
+    int rows,
+    int hidden_size,
+    int vocab_size,
+    const T* hidden,
+    const T* weights,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int total_elems = rows * vocab_size;
+    if (idx >= total_elems) {
+        return;
+    }
+    const int row = idx / vocab_size;
+    const int vocab = idx - row * vocab_size;
+    const T* row_hidden = hidden + static_cast<size_t>(row) * static_cast<size_t>(hidden_size);
+    const T* row_weight = weights + static_cast<size_t>(vocab) * static_cast<size_t>(hidden_size);
+    float acc = 0.0f;
+    for (int col = 0; col < hidden_size; ++col) {
+        acc += dotcache_qwen35_to_float(row_hidden[col]) * dotcache_qwen35_to_float(row_weight[col]);
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(acc);
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_causal_mask_kernel(
     int batch_size,
     int tgt_len,

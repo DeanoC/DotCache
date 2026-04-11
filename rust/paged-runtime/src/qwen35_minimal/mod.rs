@@ -34,6 +34,10 @@ pub struct MinimalQwen35LoadTrace {
     pub total_load_millis: f64,
     pub package_stats: Option<PreparedPackageSummary>,
     pub weight_load_stats: Option<WeightLoadStats>,
+    pub immutable_embedding_requested: bool,
+    pub immutable_embedding_active: bool,
+    pub immutable_embedding_fallback_reason: Option<String>,
+    pub immutable_embedding_runtime_mode: String,
 }
 
 #[derive(Debug)]
@@ -127,6 +131,11 @@ impl MinimalQwen35Runner {
         )?;
         let model_build_millis = model_started.elapsed().as_secs_f64() * 1000.0;
         let weight_load_stats = source.load_stats();
+        let immutable_embedding_requested = model.immutable_embedding_requested();
+        let immutable_embedding_active = model.immutable_embedding_active();
+        let immutable_embedding_fallback_reason =
+            model.immutable_embedding_fallback_reason().map(str::to_string);
+        let immutable_embedding_runtime_mode = model.immutable_embedding_runtime_mode().to_string();
         let total_load_millis = total_started.elapsed().as_secs_f64() * 1000.0;
         Ok((
             Self {
@@ -147,6 +156,10 @@ impl MinimalQwen35Runner {
                 total_load_millis,
                 package_stats: Some(package_stats),
                 weight_load_stats: Some(weight_load_stats),
+                immutable_embedding_requested,
+                immutable_embedding_active,
+                immutable_embedding_fallback_reason,
+                immutable_embedding_runtime_mode,
             },
         ))
     }

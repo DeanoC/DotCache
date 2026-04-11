@@ -2262,6 +2262,77 @@ extern "C" int dotcache_qwen35_hip_embedding_lookup(
     }
 }
 
+template <typename T>
+int output_projection_lookup_device(
+    int device_ordinal,
+    int rows,
+    int hidden_size,
+    int vocab_size,
+    const void* hidden,
+    const void* weights,
+    void* out) {
+    ScopedHipDevice scoped(device_ordinal);
+    const int total_elems = rows * vocab_size;
+    const int block = 256;
+    const int grid = (total_elems + block - 1) / block;
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_output_projection_lookup_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        rows,
+        hidden_size,
+        vocab_size,
+        static_cast<const T*>(hidden),
+        static_cast<const T*>(weights),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 11;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_output_projection_lookup(
+    int dtype,
+    size_t device_ordinal,
+    size_t rows,
+    size_t hidden_size,
+    size_t vocab_size,
+    const void* hidden,
+    const void* weights,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return output_projection_lookup_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    case 1:
+        return output_projection_lookup_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    case 2:
+        return output_projection_lookup_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    default:
+        return 122;
+    }
+}
+
 extern "C" int dotcache_qwen35_hip_causal_mask(
     int dtype,
     size_t device_ordinal,

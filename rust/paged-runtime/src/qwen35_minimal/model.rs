@@ -7,8 +7,9 @@ use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::{embedding, ops, Embedding, VarBuilder};
+use crate::ImmutableWeightHandle;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 fn elapsed_millis(start: Instant) -> f64 {
@@ -36,6 +37,262 @@ fn prepared_linear_b(source: &PreparedTensorSource, bias: bool) -> Result<Linear
 
 fn prepared_embedding(source: &PreparedTensorSource, hidden_size: usize) -> Result<Embedding> {
     Ok(Embedding::new(source.get("weight")?, hidden_size))
+}
+
+fn prepared_dtype_to_candle(dtype: crate::model_package::PreparedDType) -> Option<DType> {
+    match dtype {
+        crate::model_package::PreparedDType::F16 => Some(DType::F16),
+        crate::model_package::PreparedDType::BF16 => Some(DType::BF16),
+        crate::model_package::PreparedDType::F32 => Some(DType::F32),
+        _ => None,
+    }
+}
+
+fn build_prepared_embedding_source(
+    source: &PreparedTensorSource,
+    hidden_size: usize,
+    immutable_requested: bool,
+) -> Result<(EmbeddingSource, bool, Option<String>)> {
+    let eager = || prepared_embedding(source, hidden_size).map(EmbeddingSource::Materialized);
+    if !immutable_requested {
+        return Ok((eager()?, false, None));
+    }
+    if !source.device().is_hip() {
+        return Ok((eager()?, false, Some("backend-unsupported".to_string())));
+    }
+
+    let Some(handle) = source.get_immutable("weight")? else {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-handle-unavailable".to_string()),
+        ));
+    };
+    let shape = handle.shape().to_vec();
+    if shape.len() != 2 || shape[1] != hidden_size {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-shape-mismatch".to_string()),
+        ));
+    }
+    if !matches!(
+        handle.layout(),
+        crate::model_package::TensorLayout::StandardContiguous
+    ) {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-layout-unsupported".to_string()),
+        ));
+    }
+    let Some(dtype) = prepared_dtype_to_candle(handle.dtype()) else {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-dtype-unsupported".to_string()),
+        ));
+    };
+
+    Ok((
+        EmbeddingSource::Immutable(ImmutableEmbedding::new(
+            handle,
+            EmbeddingMeta {
+                vocab_size: shape[0],
+                hidden_size,
+                dtype,
+                device: source.device().clone(),
+            },
+        )),
+        true,
+        None,
+    ))
+}
+
+fn immutable_embedding_enabled() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_IMMUTABLE_EMBED").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingMeta {
+    vocab_size: usize,
+    hidden_size: usize,
+    dtype: DType,
+    device: Device,
+}
+
+#[derive(Debug)]
+struct RegisteredHostWeight {
+    host_ptr: usize,
+    device_ptr: usize,
+}
+
+impl RegisteredHostWeight {
+    fn device_ptr(&self) -> *const std::ffi::c_void {
+        self.device_ptr as *const std::ffi::c_void
+    }
+}
+
+impl Drop for RegisteredHostWeight {
+    fn drop(&mut self) {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        hip::unregister_host_mapping(self.host_ptr as *const std::ffi::c_void);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImmutableEmbedding {
+    handle: ImmutableWeightHandle,
+    meta: EmbeddingMeta,
+    state: Arc<Mutex<ImmutableEmbeddingState>>,
+}
+
+#[derive(Debug)]
+enum ImmutableEmbeddingState {
+    Uninitialized,
+    Registered(RegisteredHostWeight),
+    Fallback(Embedding),
+}
+
+impl ImmutableEmbedding {
+    fn new(handle: ImmutableWeightHandle, meta: EmbeddingMeta) -> Self {
+        Self {
+            handle,
+            meta,
+            state: Arc::new(Mutex::new(ImmutableEmbeddingState::Uninitialized)),
+        }
+    }
+
+    fn current_mode(&self) -> &'static str {
+        let state = self.state.lock().expect("immutable embedding state poisoned");
+        match &*state {
+            ImmutableEmbeddingState::Uninitialized | ImmutableEmbeddingState::Registered(_) => {
+                "immutable"
+            }
+            ImmutableEmbeddingState::Fallback(_) => "fallback",
+        }
+    }
+
+    fn materialized_embedding(&self) -> Result<Embedding> {
+        Ok(Embedding::new(
+            self.handle
+                .materialize(&self.meta.device)
+                .map_err(|err| candle::Error::Msg(err.to_string()))?,
+            self.meta.hidden_size,
+        ))
+    }
+
+    fn ensure_fallback_embedding(&self) -> Result<Embedding> {
+        let mut state = self.state.lock().expect("immutable embedding state poisoned");
+        if let ImmutableEmbeddingState::Fallback(embedding) = &*state {
+            return Ok(embedding.clone());
+        }
+        let embedding = self.materialized_embedding()?;
+        *state = ImmutableEmbeddingState::Fallback(embedding.clone());
+        Ok(embedding)
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn registered_device_ptr(&self, device_ordinal: usize) -> Result<*const std::ffi::c_void> {
+        let mut state = self.state.lock().expect("immutable embedding state poisoned");
+        match &*state {
+            ImmutableEmbeddingState::Registered(weight) => return Ok(weight.device_ptr()),
+            ImmutableEmbeddingState::Fallback(_) => {
+                candle::bail!("immutable embedding already fell back to eager storage")
+            }
+            ImmutableEmbeddingState::Uninitialized => {}
+        }
+        let host_ptr = self.handle.bytes().as_ptr() as *const std::ffi::c_void;
+        let byte_len = self.handle.bytes().len();
+        let device_ptr = hip::register_host_mapping_for_device(device_ordinal, host_ptr, byte_len)?;
+        *state = ImmutableEmbeddingState::Registered(RegisteredHostWeight {
+            host_ptr: host_ptr as usize,
+            device_ptr: device_ptr as usize,
+        });
+        match &*state {
+            ImmutableEmbeddingState::Registered(weight) => Ok(weight.device_ptr()),
+            _ => unreachable!("registered immutable embedding state replaced unexpectedly"),
+        }
+    }
+
+    fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if self.meta.device.is_hip() && input_ids.device().is_hip() {
+            match hip_immutable_embedding_lookup(self, input_ids) {
+                Ok(output) => return Ok(output),
+                Err(_) => {
+                    let fallback = self.ensure_fallback_embedding()?;
+                    return immutable_embedding_forward_fallback(&fallback, input_ids);
+                }
+            }
+        }
+        let fallback = self.ensure_fallback_embedding()?;
+        immutable_embedding_forward_fallback(&fallback, input_ids)
+    }
+}
+
+fn immutable_embedding_forward_fallback(
+    embedding: &Embedding,
+    input_ids: &Tensor,
+) -> Result<Tensor> {
+    if embedding.embeddings().device().is_hip() && input_ids.device().is_hip() {
+        return hip_embedding_lookup(embedding.embeddings(), input_ids);
+    }
+    embedding.forward(input_ids)
+}
+
+#[derive(Debug, Clone)]
+enum EmbeddingSource {
+    Materialized(Embedding),
+    Immutable(ImmutableEmbedding),
+}
+
+impl EmbeddingSource {
+    fn embeddings(&self) -> Option<&Tensor> {
+        match self {
+            Self::Materialized(embedding) => Some(embedding.embeddings()),
+            Self::Immutable(_) => None,
+        }
+    }
+
+    fn dtype(&self) -> DType {
+        match self {
+            Self::Materialized(embedding) => embedding.embeddings().dtype(),
+            Self::Immutable(embedding) => embedding.meta.dtype,
+        }
+    }
+
+    fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(embedding) => immutable_embedding_forward_fallback(embedding, input_ids),
+            Self::Immutable(embedding) => embedding.forward(input_ids),
+        }
+    }
+
+    fn runtime_mode(&self) -> &'static str {
+        match self {
+            Self::Materialized(_) => "eager",
+            Self::Immutable(embedding) => embedding.current_mode(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum OutputProjectionSource {
+    Materialized(Linear),
+    TiedImmutable(ImmutableEmbedding),
+}
+
+impl OutputProjectionSource {
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => hidden_states.apply(linear),
+            Self::TiedImmutable(embedding) => immutable_output_projection(embedding, hidden_states),
+        }
+    }
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -1020,6 +1277,149 @@ fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor>
             hidden_size,
         },
     )
+}
+
+#[derive(Debug, Clone)]
+struct HipImmutableEmbeddingLookup {
+    embedding: ImmutableEmbedding,
+}
+
+impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
+    fn name(&self) -> &'static str {
+        "hip-immutable-embedding-lookup"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-immutable-embedding-lookup has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        indexes: &candle::HipStorage,
+        indexes_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !indexes_layout.is_contiguous() {
+            candle::bail!("hip-immutable-embedding-lookup requires contiguous indexes")
+        }
+        let device = indexes.device().clone();
+        let device_ptr = self.embedding.registered_device_ptr(device.ordinal())?;
+        let token_count = indexes_layout.shape().elem_count();
+        let mut out_dims = indexes_layout.shape().dims().to_vec();
+        out_dims.push(self.embedding.meta.hidden_size);
+        let out_shape = candle::Shape::from(out_dims);
+        let output = unsafe { device.alloc_uninit(&out_shape, self.embedding.meta.dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+                hip::dtype_code(self.embedding.meta.dtype)?,
+                hip::index_dtype_code(indexes.dtype())?,
+                device.ordinal(),
+                token_count,
+                self.embedding.meta.vocab_size,
+                self.embedding.meta.hidden_size,
+                device_ptr as *const c_void,
+                indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn hip_immutable_embedding_lookup(embedding: &ImmutableEmbedding, indexes: &Tensor) -> Result<Tensor> {
+    let indexes = indexes.contiguous()?;
+    indexes.apply_op1_no_bwd(&HipImmutableEmbeddingLookup {
+        embedding: embedding.clone(),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct HipImmutableOutputProjection {
+    embedding: ImmutableEmbedding,
+}
+
+impl candle::CustomOp1 for HipImmutableOutputProjection {
+    fn name(&self) -> &'static str {
+        "hip-immutable-output-projection"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("hip-immutable-output-projection has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        hidden: &candle::HipStorage,
+        hidden_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::backend::{BackendDevice, BackendStorage};
+        use std::ffi::c_void;
+
+        if !hidden_layout.is_contiguous() {
+            candle::bail!("hip-immutable-output-projection requires contiguous hidden states")
+        }
+        let dims = hidden_layout.shape().dims();
+        let hidden_size = *dims.last().ok_or_else(|| candle::Error::Msg("hidden state rank must be >= 1".to_string()))?;
+        if hidden_size != self.embedding.meta.hidden_size {
+            candle::bail!(
+                "hip-immutable-output-projection hidden size mismatch got {} expected {}",
+                hidden_size,
+                self.embedding.meta.hidden_size
+            )
+        }
+        let rows = hidden_layout.shape().elem_count() / hidden_size;
+        let device = hidden.device().clone();
+        let weight_ptr = self.embedding.registered_device_ptr(device.ordinal())?;
+        let mut out_dims = dims.to_vec();
+        *out_dims.last_mut().expect("validated non-empty dims") = self.embedding.meta.vocab_size;
+        let out_shape = candle::Shape::from(out_dims);
+        let output = unsafe { device.alloc_uninit(&out_shape, self.embedding.meta.dtype)? };
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
+                hip::dtype_code(self.embedding.meta.dtype)?,
+                device.ordinal(),
+                rows,
+                self.embedding.meta.hidden_size,
+                self.embedding.meta.vocab_size,
+                hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+                weight_ptr,
+                output.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((output, out_shape))
+    }
+}
+
+fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden_states: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if embedding.meta.device.is_hip() && hidden_states.device().is_hip() {
+        let hidden_states = hidden_states.contiguous()?;
+        return hidden_states.apply_op1_no_bwd(&HipImmutableOutputProjection {
+            embedding: embedding.clone(),
+        });
+    }
+
+    let fallback = embedding.ensure_fallback_embedding()?;
+    let weight = fallback.embeddings().t()?;
+    hidden_states.matmul(&weight)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -10030,11 +10430,14 @@ impl DecoderLayer {
 
 #[derive(Debug, Clone)]
 pub struct TextModel {
-    embed_tokens: Embedding,
+    embed_tokens: EmbeddingSource,
     layers: Vec<DecoderLayer>,
     norm: Qwen35RmsNorm,
     device: Device,
     dtype: DType,
+    immutable_embedding_requested: bool,
+    immutable_embedding_active: bool,
+    immutable_embedding_fallback_reason: Option<String>,
 }
 
 impl TextModel {
@@ -10054,20 +10457,31 @@ impl TextModel {
             )?);
         }
         Ok(Self {
-            embed_tokens,
+            embed_tokens: EmbeddingSource::Materialized(embed_tokens),
             layers,
             norm: Qwen35RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?,
             device: vb.device().clone(),
             dtype: vb.dtype(),
+            immutable_embedding_requested: false,
+            immutable_embedding_active: false,
+            immutable_embedding_fallback_reason: None,
         })
     }
 
-    pub(crate) fn from_prepared(cfg: &TextConfig, source: PreparedTensorSource) -> Result<Self> {
+    pub(crate) fn from_prepared(
+        cfg: &TextConfig,
+        source: PreparedTensorSource,
+    ) -> Result<Self> {
         let cfg = cfg.clone().normalized();
         let model_source = source.pp("model").pp("language_model");
-        let embed_tokens =
-            prepared_embedding(&model_source.pp("embed_tokens"), cfg.hidden_size)?;
-        let dtype = embed_tokens.embeddings().dtype();
+        let immutable_embedding_requested = immutable_embedding_enabled();
+        let (embed_tokens, immutable_embedding_active, immutable_embedding_fallback_reason) =
+            build_prepared_embedding_source(
+                &model_source.pp("embed_tokens"),
+                cfg.hidden_size,
+                immutable_embedding_requested,
+            )?;
+        let dtype = embed_tokens.dtype();
         let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, source.device(), dtype)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let layers_source = model_source.pp("layers");
@@ -10085,6 +10499,9 @@ impl TextModel {
             norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &model_source.pp("norm"))?,
             device: source.device().clone(),
             dtype,
+            immutable_embedding_requested,
+            immutable_embedding_active,
+            immutable_embedding_fallback_reason,
         })
     }
 
@@ -10154,10 +10571,27 @@ impl TextModel {
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
-        if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
-            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
-        }
         self.embed_tokens.forward(input_ids)
+    }
+
+    fn materialized_embeddings(&self) -> Option<&Tensor> {
+        self.embed_tokens.embeddings()
+    }
+
+    fn immutable_embedding_requested(&self) -> bool {
+        self.immutable_embedding_requested
+    }
+
+    fn immutable_embedding_active(&self) -> bool {
+        self.immutable_embedding_active
+    }
+
+    fn immutable_embedding_fallback_reason(&self) -> Option<&str> {
+        self.immutable_embedding_fallback_reason.as_deref()
+    }
+
+    fn immutable_embedding_runtime_mode(&self) -> &'static str {
+        self.embed_tokens.runtime_mode()
     }
 
     pub fn full_attention_layer_ids(&self) -> Vec<usize> {
@@ -10501,7 +10935,7 @@ impl TextModel {
 #[derive(Debug, Clone)]
 pub struct ModelForCausalLM {
     language_model: TextModel,
-    lm_head: Linear,
+    lm_head: OutputProjectionSource,
 }
 
 impl ModelForCausalLM {
@@ -10509,13 +10943,19 @@ impl ModelForCausalLM {
         let cfg = cfg.clone().normalized();
         let language_model = TextModel::new(&cfg.text_config, vb.clone())?;
         let lm_head = if vb.contains_tensor("lm_head.weight") {
-            linear_no_bias(
+            OutputProjectionSource::Materialized(linear_no_bias(
                 cfg.text_config.hidden_size,
                 cfg.text_config.vocab_size,
                 vb.pp("lm_head"),
-            )?
+            )?)
         } else {
-            Linear::new(language_model.embed_tokens.embeddings().clone(), None)
+            OutputProjectionSource::Materialized(Linear::new(
+                language_model
+                    .materialized_embeddings()
+                    .expect("direct loader uses eager embedding")
+                    .clone(),
+                None,
+            ))
         };
         Ok(Self {
             language_model,
@@ -10527,9 +10967,28 @@ impl ModelForCausalLM {
         let cfg = cfg.clone().normalized();
         let language_model = TextModel::from_prepared(&cfg.text_config, source.clone())?;
         let lm_head = if source.contains_tensor("lm_head.weight") {
-            prepared_linear_no_bias(&source.pp("lm_head"))?
+            OutputProjectionSource::Materialized(prepared_linear_no_bias(&source.pp("lm_head"))?)
+        } else if immutable_embedding_enabled() && language_model.immutable_embedding_active() {
+            match &language_model.embed_tokens {
+                EmbeddingSource::Immutable(embedding) => {
+                    OutputProjectionSource::TiedImmutable(embedding.clone())
+                }
+                EmbeddingSource::Materialized(_) => OutputProjectionSource::Materialized(Linear::new(
+                    language_model
+                        .materialized_embeddings()
+                        .expect("materialized embedding should be available")
+                        .clone(),
+                    None,
+                )),
+            }
         } else {
-            Linear::new(language_model.embed_tokens.embeddings().clone(), None)
+            OutputProjectionSource::Materialized(Linear::new(
+                language_model
+                    .materialized_embeddings()
+                    .expect("tied lm_head requires eager embedding")
+                    .clone(),
+                None,
+            ))
         };
         Ok(Self {
             language_model,
@@ -10554,8 +11013,8 @@ impl ModelForCausalLM {
             )?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
@@ -10572,14 +11031,30 @@ impl ModelForCausalLM {
             .forward_profiled(input_ids, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
         self.language_model.hidden_states_from_input_ids(input_ids)
+    }
+
+    pub fn immutable_embedding_requested(&self) -> bool {
+        self.language_model.immutable_embedding_requested()
+    }
+
+    pub fn immutable_embedding_active(&self) -> bool {
+        self.language_model.immutable_embedding_active()
+    }
+
+    pub fn immutable_embedding_fallback_reason(&self) -> Option<&str> {
+        self.language_model.immutable_embedding_fallback_reason()
+    }
+
+    pub fn immutable_embedding_runtime_mode(&self) -> &'static str {
+        self.language_model.immutable_embedding_runtime_mode()
     }
 
     pub fn forward_hidden_states_profiled(
@@ -10594,8 +11069,8 @@ impl ModelForCausalLM {
             .forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
@@ -10613,8 +11088,8 @@ impl ModelForCausalLM {
             .forward_profiled_with_linear_traces(input_ids, seqlen_offset, target_layers)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, traces, profile))
     }

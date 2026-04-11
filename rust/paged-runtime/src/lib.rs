@@ -42,7 +42,9 @@ pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 pub use model::{greedy_generate, CausalLm, GreedyGeneration, ModelArchitecture, ModelFamily};
 pub use model::{RuntimeMode, RuntimeStageMetrics};
 #[cfg(feature = "qwen35-minimal")]
-pub use model_package::{ModelPackage, ModelTarget, PreparedPackageSummary, WeightLoadStats};
+pub use model_package::{
+    ImmutableWeightHandle, ModelPackage, ModelTarget, PreparedPackageSummary, WeightLoadStats,
+};
 pub use page::{KvPage, PageId};
 pub use page_mode::{
     PageEscapeDType, PageModePolicy, PageModeSpec, PageModeTag, PageQuantScheme, PageSideKind,

@@ -283,10 +283,67 @@ impl<'a> WeightView<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ImmutableWeightHandle {
+    package: Arc<PreparedPackage>,
+    tensor_idx: usize,
+}
+
+impl ImmutableWeightHandle {
+    fn entry(&self) -> &PreparedTensorEntry {
+        &self.package.manifest.tensors[self.tensor_idx]
+    }
+
+    pub fn name(&self) -> &str {
+        &self.entry().name
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        &self.entry().shape
+    }
+
+    pub fn dtype(&self) -> PreparedDType {
+        self.entry().dtype
+    }
+
+    pub fn layout(&self) -> &TensorLayoutTag {
+        &self.entry().layout
+    }
+
+    pub fn backend(&self) -> &str {
+        &self.package.manifest.target_backend
+    }
+
+    pub fn family(&self) -> &str {
+        &self.package.manifest.target_family
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.entry().offset
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.entry().byte_len
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        let entry = self.entry();
+        let start = usize::try_from(entry.offset).expect("validated package offset fits usize");
+        let byte_len =
+            usize::try_from(entry.byte_len).expect("validated package byte_len fits usize");
+        &self.package.weights[start..start + byte_len]
+    }
+
+    pub fn materialize(&self, device: &Device) -> Result<Tensor> {
+        self.package.load_tensor(self.name(), device)
+    }
+}
+
 pub trait WeightProvider: Clone {
     fn device(&self) -> &Device;
     fn pp<T: Display>(&self, component: T) -> Self;
     fn get(&self, name: &str) -> candle_core::Result<Tensor>;
+    fn get_immutable(&self, name: &str) -> candle_core::Result<Option<ImmutableWeightHandle>>;
     fn contains_tensor(&self, name: &str) -> bool;
 }
 
@@ -478,6 +535,19 @@ impl PreparedPackage {
         self.tensor_index.contains_key(name)
     }
 
+    pub fn immutable_handle(&self, name: &str) -> Result<ImmutableWeightHandle> {
+        let tensor_idx = *self.tensor_index.get(name).ok_or_else(|| {
+            ModelStoreError::External {
+                context: "model-store",
+                message: format!("missing tensor {name} in prepared package"),
+            }
+        })?;
+        Ok(ImmutableWeightHandle {
+            package: Arc::new(self.clone()),
+            tensor_idx,
+        })
+    }
+
     pub fn weight_view(&self, name: &str) -> Result<WeightView<'_>> {
         let entry = self.tensor_entry(name)?;
         let start = usize::try_from(entry.offset).map_err(|_| ModelStoreError::External {
@@ -604,6 +674,25 @@ impl CandleWeightProvider {
         self.package.contains_tensor(&self.full_name(name))
     }
 
+    pub fn get_immutable(&self, name: &str) -> candle_core::Result<Option<ImmutableWeightHandle>> {
+        let full_name = self.full_name(name);
+        if !self.device.is_hip()
+            || self.package.manifest.target_backend != BackendKind::Hip.as_str()
+            || full_name != "model.language_model.embed_tokens.weight"
+            || !self.package.contains_tensor(&full_name)
+        {
+            return Ok(None);
+        }
+        let handle = self
+            .package
+            .immutable_handle(&full_name)
+            .map_err(|err| candle_core::Error::Msg(err.to_string()))?;
+        match handle.layout() {
+            TensorLayoutTag::StandardContiguous => Ok(Some(handle)),
+            _ => Ok(None),
+        }
+    }
+
     pub fn load_stats(&self) -> WeightLoadStats {
         let stats = self.load_stats.lock().expect("load stats mutex poisoned");
         let tensor_get_calls = stats.values().map(|entry| entry.calls).sum();
@@ -665,6 +754,10 @@ impl WeightProvider for CandleWeightProvider {
 
     fn get(&self, name: &str) -> candle_core::Result<Tensor> {
         self.get(name)
+    }
+
+    fn get_immutable(&self, name: &str) -> candle_core::Result<Option<ImmutableWeightHandle>> {
+        self.get_immutable(name)
     }
 
     fn contains_tensor(&self, name: &str) -> bool {
