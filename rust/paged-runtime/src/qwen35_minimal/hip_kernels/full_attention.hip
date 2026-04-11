@@ -42,6 +42,25 @@ __device__ inline hip_bfloat16 dotcache_qwen35_from_float<hip_bfloat16>(float va
     return hip_bfloat16(value);
 }
 
+__device__ inline float dotcache_qwen35_exp_fast(float x) {
+    return __expf(x);
+}
+
+__device__ inline float dotcache_qwen35_sigmoid_fast(float x) {
+    if (x >= 0.0f) {
+        const float e = dotcache_qwen35_exp_fast(-x);
+        return 1.0f / (1.0f + e);
+    }
+    const float e = dotcache_qwen35_exp_fast(x);
+    return e / (1.0f + e);
+}
+
+__device__ inline float dotcache_qwen35_softplus_fast(float x) {
+    if (x > 20.0f) return x;
+    if (x < -20.0f) return dotcache_qwen35_exp_fast(x);
+    return log1pf(dotcache_qwen35_exp_fast(x));
+}
+
 template <typename T>
 __device__ inline float dotcache_qwen35_conv4_contiguous_t_ge3(
     const T* mixed_qkv,
@@ -241,7 +260,7 @@ __global__ void dotcache_qwen35_linear_prefill_conv_pack_kernel(
             dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
     }
 
-    const float silu = acc / (1.0f + expf(-acc));
+    const float silu = acc * dotcache_qwen35_sigmoid_fast(acc);
     out[tid] = dotcache_qwen35_from_float<T>(silu);
 }
 
@@ -293,7 +312,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_kernel(
         acc += x * dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
     }
 
-    const float silu = acc / (1.0f + expf(-acc));
+    const float silu = acc * dotcache_qwen35_sigmoid_fast(acc);
     out[tid] = dotcache_qwen35_from_float<T>(silu);
 }
 
@@ -353,7 +372,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel(
             acc += x * dotcache_qwen35_to_float(weights[weight_offset + static_cast<size_t>(tap)]);
         }
 
-        const float silu = acc / (1.0f + expf(-acc));
+        const float silu = acc * dotcache_qwen35_sigmoid_fast(acc);
         out[tid] = dotcache_qwen35_from_float<T>(silu);
         return;
     }
@@ -365,7 +384,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel(
     const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
     const float bias = dotcache_qwen35_to_float(dt_bias[head]);
     const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
-    const float softplus = log1pf(expf(a_val + bias));
+    const float softplus = dotcache_qwen35_softplus_fast(a_val + bias);
     out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
 }
 
@@ -440,7 +459,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel_k4s3(
             const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
             acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         }
-        const float silu = acc / (1.0f + expf(-acc));
+        const float silu = acc * dotcache_qwen35_sigmoid_fast(acc);
         out[tid] = dotcache_qwen35_from_float<T>(silu);
         return;
     }
@@ -452,7 +471,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_kernel_k4s3(
     const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
     const float bias = dotcache_qwen35_to_float(dt_bias[head]);
     const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
-    const float softplus = log1pf(expf(a_val + bias));
+    const float softplus = dotcache_qwen35_softplus_fast(a_val + bias);
     out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
 }
 
@@ -538,7 +557,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_with_state_kern
             const float x3 = dotcache_qwen35_to_float(mixed_qkv[mixed_c_offset + 0]);
             acc = ((x0 * w0 + x1 * w1) + (x2 * w2 + x3 * w3));
         }
-        const float silu = acc / (1.0f + expf(-acc));
+        const float silu = acc * dotcache_qwen35_sigmoid_fast(acc);
         out[tid] = dotcache_qwen35_from_float<T>(silu);
         return;
     }
@@ -550,7 +569,7 @@ __global__ void dotcache_qwen35_linear_stateful_conv_value_decay_with_state_kern
     const float a_val = dotcache_qwen35_to_float(a[a_base + head]);
     const float bias = dotcache_qwen35_to_float(dt_bias[head]);
     const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
-    const float softplus = log1pf(expf(a_val + bias));
+    const float softplus = dotcache_qwen35_softplus_fast(a_val + bias);
     out[tid] = dotcache_qwen35_from_float<T>(-softplus * decay);
 }
 
@@ -603,7 +622,7 @@ __global__ void dotcache_qwen35_linear_decode_prepare_kernel(
             }
             acc += x * dotcache_qwen35_to_float(weights[weight_base + tap]);
         }
-        return acc / (1.0f + expf(-acc));
+        return acc * dotcache_qwen35_sigmoid_fast(acc);
     };
 
     __shared__ float shared_q[MAX_K];
@@ -632,11 +651,11 @@ __global__ void dotcache_qwen35_linear_decode_prepare_kernel(
         const int head_base = batch * (2 * num_v_heads) + v_head;
         const float a_raw = dotcache_qwen35_to_float(a_beta_raw[head_base]);
         const float beta_raw = dotcache_qwen35_to_float(a_beta_raw[head_base + num_v_heads]);
-        out[pair_out_base + 2 * head_k_dim + head_v_dim] = 1.0f / (1.0f + expf(-beta_raw));
+        out[pair_out_base + 2 * head_k_dim + head_v_dim] = dotcache_qwen35_sigmoid_fast(beta_raw);
         const float bias = dotcache_qwen35_to_float(dt_bias[v_head]);
         const float decay = dotcache_qwen35_to_float(a_log_exp[v_head]);
-        const float g = -log1pf(expf(a_raw + bias)) * decay;
-        out[pair_out_base + 2 * head_k_dim + head_v_dim + 1] = expf(g);
+        const float g = -dotcache_qwen35_softplus_fast(a_raw + bias) * decay;
+        out[pair_out_base + 2 * head_k_dim + head_v_dim + 1] = dotcache_qwen35_exp_fast(g);
     }
     if (tid < head_v_dim) {
         const int value_channel = key_dim * 2 + v_head * head_v_dim + tid;
@@ -1834,7 +1853,7 @@ __global__ void dotcache_qwen35_value_decay_kernel(
     const float a_val = dotcache_qwen35_to_float(a[idx]);
     const float bias = dotcache_qwen35_to_float(dt_bias[head]);
     const float decay = dotcache_qwen35_to_float(a_log_exp[head]);
-    const float softplus = log1pf(expf(a_val + bias));
+    const float softplus = dotcache_qwen35_softplus_fast(a_val + bias);
     out[idx] = dotcache_qwen35_from_float<T>(-softplus * decay);
 }
 
@@ -1934,7 +1953,7 @@ __global__ void dotcache_qwen35_rms_norm_gated_kernel(
     for (int col = tid; col < n_cols; col += blockDim.x) {
         const float x = dotcache_qwen35_to_float(row_hidden[col]);
         const float gate_x = dotcache_qwen35_to_float(row_gate[col]);
-        const float gate_silu = gate_x / (1.0f + expf(-gate_x));
+    const float gate_silu = gate_x * dotcache_qwen35_sigmoid_fast(gate_x);
         const float weight_val = dotcache_qwen35_to_float(weight[col]);
         row_out[col] =
             dotcache_qwen35_from_float<T>(x * shared_inv_rms * weight_val * gate_silu);
