@@ -199,6 +199,43 @@ def test_build_report_tolerates_partial_groups() -> None:
     assert group["comparisons"]["minimal_control_vs_main"]["delta_total_millis"] is None
 
 
+def test_build_report_accepts_luce_completed_with_warning() -> None:
+    report = build_report(
+        [
+            {
+                "run_id": "main",
+                "model_id": DEFAULT_MODEL,
+                "prompt_token_count": 2048,
+                "lane": "main_dense_control",
+                "status": "completed",
+                "summary_metrics": {
+                    "prefill_millis": 1000.0,
+                    "decode_millis": 500.0,
+                    "total_millis": 1500.0,
+                    "total_tokens_per_second": 100.0,
+                },
+            },
+            {
+                "run_id": "luce",
+                "model_id": DEFAULT_MODEL,
+                "prompt_token_count": 2048,
+                "lane": "luce_external_megakernel",
+                "status": "completed_with_warning",
+                "summary_metrics": {
+                    "prefill_millis": 250.0,
+                    "decode_millis": 250.0,
+                    "total_millis": 500.0,
+                    "total_tokens_per_second": 300.0,
+                    "terminated_due_to_invalid_token": True,
+                },
+            },
+        ]
+    )
+    group = report["groups"][0]
+    assert group["luce_external_megakernel"]["status"] == "completed_with_warning"
+    assert group["comparisons"]["luce_external_megakernel_vs_main"]["total_millis_ratio"] == 1 / 3
+
+
 def test_resume_requires_matching_run_configuration(tmp_path) -> None:
     spec = RunSpec(
         model_id=DEFAULT_MODEL,

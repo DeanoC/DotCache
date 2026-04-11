@@ -286,6 +286,20 @@ def _extract_summary_metrics(summary: dict[str, Any], *, lane: str) -> dict[str,
                 "hip_persistent_full_prefill_requested"
             ),
         }
+    if lane == "luce_external_megakernel":
+        return {
+            "prompt_token_count": summary.get("prompt_token_count"),
+            "generated_token_count": summary.get("generated_token_count"),
+            "prefill_millis": summary.get("prefill_millis"),
+            "decode_millis": summary.get("decode_millis"),
+            "total_millis": summary.get("total_millis"),
+            "prefill_tokens_per_second": summary.get("prefill_tokens_per_second"),
+            "decode_tokens_per_second": summary.get("decode_tokens_per_second"),
+            "total_tokens_per_second": summary.get("total_tokens_per_second"),
+            "invalid_token_id": summary.get("invalid_token_id"),
+            "invalid_token_step": summary.get("invalid_token_step"),
+            "terminated_due_to_invalid_token": summary.get("terminated_due_to_invalid_token"),
+        }
     return {
         "prompt_token_count": summary.get("prompt_token_count"),
         "generated_token_count": summary.get("generated_token_count"),
@@ -387,6 +401,16 @@ def execute_run(
         record["summary_metrics"] = _extract_summary_metrics(summary, lane=spec.lane)
         return record
 
+    if spec.lane == "luce_external_megakernel" and summary_path.exists():
+        print(f"[done-with-warning] {record['run_id']}", flush=True)
+        summary = _load_json(summary_path)
+        record["status"] = "completed_with_warning"
+        record["summary_metrics"] = _extract_summary_metrics(summary, lane=spec.lane)
+        stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
+        stdout_text = stdout_path.read_text(encoding="utf-8") if stdout_path.exists() else ""
+        record["warning_message"] = (stderr_text or stdout_text).strip()[-4000:]
+        return record
+
     print(f"[failed] {record['run_id']}", flush=True)
     record["status"] = "failed"
     stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
@@ -433,7 +457,7 @@ def _comparison_payload(
 def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
-        if record["status"] not in {"completed", "reused_existing", "failed"}:
+        if record["status"] not in {"completed", "reused_existing", "failed", "completed_with_warning"}:
             continue
         key = (record["model_id"], record["prompt_token_count"])
         grouped.setdefault(key, []).append(record)

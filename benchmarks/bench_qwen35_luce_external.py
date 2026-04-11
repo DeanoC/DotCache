@@ -61,6 +61,10 @@ def build_prompt_ids(tokenizer: Any, prompt_text: str, target: int | None) -> li
     return token_ids[:target]
 
 
+def valid_token_id(tokenizer: Any, token_id: int) -> bool:
+    return 0 <= int(token_id) < len(tokenizer)
+
+
 def main() -> None:
     args = parse_args()
     repo = Path(args.luce_repo).resolve()
@@ -171,15 +175,27 @@ def main() -> None:
 
     out_ids: list[int] = []
     next_id = first_token
+    invalid_token_id: int | None = None
+    invalid_token_step: int | None = None
     if args.max_new_tokens > 0:
-        out_ids.append(first_token)
+        if valid_token_id(tokenizer, first_token):
+            out_ids.append(first_token)
+        else:
+            invalid_token_id = int(first_token)
+            invalid_token_step = 0
     torch.cuda.synchronize()
     started = torch.cuda.Event(enable_timing=True)
     ended = torch.cuda.Event(enable_timing=True)
     started.record()
-    for _ in range(max(args.max_new_tokens - 1, 0)):
+    for step in range(max(args.max_new_tokens - 1, 0)):
+        if invalid_token_id is not None:
+            break
         next_id = decoder.step(next_id)
         if next_id == tokenizer.eos_token_id:
+            break
+        if not valid_token_id(tokenizer, next_id):
+            invalid_token_id = int(next_id)
+            invalid_token_step = step + 1
             break
         out_ids.append(next_id)
     ended.record()
@@ -187,7 +203,7 @@ def main() -> None:
     decode_millis = started.elapsed_time(ended)
 
     total_millis = prefill_millis + decode_millis
-    generated_text = tokenizer.decode(out_ids, skip_special_tokens=True)
+    generated_text = tokenizer.decode(out_ids, skip_special_tokens=True) if out_ids else ""
     generated_token_count = len(out_ids)
 
     summary = {
@@ -215,6 +231,9 @@ def main() -> None:
             else 0.0
         ),
         "generated_text": generated_text,
+        "invalid_token_id": invalid_token_id,
+        "invalid_token_step": invalid_token_step,
+        "terminated_due_to_invalid_token": invalid_token_id is not None,
     }
 
     summary_path = Path(f"{args.out_prefix}.summary.json")
