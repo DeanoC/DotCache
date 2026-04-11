@@ -6,6 +6,10 @@ For the current status of the DotCache-local Qwen3.5 minimal HIP path, including
 what the benchmark tools are, and which long-context kernel directions were already tried and
 rejected, see [QWEN35_MINIMAL_HIP_STATUS.md](/home/deano/DotCache/rust/paged-runtime/QWEN35_MINIMAL_HIP_STATUS.md).
 
+There is also a Rust/Candle minimal-control benchmark lane for Qwen3.5. It is intentionally
+separate from the main paged runtime so it can be used as a direct benchmark/control path while
+the main runtime keeps evolving.
+
 It deliberately starts smaller than `llama.cpp`:
 
 - append-only per-sequence page tables
@@ -259,6 +263,29 @@ The current benchmark readout on CUDA is:
 
 So `M3/int8` is currently treated as an experimental paged serving/workload mode,
 not a blanket replacement for exact pages.
+
+For the minimal-control Qwen3.5 path, use the dedicated example:
+
+```bash
+cargo run --manifest-path rust/paged-runtime/Cargo.toml --features qwen35-minimal-cuda --example hf_qwen35_minimal_bench -- \
+  Qwen/Qwen3.5-0.8B "hello" /tmp/qwen35-minimal-control \
+  --device cuda:0 \
+  --prompt-token-target 2048 \
+  --warmup-runs 0 \
+  --max-new-tokens 128
+```
+
+That writes:
+
+- `/tmp/qwen35-minimal-control.summary.json`
+
+and reports Luce-style headline metrics in the summary:
+
+- `prefill_tokens_per_second`
+- `decode_tokens_per_second`
+- `total_tokens_per_second`
+
+plus the minimal runtime stage buckets for the measured run.
 
 To sweep multiple policy variants and write one summary/trace pair per variant plus an index:
 
