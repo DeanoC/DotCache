@@ -3548,10 +3548,7 @@ impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
 
         let device = projected.device().clone();
         let value_dim = self.num_v_heads * self.head_v_dim;
-        let output_shape = candle::Shape::from((
-            self.batch_size,
-            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
-        ));
+        let output_shape = candle::Shape::from((self.batch_size, value_dim));
         let elem_count = output_shape.elem_count();
 
         let mut block = 64u32;
@@ -3565,10 +3562,12 @@ impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
             shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
         };
 
-        let initial_state = initial_state.as_cuda_slice::<f32>()?;
-        let initial_state = match initial_state_layout.contiguous_offsets() {
-            Some((o1, o2)) => initial_state.slice(o1..o2),
-            None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous initial_state"),
+        let state = initial_state.as_cuda_slice::<f32>()?;
+        let state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => state.slice(o1..o2),
+            None => candle::bail!(
+                "cuda-linear-decode-from-projected-gated requires contiguous initial_state"
+            ),
         };
 
         macro_rules! launch {
@@ -3617,7 +3616,7 @@ impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
                 builder.arg(&prev_conv_state);
                 builder.arg(&weights);
                 builder.arg(&value_cache_pack);
-                builder.arg(&initial_state);
+                builder.arg(&state);
                 builder.arg(&norm_weight);
                 builder.arg(&output);
                 unsafe { builder.launch(cfg) }.w()?;
@@ -11407,6 +11406,7 @@ impl GatedDeltaNet {
                 )?,
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
+            let fused_state = initial_state.clone();
             let fused = if device.is_hip() {
                 let a_beta_raw = Tensor::cat(
                     &[
@@ -11442,7 +11442,7 @@ impl GatedDeltaNet {
                     &prev_conv_state,
                     &weights,
                     &value_cache_pack,
-                    &initial_state,
+                    &fused_state,
                     &self.norm.weight,
                     self.norm.eps,
                     self.num_v_heads,
@@ -11515,12 +11515,14 @@ impl GatedDeltaNet {
                 )?;
             }
             let core_attn_out = fused
-                .narrow(1, 0, self.value_dim)?
                 .reshape((batch_size, seq_len, self.value_dim))?;
-            let recurrent_state = fused
-                .narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
-                .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
-                .contiguous()?;
+            let recurrent_state = if device.is_cuda() && packed_qkv_zba.is_some() {
+                fused_state
+            } else {
+                fused.narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
+                    .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                    .contiguous()?
+            };
             let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
             profile.linear_conv_millis += kv_append_elapsed;
             profile.kv_append_write_millis += kv_append_elapsed;
@@ -14599,12 +14601,17 @@ mod tests {
         let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?;
         let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
 
+        let initial_state_shape = initial_state.shape().clone();
+        let initial_state_values = initial_state.flatten_all()?.to_vec1::<f32>()?;
+        let fused_state = Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
+        let expected_initial_state =
+            Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
         let fused = linear_decode_step_cuda_from_projected_gated(
             &projected,
             &prev_conv_state,
             &weights,
             &value_cache_pack,
-            &initial_state,
+            &fused_state,
             &norm_weight,
             1e-6,
             2,
@@ -14615,6 +14622,7 @@ mod tests {
         )?
         .to_dtype(DType::F32)?
         .to_vec2::<f32>()?;
+        let fused_state = fused_state.flatten_all()?.to_vec1::<f32>()?;
 
         let expected = linear_decode_step_cuda_gated(
             &mixed_qkv,
@@ -14623,7 +14631,7 @@ mod tests {
             &a_raw,
             &beta_raw,
             &value_cache_pack,
-            &initial_state,
+            &expected_initial_state,
             &gate.reshape((2usize, 2usize))?,
             &norm_weight,
             1e-6,
@@ -14633,12 +14641,18 @@ mod tests {
             3,
             2,
         )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
+        .to_dtype(DType::F32)?;
+        let expected_out = expected.narrow(1, 0, 4)?.to_vec2::<f32>()?;
+        let expected_state = expected
+            .narrow(1, 4, 8)?
+            .reshape((1usize, 2usize, 2usize, 2usize))?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
 
         let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
-        let expected_flat: Vec<f32> = expected.into_iter().flatten().collect();
+        let expected_flat: Vec<f32> = expected_out.into_iter().flatten().collect();
         assert_close(&fused_flat, &expected_flat, 5e-3);
+        assert_close(&fused_state, &expected_state, 5e-3);
         Ok(())
     }
 
