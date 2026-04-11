@@ -17,6 +17,7 @@ from dotcache.backends.torch_mps import (
     _score_exact_logits_paged_torch,
     _score_exact_logits_transposed_torch,
     _score_m0_logits_fused_torch,
+    _score_m0_logits_fused_transposed_torch,
     _score_m0_logits_two_group64_torch,
 )
 from dotcache.integrations.llama import resolve_hf_auth_kwargs
@@ -343,6 +344,8 @@ def _runtime_score_breakdown_result(
     direct_variant = "none"
     direct_score_ms = 0.0
     direct_score_logits = None
+    direct_score_transposed_ms = 0.0
+    direct_score_transposed_logits = None
     m0_page_tensor = None
     if int(m0_pages) > 0:
         m0_key_pages = torch.randn(
@@ -363,6 +366,9 @@ def _runtime_score_breakdown_result(
             bias_np=key_bias_np,
             device=device,
         )
+        key_fused_scaled_codes_transposed = (
+            key_fused_scaled_codes.reshape(num_key_value_heads, -1, head_dim).transpose(1, 2).contiguous()
+        )
         queries_grouped = queries.reshape(num_key_value_heads, query_count, head_dim // int(group_size), int(group_size))
         query_group_sums = queries_grouped.sum(dim=-1)
         direct_variant, _ = _direct_score(
@@ -381,6 +387,17 @@ def _runtime_score_breakdown_result(
                 query_group_sums=query_group_sums,
                 group_size=int(group_size),
             )[1],
+            warmup_iters=warmup_iters,
+            bench_iters=bench_iters,
+        )
+        direct_score_transposed_ms, direct_score_transposed_logits = _bench(
+            device,
+            lambda: _score_m0_logits_fused_transposed_torch(
+                key_fused_scaled_codes_transposed,
+                queries,
+                key_bias_groups,
+                query_group_sums,
+            ),
             warmup_iters=warmup_iters,
             bench_iters=bench_iters,
         )
@@ -510,6 +527,7 @@ def _runtime_score_breakdown_result(
         "total_selected_tokens": int(total_selected_tokens),
         "direct_m0_variant": str(direct_variant),
         "direct_m0_score_ms": float(direct_score_ms),
+        "direct_m0_transposed_score_ms": float(direct_score_transposed_ms),
         "exact_m3_score_ms": float(exact_m3_score_ms),
         "exact_m3_flat_score_ms": float(exact_m3_flat_score_ms),
         "exact_m3_transposed_score_ms": float(exact_m3_transposed_score_ms),
@@ -519,6 +537,11 @@ def _runtime_score_breakdown_result(
             0.0
             if direct_score_logits is None or m0_logits_reference is None
             else _max_abs_error(direct_score_logits, m0_logits_reference)
+        ),
+        "direct_m0_transposed_vs_dense_score_max_abs_error": (
+            0.0
+            if direct_score_transposed_logits is None or m0_logits_reference is None
+            else _max_abs_error(direct_score_transposed_logits, m0_logits_reference)
         ),
         "exact_m3_flat_vs_page_score_max_abs_error": (
             0.0
