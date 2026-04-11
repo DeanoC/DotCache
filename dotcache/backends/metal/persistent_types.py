@@ -134,6 +134,9 @@ class PersistentFullAttentionLayerState:
     mixed_key_bias_cache: Any | None
     mixed_key_fused_scaled_score_cache: Any | None
     mixed_key_bias_score_cache: Any | None
+    mixed_key_packed_payload_cache: Any | None
+    mixed_key_packed_scales_cache: Any | None
+    mixed_key_packed_bias_cache: Any | None
     mixed_value_fused_scaled_cache: Any | None
     mixed_value_bias_cache: Any | None
     block_token_starts: Any

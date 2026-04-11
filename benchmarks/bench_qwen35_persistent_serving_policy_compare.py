@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-full-attention-mixed-mode-execution-allow-value-m0", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--full-attention-mixed-mode-execution-strategy",
-        choices=["cached_reconstruct", "blockwise_qdq", "direct_m0"],
+        choices=["cached_reconstruct", "blockwise_qdq", "direct_m0", "direct_m0_metal_packed"],
         default="cached_reconstruct",
     )
     parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error", default="0.10")
