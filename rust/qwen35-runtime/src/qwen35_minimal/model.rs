@@ -9485,12 +9485,13 @@ impl GatedDeltaNet {
         let v_beta = v_beta.reshape((batch_heads, num_chunks, chunk_size, v_head_dim))?;
         profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
         let g_start = profile_start(device)?;
+        let backend = backend_buffer_api::for_device(g.device());
         let g = {
             let g = g.reshape((batch_heads, num_chunks, chunk_size))?;
             if g.device().is_hip() {
-            backend_buffer_api::for_device(g.device())
-                .cumsum_last_dim(&StateBuffer::from_tensor(g.clone())?)?
-                .clone_tensor()
+                backend
+                    .cumsum_last_dim(&backend.tensor_to_buffer(g.clone())?)?
+                    .clone_tensor()
             } else {
                 g.cumsum(D::Minus1)?
             }
@@ -10329,7 +10330,7 @@ impl GatedDeltaNet {
 
             let post_start = profile_start(device)?;
             let result = (
-                Some(StateBuffer::from_tensor(
+                Some(backend.tensor_to_buffer(
                     raw_attn
                         .broadcast_mul(&decay_mask_flat)?
                         .neg()?
