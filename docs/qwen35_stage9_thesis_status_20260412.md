@@ -132,15 +132,29 @@ What we still want:
 - repeat runs on the portable corpora
 - simple variance summaries for large, broad, and external
 
-Early local read on the current code path:
+Early local read on the current code path, all on portable MPS with `3` repeats each:
 
-- portable external MPS, `3` repeats on the current real mixed runtime
-- bias ms/step values:
-  - `809.79`
-  - `836.33`
-  - `836.05`
-- mean: `827.39`
-- population stdev: `12.45`
+- external:
+  - bias ms/step values:
+    - `809.79`
+    - `836.33`
+    - `836.05`
+  - mean: `827.39`
+  - population stdev: `12.45`
+- broad:
+  - bias ms/step values:
+    - `1663.30`
+    - `1653.62`
+    - `1676.22`
+  - mean: `1664.38`
+  - population stdev: `9.26`
+- large:
+  - bias ms/step values:
+    - `1383.38`
+    - `1377.95`
+    - `1383.41`
+  - mean: `1381.58`
+  - population stdev: `2.57`
 
 That is encouragingly tight for an early repeatability pass, but the checked-in portable MPS bundles still predate the latest runtime optimizations. They should be refreshed once we are ready to promote the portable corpus to the new baseline.
 
