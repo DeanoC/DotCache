@@ -6,7 +6,10 @@ use super::prepared::PreparedTensorSource;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::{conv1d_no_bias, embedding, ops, Conv1d, Conv1dConfig, Embedding, VarBuilder};
+use candle_nn::{
+    conv1d_no_bias, embedding, kv_cache::KvCache, ops, Conv1d, Conv1dConfig, Embedding,
+    VarBuilder,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -525,7 +528,7 @@ impl candle::CustomOp2 for HipRmsNorm {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
@@ -612,7 +615,7 @@ impl candle::CustomOp3 for HipRmsNormGated {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(hidden_layout.is_contiguous()
@@ -755,6 +758,9 @@ impl Module for Qwen35RmsNorm {
         if xs.device().is_hip() && self.weight.device().is_hip() {
             return hip_rms_norm(xs, &self.weight, self.eps, true);
         }
+        if xs.device().is_cuda() && self.weight.device().is_cuda() {
+            return cuda_rms_norm(xs, &self.weight, self.eps, true);
+        }
         let xs_dtype = xs.dtype();
         let xs = xs.to_dtype(DType::F32)?;
         let variance = (xs.sqr()?.sum_keepdim(D::Minus1)? / xs.dim(D::Minus1)? as f64)?;
@@ -792,6 +798,12 @@ impl Qwen35RmsNormGated {
         {
             return hip_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
         }
+        if hidden_states.device().is_cuda()
+            && gate.device().is_cuda()
+            && self.weight.device().is_cuda()
+        {
+            return cuda_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
+        }
         let out_dtype = hidden_states.dtype();
         let hidden_states = hidden_states.to_dtype(DType::F32)?;
         let variance =
@@ -805,8 +817,9 @@ impl Qwen35RmsNormGated {
 
 #[derive(Debug, Clone)]
 struct Mlp {
-    gate_proj: Linear,
-    up_proj: Linear,
+    gate_proj: Option<Linear>,
+    up_proj: Option<Linear>,
+    gate_up_pack_proj: Option<Linear>,
     down_proj: Linear,
     act_fn: candle_nn::Activation,
 }
@@ -814,17 +827,39 @@ struct Mlp {
 impl Mlp {
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
-            up_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
+            gate_proj: Some(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("gate_proj"),
+            )?),
+            up_proj: Some(linear_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("up_proj"),
+            )?),
+            gate_up_pack_proj: None,
             down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
             act_fn: cfg.hidden_act,
         })
     }
 
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
+        let gate_up_pack_proj = source
+            .contains_tensor("gate_up_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("gate_up_pack")))
+            .transpose()?;
         Ok(Self {
-            gate_proj: prepared_linear_no_bias(&source.pp("gate_proj"))?,
-            up_proj: prepared_linear_no_bias(&source.pp("up_proj"))?,
+            gate_proj: if gate_up_pack_proj.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("gate_proj"))?)
+            } else {
+                None
+            },
+            up_proj: if gate_up_pack_proj.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("up_proj"))?)
+            } else {
+                None
+            },
+            gate_up_pack_proj,
             down_proj: prepared_linear_no_bias(&source.pp("down_proj"))?,
             act_fn: cfg.hidden_act,
         })
@@ -833,14 +868,35 @@ impl Mlp {
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let gate = xs.apply(&self.gate_proj)?;
-        let up = xs.apply(&self.up_proj)?;
+        let (gate, up) = if let Some(gate_up_pack_proj) = &self.gate_up_pack_proj {
+            let packed = fast_linear_decode(xs, gate_up_pack_proj)?;
+            let intermediate = self.down_proj.weight().dims2()?.1;
+            let gate = packed.narrow(D::Minus1, 0, intermediate)?;
+            let up = packed.narrow(D::Minus1, intermediate, intermediate)?;
+            (gate, up)
+        } else {
+            let gate = xs.apply(
+                self.gate_proj
+                    .as_ref()
+                    .expect("gate_proj missing without packed gate/up"),
+            )?;
+            let up = xs.apply(
+                self.up_proj
+                    .as_ref()
+                    .expect("up_proj missing without packed gate/up"),
+            )?;
+            (gate, up)
+        };
         let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
             hip_swiglu_mul(&gate, &up)?
+        } else if xs.device().is_cuda() && matches!(self.act_fn, candle_nn::Activation::Silu) {
+            let gate = gate.contiguous()?;
+            let up = up.contiguous()?;
+            cuda_swiglu_mul(&gate, &up)?
         } else {
             (gate.apply(&self.act_fn)? * up)?
         };
-        hidden.apply(&self.down_proj)
+        fast_linear_decode(&hidden, &self.down_proj)
     }
 }
 
@@ -857,6 +913,9 @@ fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     if xs.device().is_hip() {
         return hip_l2norm(xs, eps);
+    }
+    if xs.device().is_cuda() {
+        return cuda_l2norm(xs, eps);
     }
     let norm = xs.sqr()?.sum_keepdim(D::Minus1)?;
     xs.broadcast_div(&(norm + eps)?.sqrt()?)
@@ -888,7 +947,7 @@ impl candle::CustomOp2 for HipSwigluMul {
         up: &candle::HipStorage,
         up_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
@@ -936,6 +995,238 @@ fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct CudaSwigluMul;
+
+impl candle::CustomOp2 for CudaSwigluMul {
+    fn name(&self) -> &'static str {
+        "cuda-swiglu-mul"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _gate: &candle::CpuStorage,
+        _gate_layout: &candle::Layout,
+        _up: &candle::CpuStorage,
+        _up_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-swiglu-mul has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        up: &candle::CudaStorage,
+        up_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
+            candle::bail!("cuda-swiglu-mul requires contiguous inputs")
+        }
+        if gate_layout.shape() != up_layout.shape() {
+            candle::bail!(
+                "cuda-swiglu-mul shape mismatch gate={:?} up={:?}",
+                gate_layout.shape().dims(),
+                up_layout.shape().dims()
+            )
+        }
+        if gate.dtype() != up.dtype() {
+            candle::bail!(
+                "cuda-swiglu-mul requires matching dtypes, got gate={:?} up={:?}",
+                gate.dtype(),
+                up.dtype()
+            )
+        }
+
+        let device = gate.device().clone();
+        let out_shape = gate_layout.shape().clone();
+        let elem_count = out_shape.elem_count();
+        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-swiglu-mul requires contiguous gate"),
+                };
+                let up = up.as_cuda_slice::<$ty>()?;
+                let up = match up_layout.contiguous_offsets() {
+                    Some((o1, o2)) => up.slice(o1..o2),
+                    None => candle::bail!("cuda-swiglu-mul requires contiguous up"),
+                };
+                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, elem_count);
+                builder.arg(&gate);
+                builder.arg(&up);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match gate.dtype() {
+            DType::F16 => launch!(half::f16, "swiglu_mul_f16"),
+            DType::F32 => launch!(f32, "swiglu_mul_f32"),
+            DType::BF16 => launch!(half::bf16, "swiglu_mul_bf16"),
+            other => candle::bail!("cuda-swiglu-mul unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    gate.apply_op2_no_bwd(up, &CudaSwigluMul)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeGemv {
+    rows: usize,
+    out_dim: usize,
+    in_dim: usize,
+}
+
+impl candle::CustomOp2 for CudaLinearDecodeGemv {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-gemv"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _xs: &candle::CpuStorage,
+        _xs_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-gemv has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        xs: &candle::CudaStorage,
+        xs_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+            candle::bail!("cuda-linear-decode-gemv requires contiguous inputs")
+        }
+        if xs.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-linear-decode-gemv requires matching dtypes, got xs={:?} weight={:?}",
+                xs.dtype(),
+                weight.dtype()
+            )
+        }
+        let weight_dims = weight_layout.shape().dims();
+        if weight_dims != [self.out_dim, self.in_dim] {
+            candle::bail!(
+                "cuda-linear-decode-gemv expected weight shape [{}, {}], got {:?}",
+                self.out_dim,
+                self.in_dim,
+                weight_dims
+            )
+        }
+        if xs_layout.shape().elem_count() != self.rows * self.in_dim {
+            candle::bail!(
+                "cuda-linear-decode-gemv expected xs elem_count {}, got shape {:?}",
+                self.rows * self.in_dim,
+                xs_layout.shape().dims()
+            )
+        }
+
+        let device = xs.device().clone();
+        let mut out_dims = xs_layout.shape().dims().to_vec();
+        *out_dims
+            .last_mut()
+            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))? =
+            self.out_dim;
+        let out_shape = candle::Shape::from(out_dims);
+        let cfg = LaunchConfig {
+            grid_dim: (self.out_dim as u32, self.rows as u32, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = xs.as_cuda_slice::<$ty>()?;
+                let xs = match xs_layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous xs"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(self.rows * self.out_dim) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.rows, self.out_dim, self.in_dim);
+                builder.arg(&xs);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match xs.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_gemv_f16"),
+            DType::F32 => launch!(f32, "linear_decode_gemv_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_gemv_bf16"),
+            other => candle::bail!("cuda-linear-decode-gemv unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_linear_no_bias_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let weight = linear.weight().contiguous()?;
+    let in_dim = *xs
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))?;
+    let out_dim = weight.dim(0)?;
+    let rows = xs.elem_count() / in_dim;
+    xs.apply_op2_no_bwd(
+        &weight,
+        &CudaLinearDecodeGemv {
+            rows,
+            out_dim,
+            in_dim,
+        },
+    )
+}
+
+fn fast_linear_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
+    let use_cuda_fast = xs.device().is_cuda()
+        && linear.bias().is_none()
+        && xs.dims().len() >= 2
+        && xs.dims()[xs.dims().len() - 2] == 1;
+    if use_cuda_fast {
+        cuda_linear_no_bias_decode(xs, linear)
+    } else {
+        linear.forward(xs)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct HipEmbeddingLookup {
     vocab_size: usize,
     hidden_size: usize,
@@ -964,7 +1255,7 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         indexes: &candle::HipStorage,
         indexes_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
@@ -1011,6 +1302,85 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         }
         Ok((output, out_shape))
     }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        embeddings: &candle::CudaStorage,
+        embeddings_layout: &candle::Layout,
+        indexes: &candle::CudaStorage,
+        indexes_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
+            candle::bail!("cuda-embedding-lookup requires contiguous inputs")
+        }
+        let dims = embeddings_layout.shape().dims();
+        if dims.len() != 2 {
+            candle::bail!(
+                "cuda-embedding-lookup expected [vocab, hidden] embeddings, got {:?}",
+                dims
+            )
+        }
+        if dims[0] != self.vocab_size || dims[1] != self.hidden_size {
+            candle::bail!(
+                "cuda-embedding-lookup embedding shape mismatch got {:?} expected [{}, {}]",
+                dims,
+                self.vocab_size,
+                self.hidden_size
+            )
+        }
+        if indexes.dtype() != DType::U32 {
+            candle::bail!(
+                "cuda-embedding-lookup currently requires U32 indexes, got {:?}",
+                indexes.dtype()
+            )
+        }
+
+        let mut out_dims = indexes_layout.shape().dims().to_vec();
+        out_dims.push(self.hidden_size);
+        let out_shape = candle::Shape::from(out_dims);
+        let device = embeddings.device().clone();
+        let token_count = indexes_layout.shape().elem_count();
+        let elem_count = out_shape.elem_count();
+        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let embeddings = embeddings.as_cuda_slice::<$ty>()?;
+                let embeddings = match embeddings_layout.contiguous_offsets() {
+                    Some((o1, o2)) => embeddings.slice(o1..o2),
+                    None => candle::bail!("cuda-embedding-lookup requires contiguous embeddings"),
+                };
+                let indexes = indexes.as_cuda_slice::<u32>()?;
+                let indexes = match indexes_layout.contiguous_offsets() {
+                    Some((o1, o2)) => indexes.slice(o1..o2),
+                    None => candle::bail!("cuda-embedding-lookup requires contiguous indexes"),
+                };
+                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, token_count, self.vocab_size, self.hidden_size);
+                builder.arg(&embeddings);
+                builder.arg(&indexes);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match embeddings.dtype() {
+            DType::F16 => launch!(half::f16, "embedding_lookup_u32_f16"),
+            DType::F32 => launch!(f32, "embedding_lookup_u32_f32"),
+            DType::BF16 => launch!(half::bf16, "embedding_lookup_u32_bf16"),
+            other => candle::bail!("cuda-embedding-lookup unsupported dtype {other:?}"),
+        }
+    }
 }
 
 fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor> {
@@ -1022,6 +1392,300 @@ fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor>
         &HipEmbeddingLookup {
             vocab_size,
             hidden_size,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaRmsNorm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+    add_unit_offset: bool,
+}
+
+impl candle::CustomOp2 for CudaRmsNorm {
+    fn name(&self) -> &'static str {
+        "cuda-rms-norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _xs: &candle::CpuStorage,
+        _xs_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-rms-norm has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        xs: &candle::CudaStorage,
+        xs_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+            candle::bail!("cuda-rms-norm requires contiguous inputs")
+        }
+        if xs.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-rms-norm requires matching dtypes, got xs={:?} weight={:?}",
+                xs.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let xs_dims = xs_layout.shape().dims();
+        let n_cols = *xs_dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
+        let n_rows = xs_layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows
+            || n_cols != self.n_cols
+            || weight_layout.shape().elem_count() != self.n_cols
+        {
+            candle::bail!(
+                "cuda-rms-norm shape mismatch xs={:?} weight={:?} expected_rows={} expected_cols={}",
+                xs_dims,
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = xs.device().clone();
+        let out_shape = xs_layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = xs.as_cuda_slice::<$ty>()?;
+                let xs = match xs_layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm requires contiguous xs"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.n_rows,
+                    self.n_cols,
+                    self.eps,
+                    if self.add_unit_offset { 1i32 } else { 0i32 }
+                );
+                builder.arg(&xs);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match xs.dtype() {
+            DType::F16 => launch!(half::f16, "rms_norm_f16"),
+            DType::F32 => launch!(f32, "rms_norm_f32"),
+            DType::BF16 => launch!(half::bf16, "rms_norm_bf16"),
+            other => candle::bail!("cuda-rms-norm unsupported dtype {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaRmsNormGated {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp3 for CudaRmsNormGated {
+    fn name(&self) -> &'static str {
+        "cuda-rms-norm-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _hidden: &candle::CpuStorage,
+        _hidden_layout: &candle::Layout,
+        _gate: &candle::CpuStorage,
+        _gate_layout: &candle::Layout,
+        _weight: &candle::CpuStorage,
+        _weight_layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-rms-norm-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        hidden: &candle::CudaStorage,
+        hidden_layout: &candle::Layout,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(hidden_layout.is_contiguous()
+            && gate_layout.is_contiguous()
+            && weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-rms-norm-gated requires contiguous inputs")
+        }
+        if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-rms-norm-gated requires matching dtypes, got hidden={:?} gate={:?} weight={:?}",
+                hidden.dtype(),
+                gate.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let hidden_dims = hidden_layout.shape().dims();
+        let n_cols = *hidden_dims.last().ok_or_else(|| {
+            candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
+        })?;
+        let n_rows = hidden_layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows
+            || n_cols != self.n_cols
+            || gate_layout.shape().elem_count() != hidden_layout.shape().elem_count()
+            || weight_layout.shape().elem_count() != self.n_cols
+        {
+            candle::bail!(
+                "cuda-rms-norm-gated shape mismatch hidden={:?} gate={:?} weight={:?} expected_rows={} expected_cols={}",
+                hidden_dims,
+                gate_layout.shape().dims(),
+                weight_layout.shape().dims(),
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = hidden.device().clone();
+        let out_shape = hidden_layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let hidden = hidden.as_cuda_slice::<$ty>()?;
+                let hidden = match hidden_layout.contiguous_offsets() {
+                    Some((o1, o2)) => hidden.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous hidden"),
+                };
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous gate"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-rms-norm-gated requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
+                builder.arg(&hidden);
+                builder.arg(&gate);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match hidden.dtype() {
+            DType::F16 => launch!(half::f16, "rms_norm_gated_f16"),
+            DType::F32 => launch!(f32, "rms_norm_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "rms_norm_gated_bf16"),
+            other => candle::bail!("cuda-rms-norm-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == xs.dtype() {
+        weight
+    } else {
+        weight.to_dtype(xs.dtype())?
+    };
+    let xs_dims = xs.dims();
+    let n_cols = *xs_dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op2_no_bwd(
+        &weight,
+        &CudaRmsNorm {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
+            add_unit_offset,
+        },
+    )
+}
+
+fn cuda_rms_norm_gated(
+    hidden_states: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Tensor> {
+    let hidden_states = hidden_states.contiguous()?;
+    let gate = gate.contiguous()?;
+    let gate = if gate.dtype() == hidden_states.dtype() {
+        gate
+    } else {
+        gate.to_dtype(hidden_states.dtype())?
+    };
+    let weight = weight.contiguous()?;
+    let weight = if weight.dtype() == hidden_states.dtype() {
+        weight
+    } else {
+        weight.to_dtype(hidden_states.dtype())?
+    };
+    let hidden_dims = hidden_states.dims();
+    let n_cols = *hidden_dims.last().ok_or_else(|| {
+        candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = hidden_states.elem_count() / n_cols;
+    hidden_states.apply_op3_no_bwd(
+        &gate,
+        &weight,
+        &CudaRmsNormGated {
+            n_rows,
+            n_cols,
+            eps: eps as f32,
         },
     )
 }
@@ -1235,6 +1899,104 @@ fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
         .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
     let n_rows = xs.elem_count() / n_cols;
     xs.apply_op1_no_bwd(&HipL2Norm {
+        n_rows,
+        n_cols,
+        eps: eps as f32,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaL2Norm {
+    n_rows: usize,
+    n_cols: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp1 for CudaL2Norm {
+    fn name(&self) -> &'static str {
+        "cuda-l2norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-l2norm has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        storage: &candle::CudaStorage,
+        layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !layout.is_contiguous() {
+            candle::bail!("cuda-l2norm requires contiguous input")
+        }
+        let dims = layout.shape().dims();
+        let n_cols = *dims.last().ok_or_else(|| {
+            candle::Error::Msg("cuda-l2norm requires non-empty shape".into())
+        })?;
+        let n_rows = layout.shape().elem_count() / n_cols;
+        if n_rows != self.n_rows || n_cols != self.n_cols {
+            candle::bail!(
+                "cuda-l2norm shape mismatch input={:?} expected_rows={} expected_cols={}",
+                dims,
+                self.n_rows,
+                self.n_cols
+            )
+        }
+
+        let device = storage.device().clone();
+        let out_shape = layout.shape().clone();
+        let cfg = LaunchConfig {
+            grid_dim: (self.n_rows as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let xs = storage.as_cuda_slice::<$ty>()?;
+                let xs = match layout.contiguous_offsets() {
+                    Some((o1, o2)) => xs.slice(o1..o2),
+                    None => candle::bail!("cuda-l2norm requires contiguous input"),
+                };
+                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
+                builder.arg(&xs);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, out_shape.clone()))
+            }};
+        }
+
+        match storage.dtype() {
+            DType::F16 => launch!(half::f16, "l2norm_f16"),
+            DType::F32 => launch!(f32, "l2norm_f32"),
+            DType::BF16 => launch!(half::bf16, "l2norm_bf16"),
+            other => candle::bail!("cuda-l2norm unsupported dtype {other:?}"),
+        }
+    }
+}
+
+fn cuda_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
+    let xs = xs.contiguous()?;
+    let dims = xs.dims();
+    let n_cols = *dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("cuda-l2norm requires non-empty shape".into()))?;
+    let n_rows = xs.elem_count() / n_cols;
+    xs.apply_op1_no_bwd(&CudaL2Norm {
         n_rows,
         n_cols,
         eps: eps as f32,
@@ -1704,17 +2466,22 @@ fn use_hip_combined_linear_prefill(device: &Device, sequence_length: usize) -> b
         )
 }
 
-fn use_hip_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
+fn use_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
     // Keep the combined decode path opt-in on this UMA ROCm host: it cuts transfer
     // traffic substantially, but the custom kernels are still slower than the split
     // path here. This remains worth testing on larger discrete ROCm systems where
     // transfer cost is materially higher.
-    matches!(device.location(), DeviceLocation::Hip { .. })
-        && sequence_length == 1
-        && matches!(
-            std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        )
+    match device.location() {
+        DeviceLocation::Hip { .. } => {
+            sequence_length == 1
+                && matches!(
+                    std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
+        DeviceLocation::Cuda { .. } => sequence_length == 1,
+        _ => false,
+    }
 }
 
 fn use_hip_chunk_single_prefill_kernel(
@@ -1814,13 +2581,7 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
-        DeviceLocation::Cuda { .. } => {
-            head_dim <= 128
-                && matches!(
-                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
-                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-                )
-        }
+        DeviceLocation::Cuda { .. } => head_dim <= 256,
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -2692,6 +3453,372 @@ struct LinearDecodePrepare {
     head_repeat: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodePreparePackedCache {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeFromProjectedGated {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-from-projected-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-from-projected-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        projected: &candle::CudaStorage,
+        projected_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        value_cache_pack: &candle::CudaStorage,
+        value_cache_pack_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+        norm_weight: &candle::CudaStorage,
+        norm_weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(projected_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && value_cache_pack_layout.is_contiguous()
+            && initial_state_layout.is_contiguous()
+            && norm_weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous inputs")
+        }
+        if projected.dtype() != prev_conv_state.dtype()
+            || projected.dtype() != weights.dtype()
+            || projected.dtype() != value_cache_pack.dtype()
+            || projected.dtype() != norm_weight.dtype()
+        {
+            candle::bail!(
+                "cuda-linear-decode-from-projected-gated requires matching projected/state weight/value-cache/norm dtypes, got projected={:?} prev_state={:?} weights={:?} value_cache={:?} norm_weight={:?}",
+                projected.dtype(),
+                prev_conv_state.dtype(),
+                weights.dtype(),
+                value_cache_pack.dtype(),
+                norm_weight.dtype()
+            )
+        }
+        if initial_state.dtype() != DType::F32 {
+            candle::bail!("cuda-linear-decode-from-projected-gated requires F32 initial_state")
+        }
+
+        let device = projected.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((self.batch_size, value_dim));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim.max(self.head_k_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        let state = initial_state.as_cuda_slice::<f32>()?;
+        let state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => state.slice(o1..o2),
+            None => candle::bail!(
+                "cuda-linear-decode-from-projected-gated requires contiguous initial_state"
+            ),
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let projected = projected.as_cuda_slice::<$ty>()?;
+                let projected = match projected_layout.contiguous_offsets() {
+                    Some((o1, o2)) => projected.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous projected"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous prev_conv_state"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous weights"),
+                };
+                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
+                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
+                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous value_cache_pack"),
+                };
+                let norm_weight = norm_weight.as_cuda_slice::<$ty>()?;
+                let norm_weight = match norm_weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => norm_weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous norm_weight"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32,
+                    self.eps
+                );
+                builder.arg(&projected);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&value_cache_pack);
+                builder.arg(&state);
+                builder.arg(&norm_weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match projected.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_from_projected_gated_f16"),
+            DType::F32 => launch!(f32, "linear_decode_from_projected_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_from_projected_gated_bf16"),
+            other => candle::bail!("cuda-linear-decode-from-projected-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeFromHiddenGated {
+    batch_size: usize,
+    hidden_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    state_len: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp7 for CudaLinearDecodeFromHiddenGated {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-from-hidden-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+        _s7: &candle::CpuStorage,
+        _l7: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-from-hidden-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        hidden: &candle::CudaStorage,
+        hidden_layout: &candle::Layout,
+        qkv_zba_weight: &candle::CudaStorage,
+        qkv_zba_weight_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        value_cache_pack: &candle::CudaStorage,
+        value_cache_pack_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+        norm_weight: &candle::CudaStorage,
+        norm_weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(hidden_layout.is_contiguous()
+            && qkv_zba_weight_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && value_cache_pack_layout.is_contiguous()
+            && initial_state_layout.is_contiguous()
+            && norm_weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous inputs")
+        }
+        if hidden.dtype() != qkv_zba_weight.dtype()
+            || hidden.dtype() != prev_conv_state.dtype()
+            || hidden.dtype() != weights.dtype()
+            || hidden.dtype() != value_cache_pack.dtype()
+            || hidden.dtype() != norm_weight.dtype()
+        {
+            candle::bail!(
+                "cuda-linear-decode-from-hidden-gated requires matching hidden/weight/state/cache/norm dtypes, got hidden={:?} qkv_zba_weight={:?} prev_state={:?} weights={:?} value_cache={:?} norm_weight={:?}",
+                hidden.dtype(),
+                qkv_zba_weight.dtype(),
+                prev_conv_state.dtype(),
+                weights.dtype(),
+                value_cache_pack.dtype(),
+                norm_weight.dtype()
+            )
+        }
+        if initial_state.dtype() != DType::F32 {
+            candle::bail!("cuda-linear-decode-from-hidden-gated requires F32 initial_state")
+        }
+
+        let device = hidden.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((self.batch_size, value_dim));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim.max(self.head_k_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: ((4 * 256 + self.hidden_size) * std::mem::size_of::<f32>()) as u32,
+        };
+
+        let state = initial_state.as_cuda_slice::<f32>()?;
+        let state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => state.slice(o1..o2),
+            None => {
+                candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous initial_state")
+            }
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let hidden = hidden.as_cuda_slice::<$ty>()?;
+                let hidden = match hidden_layout.contiguous_offsets() {
+                    Some((o1, o2)) => hidden.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous hidden"),
+                };
+                let qkv_zba_weight = qkv_zba_weight.as_cuda_slice::<$ty>()?;
+                let qkv_zba_weight = match qkv_zba_weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => qkv_zba_weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous qkv_zba_weight"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous prev_conv_state"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous weights"),
+                };
+                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
+                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
+                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous value_cache_pack"),
+                };
+                let norm_weight = norm_weight.as_cuda_slice::<$ty>()?;
+                let norm_weight = match norm_weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => norm_weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous norm_weight"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.hidden_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32,
+                    self.eps
+                );
+                builder.arg(&hidden);
+                builder.arg(&qkv_zba_weight);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&value_cache_pack);
+                builder.arg(&state);
+                builder.arg(&norm_weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match hidden.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_from_hidden_gated_f16"),
+            DType::F32 => launch!(f32, "linear_decode_from_hidden_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_from_hidden_gated_bf16"),
+            other => candle::bail!("cuda-linear-decode-from-hidden-gated unsupported dtype {other:?}"),
+        }
+    }
+}
+
 impl candle::CustomOp6 for LinearDecodePrepare {
     fn name(&self) -> &'static str {
         "linear-decode-prepare"
@@ -2713,6 +3840,119 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         _l6: &candle::Layout,
     ) -> Result<(candle::CpuStorage, candle::Shape)> {
         candle::bail!("linear-decode-prepare has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        mixed_qkv: &candle::CudaStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        a_beta_raw: &candle::CudaStorage,
+        a_beta_raw_layout: &candle::Layout,
+        dt_bias: &candle::CudaStorage,
+        dt_bias_layout: &candle::Layout,
+        a_log_exp: &candle::CudaStorage,
+        a_log_exp_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_beta_raw_layout.is_contiguous()
+            && dt_bias_layout.is_contiguous()
+            && a_log_exp_layout.is_contiguous())
+        {
+            candle::bail!("linear-decode-prepare requires contiguous inputs")
+        }
+
+        let device = mixed_qkv.device().clone();
+        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
+        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_k_dim.max(self.head_v_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
+                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
+                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let a_beta_raw = a_beta_raw.as_cuda_slice::<$ty>()?;
+                let a_beta_raw = match a_beta_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_beta_raw.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let dt_bias = dt_bias.as_cuda_slice::<$ty>()?;
+                let dt_bias = match dt_bias_layout.contiguous_offsets() {
+                    Some((o1, o2)) => dt_bias.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let a_log_exp = a_log_exp.as_cuda_slice::<$ty>()?;
+                let a_log_exp = match a_log_exp_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_log_exp.slice(o1..o2),
+                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32
+                );
+                builder.arg(&mixed_qkv);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&a_beta_raw);
+                builder.arg(&dt_bias);
+                builder.arg(&a_log_exp);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match mixed_qkv.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_prepare_f16"),
+            DType::F32 => launch!(f32, "linear_decode_prepare_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_bf16"),
+            other => candle::bail!("linear-decode-prepare unsupported dtype {other:?}"),
+        }
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -2778,12 +4018,310 @@ impl candle::CustomOp6 for LinearDecodePrepare {
     }
 }
 
+impl candle::CustomOp6 for CudaLinearDecodePreparePackedCache {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-prepare-packed-cache"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+        _s5: &candle::CpuStorage,
+        _l5: &candle::Layout,
+        _s6: &candle::CpuStorage,
+        _l6: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-prepare-packed-cache has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        mixed_qkv: &candle::CudaStorage,
+        mixed_qkv_layout: &candle::Layout,
+        prev_conv_state: &candle::CudaStorage,
+        prev_conv_state_layout: &candle::Layout,
+        weights: &candle::CudaStorage,
+        weights_layout: &candle::Layout,
+        a_raw: &candle::CudaStorage,
+        a_raw_layout: &candle::Layout,
+        beta_raw: &candle::CudaStorage,
+        beta_raw_layout: &candle::Layout,
+        value_cache_pack: &candle::CudaStorage,
+        value_cache_pack_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(mixed_qkv_layout.is_contiguous()
+            && prev_conv_state_layout.is_contiguous()
+            && weights_layout.is_contiguous()
+            && a_raw_layout.is_contiguous()
+            && beta_raw_layout.is_contiguous()
+            && value_cache_pack_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs")
+        }
+
+        let device = mixed_qkv.device().clone();
+        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
+        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_k_dim.max(self.head_v_dim) as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
+                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
+                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
+                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
+                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let weights = weights.as_cuda_slice::<$ty>()?;
+                let weights = match weights_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weights.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let a_raw = a_raw.as_cuda_slice::<$ty>()?;
+                let a_raw = match a_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => a_raw.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let beta_raw = beta_raw.as_cuda_slice::<$ty>()?;
+                let beta_raw = match beta_raw_layout.contiguous_offsets() {
+                    Some((o1, o2)) => beta_raw.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
+                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
+                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device.get_or_load_func(
+                    $kernel,
+                    &candle::cuda_backend::kernels::QWEN35_DELTA,
+                )?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.state_len as i32,
+                    self.kernel_size as i32,
+                    self.head_repeat as i32
+                );
+                builder.arg(&mixed_qkv);
+                builder.arg(&prev_conv_state);
+                builder.arg(&weights);
+                builder.arg(&a_raw);
+                builder.arg(&beta_raw);
+                builder.arg(&value_cache_pack);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match mixed_qkv.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_prepare_packed_cache_f16"),
+            DType::F32 => launch!(f32, "linear_decode_prepare_packed_cache_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_packed_cache_bf16"),
+            other => candle::bail!(
+                "cuda-linear-decode-prepare-packed-cache unsupported dtype {other:?}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LinearDecodeApply {
     batch_size: usize,
     num_v_heads: usize,
     head_k_dim: usize,
     head_v_dim: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CudaLinearDecodeApplyGated {
+    batch_size: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    eps: f32,
+}
+
+impl candle::CustomOp4 for CudaLinearDecodeApplyGated {
+    fn name(&self) -> &'static str {
+        "cuda-linear-decode-apply-gated"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+        _s4: &candle::CpuStorage,
+        _l4: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("cuda-linear-decode-apply-gated has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        packed: &candle::CudaStorage,
+        packed_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+        gate: &candle::CudaStorage,
+        gate_layout: &candle::Layout,
+        weight: &candle::CudaStorage,
+        weight_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(packed_layout.is_contiguous()
+            && initial_state_layout.is_contiguous()
+            && gate_layout.is_contiguous()
+            && weight_layout.is_contiguous())
+        {
+            candle::bail!("cuda-linear-decode-apply-gated requires contiguous inputs")
+        }
+        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
+            candle::bail!("cuda-linear-decode-apply-gated requires F32 packed/state inputs")
+        }
+        if gate.dtype() != weight.dtype() {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated requires matching gate/weight dtypes, got gate={:?} weight={:?}",
+                gate.dtype(),
+                weight.dtype()
+            )
+        }
+
+        let gate_dims = gate_layout.shape().dims();
+        let n_cols = *gate_dims
+            .last()
+            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-apply-gated requires non-empty gate shape".into()))?;
+        let n_rows = gate_layout.shape().elem_count() / n_cols;
+        if n_rows != self.batch_size * self.num_v_heads || n_cols != self.head_v_dim {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated expected gate rows={} cols={}, got {:?}",
+                self.batch_size * self.num_v_heads,
+                self.head_v_dim,
+                gate_dims
+            )
+        }
+        if weight_layout.shape().elem_count() != self.head_v_dim {
+            candle::bail!(
+                "cuda-linear-decode-apply-gated expected weight len {}, got {:?}",
+                self.head_v_dim,
+                weight_layout.shape().dims()
+            )
+        }
+
+        let device = packed.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        let packed = packed.as_cuda_slice::<f32>()?;
+        let packed = match packed_layout.contiguous_offsets() {
+            Some((o1, o2)) => packed.slice(o1..o2),
+            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous packed"),
+        };
+        let initial_state = initial_state.as_cuda_slice::<f32>()?;
+        let initial_state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => initial_state.slice(o1..o2),
+            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous state"),
+        };
+
+        macro_rules! launch {
+            ($ty:ty, $kernel:expr) => {{
+                let gate = gate.as_cuda_slice::<$ty>()?;
+                let gate = match gate_layout.contiguous_offsets() {
+                    Some((o1, o2)) => gate.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous gate"),
+                };
+                let weight = weight.as_cuda_slice::<$ty>()?;
+                let weight = match weight_layout.contiguous_offsets() {
+                    Some((o1, o2)) => weight.slice(o1..o2),
+                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous weight"),
+                };
+                let output = unsafe { device.alloc::<f32>(elem_count) }?;
+                let func = device
+                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+                let mut builder = func.builder();
+                candle::builder_arg!(
+                    builder,
+                    self.batch_size as i32,
+                    self.num_v_heads as i32,
+                    self.head_k_dim as i32,
+                    self.head_v_dim as i32,
+                    self.eps
+                );
+                builder.arg(&packed);
+                builder.arg(&initial_state);
+                builder.arg(&gate);
+                builder.arg(&weight);
+                builder.arg(&output);
+                unsafe { builder.launch(cfg) }.w()?;
+                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+                Ok((storage, output_shape.clone()))
+            }};
+        }
+
+        match gate.dtype() {
+            DType::F16 => launch!(half::f16, "linear_decode_apply_gated_f16"),
+            DType::F32 => launch!(f32, "linear_decode_apply_gated_f32"),
+            DType::BF16 => launch!(half::bf16, "linear_decode_apply_gated_bf16"),
+            other => candle::bail!("cuda-linear-decode-apply-gated unsupported dtype {other:?}"),
+        }
+    }
 }
 
 impl candle::CustomOp2 for LinearDecodeApply {
@@ -2799,6 +4337,73 @@ impl candle::CustomOp2 for LinearDecodeApply {
         _l2: &candle::Layout,
     ) -> Result<(candle::CpuStorage, candle::Shape)> {
         candle::bail!("linear-decode-apply has no cpu implementation")
+    }
+
+    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
+    fn cuda_fwd(
+        &self,
+        packed: &candle::CudaStorage,
+        packed_layout: &candle::Layout,
+        initial_state: &candle::CudaStorage,
+        initial_state_layout: &candle::Layout,
+    ) -> Result<(candle::CudaStorage, candle::Shape)> {
+        use candle::backend::BackendStorage;
+        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
+        use candle::cuda_backend::WrapErr;
+
+        if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
+            candle::bail!("linear-decode-apply requires contiguous inputs")
+        }
+        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
+            candle::bail!("linear-decode-apply requires F32 packed/state inputs")
+        }
+
+        let device = packed.device().clone();
+        let value_dim = self.num_v_heads * self.head_v_dim;
+        let output_shape = candle::Shape::from((
+            self.batch_size,
+            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
+        ));
+        let elem_count = output_shape.elem_count();
+
+        let mut block = 64u32;
+        let target = self.head_v_dim as u32;
+        while block < target && block < 256 {
+            block <<= 1;
+        }
+        let cfg = LaunchConfig {
+            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        let packed = packed.as_cuda_slice::<f32>()?;
+        let packed = match packed_layout.contiguous_offsets() {
+            Some((o1, o2)) => packed.slice(o1..o2),
+            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
+        };
+        let initial_state = initial_state.as_cuda_slice::<f32>()?;
+        let initial_state = match initial_state_layout.contiguous_offsets() {
+            Some((o1, o2)) => initial_state.slice(o1..o2),
+            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
+        };
+        let output = unsafe { device.alloc::<f32>(elem_count) }?;
+        let func = device
+            .get_or_load_func("linear_decode_apply_f32", &candle::cuda_backend::kernels::QWEN35_DELTA)?;
+        let mut builder = func.builder();
+        candle::builder_arg!(
+            builder,
+            self.batch_size as i32,
+            self.num_v_heads as i32,
+            self.head_k_dim as i32,
+            self.head_v_dim as i32
+        );
+        builder.arg(&packed);
+        builder.arg(&initial_state);
+        builder.arg(&output);
+        unsafe { builder.launch(cfg) }.w()?;
+        let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
+        Ok((storage, output_shape))
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -2898,6 +4503,227 @@ fn linear_decode_step_hip(
     )
 }
 
+fn linear_decode_step_cuda(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_raw: &Tensor,
+    beta_raw: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_raw = a_raw.contiguous()?;
+    let beta_raw = beta_raw.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    let packed = mixed_qkv.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &a_raw,
+        &beta_raw,
+        &value_cache_pack,
+        &CudaLinearDecodePreparePackedCache {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+        },
+    )?;
+    packed.apply_op2_no_bwd(
+        &initial_state,
+        &LinearDecodeApply {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+        },
+    )
+}
+
+fn linear_decode_step_cuda_gated(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_raw: &Tensor,
+    beta_raw: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    gate: &Tensor,
+    norm_weight: &Tensor,
+    eps: f64,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_raw = a_raw.contiguous()?;
+    let beta_raw = beta_raw.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let gate = gate.contiguous()?;
+    let norm_weight = norm_weight.contiguous()?;
+    let norm_weight = if norm_weight.dtype() == gate.dtype() {
+        norm_weight
+    } else {
+        norm_weight.to_dtype(gate.dtype())?
+    };
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    let packed = mixed_qkv.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &a_raw,
+        &beta_raw,
+        &value_cache_pack,
+        &CudaLinearDecodePreparePackedCache {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+        },
+    )?;
+    packed.apply_op4_no_bwd(
+        &initial_state,
+        &gate,
+        &norm_weight,
+        &CudaLinearDecodeApplyGated {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            eps: eps as f32,
+        },
+    )
+}
+
+fn linear_decode_step_cuda_from_projected_gated(
+    projected: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    norm_weight: &Tensor,
+    eps: f64,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let projected = projected.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let norm_weight = norm_weight.contiguous()?;
+    let norm_weight = if norm_weight.dtype() == projected.dtype() {
+        norm_weight
+    } else {
+        norm_weight.to_dtype(projected.dtype())?
+    };
+    let (batch_size, seq_len, _out_dim) = projected.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    projected.apply_op6_no_bwd(
+        &prev_conv_state,
+        &weights,
+        &value_cache_pack,
+        &initial_state,
+        &norm_weight,
+        &CudaLinearDecodeFromProjectedGated {
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+            eps: eps as f32,
+        },
+    )
+}
+
+fn linear_decode_step_cuda_from_hidden_gated(
+    hidden: &Tensor,
+    qkv_zba_weight: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    value_cache_pack: &Tensor,
+    initial_state: &Tensor,
+    norm_weight: &Tensor,
+    eps: f64,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Tensor> {
+    let hidden = hidden.contiguous()?;
+    let qkv_zba_weight = qkv_zba_weight.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let value_cache_pack = value_cache_pack.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let norm_weight = norm_weight.contiguous()?;
+    let norm_weight = if norm_weight.dtype() == hidden.dtype() {
+        norm_weight
+    } else {
+        norm_weight.to_dtype(hidden.dtype())?
+    };
+    let (batch_size, seq_len, hidden_size) = hidden.dims3()?;
+    let (_, _, state_len) = prev_conv_state.dims3()?;
+    if seq_len != 1 {
+        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+    }
+    hidden.apply_op7_no_bwd(
+        &qkv_zba_weight,
+        &prev_conv_state,
+        &weights,
+        &value_cache_pack,
+        &initial_state,
+        &norm_weight,
+        &CudaLinearDecodeFromHiddenGated {
+            batch_size,
+            hidden_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+            eps: eps as f32,
+        },
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FullAttentionPrefillMegakernel {
     batch_size: usize,
@@ -2979,7 +4805,15 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
         let elem_count = out_shape.elem_count();
         let total_rows = self.batch_size * self.q_heads * self.q_len;
-        let cfg = LaunchConfig::for_num_elems(total_rows as u32);
+        let cfg = if self.q_len == 1 {
+            LaunchConfig {
+                grid_dim: (total_rows as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            }
+        } else {
+            LaunchConfig::for_num_elems(total_rows as u32)
+        };
 
         macro_rules! launch {
             ($ty:ty, $kernel:expr) => {{
@@ -3036,10 +4870,34 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             }};
         }
 
+        let kernel = if self.q_len == 1 {
+            match query.dtype() {
+                DType::F16 => "full_attention_decode_f16",
+                DType::F32 => "full_attention_decode_f32",
+                DType::BF16 => "full_attention_decode_bf16",
+                other => {
+                    candle::bail!(
+                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
+                    )
+                }
+            }
+        } else {
+            match query.dtype() {
+                DType::F16 => "full_attention_prefill_f16",
+                DType::F32 => "full_attention_prefill_f32",
+                DType::BF16 => "full_attention_prefill_bf16",
+                other => {
+                    candle::bail!(
+                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
+                    )
+                }
+            }
+        };
+
         match query.dtype() {
-            DType::F16 => launch!(half::f16, "full_attention_prefill_f16"),
-            DType::F32 => launch!(f32, "full_attention_prefill_f32"),
-            DType::BF16 => launch!(half::bf16, "full_attention_prefill_bf16"),
+            DType::F16 => launch!(half::f16, kernel),
+            DType::F32 => launch!(f32, kernel),
+            DType::BF16 => launch!(half::bf16, kernel),
             other => candle::bail!("full-attention-prefill-megakernel unsupported dtype {other:?}"),
         }
     }
@@ -7271,9 +9129,10 @@ fn delta_net_compute_dtype(scan_mode: DeltaNetScanMode, initial_dtype: DType) ->
 
 #[derive(Debug, Clone)]
 struct FullAttention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
+    q_proj: Option<Linear>,
+    k_proj: Option<Linear>,
+    v_proj: Option<Linear>,
+    qkv_pack_proj: Option<Linear>,
     o_proj: Linear,
     q_norm: Qwen35RmsNorm,
     k_norm: Qwen35RmsNorm,
@@ -7284,9 +9143,17 @@ struct FullAttention {
     attention_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     kv_cache: Option<(Tensor, Tensor)>,
+    kv_cache_store: Option<KvCache>,
 }
 
 impl FullAttention {
+    fn sequence_length(&self) -> usize {
+        self.kv_cache
+            .as_ref()
+            .and_then(|(key, _)| key.dims4().ok().map(|(_, _, seq_len, _)| seq_len))
+            .unwrap_or(0)
+    }
+
     fn cache_state(&self) -> FullAttentionCacheState {
         FullAttentionCacheState {
             kv_cache: self.kv_cache.clone(),
@@ -7295,6 +9162,7 @@ impl FullAttention {
 
     fn restore_cache_state(&mut self, state: &FullAttentionCacheState) {
         self.kv_cache = state.kv_cache.clone();
+        self.kv_cache_store = None;
     }
 
     fn causal_block_mask(
@@ -7560,9 +9428,10 @@ impl FullAttention {
             vb.pp("o_proj"),
         )?;
         Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
+            q_proj: Some(q_proj),
+            k_proj: Some(k_proj),
+            v_proj: Some(v_proj),
+            qkv_pack_proj: None,
             o_proj,
             q_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?,
@@ -7573,6 +9442,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            kv_cache_store: None,
         })
     }
 
@@ -7581,10 +9451,27 @@ impl FullAttention {
         rotary_emb: Arc<RotaryEmbedding>,
         source: &PreparedTensorSource,
     ) -> Result<Self> {
+        let qkv_pack_proj = source
+            .contains_tensor("qkv_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("qkv_pack")))
+            .transpose()?;
         Ok(Self {
-            q_proj: prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?,
-            k_proj: prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?,
-            v_proj: prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?,
+            q_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            k_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            v_proj: if qkv_pack_proj.is_none() {
+                Some(prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?)
+            } else {
+                None
+            },
+            qkv_pack_proj,
             o_proj: prepared_linear_b(&source.pp("o_proj"), cfg.attention_bias)?,
             q_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("k_norm"))?,
@@ -7595,6 +9482,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            kv_cache_store: None,
         })
     }
 
@@ -7611,10 +9499,41 @@ impl FullAttention {
         let mut profile = RuntimeProfile::default();
         let (b_sz, q_len, _) = xs.dims3()?;
         let qkv_start = profile_start(device)?;
-        let q_and_gate =
-            self.q_proj
+        let q_gate_out = self.num_heads * self.head_dim * 2;
+        let kv_out = self.num_kv_heads * self.head_dim;
+        let (q_and_gate, key_states, value_states) = if let Some(qkv_pack_proj) = &self.qkv_pack_proj {
+            let packed = fast_linear_decode(xs, qkv_pack_proj)?;
+            let q_and_gate = packed
+                .narrow(D::Minus1, 0, q_gate_out)?
+                .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
+            let key_states = packed
+                .narrow(D::Minus1, q_gate_out, kv_out)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            let value_states = packed
+                .narrow(D::Minus1, q_gate_out + kv_out, kv_out)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            (q_and_gate, key_states, value_states)
+        } else {
+            let q_and_gate = self
+                .q_proj
+                .as_ref()
+                .expect("q_proj missing without packed qkv")
                 .forward(xs)?
                 .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
+            let key_states = self
+                .k_proj
+                .as_ref()
+                .expect("k_proj missing without packed qkv")
+                .forward(xs)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            let value_states = self
+                .v_proj
+                .as_ref()
+                .expect("v_proj missing without packed qkv")
+                .forward(xs)?
+                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
+            (q_and_gate, key_states, value_states)
+        };
         let query_states = q_and_gate
             .narrow(D::Minus1, 0, self.head_dim)?
             .apply(&self.q_norm)?
@@ -7623,16 +9542,10 @@ impl FullAttention {
             .narrow(D::Minus1, self.head_dim, self.head_dim)?
             .reshape((b_sz, q_len, self.num_heads * self.head_dim))?;
 
-        let key_states = self
-            .k_proj
-            .forward(xs)?
-            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
+        let key_states = key_states
             .apply(&self.k_norm)?
             .transpose(1, 2)?;
-        let value_states = self
-            .v_proj
-            .forward(xs)?
-            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
+        let value_states = value_states
             .transpose(1, 2)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
@@ -7643,24 +9556,39 @@ impl FullAttention {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
-        let (key_states, value_states): (Tensor, Tensor) = match &self.kv_cache {
-            Some((prev_k, prev_v)) if external_full_attention.is_none() => {
-                let prev_k = if prev_k.dtype() == key_states.dtype() {
-                    prev_k.clone()
-                } else {
-                    prev_k.to_dtype(key_states.dtype())?
-                };
-                let prev_v = if prev_v.dtype() == value_states.dtype() {
-                    prev_v.clone()
-                } else {
-                    prev_v.to_dtype(value_states.dtype())?
-                };
-                (
-                    Tensor::cat(&[&prev_k, &key_states], 2)?,
-                    Tensor::cat(&[&prev_v, &value_states], 2)?,
-                )
+        let (key_states, value_states): (Tensor, Tensor) = if external_full_attention.is_none() {
+            let initial_seq_len = self
+                .kv_cache
+                .as_ref()
+                .and_then(|(prev_k, _)| prev_k.dim(2).ok())
+                .unwrap_or_else(|| key_states.dim(2).unwrap_or(1))
+                .max(1);
+            let store = self
+                .kv_cache_store
+                .get_or_insert_with(|| KvCache::new(2, initial_seq_len));
+            if store.current_seq_len() == 0 {
+                if let Some((prev_k, prev_v)) = &self.kv_cache {
+                    let prev_k = if prev_k.dtype() == key_states.dtype() {
+                        prev_k.clone()
+                    } else {
+                        prev_k.to_dtype(key_states.dtype())?
+                    }
+                    .contiguous()?;
+                    let prev_v = if prev_v.dtype() == value_states.dtype() {
+                        prev_v.clone()
+                    } else {
+                        prev_v.to_dtype(value_states.dtype())?
+                    }
+                    .contiguous()?;
+                    store.append(&prev_k, &prev_v)?;
+                }
             }
-            _ => (key_states, value_states),
+            let key_states = key_states.contiguous()?;
+            let value_states = value_states.contiguous()?;
+            store.append(&key_states, &value_states)?
+        } else {
+            self.kv_cache_store = None;
+            (key_states, value_states)
         };
         profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
 
@@ -7706,8 +9634,7 @@ impl FullAttention {
                 self.num_kv_groups,
                 scale as f32,
                 seqlen_offset,
-            )?
-            .to_dtype(DType::F32)?;
+            )?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
         } else if use_full_attention_prefill_megakernel(
@@ -7846,7 +9773,7 @@ impl FullAttention {
         let gated = attn_output.broadcast_mul(&ops::sigmoid(&gate)?)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = gated.apply(&self.o_proj)?;
+        let output = fast_linear_decode(&gated, &self.o_proj)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -7881,15 +9808,18 @@ impl FullAttention {
 
     fn clear_kv_cache(&mut self) {
         self.kv_cache = None;
+        self.kv_cache_store = None;
     }
 }
 
 #[derive(Debug, Clone)]
 struct GatedDeltaNet {
     in_proj_qkv: Linear,
-    in_proj_z: Linear,
-    in_proj_b: Linear,
-    in_proj_a: Linear,
+    in_proj_qkv_zba_pack: Option<Linear>,
+    in_proj_z: Option<Linear>,
+    in_proj_b: Option<Linear>,
+    in_proj_a: Option<Linear>,
+    in_proj_zba_pack: Option<Linear>,
     conv1d: Conv1d,
     conv1d_weight_squeezed: Option<Tensor>,
     dt_bias: Tensor,
@@ -7928,6 +9858,7 @@ struct LinearValueCache {
     device_location: DeviceLocation,
     dt_bias: Tensor,
     a_log_exp: Tensor,
+    packed: Tensor,
 }
 
 impl GatedDeltaNet {
@@ -7960,17 +9891,19 @@ impl GatedDeltaNet {
         )?;
         Ok(Self {
             in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
-            in_proj_z: linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?,
-            in_proj_b: linear_no_bias(
+            in_proj_qkv_zba_pack: None,
+            in_proj_z: Some(linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?),
+            in_proj_b: Some(linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_b"),
-            )?,
-            in_proj_a: linear_no_bias(
+            )?),
+            in_proj_a: Some(linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_a"),
-            )?,
+            )?),
+            in_proj_zba_pack: None,
             conv1d,
             conv1d_weight_squeezed: None,
             dt_bias: vb.get(cfg.linear_num_value_heads, "dt_bias")?,
@@ -8009,11 +9942,33 @@ impl GatedDeltaNet {
                 ..Default::default()
             },
         )?;
+        let in_proj_zba_pack = source
+            .contains_tensor("zba_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("zba_pack")))
+            .transpose()?;
+        let in_proj_qkv_zba_pack = source
+            .contains_tensor("qkv_zba_pack.weight")
+            .then(|| prepared_linear_no_bias(&source.pp("qkv_zba_pack")))
+            .transpose()?;
         Ok(Self {
             in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
-            in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
-            in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
-            in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
+            in_proj_qkv_zba_pack,
+            in_proj_z: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_z"))?)
+            } else {
+                None
+            },
+            in_proj_b: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_b"))?)
+            } else {
+                None
+            },
+            in_proj_a: if in_proj_zba_pack.is_none() {
+                Some(prepared_linear_no_bias(&source.pp("in_proj_a"))?)
+            } else {
+                None
+            },
+            in_proj_zba_pack,
             conv1d,
             conv1d_weight_squeezed: source
                 .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
@@ -8091,6 +10046,7 @@ impl GatedDeltaNet {
             self.value_cache = Some(LinearValueCache {
                 dtype,
                 device_location,
+                packed: Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?.contiguous()?,
                 dt_bias,
                 a_log_exp,
             });
@@ -8414,14 +10370,25 @@ impl GatedDeltaNet {
         } else {
             match &self.conv_state {
                 Some(prev_state) => {
-                    let prev_state = if prev_state.dtype() == mixed_qkv.dtype() {
+                    let state = if prev_state.dtype() == mixed_qkv.dtype() {
                         prev_state.clone()
                     } else {
                         prev_state.to_dtype(mixed_qkv.dtype())?
                     };
-                    let keep = state_len - seq_len;
-                    let prev_tail = prev_state.narrow(2, prev_state.dim(2)? - keep, keep)?;
-                    Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
+                    let prev_state_len = state.dim(2)?;
+                    if prev_state_len == state_len {
+                        let keep = state_len - seq_len;
+                        let prev_tail = state
+                            .narrow(2, prev_state_len - keep, keep)?
+                            .contiguous()?;
+                        state.slice_set(&prev_tail, 2, 0)?;
+                        state.slice_set(mixed_qkv, 2, keep)?;
+                        state
+                    } else {
+                        let keep = state_len - seq_len;
+                        let prev_tail = state.narrow(2, prev_state_len - keep, keep)?;
+                        Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
+                    }
                 }
                 None => {
                     let zeros = Tensor::zeros(
@@ -8467,7 +10434,7 @@ impl GatedDeltaNet {
     }
 
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
-        if mixed_qkv.device().is_hip() {
+        if mixed_qkv.device().is_hip() || mixed_qkv.device().is_cuda() {
             return self
                 .run_depthwise_conv_materialized_pack(mixed_qkv)?
                 .transpose(1, 2);
@@ -8559,7 +10526,7 @@ impl GatedDeltaNet {
             )?,
         };
 
-        if device.is_hip() && k_head_dim <= 256 {
+        if (device.is_hip() || (device.is_cuda() && seq_len == 1)) && k_head_dim <= 256 {
             let batch_heads = batch_size * num_heads;
             let pack_start = profile_start(device)?;
             let initial_state = recurrent_state
@@ -9492,56 +11459,136 @@ impl GatedDeltaNet {
         let device = hidden_states.device();
         let total_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
-        let compute_dtype =
-            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype());
         let layout_start = profile_start(device)?;
         let hidden_states = self.apply_mask_to_padding_states(hidden_states, attention_mask)?;
         let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        let compute_dtype = if hidden_states.device().is_cuda() && seq_len == 1 {
+            match hidden_states.dtype() {
+                DType::F16 | DType::BF16 => hidden_states.dtype(),
+                _ => linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype()),
+            }
+        } else {
+            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype())
+        };
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
+        let direct_cuda_hidden_combined_decode = seq_len == 1
+            && device.is_cuda()
+            && use_combined_linear_decode(device, seq_len)
+            && self.in_proj_qkv_zba_pack.is_some();
         let qkv_start = profile_start(device)?;
-        let mixed_qkv = self.in_proj_qkv.forward(&hidden_states)?.transpose(1, 2)?;
-        let z = self.in_proj_z.forward(&hidden_states)?.reshape((
-            batch_size,
-            seq_len,
-            self.num_v_heads,
-            self.head_v_dim,
-        ))?;
-        let beta_raw = self.in_proj_b.forward(&hidden_states)?;
-        let a = self.in_proj_a.forward(&hidden_states)?;
+        let packed_qkv_zba = if direct_cuda_hidden_combined_decode {
+            None
+        } else if seq_len == 1
+            && hidden_states.device().is_cuda()
+            && self.in_proj_qkv_zba_pack.is_some()
+        {
+            Some(fast_linear_decode(
+                &hidden_states,
+                self.in_proj_qkv_zba_pack
+                    .as_ref()
+                    .expect("qkv_zba pack checked above"),
+            )?)
+        } else {
+            None
+        };
+        let packed_cuda_combined_decode =
+            (direct_cuda_hidden_combined_decode || packed_qkv_zba.is_some())
+                && use_combined_linear_decode(device, seq_len)
+                && device.is_cuda();
+        let (mixed_qkv, z, beta_raw, a) = if direct_cuda_hidden_combined_decode {
+            (None, None, None, None)
+        } else if let Some(packed) = &packed_qkv_zba {
+            if packed_cuda_combined_decode {
+                (None, None, None, None)
+            } else {
+                let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
+                let z = packed
+                    .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
+                    .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
+                let beta_raw = packed.narrow(
+                    D::Minus1,
+                    self.conv_dim() + self.value_dim,
+                    self.num_v_heads,
+                )?;
+                let a = packed.narrow(
+                    D::Minus1,
+                    self.conv_dim() + self.value_dim + self.num_v_heads,
+                    self.num_v_heads,
+                )?;
+                (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
+            }
+        } else {
+            let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
+            let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
+            let packed = fast_linear_decode(&hidden_states, in_proj_zba_pack)?;
+            let z = packed.narrow(D::Minus1, 0, self.value_dim)?.reshape((
+                batch_size,
+                seq_len,
+                self.num_v_heads,
+                self.head_v_dim,
+            ))?;
+            let beta_raw = packed.narrow(D::Minus1, self.value_dim, self.num_v_heads)?;
+            let a = packed.narrow(D::Minus1, self.value_dim + self.num_v_heads, self.num_v_heads)?;
+            (z, beta_raw, a)
+        } else {
+            let z = self
+                .in_proj_z
+                .as_ref()
+                .expect("in_proj_z missing without packed zba")
+                .forward(&hidden_states)?
+                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
+            let beta_raw = self
+                .in_proj_b
+                .as_ref()
+                .expect("in_proj_b missing without packed zba")
+                .forward(&hidden_states)?;
+            let a = self
+                .in_proj_a
+                .as_ref()
+                .expect("in_proj_a missing without packed zba")
+                .forward(&hidden_states)?;
+            (z, beta_raw, a)
+            };
+            (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
+        };
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
-        if use_hip_combined_linear_decode(device, seq_len) {
+        if use_combined_linear_decode(device, seq_len) {
             let kv_append_start = profile_start(device)?;
-            let target_dtype = mixed_qkv.dtype();
+            let target_dtype = if direct_cuda_hidden_combined_decode {
+                hidden_states.dtype()
+            } else if let Some(packed_qkv_zba) = &packed_qkv_zba {
+                packed_qkv_zba.dtype()
+            } else {
+                mixed_qkv
+                    .as_ref()
+                    .expect("mixed_qkv required without packed qkv_zba")
+                    .dtype()
+            };
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
-            let prev_conv_state = match &self.conv_state {
-                Some(prev_state) => {
-                    if prev_state.dtype() == target_dtype {
-                        prev_state.clone()
+                let prev_conv_state = match &self.conv_state {
+                    Some(prev_state) => {
+                        if prev_state.dtype() == target_dtype {
+                            prev_state.clone()
                     } else {
                         prev_state.to_dtype(target_dtype)?
                     }
                 }
                 None => Tensor::zeros(
-                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
+                    (batch_size, self.conv_dim(), state_len),
                     target_dtype,
-                    mixed_qkv.device(),
+                    device,
                 )?,
             };
-            let a = if a.dtype() == target_dtype {
-                a.clone()
-            } else {
-                a.to_dtype(target_dtype)?
-            };
-            let beta_raw = if beta_raw.dtype() == target_dtype {
-                beta_raw.clone()
-            } else {
-                beta_raw.to_dtype(target_dtype)?
-            };
-            let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+            let value_cache_pack = self
+                .value_cache
+                .as_ref()
+                .expect("linear value cache must be initialized")
+                .packed
+                .clone();
             let initial_state = match &self.recurrent_state {
                 Some(state) => {
                     let state = if state.rank() == 3 {
@@ -9567,48 +11614,158 @@ impl GatedDeltaNet {
                 )?,
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
-            let fused = linear_decode_step_hip(
-                &mixed_qkv.contiguous()?,
-                &prev_conv_state,
-                &weights,
-                &a_beta_raw,
-                &dt_bias,
-                &a_log_exp,
-                &initial_state,
-                self.num_v_heads,
-                self.head_k_dim,
-                self.head_v_dim,
-                self.conv_kernel_size,
-                head_repeat,
-            )?;
-            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
-            let core_attn_out = fused
-                .narrow(1, 0, self.value_dim)?
-                .reshape((batch_size, seq_len, self.value_dim))?;
-            let recurrent_state = fused
-                .narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
-                .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+            let fused_state = initial_state.clone();
+            let fused = if device.is_hip() {
+                let a_beta_raw = Tensor::cat(
+                    &[
+                        a.as_ref()
+                            .expect("a required for hip linear decode"),
+                        beta_raw
+                            .as_ref()
+                            .expect("beta_raw required for hip linear decode"),
+                    ],
+                    D::Minus1,
+                )?
                 .contiguous()?;
+                linear_decode_step_hip(
+                    &mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required for hip linear decode")
+                        .contiguous()?,
+                    &prev_conv_state,
+                    &weights,
+                    &a_beta_raw,
+                    &dt_bias,
+                    &a_log_exp,
+                    &initial_state,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            } else if direct_cuda_hidden_combined_decode {
+                linear_decode_step_cuda_from_hidden_gated(
+                    &hidden_states,
+                    self.in_proj_qkv_zba_pack
+                        .as_ref()
+                        .expect("qkv_zba pack required for direct cuda hidden decode")
+                        .weight(),
+                    &prev_conv_state,
+                    &weights,
+                    &value_cache_pack,
+                    &fused_state,
+                    &self.norm.weight,
+                    self.norm.eps,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            } else if let Some(packed_qkv_zba) = &packed_qkv_zba {
+                linear_decode_step_cuda_from_projected_gated(
+                    packed_qkv_zba,
+                    &prev_conv_state,
+                    &weights,
+                    &value_cache_pack,
+                    &fused_state,
+                    &self.norm.weight,
+                    self.norm.eps,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            } else {
+                let a = if a
+                    .as_ref()
+                    .expect("a required without packed projected decode")
+                    .dtype()
+                    == target_dtype
+                {
+                    a.as_ref()
+                        .expect("a required without packed projected decode")
+                        .clone()
+                } else {
+                    a.as_ref()
+                        .expect("a required without packed projected decode")
+                        .to_dtype(target_dtype)?
+                };
+                let beta_raw = if beta_raw
+                    .as_ref()
+                    .expect("beta_raw required without packed projected decode")
+                    .dtype()
+                    == target_dtype
+                {
+                    beta_raw
+                        .as_ref()
+                        .expect("beta_raw required without packed projected decode")
+                        .clone()
+                } else {
+                    beta_raw
+                        .as_ref()
+                        .expect("beta_raw required without packed projected decode")
+                        .to_dtype(target_dtype)?
+                };
+                linear_decode_step_cuda_gated(
+                    &mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required without packed projected decode")
+                        .contiguous()?,
+                    &prev_conv_state,
+                    &weights,
+                    &a,
+                    &beta_raw,
+                    &value_cache_pack,
+                    &initial_state,
+                    &z.as_ref()
+                        .expect("z required without packed projected decode")
+                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                    &self.norm.weight,
+                    self.norm.eps,
+                    self.num_v_heads,
+                    self.head_k_dim,
+                    self.head_v_dim,
+                    self.conv_kernel_size,
+                    head_repeat,
+                )?
+            };
+            if direct_cuda_hidden_combined_decode {
+                self.conv_state = Some(prev_conv_state);
+            } else if let Some(_packed_qkv_zba) = &packed_qkv_zba {
+                self.conv_state = Some(prev_conv_state);
+            } else {
+                self.update_depthwise_conv_state_from_raw(
+                    mixed_qkv
+                        .as_ref()
+                        .expect("mixed_qkv required without packed qkv_zba"),
+                )?;
+            }
+            let core_attn_out = fused
+                .reshape((batch_size, seq_len, self.value_dim))?;
+            let recurrent_state = if device.is_cuda()
+                && (direct_cuda_hidden_combined_decode || packed_qkv_zba.is_some())
+            {
+                fused_state
+            } else {
+                fused.narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
+                    .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                    .contiguous()?
+            };
             let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
             profile.linear_conv_millis += kv_append_elapsed;
             profile.kv_append_write_millis += kv_append_elapsed;
             profile.linear_recurrent_loop_millis += kv_append_elapsed;
 
             let output_start = profile_start(device)?;
-            let core_attn_out = self
-                .norm
-                .forward(
-                    &core_attn_out
-                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                )?
-                .reshape((batch_size, seq_len, self.value_dim))?;
             let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
                 core_attn_out
             } else {
                 core_attn_out.to_dtype(hidden_states.dtype())?
             };
-            let output = self.out_proj.forward(&core_attn_out)?;
+            let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
             profile.output_projection_millis += profile_elapsed(output_start, device)?;
             profile.linear_attention_millis += profile_elapsed(total_start, device)?;
             return Ok((output, recurrent_state, profile));
@@ -9616,11 +11773,16 @@ impl GatedDeltaNet {
 
         let kv_append_start = profile_start(device)?;
         let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
+            let mixed_qkv = mixed_qkv
+                .as_ref()
+                .expect("mixed_qkv required for linear prefill");
             let target_dtype = mixed_qkv.dtype();
-            let a = if a.dtype() == target_dtype {
-                a.clone()
+            let a = if a.as_ref().expect("a required for linear prefill").dtype() == target_dtype {
+                a.as_ref().expect("a required for linear prefill").clone()
             } else {
-                a.to_dtype(target_dtype)?
+                a.as_ref()
+                    .expect("a required for linear prefill")
+                    .to_dtype(target_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
@@ -9667,18 +11829,23 @@ impl GatedDeltaNet {
             };
             (mixed_qkv, g)
         } else {
+            let mixed_qkv = mixed_qkv
+                .as_ref()
+                .expect("mixed_qkv required for linear conv path");
             let mixed_qkv = if seq_len == 1 {
-                self.run_depthwise_conv_update(&mixed_qkv)?
+                self.run_depthwise_conv_update(mixed_qkv)?
                     .transpose(1, 2)?
             } else if use_linear_prefill_packed_kernel(device, seq_len) {
-                self.run_depthwise_conv_packed_prefill(&mixed_qkv)?
+                self.run_depthwise_conv_packed_prefill(mixed_qkv)?
             } else {
-                self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
+                self.run_depthwise_conv(mixed_qkv)?.transpose(1, 2)?
             };
-            let a = if a.dtype() == compute_dtype {
-                a
+            let a = if a.as_ref().expect("a required for linear conv path").dtype() == compute_dtype {
+                a.as_ref().expect("a required for linear conv path").clone()
             } else {
-                a.to_dtype(compute_dtype)?
+                a.as_ref()
+                    .expect("a required for linear conv path")
+                    .to_dtype(compute_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
             let g = if device.is_hip() {
@@ -9735,7 +11902,11 @@ impl GatedDeltaNet {
         } else {
             value.to_dtype(compute_dtype)?
         };
-        let beta = ops::sigmoid(&beta_raw)?;
+        let beta = ops::sigmoid(
+            beta_raw
+                .as_ref()
+                .expect("beta_raw required for linear attention"),
+        )?;
         let beta = if beta.dtype() == compute_dtype {
             beta
         } else {
@@ -9773,7 +11944,9 @@ impl GatedDeltaNet {
             .forward(
                 &core_attn_out
                     .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                &z.as_ref()
+                    .expect("z required for linear attention")
+                    .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
             )?
             .reshape((batch_size, seq_len, self.value_dim))?;
         let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
@@ -9781,7 +11954,7 @@ impl GatedDeltaNet {
         } else {
             core_attn_out.to_dtype(hidden_states.dtype())?
         };
-        let output = self.out_proj.forward(&core_attn_out)?;
+        let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.linear_attention_millis +=
             profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
@@ -9977,10 +12150,47 @@ impl DecoderLayer {
             .map(|(output, _)| output)
     }
 
+    fn decode_profiled(
+        &mut self,
+        xs: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let device = xs.device();
+        let mut profile = RuntimeProfile::default();
+        let residual = xs;
+        let xs_norm = self.input_layernorm.forward(xs)?;
+        let xs = match &mut self.token_mixer {
+            LayerKind::Linear(linear_attn) => {
+                let (xs, layer_profile) = linear_attn.forward_profiled(&xs_norm, None)?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+            LayerKind::Full(self_attn) => {
+                let (xs, layer_profile) = self_attn.forward_profiled(&xs_norm, None, seqlen_offset)?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+        };
+        let xs = residual.broadcast_add(&xs)?;
+        let residual = &xs;
+        let xs = self.post_attention_layernorm.forward(&xs)?;
+        let mlp_start = profile_start(device)?;
+        let xs = self.mlp.forward(&xs)?;
+        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
+        Ok((residual.broadcast_add(&xs)?, profile))
+    }
+
     fn clear_kv_cache(&mut self) {
         match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => linear_attn.clear_kv_cache(),
             LayerKind::Full(self_attn) => self_attn.clear_kv_cache(),
+        }
+    }
+
+    fn sequence_length(&self) -> usize {
+        match &self.token_mixer {
+            LayerKind::Linear(_) => 0,
+            LayerKind::Full(self_attn) => self_attn.sequence_length(),
         }
     }
 
@@ -10142,6 +12352,9 @@ impl TextModel {
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
         if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
+            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
+        }
+        if self.embed_tokens.embeddings().device().is_cuda() && input_ids.device().is_cuda() {
             return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
         }
         self.embed_tokens.forward(input_ids)
@@ -10453,6 +12666,25 @@ impl TextModel {
         Ok((self.norm.forward(&xs)?, profile))
     }
 
+    pub fn decode_hidden_states_profiled(
+        &mut self,
+        hidden_states: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let (_, seq_len, _) = hidden_states.dims3()?;
+        if seq_len != 1 {
+            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
+        }
+        let mut profile = RuntimeProfile::default();
+        let mut xs = hidden_states.clone();
+        for layer in self.layers.iter_mut() {
+            let (next_xs, layer_profile) = layer.decode_profiled(&xs, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((self.norm.forward(&xs)?, profile))
+    }
+
     pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         self.forward_profiled(input_ids, seqlen_offset)
             .map(|(output, _)| output)
@@ -10462,6 +12694,14 @@ impl TextModel {
         for layer in self.layers.iter_mut() {
             layer.clear_kv_cache();
         }
+    }
+
+    pub fn sequence_length(&self) -> usize {
+        self.layers
+            .iter()
+            .map(DecoderLayer::sequence_length)
+            .find(|&seq_len| seq_len != 0)
+            .unwrap_or(0)
     }
 
     pub fn cache_state(&self) -> CacheState {
@@ -10539,6 +12779,27 @@ impl ModelForCausalLM {
                 seqlen_offset,
                 external_full_attention,
             )?;
+        let output_start = profile_start(device)?;
+        let logits = hidden_states
+            .narrow(1, seq_len - 1, 1)?
+            .apply(&self.lm_head)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        Ok((logits, profile))
+    }
+
+    pub fn decode_hidden_states_profiled(
+        &mut self,
+        hidden_states: &Tensor,
+        seqlen_offset: usize,
+    ) -> Result<(Tensor, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let (_, seq_len, _) = hidden_states.dims3()?;
+        if seq_len != 1 {
+            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
+        }
+        let (hidden_states, mut profile) = self
+            .language_model
+            .decode_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
             .narrow(1, seq_len - 1, 1)?
@@ -10662,6 +12923,10 @@ impl ModelForCausalLM {
 
     pub fn clear_kv_cache(&mut self) {
         self.language_model.clear_kv_cache()
+    }
+
+    pub fn sequence_length(&self) -> usize {
+        self.language_model.sequence_length()
     }
 
     pub fn cache_state(&self) -> CacheState {
@@ -11399,7 +13664,100 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    fn cuda_full_attention_decode_sample_large(
+        device: &Device,
+    ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
+        let batch_size = 1usize;
+        let q_heads = 8usize;
+        let kv_heads = 2usize;
+        let q_len = 1usize;
+        let kv_len = 17usize;
+        let head_dim = 256usize;
+        let num_kv_groups = q_heads / kv_heads;
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seqlen_offset = kv_len - 1;
+
+        let query_data = (0..batch_size * q_heads * q_len * head_dim)
+            .map(|idx| ((idx % 29) as f32 - 14.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let key_data = (0..batch_size * kv_heads * kv_len * head_dim)
+            .map(|idx| ((idx % 31) as f32 - 15.0) * 0.0234375)
+            .collect::<Vec<_>>();
+        let value_data = (0..batch_size * kv_heads * kv_len * head_dim)
+            .map(|idx| ((idx % 37) as f32 - 18.0) * 0.046875)
+            .collect::<Vec<_>>();
+
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_size, q_heads, q_len, head_dim),
+            device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_size, kv_heads, kv_len, head_dim),
+            device,
+        )?;
+
+        let mut expected = Vec::with_capacity(batch_size * q_heads * q_len * head_dim);
+        for b in 0..batch_size {
+            for q_head in 0..q_heads {
+                let kv_head = q_head / num_kv_groups;
+                let query_offset = ((b * q_heads + q_head) * q_len) * head_dim;
+                let q_row = &query_data[query_offset..query_offset + head_dim];
+                let key_head_offset = (b * kv_heads + kv_head) * kv_len * head_dim;
+                let value_head_offset = key_head_offset;
+                let mut max_score = f32::NEG_INFINITY;
+                let mut denom = 0.0f32;
+                let mut out_row = vec![0.0f32; head_dim];
+                for k_pos in 0..kv_len {
+                    let key_offset = key_head_offset + k_pos * head_dim;
+                    let value_offset = value_head_offset + k_pos * head_dim;
+                    let mut score = 0.0f32;
+                    for d in 0..head_dim {
+                        score += q_row[d] * key_data[key_offset + d];
+                    }
+                    score *= scale;
+                    if !max_score.is_finite() {
+                        max_score = score;
+                        denom = 1.0;
+                        out_row.copy_from_slice(&value_data[value_offset..value_offset + head_dim]);
+                        continue;
+                    }
+                    let new_max = max_score.max(score);
+                    let prev_scale = (max_score - new_max).exp();
+                    let curr_scale = (score - new_max).exp();
+                    denom = denom * prev_scale + curr_scale;
+                    for d in 0..head_dim {
+                        out_row[d] =
+                            out_row[d] * prev_scale + curr_scale * value_data[value_offset + d];
+                    }
+                    max_score = new_max;
+                }
+                let inv_denom = if denom > 0.0 { 1.0 / denom } else { 0.0 };
+                for value in out_row {
+                    expected.push(value * inv_denom);
+                }
+            }
+        }
+
+        Ok((
+            query,
+            key,
+            value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            expected,
+        ))
+    }
+
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_rms_norm_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, Vec<f32>, Vec<f32>)> {
@@ -11436,7 +13794,7 @@ mod tests {
         Ok((xs, gate, weight, expected_norm, expected_gated))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_l2norm_sample(device: &Device) -> Result<(Tensor, Vec<f32>)> {
         let xs_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -11456,7 +13814,7 @@ mod tests {
         Ok((xs, expected))
     }
 
-    #[cfg(feature = "qwen35-minimal-hip")]
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
     fn hip_swiglu_mul_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
         let gate_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -11474,6 +13832,40 @@ mod tests {
             expected.push(silu * *up_x);
         }
         Ok((gate, up, expected))
+    }
+
+    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
+    fn linear_decode_gemv_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
+        let xs_data = vec![
+            0.2f32, -0.3, 0.4, 0.1, -0.2, 0.5, 0.7, -0.6,
+            0.6, 0.2, -0.1, 0.3, 0.4, -0.5, 0.8, 0.9,
+        ];
+        let weight_data = vec![
+            0.1f32, 0.0, 0.2, -0.1, 0.3, -0.4, 0.5, -0.2,
+            -0.2, 0.5, 0.1, 0.0, -0.3, 0.4, 0.2, 0.6,
+            0.7, -0.1, 0.3, 0.4, 0.2, 0.1, -0.5, 0.2,
+            0.0, -0.6, 0.8, 0.5, -0.1, 0.7, 0.4, -0.3,
+            0.4, 0.2, -0.2, 0.6, 0.3, -0.5, 0.1, 0.0,
+        ];
+        let xs = Tensor::from_vec(xs_data.clone(), (2usize, 1usize, 8usize), device)?
+            .to_dtype(DType::F16)?;
+        let weight = Tensor::from_vec(weight_data.clone(), (5usize, 8usize), device)?
+            .to_dtype(DType::F16)?;
+        let mut expected = Vec::with_capacity(2 * 5);
+        for row in 0..2usize {
+            let row_slice = &xs_data[row * 8..(row + 1) * 8];
+            for out_idx in 0..5usize {
+                let w = &weight_data[out_idx * 8..(out_idx + 1) * 8];
+                expected.push(
+                    row_slice
+                        .iter()
+                        .zip(w.iter())
+                        .map(|(x, ww)| x * ww)
+                        .sum::<f32>(),
+                );
+            }
+        }
+        Ok((xs, weight, expected))
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -11656,7 +14048,6 @@ mod tests {
     }
 
 
-    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_linear_decode_step_sample(
         device: &Device,
     ) -> Result<(
@@ -12087,6 +14478,29 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-cuda")]
     #[test]
+    fn cuda_full_attention_decode_matches_reference_large_head_dim() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
+            cuda_full_attention_decode_sample_large(&device)?;
+        let output = full_attention_decode_megakernel(
+            &query,
+            &key,
+            &value,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+        )?;
+        let output = output
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 2e-2);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
     fn cuda_paged_attention_decode_falls_back_for_large_head_dim() -> Result<()> {
         let _guard = cuda_test_guard();
         let _env_guard = CudaFullPrefillEnvGuard::set("1");
@@ -12112,6 +14526,78 @@ mod tests {
         let output = paged_attention_decode_megakernel(&queries, &key, &value)?
             .flatten_all()?
             .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_delta_recurrent_prefill_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let batch_heads = 1usize;
+        let seq_len = 1usize;
+        let k_head_dim = 2usize;
+        let v_head_dim = 2usize;
+
+        let initial_state_data = vec![0.1f32, -0.2, 0.05, 0.3];
+        let query_data = vec![0.2f32, -0.1];
+        let key_data = vec![0.1f32, 0.2];
+        let value_data = vec![0.3f32, -0.1];
+        let beta_data = vec![0.5f32];
+        let g_data = vec![0.0f32];
+
+        let initial_state = Tensor::from_vec(
+            initial_state_data.clone(),
+            (batch_heads, k_head_dim, v_head_dim),
+            &device,
+        )?;
+        let query = Tensor::from_vec(
+            query_data.clone(),
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let key = Tensor::from_vec(
+            key_data.clone(),
+            (batch_heads, seq_len, k_head_dim),
+            &device,
+        )?;
+        let value = Tensor::from_vec(
+            value_data.clone(),
+            (batch_heads, seq_len, v_head_dim),
+            &device,
+        )?;
+        let beta = Tensor::from_vec(beta_data.clone(), (batch_heads, seq_len), &device)?;
+        let g = Tensor::from_vec(g_data.clone(), (batch_heads, seq_len), &device)?;
+
+        let output = delta_recurrent_prefill(&initial_state, &query, &key, &value, &beta, &g)?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+
+        let g_t = g_data[0].exp();
+        let mut state_col0 = initial_state_data[0] * g_t;
+        let mut state_col1 = initial_state_data[2] * g_t;
+        let kv_mem_0 = state_col0 * key_data[0] + state_col1 * key_data[1];
+        let delta_0 = (value_data[0] - kv_mem_0) * beta_data[0];
+        state_col0 += key_data[0] * delta_0;
+        state_col1 += key_data[1] * delta_0;
+        let out_0 = state_col0 * query_data[0] + state_col1 * query_data[1];
+
+        let mut state_col0_b = initial_state_data[1] * g_t;
+        let mut state_col1_b = initial_state_data[3] * g_t;
+        let kv_mem_1 = state_col0_b * key_data[0] + state_col1_b * key_data[1];
+        let delta_1 = (value_data[1] - kv_mem_1) * beta_data[0];
+        state_col0_b += key_data[0] * delta_1;
+        state_col1_b += key_data[1] * delta_1;
+        let out_1 = state_col0_b * query_data[0] + state_col1_b * query_data[1];
+
+        let expected = vec![
+            out_0,
+            out_1,
+            state_col0,
+            state_col0_b,
+            state_col1,
+            state_col1_b,
+        ];
         assert_close(&output, &expected, 1e-5);
         Ok(())
     }
@@ -12286,6 +14772,312 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_step_matches_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let output = linear_decode_step_cuda(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_vec2::<f32>()?;
+        assert_close(&output[0], &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_step_gated_matches_composed_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (2usize, 2usize), &device)?
+            .to_dtype(DType::F16)?;
+        let norm_weight =
+            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
+
+        let fused = linear_decode_step_cuda_gated(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            &gate,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+
+        let base = linear_decode_step_cuda(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?;
+        let expected_value = cuda_rms_norm_gated(
+            &base.narrow(1, 0, 4)?.reshape((2usize, 2usize))?,
+            &gate,
+            &norm_weight,
+            1e-6,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+        let expected_state = base
+            .narrow(1, 4, 8)?
+            .to_dtype(DType::F32)?
+            .to_vec2::<f32>()?;
+        let expected_value_flat: Vec<f32> = expected_value.into_iter().flatten().collect();
+        let expected_state_flat: Vec<f32> = expected_state.into_iter().flatten().collect();
+        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
+
+        assert_close(&fused_flat[0..4], &expected_value_flat, 5e-3);
+        assert_close(&fused_flat[4..12], &expected_state_flat, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_from_projected_gated_matches_composed_reference() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (1usize, 1usize, 4usize), &device)?
+            .to_dtype(DType::F16)?;
+        let norm_weight =
+            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
+        let beta_raw = a_beta_raw.narrow(D::Minus1, 0, 2)?;
+        let a_raw = a_beta_raw.narrow(D::Minus1, 2, 2)?;
+        let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?;
+        let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
+
+        let initial_state_shape = initial_state.shape().clone();
+        let initial_state_values = initial_state.flatten_all()?.to_vec1::<f32>()?;
+        let fused_state = Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
+        let expected_initial_state =
+            Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
+        let prev_conv_shape = prev_conv_state.shape().clone();
+        let prev_conv_values = prev_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let fused_conv_state = Tensor::from_slice(&prev_conv_values, prev_conv_shape.clone(), &device)?
+            .to_dtype(DType::F16)?;
+        let expected_prev_conv_state =
+            Tensor::from_slice(&prev_conv_values, prev_conv_shape, &device)?.to_dtype(DType::F16)?;
+        let fused = linear_decode_step_cuda_from_projected_gated(
+            &projected,
+            &fused_conv_state,
+            &weights,
+            &value_cache_pack,
+            &fused_state,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+        let fused_state = fused_state.flatten_all()?.to_vec1::<f32>()?;
+
+        let expected = linear_decode_step_cuda_gated(
+            &mixed_qkv,
+            &prev_conv_state,
+            &weights,
+            &a_raw,
+            &beta_raw,
+            &value_cache_pack,
+            &expected_initial_state,
+            &gate.reshape((2usize, 2usize))?,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?;
+        let expected_out = expected.narrow(1, 0, 4)?.to_vec2::<f32>()?;
+        let expected_state = expected
+            .narrow(1, 4, 8)?
+            .reshape((1usize, 2usize, 2usize, 2usize))?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let expected_conv_state = {
+            let mixed_qkv = projected.narrow(D::Minus1, 0, 8)?.transpose(1, 2)?;
+            let state_len = expected_prev_conv_state.dim(2)?;
+            let state = expected_prev_conv_state.clone();
+            if state_len > 1 {
+                let tail = state.narrow(2, 1, state_len - 1)?.contiguous()?;
+                state.slice_set(&tail, 2, 0)?;
+            }
+            state.slice_set(&mixed_qkv.contiguous()?, 2, state_len - 1)?;
+            state.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?
+        };
+
+        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
+        let expected_flat: Vec<f32> = expected_out.into_iter().flatten().collect();
+        let fused_conv_state = fused_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&fused_flat, &expected_flat, 5e-3);
+        assert_close(&fused_state, &expected_state, 5e-3);
+        assert_close(&fused_conv_state, &expected_conv_state, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_from_hidden_gated_matches_projected_path() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let (
+            mixed_qkv,
+            prev_conv_state,
+            weights,
+            a_beta_raw,
+            dt_bias,
+            a_log_exp,
+            initial_state,
+            _expected,
+        ) = hip_linear_decode_step_sample(&device)?;
+        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (1usize, 1usize, 4usize), &device)?
+            .to_dtype(DType::F16)?;
+        let norm_weight =
+            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
+        let beta_raw = a_beta_raw.narrow(D::Minus1, 0, 2)?;
+        let a_raw = a_beta_raw.narrow(D::Minus1, 2, 2)?;
+        let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?
+            .contiguous()?;
+        let projected_width = projected.dim(D::Minus1)?;
+        let hidden = projected.clone();
+        let qkv_zba_weight = Tensor::eye(projected_width, DType::F16, &device)?;
+        let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
+
+        let initial_state_shape = initial_state.shape().clone();
+        let initial_state_values = initial_state.flatten_all()?.to_vec1::<f32>()?;
+        let direct_state =
+            Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
+        let projected_state =
+            Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
+        let prev_conv_shape = prev_conv_state.shape().clone();
+        let prev_conv_values = prev_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let direct_conv_state = Tensor::from_slice(&prev_conv_values, prev_conv_shape.clone(), &device)?
+            .to_dtype(DType::F16)?;
+        let projected_conv_state =
+            Tensor::from_slice(&prev_conv_values, prev_conv_shape, &device)?.to_dtype(DType::F16)?;
+
+        let direct = linear_decode_step_cuda_from_hidden_gated(
+            &hidden,
+            &qkv_zba_weight,
+            &direct_conv_state,
+            &weights,
+            &value_cache_pack,
+            &direct_state,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+        let direct_state = direct_state.flatten_all()?.to_vec1::<f32>()?;
+        let direct_conv_state = direct_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+
+        let projected_out = linear_decode_step_cuda_from_projected_gated(
+            &projected,
+            &projected_conv_state,
+            &weights,
+            &value_cache_pack,
+            &projected_state,
+            &norm_weight,
+            1e-6,
+            2,
+            2,
+            2,
+            3,
+            2,
+        )?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+        let projected_state = projected_state.flatten_all()?.to_vec1::<f32>()?;
+        let projected_conv_state = projected_conv_state
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+
+        let direct_flat: Vec<f32> = direct.into_iter().flatten().collect();
+        let projected_flat: Vec<f32> = projected_out.into_iter().flatten().collect();
+        assert_close(&direct_flat, &projected_flat, 5e-3);
+        assert_close(&direct_state, &projected_state, 5e-3);
+        assert_close(&direct_conv_state, &projected_conv_state, 5e-3);
+        Ok(())
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_rms_norm_matches_reference() -> Result<()> {
@@ -12330,6 +15122,41 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_rms_norm_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, gate, weight, expected_norm, expected_gated) = hip_rms_norm_sample(&device)?;
+
+        let norm = cuda_rms_norm(&xs, &weight, 1e-6, true)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&norm, &expected_norm, 5e-3);
+
+        let gated = cuda_rms_norm_gated(&xs, &gate, &weight, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&gated, &expected_gated, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_l2norm_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, expected) = hip_l2norm_sample(&device)?;
+        let output = cuda_l2norm(&xs, 1e-6)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_l2norm_matches_reference() -> Result<()> {
@@ -12366,6 +15193,20 @@ mod tests {
         let device = Device::new_hip(0)?;
         let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
         let output = hip_swiglu_mul(&gate, &up)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-3);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_swiglu_mul_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
+        let output = cuda_swiglu_mul(&gate, &up)?
             .to_dtype(DType::F32)?
             .flatten_all()?
             .to_vec1::<f32>()?;
@@ -12414,6 +15255,47 @@ mod tests {
         assert_eq!(output.dtype(), embeddings.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_embedding_lookup_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let vocab_size = 5usize;
+        let hidden_size = 4usize;
+        let embeddings_data = vec![
+            0.0f32, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 22.0, 23.0, 30.0, 31.0,
+            32.0, 33.0, 40.0, 41.0, 42.0, 43.0,
+        ];
+        let index_data = vec![3u32, 1, 4, 0];
+        let expected = vec![
+            30.0f32, 31.0, 32.0, 33.0, 10.0, 11.0, 12.0, 13.0, 40.0, 41.0, 42.0, 43.0, 0.0,
+            1.0, 2.0, 3.0,
+        ];
+        let embeddings = Tensor::from_vec(embeddings_data, (vocab_size, hidden_size), &device)?;
+        let indexes = Tensor::from_vec(index_data, (2, 2), &device)?;
+        let output = hip_embedding_lookup(&embeddings, &indexes)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-cuda")]
+    #[test]
+    fn cuda_linear_decode_gemv_matches_reference() -> Result<()> {
+        let _guard = cuda_test_guard();
+        let device = Device::new_cuda(0)?;
+        let (xs, weight, expected) = linear_decode_gemv_sample(&device)?;
+        let linear = Linear::new(weight, None);
+        let output = cuda_linear_no_bias_decode(&xs, &linear)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        assert_close(&output, &expected, 5e-4);
         Ok(())
     }
 

@@ -2,11 +2,12 @@ mod hip;
 mod model;
 mod prepared;
 mod with_tracing;
+pub(crate) use prepared::PreparedTensorSource;
 
 pub use model::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
     LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec, ModelForCausalLM,
-    TextConfig as MinimalQwen35TextConfig,
+    RuntimeProfile as MinimalQwen35RuntimeProfile, TextConfig as MinimalQwen35TextConfig,
 };
 
 use candle_core::{DType, Device, Tensor};
@@ -15,8 +16,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{HfHubModelSource, PreparedModelPackage, Result};
-use prepared::PreparedTensorSource;
-
 #[derive(Debug, Clone)]
 pub struct MinimalQwen35Weights {
     pub model_id: String,

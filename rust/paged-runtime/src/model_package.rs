@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{HfHubModelSource, Result, RuntimeError};
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
-const PACKAGE_CONVERTER_VERSION: u32 = 2;
+const PACKAGE_CONVERTER_VERSION: u32 = 6;
 const PACKAGE_ALIGNMENT: u64 = 4096;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const WEIGHTS_FILENAME: &str = "weights.bin";
@@ -79,6 +79,10 @@ pub enum PreparedTensorLayout {
     DepthwiseConvSqueezed,
     HeadBiasReshaped,
     HeadExpReshaped,
+    FullAttentionQkvPacked,
+    LinearAuxPacked,
+    LinearDecodeQkvAuxPacked,
+    MlpGateUpPacked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +164,9 @@ pub struct PreparedModelPackage {
 impl PreparedModelPackage {
     pub fn resolve_or_build_qwen35_minimal(model_id: &str, device: &Device) -> Result<Self> {
         let target = ModelTarget::detect(device);
+        let mut package_root_from_alias = None;
         if let Some(alias) = read_alias(MODEL_FAMILY_QWEN35_MINIMAL, model_id, &target)? {
+            package_root_from_alias = Some(alias.package_root.clone());
             if alias.package_root.exists() {
                 let package = Self::open(&alias.package_root)?;
                 if package.manifest.schema_version == PACKAGE_SCHEMA_VERSION
@@ -179,6 +185,21 @@ impl PreparedModelPackage {
             &artifacts.revision,
             &target,
         )?;
+
+        let needs_rebuild = if let Some(alias_root) = package_root_from_alias.as_ref() {
+            alias_root == &package_root && package_root.exists()
+        } else {
+            false
+        };
+        if needs_rebuild {
+            fs::remove_dir_all(&package_root).map_err(|err| RuntimeError::External {
+                context: "prepared-model-package",
+                message: format!(
+                    "failed to remove stale prepared package {}: {err}",
+                    package_root.display()
+                ),
+            })?;
+        }
 
         if !package_root.exists() {
             build_package_with_lock(&package_root, || {
@@ -330,6 +351,11 @@ fn build_qwen35_minimal_package(
         message: format!("failed to create {}: {err}", weights_path.display()),
     })?;
     let mut offset = 0u64;
+    let mut full_attn_qkv_packs = BTreeMap::<String, FullAttentionQkvPackCandidate>::new();
+    let mut linear_aux_packs = BTreeMap::<String, LinearAuxPackCandidate>::new();
+    let mut linear_decode_qkv_aux_packs =
+        BTreeMap::<String, LinearDecodeQkvAuxPackCandidate>::new();
+    let mut mlp_gate_up_packs = BTreeMap::<String, MlpGateUpPackCandidate>::new();
 
     for weight_path in &artifacts.weight_paths {
         let file = File::open(weight_path).map_err(|err| RuntimeError::External {
@@ -352,6 +378,34 @@ fn build_qwen35_minimal_package(
                 message: format!("failed to read tensor {name} from {}: {err}", weight_path.display()),
             })?;
             let dtype = PreparedDType::from_safetensors(view.dtype())?;
+            collect_full_attention_qkv_candidate(
+                &mut full_attn_qkv_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
+            collect_mlp_gate_up_candidate(
+                &mut mlp_gate_up_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
+            collect_linear_aux_candidate(
+                &mut linear_aux_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
+            collect_linear_decode_qkv_aux_candidate(
+                &mut linear_decode_qkv_aux_packs,
+                name,
+                view.shape(),
+                dtype,
+                view.data(),
+            );
             write_tensor_entry(
                 &mut weights_file,
                 &mut offset,
@@ -379,6 +433,67 @@ fn build_qwen35_minimal_package(
             }
         }
     }
+
+    for (prefix, candidate) in full_attn_qkv_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.qkv_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::FullAttentionQkvPacked,
+                &bytes,
+            )?;
+        }
+    }
+
+    for (prefix, candidate) in linear_aux_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.zba_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::LinearAuxPacked,
+                &bytes,
+            )?;
+        }
+    }
+
+    for (prefix, candidate) in linear_decode_qkv_aux_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.qkv_zba_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::LinearDecodeQkvAuxPacked,
+                &bytes,
+            )?;
+        }
+    }
+
+    for (prefix, candidate) in mlp_gate_up_packs {
+        if let Some((shape, dtype, bytes)) = candidate.pack()? {
+            write_tensor_entry(
+                &mut weights_file,
+                &mut offset,
+                &mut tensors,
+                &format!("{prefix}.gate_up_pack.weight"),
+                &shape,
+                dtype,
+                PreparedTensorLayout::MlpGateUpPacked,
+                &bytes,
+            )?;
+        }
+    }
+
     weights_file.flush().map_err(|err| RuntimeError::External {
         context: "prepared-model-package",
         message: format!("failed to flush weights blob: {err}"),
@@ -418,6 +533,262 @@ fn build_qwen35_minimal_package(
         ),
     })?;
     Ok(())
+}
+
+#[derive(Default)]
+struct FullAttentionQkvPackCandidate {
+    q_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    k_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    v_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct MlpGateUpPackCandidate {
+    gate_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    up_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct LinearAuxPackCandidate {
+    z_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    b_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    a_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct LinearDecodeQkvAuxPackCandidate {
+    qkv_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    z_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    b_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+    a_weight: Option<(Vec<usize>, PreparedDType, Vec<u8>)>,
+}
+
+impl FullAttentionQkvPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((q_shape, q_dtype, mut q_bytes)) = self.q_weight else {
+            return Ok(None);
+        };
+        let Some((k_shape, k_dtype, k_bytes)) = self.k_weight else {
+            return Ok(None);
+        };
+        let Some((v_shape, v_dtype, v_bytes)) = self.v_weight else {
+            return Ok(None);
+        };
+        if q_dtype != k_dtype || q_dtype != v_dtype {
+            return Ok(None);
+        }
+        if q_shape.len() != 2 || k_shape.len() != 2 || v_shape.len() != 2 {
+            return Ok(None);
+        }
+        if q_shape[1] != k_shape[1] || q_shape[1] != v_shape[1] {
+            return Ok(None);
+        }
+        let in_dim = q_shape[1];
+        let out_dim = q_shape[0] + k_shape[0] + v_shape[0];
+        q_bytes.extend_from_slice(&k_bytes);
+        q_bytes.extend_from_slice(&v_bytes);
+        Ok(Some((vec![out_dim, in_dim], q_dtype, q_bytes)))
+    }
+}
+
+impl MlpGateUpPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((gate_shape, gate_dtype, mut gate_bytes)) = self.gate_weight else {
+            return Ok(None);
+        };
+        let Some((up_shape, up_dtype, up_bytes)) = self.up_weight else {
+            return Ok(None);
+        };
+        if gate_dtype != up_dtype {
+            return Ok(None);
+        }
+        if gate_shape.len() != 2 || up_shape.len() != 2 {
+            return Ok(None);
+        }
+        if gate_shape[0] != up_shape[0] || gate_shape[1] != up_shape[1] {
+            return Ok(None);
+        }
+        let out_dim = gate_shape[0] + up_shape[0];
+        let in_dim = gate_shape[1];
+        gate_bytes.extend_from_slice(&up_bytes);
+        Ok(Some((vec![out_dim, in_dim], gate_dtype, gate_bytes)))
+    }
+}
+
+impl LinearAuxPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((z_shape, z_dtype, mut z_bytes)) = self.z_weight else {
+            return Ok(None);
+        };
+        let Some((b_shape, b_dtype, b_bytes)) = self.b_weight else {
+            return Ok(None);
+        };
+        let Some((a_shape, a_dtype, a_bytes)) = self.a_weight else {
+            return Ok(None);
+        };
+        if z_dtype != b_dtype || z_dtype != a_dtype {
+            return Ok(None);
+        }
+        if z_shape.len() != 2 || b_shape.len() != 2 || a_shape.len() != 2 {
+            return Ok(None);
+        }
+        if z_shape[1] != b_shape[1] || z_shape[1] != a_shape[1] {
+            return Ok(None);
+        }
+        let out_dim = z_shape[0] + b_shape[0] + a_shape[0];
+        let in_dim = z_shape[1];
+        z_bytes.extend_from_slice(&b_bytes);
+        z_bytes.extend_from_slice(&a_bytes);
+        Ok(Some((vec![out_dim, in_dim], z_dtype, z_bytes)))
+    }
+}
+
+impl LinearDecodeQkvAuxPackCandidate {
+    fn pack(self) -> Result<Option<(Vec<usize>, PreparedDType, Vec<u8>)>> {
+        let Some((qkv_shape, qkv_dtype, mut qkv_bytes)) = self.qkv_weight else {
+            return Ok(None);
+        };
+        let Some((z_shape, z_dtype, z_bytes)) = self.z_weight else {
+            return Ok(None);
+        };
+        let Some((b_shape, b_dtype, b_bytes)) = self.b_weight else {
+            return Ok(None);
+        };
+        let Some((a_shape, a_dtype, a_bytes)) = self.a_weight else {
+            return Ok(None);
+        };
+        if qkv_dtype != z_dtype || qkv_dtype != b_dtype || qkv_dtype != a_dtype {
+            return Ok(None);
+        }
+        if qkv_shape.len() != 2 || z_shape.len() != 2 || b_shape.len() != 2 || a_shape.len() != 2 {
+            return Ok(None);
+        }
+        if qkv_shape[1] != z_shape[1] || qkv_shape[1] != b_shape[1] || qkv_shape[1] != a_shape[1] {
+            return Ok(None);
+        }
+        let out_dim = qkv_shape[0] + z_shape[0] + b_shape[0] + a_shape[0];
+        let in_dim = qkv_shape[1];
+        qkv_bytes.extend_from_slice(&z_bytes);
+        qkv_bytes.extend_from_slice(&b_bytes);
+        qkv_bytes.extend_from_slice(&a_bytes);
+        Ok(Some((vec![out_dim, in_dim], qkv_dtype, qkv_bytes)))
+    }
+}
+
+fn collect_full_attention_qkv_candidate(
+    candidates: &mut BTreeMap<String, FullAttentionQkvPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".q_proj.weight") {
+        Some((prefix.to_string(), "q"))
+    } else if let Some(prefix) = name.strip_suffix(".k_proj.weight") {
+        Some((prefix.to_string(), "k"))
+    } else if let Some(prefix) = name.strip_suffix(".v_proj.weight") {
+        Some((prefix.to_string(), "v"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "q" => candidate.q_weight = Some(payload),
+        "k" => candidate.k_weight = Some(payload),
+        "v" => candidate.v_weight = Some(payload),
+        _ => {}
+    }
+}
+
+fn collect_linear_decode_qkv_aux_candidate(
+    candidates: &mut BTreeMap<String, LinearDecodeQkvAuxPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".in_proj_qkv.weight") {
+        Some((prefix.to_string(), "qkv"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_z.weight") {
+        Some((prefix.to_string(), "z"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_b.weight") {
+        Some((prefix.to_string(), "b"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_a.weight") {
+        Some((prefix.to_string(), "a"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "qkv" => candidate.qkv_weight = Some(payload),
+        "z" => candidate.z_weight = Some(payload),
+        "b" => candidate.b_weight = Some(payload),
+        "a" => candidate.a_weight = Some(payload),
+        _ => {}
+    }
+}
+
+fn collect_mlp_gate_up_candidate(
+    candidates: &mut BTreeMap<String, MlpGateUpPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".gate_proj.weight") {
+        Some((prefix.to_string(), "gate"))
+    } else if let Some(prefix) = name.strip_suffix(".up_proj.weight") {
+        Some((prefix.to_string(), "up"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "gate" => candidate.gate_weight = Some(payload),
+        "up" => candidate.up_weight = Some(payload),
+        _ => {}
+    }
+}
+
+fn collect_linear_aux_candidate(
+    candidates: &mut BTreeMap<String, LinearAuxPackCandidate>,
+    name: &str,
+    shape: &[usize],
+    dtype: PreparedDType,
+    data: &[u8],
+) {
+    let suffix = if let Some(prefix) = name.strip_suffix(".in_proj_z.weight") {
+        Some((prefix.to_string(), "z"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_b.weight") {
+        Some((prefix.to_string(), "b"))
+    } else if let Some(prefix) = name.strip_suffix(".in_proj_a.weight") {
+        Some((prefix.to_string(), "a"))
+    } else {
+        None
+    };
+    let Some((prefix, which)) = suffix else {
+        return;
+    };
+    let candidate = candidates.entry(prefix).or_default();
+    let payload = (shape.to_vec(), dtype, data.to_vec());
+    match which {
+        "z" => candidate.z_weight = Some(payload),
+        "b" => candidate.b_weight = Some(payload),
+        "a" => candidate.a_weight = Some(payload),
+        _ => {}
+    }
 }
 
 fn write_tensor_entry(

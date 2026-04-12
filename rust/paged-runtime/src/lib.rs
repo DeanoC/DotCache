@@ -15,8 +15,11 @@ pub mod model;
 pub mod page;
 pub mod page_mode;
 #[cfg(feature = "candle")]
+pub mod megakernel_control;
+#[cfg(feature = "candle")]
 pub mod policy;
 #[cfg(feature = "qwen35-minimal")]
+pub mod qwen35_fast;
 pub mod model_package;
 #[cfg(feature = "qwen35-minimal")]
 pub mod qwen35_minimal;
@@ -54,6 +57,8 @@ pub use qwen35_minimal::{
     MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionLayerSpec,
     MinimalQwen35Runner, MinimalQwen35Weights,
 };
+#[cfg(feature = "qwen35-minimal")]
+pub use qwen35_fast::{Qwen35FastRunner, Qwen35FastTopology};
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;
 pub use session::{
