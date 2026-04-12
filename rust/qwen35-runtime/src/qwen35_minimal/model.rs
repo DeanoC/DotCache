@@ -9498,6 +9498,68 @@ pub(crate) fn delta_attn_solve_scan(base_attn_scan: &Tensor) -> Result<Tensor> {
     base_attn_scan.apply_op1_no_bwd(&DeltaAttnSolveScan)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_attn_solve_scan_host_buffer(
+    base_attn_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let base_attn_scan = base_attn_scan.contiguous()?;
+    let ordinal = match base_attn_scan.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (base_storage, base_layout) = base_attn_scan.storage_and_layout();
+    let Storage::Hip(base_storage) = &*base_storage else {
+        return Ok(None);
+    };
+    if !base_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let (batch_heads, num_chunks, chunk_size, width) = base_layout.shape().dims4()?;
+    if width != chunk_size {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(base_attn_scan.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(base_attn_scan.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_attn_solve_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            base_storage.raw_device_ptr_with_offset(base_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-attn-solve-scan-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_attn_solve_scan_host_buffer(
+    base_attn_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = base_attn_scan;
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaAttnSolveFromInputs;
 
