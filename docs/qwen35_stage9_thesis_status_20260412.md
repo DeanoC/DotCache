@@ -191,6 +191,58 @@ So the current read is:
 - some boundary fallback looks genuinely performance-positive
 - the next useful work there is likely a cost-aware mixed policy, not a globally looser gate
 
+Second focused portable-broad study:
+
+- benchmark artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_broad/qwen35_persistent_exact_key_frontier.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_broad/qwen35_persistent_exact_key_frontier.md)
+- baseline:
+  - exact-key fallback is again entirely concentrated in layer `15`
+  - `8` exact-key blocks per case
+  - baseline bias `1864.58 ms/step`
+- per-layer threshold sweep on layer `15`:
+  - `0.20` keeps the fallback frontier unchanged, preserves exact-match, and improves to `1772.44 ms/step`
+  - `0.22` removes exact-key fallback, preserves exact-match, but regresses badly to `2205.63 ms/step`
+  - `0.24` removes exact-key fallback, preserves exact-match, and improves materially to `1693.05 ms/step`
+
+So the cross-corpus read is now a little richer:
+
+- the frontier remains narrow and localizable
+- layer `15` is the important boundary on both `external` and `broad`
+- but the best policy is corpus-sensitive
+- removing exact-key fallback can be:
+  - harmful on `external`
+  - helpful on `broad`
+
+That makes the next useful policy shape more likely to be cost-aware and context-sensitive rather than a single global threshold bump.
+
+Third focused portable-large study:
+
+- benchmark artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_large/qwen35_persistent_exact_key_frontier.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_large/qwen35_persistent_exact_key_frontier.md)
+- baseline:
+  - exact-key fallback is again entirely concentrated in layer `15`
+  - `8` exact-key blocks per case
+  - baseline bias `1656.64 ms/step`
+- per-layer threshold sweep on layer `15`:
+  - `0.20` keeps the fallback frontier unchanged, preserves exact-match, and improves to `1515.22 ms/step`
+  - `0.22` removes exact-key fallback, preserves exact-match, but regresses badly to `2305.68 ms/step`
+  - `0.24` removes exact-key fallback, preserves exact-match, and is effectively neutral at `1661.59 ms/step`
+
+So the exact-key frontier picture is now pretty consistent in structure and inconsistent in the way that actually matters:
+
+- the frontier is narrow on all three portable corpora
+- it is always layer `15`
+- it is always about `8` exact-key blocks per case
+- but the best treatment is workload-dependent
+
+Current pattern:
+
+- `external`: removing the frontier is slightly worse
+- `broad`: removing the frontier at `0.24` is materially better
+- `large`: full removal at `0.24` is neutral, while a lighter `0.20` adjustment improves performance without removing fallback
+
+That strengthens the case for a cost-aware mixed policy instead of a single threshold rule. The frontier is simple enough to target, but not simple enough to flatten globally.
+
 ### 5. Hard-case explanation
 
 The system should still have a clean story for the remaining hard prompts and layers:
