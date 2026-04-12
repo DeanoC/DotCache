@@ -95,6 +95,10 @@ pub(crate) enum HipNativeExpr {
     Recip {
         source: Arc<HipNativeBuffer>,
     },
+    L2Norm {
+        source: Arc<HipNativeBuffer>,
+        eps: f64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +408,42 @@ impl HipNativeBuffer {
         Ok(Some(out.into()))
     }
 
+    fn host_bytes_l2norm(
+        &self,
+        source: &Arc<HipNativeBuffer>,
+        eps: f64,
+    ) -> Result<Option<Arc<[u8]>>> {
+        if !Self::supports_host_float_ops(self.dtype) {
+            return Ok(None);
+        }
+        let bytes = match source.try_materialize_host_bytes()? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let shape = source.shape();
+        if shape.is_empty() {
+            return Ok(None);
+        }
+        let inner = *shape.last().unwrap();
+        let outer = Self::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0u8; Self::byte_len(&self.shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let mut sum_sq = 0.0f64;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = Self::read_host_float(&bytes, self.dtype, idx)?;
+                sum_sq += value * value;
+            }
+            let denom = (sum_sq + eps).sqrt();
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = Self::read_host_float(&bytes, self.dtype, idx)?;
+                Self::write_host_float(&mut out, self.dtype, idx, value / denom)?;
+            }
+        }
+        Ok(Some(out.into()))
+    }
+
     fn host_bytes_matmul(lhs: &Arc<HipNativeBuffer>, rhs: &Arc<HipNativeBuffer>) -> Result<Option<Self>> {
         if lhs.dtype() != rhs.dtype() || !Self::supports_host_float_ops(lhs.dtype()) {
             return Ok(None);
@@ -516,6 +556,7 @@ impl HipNativeBuffer {
                 self.host_bytes_map_float(source, |v| v * *value)
             }
             HipNativeExpr::Recip { source } => self.host_bytes_map_float(source, |v| v.recip()),
+            HipNativeExpr::L2Norm { source, eps } => self.host_bytes_l2norm(source, *eps),
             _ => Ok(None),
         }
     }
@@ -787,6 +828,18 @@ impl HipNativeBuffer {
         }
     }
 
+    pub(crate) fn l2norm(source: Arc<HipNativeBuffer>, eps: f64) -> Self {
+        Self {
+            expr: HipNativeExpr::L2Norm {
+                source: source.clone(),
+                eps,
+            },
+            shape: source.shape.clone(),
+            dtype: source.dtype,
+            device: source.device.clone(),
+        }
+    }
+
     pub(crate) fn materialize(&self) -> Result<Tensor> {
         if let Some(bytes) = self.try_materialize_host_bytes()? {
             return Tensor::from_raw_buffer(bytes.as_ref(), self.dtype, &self.shape, &self.device);
@@ -851,6 +904,11 @@ impl HipNativeBuffer {
             HipNativeExpr::AddScalar { source, value } => Ok((source.materialize()? + *value)?),
             HipNativeExpr::MulScalar { source, value } => Ok((source.materialize()? * *value)?),
             HipNativeExpr::Recip { source } => source.materialize()?.recip(),
+            HipNativeExpr::L2Norm { source, eps } => {
+                let source = source.materialize()?;
+                let norm = source.sqr()?.sum_keepdim(candle_core::D::Minus1)?;
+                source.broadcast_div(&(norm + *eps)?.sqrt()?)
+            }
         }
     }
 
@@ -1045,6 +1103,13 @@ impl HipStorage {
         ))))
     }
 
+    pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
+        Ok(Self::from_native_buffer(HipNativeBuffer::l2norm(
+            Arc::new(self.0.clone()),
+            eps,
+        )))
+    }
+
     pub(crate) fn sigmoid(&self) -> Result<Self> {
         Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
             HipNativeBuffer::add_scalar(
@@ -1180,6 +1245,10 @@ impl HipTensor {
 
     pub(crate) fn recip(&self) -> Result<Self> {
         Ok(Self(self.0.recip()?))
+    }
+
+    pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
+        Ok(Self(self.0.l2norm(eps)?))
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
@@ -1666,7 +1735,7 @@ fn rms_norm_hip(
 }
 
 fn l2norm_hip(xs: &HipTensor, eps: f64) -> Result<HipTensor> {
-    l2norm(&xs.clone().into_tensor(), eps)
+    xs.l2norm(eps)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2139,6 +2208,17 @@ mod tests {
         let tensor = lhs.matmul(&rhs)?;
         assert_eq!(tensor.0.shape(), vec![2, 2]);
         assert_eq!(values_f32(tensor)?, vec![58.0, 64.0, 139.0, 154.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn host_bytes_l2norm_stays_host_backed() -> Result<()> {
+        let tensor = host_f32_tensor(&[2, 2], &[3.0, 4.0, 5.0, 12.0]).l2norm(1e-6)?;
+        let values = values_f32(tensor)?;
+        assert!((values[0] - 0.6).abs() < 1e-5);
+        assert!((values[1] - 0.8).abs() < 1e-5);
+        assert!((values[2] - (5.0f32 / 13.0)).abs() < 1e-5);
+        assert!((values[3] - (12.0f32 / 13.0)).abs() < 1e-5);
         Ok(())
     }
 
