@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -56,6 +57,57 @@ def _load_torch_mixed_execution_ops():
     )
 
     return _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch, _score_exact_logits_flat_torch
+
+
+def _load_torch_grouped_packed_ops():
+    from ..torch_mps import (
+        _score_m0_logits_packed32_grouped_torch,
+        _unpack_metadata,
+    )
+
+    return _score_m0_logits_packed32_grouped_torch, _unpack_metadata
+
+
+def _load_triton_direct_m0_ops():
+    from ..triton_direct_m0 import (
+        direct_m0_softmax_available,
+        fused_context_triton,
+        fused_indexed_context_triton,
+        fused_selected_blocks_context_triton,
+        score_direct_m0_logits_triton,
+        softmax_weights_triton,
+        triton_direct_m0_available,
+        triton_direct_m0_fused_available,
+    )
+
+    return (
+        score_direct_m0_logits_triton,
+        softmax_weights_triton,
+        fused_context_triton,
+        fused_indexed_context_triton,
+        fused_selected_blocks_context_triton,
+        triton_direct_m0_available,
+        direct_m0_softmax_available,
+        triton_direct_m0_fused_available,
+    )
+
+
+def _load_native_direct_m0_ops():
+    from ..native_direct_m0 import (
+        fused_selected_blocks_context_cuda,
+        fused_selected_blocks_stream_stats_cuda,
+        native_direct_m0_available,
+        native_direct_m0_final_mix_available,
+        softmax_value_context_cuda,
+    )
+
+    return (
+        fused_selected_blocks_context_cuda,
+        fused_selected_blocks_stream_stats_cuda,
+        softmax_value_context_cuda,
+        native_direct_m0_available,
+        native_direct_m0_final_mix_available,
+    )
 
 
 def _metal_direct_m0_probe_script_path() -> Path:
@@ -551,7 +603,13 @@ def _copy_full_attention_block_metadata_prefix(
     state.block_k_subradii[prefix].copy_(previous["block_k_subradii"][prefix])
     state.block_v_center[prefix].copy_(previous["block_v_center"][prefix])
     state.block_v_radius[prefix].copy_(previous["block_v_radius"][prefix])
+    state.block_v_subcenters[prefix].copy_(previous["block_v_subcenters"][prefix])
+    state.block_v_subradii[prefix].copy_(previous["block_v_subradii"][prefix])
+    state.block_v_sub_norm_max[prefix].copy_(previous["block_v_sub_norm_max"][prefix])
+    state.block_v_subtoken_counts[prefix].copy_(previous["block_v_subtoken_counts"][prefix])
     state.block_v_norm_max[prefix].copy_(previous["block_v_norm_max"][prefix])
+    state.block_v_pos_sum[prefix].copy_(previous["block_v_pos_sum"][prefix])
+    state.block_v_neg_sum[prefix].copy_(previous["block_v_neg_sum"][prefix])
     state.block_prev_attention_ema[prefix].copy_(previous["block_prev_attention_ema"][prefix])
     state.block_k_comp_error[prefix].copy_(previous["block_k_comp_error"][prefix])
     state.block_k_mode[prefix] = previous["block_k_mode"][prefix]
@@ -844,6 +902,7 @@ def _allocate_full_attention_block_metadata(
     num_blocks: int,
     device: Any,
     key_centroid_count: int,
+    value_centroid_count: int,
 ):
     torch = _load_torch()
     kv_heads = int(key_cache.shape[0])
@@ -862,7 +921,29 @@ def _allocate_full_attention_block_metadata(
     )
     block_v_center = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_v_radius = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_v_subcenters = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1), head_dim),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_subradii = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1)),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_sub_norm_max = torch.zeros(
+        (num_blocks, kv_heads, max(int(value_centroid_count), 1)),
+        dtype=torch.float32,
+        device=device,
+    )
+    block_v_subtoken_counts = torch.zeros(
+        (num_blocks, max(int(value_centroid_count), 1)),
+        dtype=torch.int32,
+        device=device,
+    )
     block_v_norm_max = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_v_pos_sum = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
+    block_v_neg_sum = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_prev_attention_ema = torch.zeros((num_blocks,), dtype=torch.float32, device=device)
     block_k_comp_error = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
     block_compression_metadata_valid = np.ones((num_blocks, kv_heads), dtype=np.float32)
@@ -873,11 +954,55 @@ def _allocate_full_attention_block_metadata(
         block_k_subradii,
         block_v_center,
         block_v_radius,
+        block_v_subcenters,
+        block_v_subradii,
+        block_v_sub_norm_max,
+        block_v_subtoken_counts,
         block_v_norm_max,
+        block_v_pos_sum,
+        block_v_neg_sum,
         block_prev_attention_ema,
         block_k_comp_error,
         block_compression_metadata_valid,
     )
+
+
+def _resolve_layer_key_centroid_count(
+    config: PersistentServingConfig | None,
+    layer_id: int,
+    *,
+    default: int = 1,
+) -> int:
+    resolved = max(int(default), 1)
+    if config is None:
+        return resolved
+    resolved = max(int(getattr(config, "full_attention_key_centroid_count", resolved)), 1)
+    by_layer = getattr(config, "full_attention_key_centroid_count_by_layer", None)
+    if by_layer:
+        try:
+            resolved = max(int(by_layer.get(int(layer_id), resolved)), 1)
+        except Exception:
+            resolved = max(int(resolved), 1)
+    return resolved
+
+
+def _resolve_layer_value_centroid_count(
+    config: PersistentServingConfig | None,
+    layer_id: int,
+    *,
+    default: int = 1,
+) -> int:
+    resolved = max(int(default), 1)
+    if config is None:
+        return resolved
+    resolved = max(int(getattr(config, "full_attention_value_centroid_count", resolved)), 1)
+    by_layer = getattr(config, "full_attention_value_centroid_count_by_layer", None)
+    if by_layer:
+        try:
+            resolved = max(int(by_layer.get(int(layer_id), resolved)), 1)
+        except Exception:
+            resolved = max(int(resolved), 1)
+    return resolved
 
 
 def _recompute_full_attention_block_metadata(
@@ -901,7 +1026,13 @@ def _recompute_full_attention_block_metadata(
             state.block_k_subradii[block_idx].zero_()
             state.block_v_center[block_idx].zero_()
             state.block_v_radius[block_idx].zero_()
+            state.block_v_subcenters[block_idx].zero_()
+            state.block_v_subradii[block_idx].zero_()
+            state.block_v_sub_norm_max[block_idx].zero_()
+            state.block_v_subtoken_counts[block_idx].zero_()
             state.block_v_norm_max[block_idx].zero_()
+            state.block_v_pos_sum[block_idx].zero_()
+            state.block_v_neg_sum[block_idx].zero_()
             state.block_k_comp_error[block_idx].zero_()
             state.block_compression_metadata_valid[block_idx] = 0.0
             continue
@@ -910,10 +1041,20 @@ def _recompute_full_attention_block_metadata(
         center = key_slice.mean(dim=1)
         distances = torch.linalg.vector_norm(key_slice - center[:, None, :], dim=-1)
         state.block_k_subcenters[block_idx].copy_(center[:, None, :].expand_as(state.block_k_subcenters[block_idx]))
-        state.block_k_subradii[block_idx].copy_(distances.max(dim=1).values[:, None].expand_as(state.block_k_subradii[block_idx]))
-        centroid_count = int(state.block_k_subcenters.shape[2])
-        if centroid_count > 1:
-            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), centroid_count)
+        state.block_k_subradii[block_idx].copy_(
+            distances.max(dim=1).values[:, None].expand_as(state.block_k_subradii[block_idx])
+        )
+        allocated_centroid_count = int(state.block_k_subcenters.shape[2])
+        active_centroid_count = min(
+            _resolve_layer_key_centroid_count(
+                config,
+                int(state.layer_id),
+                default=int(allocated_centroid_count),
+            ),
+            int(allocated_centroid_count),
+        )
+        if active_centroid_count > 1:
+            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), active_centroid_count)
             for centroid_idx, token_ids in enumerate(token_partitions):
                 if len(token_ids) <= 0:
                     continue
@@ -926,11 +1067,51 @@ def _recompute_full_attention_block_metadata(
         value_center = value_slice.mean(dim=1)
         value_distances = torch.linalg.vector_norm(value_slice - value_center[:, None, :], dim=-1)
         value_norms = torch.linalg.vector_norm(value_slice, dim=-1)
+        value_pos_sum = value_slice.clamp_min(0.0).sum(dim=1)
+        value_neg_sum = value_slice.clamp_max(0.0).sum(dim=1)
         state.block_k_center[block_idx].copy_(center)
         state.block_k_radius[block_idx].copy_(distances.max(dim=1).values)
         state.block_v_center[block_idx].copy_(value_center)
         state.block_v_radius[block_idx].copy_(value_distances.max(dim=1).values)
+        state.block_v_subcenters[block_idx].copy_(value_center[:, None, :].expand_as(state.block_v_subcenters[block_idx]))
+        state.block_v_subradii[block_idx].copy_(
+            value_distances.max(dim=1).values[:, None].expand_as(state.block_v_subradii[block_idx])
+        )
+        state.block_v_sub_norm_max[block_idx].copy_(
+            value_norms.max(dim=1).values[:, None].expand_as(state.block_v_sub_norm_max[block_idx])
+        )
+        state.block_v_subtoken_counts[block_idx].zero_()
+        state.block_v_subtoken_counts[block_idx, 0] = int(token_count)
+        allocated_value_centroid_count = int(state.block_v_subcenters.shape[2])
+        active_value_centroid_count = min(
+            _resolve_layer_value_centroid_count(
+                config,
+                int(state.layer_id),
+                default=int(allocated_value_centroid_count),
+            ),
+            int(allocated_value_centroid_count),
+        )
+        if active_value_centroid_count > 1:
+            token_partitions = np.array_split(np.arange(token_count, dtype=np.int64), active_value_centroid_count)
+            state.block_v_subcenters[block_idx].zero_()
+            state.block_v_subradii[block_idx].zero_()
+            state.block_v_sub_norm_max[block_idx].zero_()
+            state.block_v_subtoken_counts[block_idx].zero_()
+            for centroid_idx, token_ids in enumerate(token_partitions):
+                if len(token_ids) <= 0:
+                    continue
+                token_index_tensor = torch.as_tensor(token_ids, dtype=torch.int64, device=value_slice.device)
+                sub_value_slice = value_slice.index_select(1, token_index_tensor)
+                sub_center = sub_value_slice.mean(dim=1)
+                sub_distances = torch.linalg.vector_norm(sub_value_slice - sub_center[:, None, :], dim=-1)
+                sub_norms = torch.linalg.vector_norm(sub_value_slice, dim=-1)
+                state.block_v_subcenters[block_idx, :, centroid_idx, :].copy_(sub_center)
+                state.block_v_subradii[block_idx, :, centroid_idx].copy_(sub_distances.max(dim=1).values)
+                state.block_v_sub_norm_max[block_idx, :, centroid_idx].copy_(sub_norms.max(dim=1).values)
+                state.block_v_subtoken_counts[block_idx, centroid_idx] = int(len(token_ids))
         state.block_v_norm_max[block_idx].copy_(value_norms.max(dim=1).values)
+        state.block_v_pos_sum[block_idx].copy_(value_pos_sum)
+        state.block_v_neg_sum[block_idx].copy_(value_neg_sum)
         state.block_k_comp_error[block_idx].zero_()
         for kv_head_idx in range(int(key_slice.shape[0])):
             key_mode = _normalize_stage8_mode_name(state.block_k_mode[block_idx, kv_head_idx])
@@ -1077,6 +1258,24 @@ def _residual_value_upper_for_blocks(
     residual_cluster_count: int,
 ) -> tuple[float, float]:
     torch = _load_torch()
+    global_weighted_center_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_positive_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_negative_sum = torch.zeros(
+        (int(state.value_cache.shape[-1]),),
+        dtype=torch.float32,
+        device=state.value_cache.device,
+    )
+    global_radius_upper = 0.0
+    global_norm_upper = 0.0
+    global_mass_upper = 0.0
     grouped_block_ids: list[list[int]]
     if int(residual_cluster_count) > 0:
         grouped_block_ids = _cluster_block_ids_by_key_envelope(
@@ -1101,6 +1300,16 @@ def _residual_value_upper_for_blocks(
             dtype=torch.float32,
             device=state.value_cache.device,
         )
+        positive_sum = torch.zeros(
+            (int(state.value_cache.shape[-1]),),
+            dtype=torch.float32,
+            device=state.value_cache.device,
+        )
+        negative_sum = torch.zeros(
+            (int(state.value_cache.shape[-1]),),
+            dtype=torch.float32,
+            device=state.value_cache.device,
+        )
         block_mass_upper = 0.0
         block_radius_upper = 0.0
         block_norm_upper = 0.0
@@ -1117,22 +1326,88 @@ def _residual_value_upper_for_blocks(
             )
             current_block_mass = float(block_token_count) * scaled
             block_mass_upper += current_block_mass
-            weighted_center_sum = weighted_center_sum + (
-                state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
-                * float(current_block_mass)
+            global_mass_upper += current_block_mass
+            active_value_centroids = int(state.block_v_subcenters.shape[2])
+            subtoken_counts = state.block_v_subtoken_counts[int(remaining_block_id), :active_value_centroids]
+            use_value_subcentroids = bool(int((subtoken_counts > 0).sum().item()) > 1)
+            if use_value_subcentroids:
+                active_sub_count = min(active_value_centroids, int((subtoken_counts > 0).sum().item()))
+                for sub_idx in range(active_sub_count):
+                    sub_token_count = int(subtoken_counts[sub_idx].item())
+                    if sub_token_count <= 0:
+                        continue
+                    current_sub_mass = float(sub_token_count) * scaled
+                    weighted_center_sum = weighted_center_sum + (
+                        state.block_v_subcenters[int(remaining_block_id), int(kv_head_idx), sub_idx].to(dtype=torch.float32)
+                        * float(current_sub_mass)
+                    )
+                    global_weighted_center_sum = global_weighted_center_sum + (
+                        state.block_v_subcenters[int(remaining_block_id), int(kv_head_idx), sub_idx].to(dtype=torch.float32)
+                        * float(current_sub_mass)
+                    )
+                    block_radius_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_subradii[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    global_radius_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_subradii[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    block_norm_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_sub_norm_max[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+                    global_norm_upper += (
+                        float(current_sub_mass)
+                        * float(state.block_v_sub_norm_max[int(remaining_block_id), int(kv_head_idx), sub_idx].item())
+                    )
+            else:
+                weighted_center_sum = weighted_center_sum + (
+                    state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                    * float(current_block_mass)
+                )
+                global_weighted_center_sum = global_weighted_center_sum + (
+                    state.block_v_center[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                    * float(current_block_mass)
+                )
+                block_radius_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                global_radius_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                block_norm_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+                global_norm_upper += (
+                    float(current_block_mass)
+                    * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+                )
+            positive_sum = positive_sum + (
+                state.block_v_pos_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
-            block_radius_upper += (
-                float(current_block_mass)
-                * float(state.block_v_radius[int(remaining_block_id), int(kv_head_idx)].item())
+            negative_sum = negative_sum + (
+                state.block_v_neg_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
-            block_norm_upper += (
-                float(current_block_mass)
-                * float(state.block_v_norm_max[int(remaining_block_id), int(kv_head_idx)].item())
+            global_positive_sum = global_positive_sum + (
+                state.block_v_pos_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
+            )
+            global_negative_sum = global_negative_sum + (
+                state.block_v_neg_sum[int(remaining_block_id), int(kv_head_idx)].to(dtype=torch.float32)
+                * float(scaled)
             )
         block_value_upper = min(
             float(torch.linalg.vector_norm(weighted_center_sum).item()) + float(block_radius_upper),
             float(block_norm_upper),
         )
+        block_box_upper = float(torch.linalg.vector_norm(torch.maximum(positive_sum.abs(), negative_sum.abs())).item())
+        block_value_upper = min(float(block_value_upper), float(block_box_upper))
         if not use_group_caps or not token_spans:
             residual_mass_upper += float(block_mass_upper)
             residual_value_upper += float(block_value_upper)
@@ -1155,13 +1430,504 @@ def _residual_value_upper_for_blocks(
         )
         residual_mass_upper += min(float(block_mass_upper), float(cluster_mass_cap))
         residual_value_upper += min(float(block_value_upper), float(cluster_value_norm_cap))
-    return float(residual_mass_upper), float(residual_value_upper)
+    global_value_upper = min(
+        float(torch.linalg.vector_norm(global_weighted_center_sum).item()) + float(global_radius_upper),
+        float(global_norm_upper),
+    )
+    global_box_upper = float(
+        torch.linalg.vector_norm(torch.maximum(global_positive_sum.abs(), global_negative_sum.abs())).item()
+    )
+    global_value_upper = min(float(global_value_upper), float(global_box_upper))
+    resolved_mass_upper = float(global_mass_upper if not use_group_caps else residual_mass_upper)
+    resolved_value_upper = min(float(residual_value_upper), float(global_value_upper))
+    return float(resolved_mass_upper), float(resolved_value_upper)
+
+
+@dataclass(slots=True)
+class _StreamingResidualUpperTracker:
+    upper_bounds: np.ndarray
+    token_counts: np.ndarray
+    block_region_indices: np.ndarray
+    block_v_centers_by_q_head: np.ndarray
+    block_v_positive_sum_by_q_head: np.ndarray
+    block_v_negative_sum_by_q_head: np.ndarray
+    block_v_radii_by_q_head: np.ndarray
+    block_v_norm_max_by_q_head: np.ndarray
+    active_mask: np.ndarray
+    residual_mass_by_q_head_region: np.ndarray
+    residual_center_sum_by_q_head_region: np.ndarray
+    residual_positive_sum_by_q_head_region: np.ndarray
+    residual_negative_sum_by_q_head_region: np.ndarray
+    residual_radius_sum_by_q_head_region: np.ndarray
+    residual_norm_sum_by_q_head_region: np.ndarray
+    residual_center_sum_by_q_head_global: np.ndarray
+    residual_positive_sum_by_q_head_global: np.ndarray
+    residual_negative_sum_by_q_head_global: np.ndarray
+    residual_radius_sum_by_q_head_global: np.ndarray
+    residual_norm_sum_by_q_head_global: np.ndarray
+    current_m_by_q_head: np.ndarray
+    initialized_q_heads: np.ndarray
+    remaining_token_count: int
+
+    @classmethod
+    def from_state(
+        cls,
+        *,
+        state: PersistentFullAttentionLayerState,
+        q_head_to_kv_head: np.ndarray,
+        upper_bounds: Any,
+        num_heads: int,
+    ) -> "_StreamingResidualUpperTracker":
+        torch = _load_torch()
+        upper_bounds_np = np.asarray(
+            (upper_bounds.detach() if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds))
+            .to(dtype=torch.float32, device="cpu")
+            .numpy(),
+            dtype=np.float64,
+        )
+        token_counts = np.asarray(state.block_token_counts, dtype=np.float64)
+        active_mask = np.asarray(token_counts > 0.0, dtype=bool)
+        block_region_ids = np.asarray(state.block_region_ids, dtype=np.int64)
+        unique_region_ids, block_region_indices = np.unique(block_region_ids, return_inverse=True)
+        q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+        q_to_kv_t = torch.as_tensor(q_to_kv, device=state.block_v_center.device, dtype=torch.long)
+        block_v_centers_by_q_head = np.asarray(
+            state.block_v_center.index_select(1, q_to_kv_t).permute(1, 0, 2).detach().cpu().numpy(),
+            dtype=np.float64,
+        )
+        block_v_positive_sum_by_q_head = np.asarray(
+            state.block_v_pos_sum.index_select(1, q_to_kv_t).permute(1, 0, 2).detach().cpu().numpy(),
+            dtype=np.float64,
+        )
+        block_v_negative_sum_by_q_head = np.asarray(
+            state.block_v_neg_sum.index_select(1, q_to_kv_t).permute(1, 0, 2).detach().cpu().numpy(),
+            dtype=np.float64,
+        )
+        block_v_radii_by_q_head = np.asarray(
+            state.block_v_radius.index_select(1, q_to_kv_t).transpose(0, 1).detach().cpu().numpy(),
+            dtype=np.float64,
+        )
+        block_v_norm_max_by_q_head = np.asarray(
+            state.block_v_norm_max.index_select(1, q_to_kv_t).transpose(0, 1).detach().cpu().numpy(),
+            dtype=np.float64,
+        )
+        num_regions = max(len(unique_region_ids), 1)
+        value_dim = int(state.value_cache.shape[-1])
+        return cls(
+            upper_bounds=upper_bounds_np,
+            token_counts=token_counts,
+            block_region_indices=block_region_indices,
+            block_v_centers_by_q_head=block_v_centers_by_q_head,
+            block_v_positive_sum_by_q_head=block_v_positive_sum_by_q_head,
+            block_v_negative_sum_by_q_head=block_v_negative_sum_by_q_head,
+            block_v_radii_by_q_head=block_v_radii_by_q_head,
+            block_v_norm_max_by_q_head=block_v_norm_max_by_q_head,
+            active_mask=active_mask,
+            residual_mass_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_center_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_positive_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_negative_sum_by_q_head_region=np.zeros(
+                (int(num_heads), int(num_regions), int(value_dim)),
+                dtype=np.float64,
+            ),
+            residual_radius_sum_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_norm_sum_by_q_head_region=np.zeros((int(num_heads), int(num_regions)), dtype=np.float64),
+            residual_center_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_positive_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_negative_sum_by_q_head_global=np.zeros((int(num_heads), int(value_dim)), dtype=np.float64),
+            residual_radius_sum_by_q_head_global=np.zeros((int(num_heads),), dtype=np.float64),
+            residual_norm_sum_by_q_head_global=np.zeros((int(num_heads),), dtype=np.float64),
+            current_m_by_q_head=np.full((int(num_heads),), float("-inf"), dtype=np.float64),
+            initialized_q_heads=np.zeros((int(num_heads),), dtype=bool),
+            remaining_token_count=int(np.sum(token_counts[active_mask])),
+        )
+
+    def _initialize_q_heads(self, q_head_ids: np.ndarray, *, m_values: np.ndarray) -> None:
+        resolved_q_head_ids = np.asarray(q_head_ids, dtype=np.int64)
+        if resolved_q_head_ids.size == 0:
+            return
+        resolved_m_values = np.asarray(m_values, dtype=np.float64)
+        self.current_m_by_q_head[resolved_q_head_ids] = resolved_m_values
+        self.initialized_q_heads[resolved_q_head_ids] = True
+        self.residual_mass_by_q_head_region[resolved_q_head_ids, :] = 0.0
+        self.residual_center_sum_by_q_head_region[resolved_q_head_ids, :, :] = 0.0
+        self.residual_positive_sum_by_q_head_region[resolved_q_head_ids, :, :] = 0.0
+        self.residual_negative_sum_by_q_head_region[resolved_q_head_ids, :, :] = 0.0
+        self.residual_radius_sum_by_q_head_region[resolved_q_head_ids, :] = 0.0
+        self.residual_norm_sum_by_q_head_region[resolved_q_head_ids, :] = 0.0
+        self.residual_center_sum_by_q_head_global[resolved_q_head_ids, :] = 0.0
+        self.residual_positive_sum_by_q_head_global[resolved_q_head_ids, :] = 0.0
+        self.residual_negative_sum_by_q_head_global[resolved_q_head_ids, :] = 0.0
+        self.residual_radius_sum_by_q_head_global[resolved_q_head_ids] = 0.0
+        self.residual_norm_sum_by_q_head_global[resolved_q_head_ids] = 0.0
+        if not np.any(self.active_mask):
+            return
+        active_block_ids = np.flatnonzero(self.active_mask)
+        active_region_indices = self.block_region_indices[active_block_ids]
+        active_upper_bounds = self.upper_bounds[active_block_ids]
+        active_token_counts = self.token_counts[active_block_ids]
+        finite_mask = np.isfinite(resolved_m_values)
+        scaled = np.exp(
+            np.where(
+                finite_mask[:, None],
+                np.minimum(active_upper_bounds[None, :] - resolved_m_values[:, None], 80.0),
+                np.minimum(active_upper_bounds[None, :], 80.0),
+            )
+        )
+        mass_terms = active_token_counts[None, :] * scaled
+        centers = self.block_v_centers_by_q_head[resolved_q_head_ids][:, active_block_ids, :]
+        positive = self.block_v_positive_sum_by_q_head[resolved_q_head_ids][:, active_block_ids, :]
+        negative = self.block_v_negative_sum_by_q_head[resolved_q_head_ids][:, active_block_ids, :]
+        radii = self.block_v_radii_by_q_head[resolved_q_head_ids][:, active_block_ids]
+        norm_max = self.block_v_norm_max_by_q_head[resolved_q_head_ids][:, active_block_ids]
+        self.residual_center_sum_by_q_head_global[resolved_q_head_ids, :] = np.sum(
+            centers * mass_terms[:, :, None],
+            axis=1,
+        )
+        self.residual_positive_sum_by_q_head_global[resolved_q_head_ids, :] = np.sum(
+            positive * scaled[:, :, None],
+            axis=1,
+        )
+        self.residual_negative_sum_by_q_head_global[resolved_q_head_ids, :] = np.sum(
+            negative * scaled[:, :, None],
+            axis=1,
+        )
+        self.residual_radius_sum_by_q_head_global[resolved_q_head_ids] = np.sum(radii * mass_terms, axis=1)
+        self.residual_norm_sum_by_q_head_global[resolved_q_head_ids] = np.sum(norm_max * mass_terms, axis=1)
+        unique_regions = np.unique(active_region_indices)
+        for region_index in unique_regions.tolist():
+            region_mask = active_region_indices == int(region_index)
+            region_scaled = scaled[:, region_mask]
+            region_masses = mass_terms[:, region_mask]
+            self.residual_mass_by_q_head_region[resolved_q_head_ids, int(region_index)] = np.sum(
+                region_masses,
+                axis=1,
+            )
+            self.residual_center_sum_by_q_head_region[resolved_q_head_ids, int(region_index), :] = np.sum(
+                centers[:, region_mask, :] * region_masses[:, :, None],
+                axis=1,
+            )
+            self.residual_positive_sum_by_q_head_region[resolved_q_head_ids, int(region_index), :] = np.sum(
+                positive[:, region_mask, :] * region_scaled[:, :, None],
+                axis=1,
+            )
+            self.residual_negative_sum_by_q_head_region[resolved_q_head_ids, int(region_index), :] = np.sum(
+                negative[:, region_mask, :] * region_scaled[:, :, None],
+                axis=1,
+            )
+            self.residual_radius_sum_by_q_head_region[resolved_q_head_ids, int(region_index)] = np.sum(
+                radii[:, region_mask] * region_masses,
+                axis=1,
+            )
+            self.residual_norm_sum_by_q_head_region[resolved_q_head_ids, int(region_index)] = np.sum(
+                norm_max[:, region_mask] * region_masses,
+                axis=1,
+            )
+
+    def _initialize_q_head(self, q_head_idx: int, *, m_value: float) -> None:
+        self._initialize_q_heads(
+            np.asarray([int(q_head_idx)], dtype=np.int64),
+            m_values=np.asarray([float(m_value)], dtype=np.float64),
+        )
+
+    def mark_processed_blocks(self, block_ids: list[int], *, m_values: Any) -> None:
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids
+            if 0 <= int(block_id) < int(self.active_mask.shape[0]) and bool(self.active_mask[int(block_id)])
+        ]
+        if not resolved_block_ids:
+            return
+        torch = _load_torch()
+        if torch.is_tensor(m_values):
+            m_values_np = np.asarray(
+                m_values.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                dtype=np.float64,
+            ).reshape(-1)
+        else:
+            m_values_np = np.asarray(m_values, dtype=np.float64).reshape(-1)
+        uninitialized_q_head_ids = np.flatnonzero(~np.asarray(self.initialized_q_heads, dtype=bool))
+        if uninitialized_q_head_ids.size > 0:
+            self._initialize_q_heads(
+                uninitialized_q_head_ids,
+                m_values=m_values_np[uninitialized_q_head_ids],
+            )
+        resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
+        token_counts = self.token_counts[resolved_block_ids_np]
+        upper_values = self.upper_bounds[resolved_block_ids_np]
+        region_indices = self.block_region_indices[resolved_block_ids_np]
+        previous_m_values = np.asarray(self.current_m_by_q_head, dtype=np.float64).copy()
+        finite_prev = np.isfinite(previous_m_values)
+        finite_next = np.isfinite(m_values_np)
+        rescale = np.ones_like(m_values_np, dtype=np.float64)
+        both_finite = finite_prev & finite_next
+        rescale[both_finite] = np.exp(
+            np.clip(previous_m_values[both_finite] - m_values_np[both_finite], -80.0, 0.0)
+        )
+        rescale[~finite_prev & finite_next] = 0.0
+        self.residual_mass_by_q_head_region *= rescale[:, None]
+        self.residual_center_sum_by_q_head_region *= rescale[:, None, None]
+        self.residual_positive_sum_by_q_head_region *= rescale[:, None, None]
+        self.residual_negative_sum_by_q_head_region *= rescale[:, None, None]
+        self.residual_radius_sum_by_q_head_region *= rescale[:, None]
+        self.residual_norm_sum_by_q_head_region *= rescale[:, None]
+        self.residual_center_sum_by_q_head_global *= rescale[:, None]
+        self.residual_positive_sum_by_q_head_global *= rescale[:, None]
+        self.residual_negative_sum_by_q_head_global *= rescale[:, None]
+        self.residual_radius_sum_by_q_head_global *= rescale
+        self.residual_norm_sum_by_q_head_global *= rescale
+        scaled = np.exp(
+            np.where(
+                finite_next[:, None],
+                np.minimum(upper_values[None, :] - m_values_np[:, None], 80.0),
+                np.minimum(upper_values[None, :], 80.0),
+            )
+        )
+        processed_masses = token_counts[None, :] * scaled
+        centers = self.block_v_centers_by_q_head[:, resolved_block_ids_np, :]
+        positive = self.block_v_positive_sum_by_q_head[:, resolved_block_ids_np, :]
+        negative = self.block_v_negative_sum_by_q_head[:, resolved_block_ids_np, :]
+        radii = self.block_v_radii_by_q_head[:, resolved_block_ids_np]
+        norm_max = self.block_v_norm_max_by_q_head[:, resolved_block_ids_np]
+        self.residual_center_sum_by_q_head_global -= np.sum(centers * processed_masses[:, :, None], axis=1)
+        self.residual_positive_sum_by_q_head_global -= np.sum(positive * scaled[:, :, None], axis=1)
+        self.residual_negative_sum_by_q_head_global -= np.sum(negative * scaled[:, :, None], axis=1)
+        self.residual_radius_sum_by_q_head_global = np.maximum(
+            self.residual_radius_sum_by_q_head_global - np.sum(radii * processed_masses, axis=1),
+            0.0,
+        )
+        self.residual_norm_sum_by_q_head_global = np.maximum(
+            self.residual_norm_sum_by_q_head_global - np.sum(norm_max * processed_masses, axis=1),
+            0.0,
+        )
+        unique_regions = np.unique(region_indices)
+        for region_index in unique_regions.tolist():
+            region_mask = region_indices == int(region_index)
+            region_masses = processed_masses[:, region_mask]
+            region_scaled = scaled[:, region_mask]
+            self.residual_mass_by_q_head_region[:, int(region_index)] = np.maximum(
+                self.residual_mass_by_q_head_region[:, int(region_index)] - np.sum(region_masses, axis=1),
+                0.0,
+            )
+            self.residual_center_sum_by_q_head_region[:, int(region_index), :] -= np.sum(
+                centers[:, region_mask, :] * region_masses[:, :, None],
+                axis=1,
+            )
+            self.residual_positive_sum_by_q_head_region[:, int(region_index), :] -= np.sum(
+                positive[:, region_mask, :] * region_scaled[:, :, None],
+                axis=1,
+            )
+            self.residual_negative_sum_by_q_head_region[:, int(region_index), :] -= np.sum(
+                negative[:, region_mask, :] * region_scaled[:, :, None],
+                axis=1,
+            )
+            self.residual_radius_sum_by_q_head_region[:, int(region_index)] = np.maximum(
+                self.residual_radius_sum_by_q_head_region[:, int(region_index)]
+                - np.sum(radii[:, region_mask] * region_masses, axis=1),
+                0.0,
+            )
+            self.residual_norm_sum_by_q_head_region[:, int(region_index)] = np.maximum(
+                self.residual_norm_sum_by_q_head_region[:, int(region_index)]
+                - np.sum(norm_max[:, region_mask] * region_masses, axis=1),
+                0.0,
+            )
+        self.current_m_by_q_head[:] = m_values_np
+        self.active_mask[resolved_block_ids_np] = False
+        self.remaining_token_count = max(
+            int(self.remaining_token_count - int(np.sum(token_counts))),
+            0,
+        )
+
+    def tighten_upper_bounds(self, block_ids: list[int], *, new_upper_bounds: np.ndarray) -> None:
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids
+            if 0 <= int(block_id) < int(self.active_mask.shape[0]) and bool(self.active_mask[int(block_id)])
+        ]
+        if not resolved_block_ids:
+            return
+        resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
+        updated_upper_bounds = np.asarray(new_upper_bounds, dtype=np.float64)[resolved_block_ids_np]
+        previous_upper_bounds = self.upper_bounds[resolved_block_ids_np].copy()
+        self.upper_bounds[resolved_block_ids_np] = np.minimum(previous_upper_bounds, updated_upper_bounds)
+        region_indices = self.block_region_indices[resolved_block_ids_np]
+        token_counts = self.token_counts[resolved_block_ids_np]
+        for q_head_idx in range(int(self.current_m_by_q_head.shape[0])):
+            if not bool(self.initialized_q_heads[int(q_head_idx)]):
+                continue
+            m_value = float(self.current_m_by_q_head[int(q_head_idx)])
+            if math.isfinite(m_value):
+                previous_scaled = np.exp(np.minimum(previous_upper_bounds - m_value, 80.0))
+                updated_scaled = np.exp(np.minimum(self.upper_bounds[resolved_block_ids_np] - m_value, 80.0))
+            else:
+                previous_scaled = np.exp(np.minimum(previous_upper_bounds, 80.0))
+                updated_scaled = np.exp(np.minimum(self.upper_bounds[resolved_block_ids_np], 80.0))
+            scaled_delta = np.maximum(previous_scaled - updated_scaled, 0.0)
+            if not np.any(scaled_delta > 0.0):
+                continue
+            mass_delta = token_counts * scaled_delta
+            for position, block_id in enumerate(resolved_block_ids):
+                delta_scaled = float(scaled_delta[int(position)])
+                if delta_scaled <= 0.0:
+                    continue
+                delta_mass = float(mass_delta[int(position)])
+                region_index = int(region_indices[int(position)])
+                self.residual_mass_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(self.residual_mass_by_q_head_region[int(q_head_idx), region_index] - delta_mass),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * delta_mass
+                )
+                self.residual_positive_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_negative_sum_by_q_head_region[int(q_head_idx), region_index, :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_region[int(q_head_idx), region_index]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_center_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_centers_by_q_head[int(q_head_idx), int(block_id), :] * delta_mass
+                )
+                self.residual_positive_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_positive_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_negative_sum_by_q_head_global[int(q_head_idx), :] -= (
+                    self.block_v_negative_sum_by_q_head[int(q_head_idx), int(block_id), :] * delta_scaled
+                )
+                self.residual_radius_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_radius_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_radii_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+                self.residual_norm_sum_by_q_head_global[int(q_head_idx)] = max(
+                    float(
+                        self.residual_norm_sum_by_q_head_global[int(q_head_idx)]
+                        - self.block_v_norm_max_by_q_head[int(q_head_idx), int(block_id)] * delta_mass
+                    ),
+                    0.0,
+                )
+
+    def bounds_for_q_head(self, q_head_idx: int) -> tuple[float, float]:
+        if not np.any(self.active_mask):
+            return 0.0, 0.0
+        if not bool(self.initialized_q_heads[int(q_head_idx)]):
+            return 0.0, 0.0
+        residual_mass = float(np.sum(self.residual_mass_by_q_head_region[int(q_head_idx), :]))
+        residual_value = 0.0
+        for region_index in range(int(self.residual_mass_by_q_head_region.shape[1])):
+            region_mass = float(self.residual_mass_by_q_head_region[int(q_head_idx), int(region_index)])
+            if region_mass <= 0.0:
+                continue
+            center_norm = float(
+                np.linalg.norm(self.residual_center_sum_by_q_head_region[int(q_head_idx), int(region_index), :])
+            )
+            box_norm = float(
+                np.linalg.norm(
+                    np.maximum(
+                        np.abs(self.residual_positive_sum_by_q_head_region[int(q_head_idx), int(region_index), :]),
+                        np.abs(self.residual_negative_sum_by_q_head_region[int(q_head_idx), int(region_index), :]),
+                    )
+                )
+            )
+            radius_sum = float(self.residual_radius_sum_by_q_head_region[int(q_head_idx), int(region_index)])
+            norm_sum = float(self.residual_norm_sum_by_q_head_region[int(q_head_idx), int(region_index)])
+            residual_value += min(center_norm + radius_sum, norm_sum, box_norm)
+        global_center_norm = float(
+            np.linalg.norm(self.residual_center_sum_by_q_head_global[int(q_head_idx), :])
+        )
+        global_box_norm = float(
+            np.linalg.norm(
+                np.maximum(
+                    np.abs(self.residual_positive_sum_by_q_head_global[int(q_head_idx), :]),
+                    np.abs(self.residual_negative_sum_by_q_head_global[int(q_head_idx), :]),
+                )
+            )
+        )
+        global_value = min(
+            global_center_norm + float(self.residual_radius_sum_by_q_head_global[int(q_head_idx)]),
+            float(self.residual_norm_sum_by_q_head_global[int(q_head_idx)]),
+            global_box_norm,
+        )
+        return (
+            float(max(residual_mass, 0.0)),
+            float(max(min(residual_value, global_value), 0.0)),
+        )
+
+    def bounds_for_all_q_heads(self) -> tuple[np.ndarray, np.ndarray]:
+        num_heads = int(self.current_m_by_q_head.shape[0])
+        residual_mass = np.zeros((num_heads,), dtype=np.float64)
+        residual_value = np.zeros((num_heads,), dtype=np.float64)
+        if not np.any(self.active_mask):
+            return residual_mass, residual_value
+        initialized_mask = np.asarray(self.initialized_q_heads, dtype=bool)
+        if not np.any(initialized_mask):
+            return residual_mass, residual_value
+        region_mass = np.asarray(self.residual_mass_by_q_head_region, dtype=np.float64)
+        residual_mass = np.sum(region_mass, axis=1)
+        center_norm = np.linalg.norm(self.residual_center_sum_by_q_head_region, axis=2)
+        box_norm = np.linalg.norm(
+            np.maximum(
+                np.abs(self.residual_positive_sum_by_q_head_region),
+                np.abs(self.residual_negative_sum_by_q_head_region),
+            ),
+            axis=2,
+        )
+        region_value = np.minimum(
+            center_norm + np.asarray(self.residual_radius_sum_by_q_head_region, dtype=np.float64),
+            np.asarray(self.residual_norm_sum_by_q_head_region, dtype=np.float64),
+        )
+        region_value = np.minimum(region_value, box_norm)
+        region_value = np.where(region_mass > 0.0, region_value, 0.0)
+        residual_value = np.sum(region_value, axis=1)
+        global_center_norm = np.linalg.norm(self.residual_center_sum_by_q_head_global, axis=1)
+        global_box_norm = np.linalg.norm(
+            np.maximum(
+                np.abs(self.residual_positive_sum_by_q_head_global),
+                np.abs(self.residual_negative_sum_by_q_head_global),
+            ),
+            axis=1,
+        )
+        global_value = np.minimum(
+            global_center_norm + np.asarray(self.residual_radius_sum_by_q_head_global, dtype=np.float64),
+            np.asarray(self.residual_norm_sum_by_q_head_global, dtype=np.float64),
+        )
+        global_value = np.minimum(global_value, global_box_norm)
+        residual_mass = np.where(initialized_mask, np.maximum(residual_mass, 0.0), 0.0)
+        residual_value = np.where(
+            initialized_mask,
+            np.maximum(np.minimum(residual_value, global_value), 0.0),
+            0.0,
+        )
+        return residual_mass, residual_value
 
 
 def _resolve_block_score_inputs(
     *,
     state: PersistentFullAttentionLayerState,
     config: PersistentServingConfig,
+    layer_id: int,
     query: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
@@ -1239,6 +2005,12 @@ def _resolve_block_score_inputs(
             if probe_upper is not None and math.isfinite(probe_upper):
                 upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(probe_upper))
     refine_top_k = max(int(getattr(config, "full_attention_refine_top_k", 0)), 0)
+    refine_top_k_by_layer = getattr(config, "full_attention_refine_top_k_by_layer", None)
+    if refine_top_k_by_layer:
+        try:
+            refine_top_k = max(int(refine_top_k_by_layer.get(int(layer_id), refine_top_k)), 0)
+        except Exception:
+            refine_top_k = max(int(refine_top_k), 0)
     if refine_top_k > 0 and num_blocks > 0:
         ranked_block_ids = sorted(
             range(num_blocks),
@@ -1324,11 +2096,11 @@ def _rank_optional_block_ids(
 ) -> list[int]:
     if not candidate_block_ids:
         return []
+    torch = _load_torch()
     def _score_values_array(value: Any) -> np.ndarray:
         if isinstance(value, np.ndarray):
             return value.astype(np.float32, copy=False)
         if hasattr(value, "detach"):
-            torch = _load_torch()
             return value.detach().to(device="cpu", dtype=torch.float32).numpy()
         return np.asarray(value, dtype=np.float32)
     candidate_ids_np = np.asarray(candidate_block_ids, dtype=np.int64)
@@ -1344,6 +2116,264 @@ def _rank_optional_block_ids(
         return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
     order = np.argsort(priority_values[candidate_ids_np], kind="stable")
     return [int(block_id) for block_id in candidate_ids_np[order[::-1]].tolist()]
+
+
+def _resolve_streaming_proxy_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    config: PersistentServingConfig,
+    q_head_to_kv_head: np.ndarray,
+    upper_bounds: Any,
+    layer_id: int,
+    mode: str = "residual_proxy",
+) -> Any:
+    torch = _load_torch()
+    upper_tensor = upper_bounds if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds)
+    device = upper_tensor.device
+    dtype = torch.float32
+    upper = upper_tensor.to(device=device, dtype=dtype)
+    token_counts = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.float32),
+        dtype=dtype,
+        device=device,
+    ).clamp_min(1.0)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    kv_value_norms = [
+        state.block_v_norm_max[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        for kv_head_idx in q_to_kv.tolist()
+    ]
+    if kv_value_norms:
+        value_norm = torch.stack(kv_value_norms, dim=0).max(dim=0).values.clamp_min(1e-8)
+    else:
+        value_norm = torch.ones_like(token_counts)
+    if str(mode).strip().lower() == "residual_proxy_envelope":
+        kv_value_centers = [
+            torch.linalg.vector_norm(
+                state.block_v_center[:, int(kv_head_idx), :].to(device=device, dtype=dtype),
+                dim=-1,
+            )
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        kv_value_radii = [
+            state.block_v_radius[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        kv_value_boxes = [
+            torch.linalg.vector_norm(
+                torch.maximum(
+                    state.block_v_pos_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                    state.block_v_neg_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                ),
+                dim=-1,
+            )
+            for kv_head_idx in q_to_kv.tolist()
+        ]
+        if kv_value_centers and kv_value_radii and kv_value_boxes:
+            center_radius = (
+                torch.stack(kv_value_centers, dim=0).max(dim=0).values
+                + torch.stack(kv_value_radii, dim=0).max(dim=0).values
+            ).clamp_min(1e-8)
+            box_norm_per_token = (
+                torch.stack(kv_value_boxes, dim=0).max(dim=0).values / token_counts
+            ).clamp_min(1e-8)
+            value_norm = torch.minimum(value_norm, center_radius)
+            value_norm = torch.minimum(value_norm, box_norm_per_token)
+    token_weight = float(getattr(config, "full_attention_streaming_proxy_token_weight", 1.0))
+    value_weight = float(getattr(config, "full_attention_streaming_proxy_value_weight", 1.0))
+    value_weight_by_layer = getattr(config, "full_attention_streaming_proxy_value_weight_by_layer", None)
+    if value_weight_by_layer:
+        try:
+            value_weight = float(value_weight_by_layer.get(int(layer_id), value_weight))
+        except Exception:
+            value_weight = float(value_weight)
+    return upper + token_weight * torch.log(token_counts) + value_weight * torch.log(value_norm)
+
+
+def _resolve_streaming_value_upper_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    q_head_to_kv_head: np.ndarray,
+    upper_bounds: Any,
+) -> Any:
+    torch = _load_torch()
+    upper_tensor = upper_bounds if torch.is_tensor(upper_bounds) else torch.as_tensor(upper_bounds)
+    device = upper_tensor.device
+    dtype = torch.float32
+    upper = upper_tensor.to(device=device, dtype=dtype)
+    cached_value_upper_log = getattr(state, "block_streaming_value_upper_log_cache", None)
+    if cached_value_upper_log is not None:
+        return upper + cached_value_upper_log.to(device=device, dtype=dtype)
+    token_counts = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.float32),
+        dtype=dtype,
+        device=device,
+    ).clamp_min(1.0)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    block_value_upper_terms = []
+    for kv_head_idx in q_to_kv.tolist():
+        center_norm = torch.linalg.vector_norm(
+            state.block_v_center[:, int(kv_head_idx), :].to(device=device, dtype=dtype),
+            dim=-1,
+        )
+        radius = state.block_v_radius[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        norm_max = state.block_v_norm_max[:, int(kv_head_idx)].to(device=device, dtype=dtype)
+        box_norm = torch.linalg.vector_norm(
+            torch.maximum(
+                state.block_v_pos_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+                state.block_v_neg_sum[:, int(kv_head_idx), :].to(device=device, dtype=dtype).abs(),
+            ),
+            dim=-1,
+        )
+        block_value_upper = torch.minimum(
+            token_counts * (center_norm + radius),
+            token_counts * norm_max,
+        )
+        block_value_upper = torch.minimum(block_value_upper, box_norm).clamp_min(1e-8)
+        block_value_upper_terms.append(block_value_upper)
+    if block_value_upper_terms:
+        value_upper = torch.stack(block_value_upper_terms, dim=0).max(dim=0).values
+    else:
+        value_upper = torch.ones_like(token_counts)
+    return upper + torch.log(value_upper.clamp_min(1e-8))
+
+
+def _refresh_cached_streaming_value_upper_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_indices: list[int] | np.ndarray,
+    q_head_to_kv_head: np.ndarray,
+) -> None:
+    torch = _load_torch()
+    if len(block_indices) == 0:
+        return
+    cache_device = state.value_cache.device
+    cache = getattr(state, "block_streaming_value_upper_log_cache", None)
+    num_blocks = int(len(state.block_token_starts))
+    if cache is None or int(cache.shape[0]) != num_blocks or cache.device != cache_device:
+        state.block_streaming_value_upper_log_cache = torch.zeros(
+            (num_blocks,),
+            dtype=torch.float32,
+            device=cache_device,
+        )
+        cache = state.block_streaming_value_upper_log_cache
+    block_index_tensor = torch.as_tensor(block_indices, dtype=torch.int64, device=cache_device).reshape(-1)
+    if int(block_index_tensor.numel()) == 0:
+        return
+    unique_kv_heads = np.unique(np.asarray(q_head_to_kv_head, dtype=np.int64).reshape(-1))
+    if unique_kv_heads.size == 0:
+        cache.index_fill_(0, block_index_tensor, 0.0)
+        return
+    kv_index_tensor = torch.as_tensor(unique_kv_heads, dtype=torch.int64, device=cache_device)
+    if state.block_token_counts_cuda is not None and state.block_token_counts_cuda.device == cache_device:
+        token_counts = state.block_token_counts_cuda.index_select(0, block_index_tensor).to(dtype=torch.float32)
+    else:
+        token_counts = torch.as_tensor(
+            np.asarray(state.block_token_counts, dtype=np.int64),
+            dtype=torch.int64,
+            device=cache_device,
+        ).index_select(0, block_index_tensor).to(dtype=torch.float32)
+    token_counts = token_counts.unsqueeze(1).clamp_min(1.0)
+    centers = state.block_v_center.index_select(0, block_index_tensor).index_select(1, kv_index_tensor).to(dtype=torch.float32)
+    radii = state.block_v_radius.index_select(0, block_index_tensor).index_select(1, kv_index_tensor).to(dtype=torch.float32)
+    norm_max = state.block_v_norm_max.index_select(0, block_index_tensor).index_select(1, kv_index_tensor).to(dtype=torch.float32)
+    pos_sum = state.block_v_pos_sum.index_select(0, block_index_tensor).index_select(1, kv_index_tensor).to(dtype=torch.float32)
+    neg_sum = state.block_v_neg_sum.index_select(0, block_index_tensor).index_select(1, kv_index_tensor).to(dtype=torch.float32)
+    center_norm = torch.linalg.vector_norm(centers, dim=-1)
+    box_norm = torch.linalg.vector_norm(torch.maximum(pos_sum.abs(), neg_sum.abs()), dim=-1)
+    block_value_upper = torch.minimum(
+        token_counts * (center_norm + radii),
+        token_counts * norm_max,
+    )
+    block_value_upper = torch.minimum(block_value_upper, box_norm).clamp_min(1e-8)
+    cache.index_copy_(0, block_index_tensor, torch.log(block_value_upper.max(dim=1).values))
+
+
+def _resolve_streaming_exact_value_scores(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    query_tensor: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+    m_values: Any,
+    l_values: Any,
+) -> Any:
+    torch = _load_torch()
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    device = query_fp32.device
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    num_blocks = int(len(state.block_token_starts))
+    scores = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=device)
+    m_fp32 = m_values.to(device=device, dtype=torch.float32)
+    l_fp32 = l_values.to(device=device, dtype=torch.float32)
+    for block_id in [int(value) for value in block_ids]:
+        token_start = int(state.block_token_starts[int(block_id)])
+        token_count = int(state.block_token_counts[int(block_id)])
+        if token_count <= 0:
+            continue
+        best_score = 0.0
+        for q_head_idx in range(int(query_fp32.shape[0])):
+            kv_head_idx = int(q_to_kv[q_head_idx])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=device,
+                dtype=torch.float32,
+            )
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=device,
+                dtype=torch.float32,
+            )
+            if int(key_slice.shape[0]) <= 0:
+                continue
+            logits = torch.matmul(key_slice, query_fp32[q_head_idx]) * float(query_scale)
+            m_value = float(m_fp32[q_head_idx].item())
+            if math.isfinite(m_value):
+                scaled = torch.exp(logits - m_value)
+            else:
+                local_max = float(logits.max().item())
+                scaled = torch.exp(logits - local_max)
+            block_mass = float(scaled.sum().item())
+            denom = float(l_fp32[q_head_idx].item() + block_mass)
+            if denom <= 0.0:
+                continue
+            contribution = torch.sum(scaled[:, None] * value_slice, dim=0)
+            value_score = float(torch.linalg.vector_norm(contribution).item() / denom)
+            best_score = max(best_score, value_score)
+        scores[int(block_id)] = float(best_score)
+    return scores
+
+
+def _refine_upper_bounds_exact_for_block_ids(
+    *,
+    state: PersistentFullAttentionLayerState,
+    block_ids: list[int],
+    query_tensor: Any,
+    q_head_to_kv_head: np.ndarray,
+    query_scale: float,
+    upper_bounds: Any,
+) -> None:
+    torch = _load_torch()
+    if not block_ids:
+        return
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
+    for block_id in [int(value) for value in block_ids]:
+        token_start = int(state.block_token_starts[int(block_id)])
+        token_count = int(state.block_token_counts[int(block_id)])
+        if token_count <= 0:
+            continue
+        exact_max = float("-inf")
+        for q_head_idx in range(int(query_fp32.shape[0])):
+            kv_head_idx = int(q_to_kv[q_head_idx])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                device=query_fp32.device,
+                dtype=torch.float32,
+            )
+            if int(key_slice.shape[0]) == 0:
+                continue
+            logits = torch.matmul(key_slice, query_fp32[q_head_idx]) * float(query_scale)
+            exact_max = max(exact_max, float(logits.max().item()))
+        if math.isfinite(exact_max):
+            upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(exact_max))
 
 
 def _policy_preference_bonus(
@@ -1864,15 +2894,22 @@ def _compression_invalid_block_ids(
 def _gather_selected_block_tensors(
     *,
     state: PersistentFullAttentionLayerState,
-    block_ids: list[int],
+    block_ids: Any,
 ):
     torch = _load_torch()
-    if not block_ids:
+    if torch.is_tensor(block_ids):
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids.detach().to(device="cpu", dtype=torch.int64).reshape(-1).tolist()
+        ]
+    else:
+        resolved_block_ids = [int(block_id) for block_id in block_ids]
+    if not resolved_block_ids:
         raise ValueError("selected block ids must not be empty")
     key_slices = []
     value_slices = []
     token_counts: list[int] = []
-    for block_id in block_ids:
+    for block_id in resolved_block_ids:
         token_start = int(state.block_token_starts[block_id])
         token_count = int(state.block_token_counts[block_id])
         token_counts.append(token_count)
@@ -1960,6 +2997,73 @@ def _pad_queries_for_direct_m0(
     return padded, query_group_sums
 
 
+def _can_use_cuda_direct_m0_fast_final_mix(
+    *,
+    query_tensor: Any,
+    collect_stream_stats: bool,
+    total_tokens: int,
+    m0_token_count: int,
+    m3_token_count: int,
+    score_dtype: Any,
+) -> bool:
+    torch = _load_torch()
+    if str(getattr(query_tensor.device, "type", "")) != "cuda":
+        return False
+    if collect_stream_stats:
+        return False
+    if int(total_tokens) <= 0 or int(m3_token_count) != 0 or int(m0_token_count) != int(total_tokens):
+        return False
+    return score_dtype in {torch.float16, torch.bfloat16}
+
+
+def _cuda_direct_m0_fast_final_mix_exact_values(
+    *,
+    logits: Any,
+    gathered_values: Any,
+    query_scale: float,
+    score_dtype: Any,
+) -> tuple[Any, Any]:
+    torch = _load_torch()
+    scaled_logits = logits.to(dtype=torch.float32) * float(query_scale)
+    weights = torch.softmax(scaled_logits, dim=-1)
+    values_mm = gathered_values.to(dtype=score_dtype)
+    context = torch.matmul(weights.to(dtype=score_dtype), values_mm).to(torch.float32)
+    return context, weights
+
+
+def _cuda_direct_m0_triton_softmax_final_mix_exact_values(
+    *,
+    logits: Any,
+    gathered_values: Any,
+    query_scale: float,
+    score_dtype: Any,
+    softmax_weights_triton: Any,
+) -> tuple[Any, Any]:
+    torch = _load_torch()
+    weights = softmax_weights_triton(logits=logits, query_scale=float(query_scale))
+    context = torch.matmul(
+        weights.to(dtype=score_dtype),
+        gathered_values.to(dtype=score_dtype),
+    ).to(torch.float32)
+    return context, weights
+
+
+def _cuda_direct_m0_native_final_mix_exact_values(
+    *,
+    logits: Any,
+    gathered_values: Any,
+    query_scale: float,
+    score_dtype: Any,
+    softmax_value_context_cuda: Any,
+) -> Any:
+    torch = _load_torch()
+    return softmax_value_context_cuda(
+        logits=logits.to(dtype=torch.float32).contiguous(),
+        values=gathered_values.to(dtype=score_dtype).contiguous(),
+        query_scale=float(query_scale),
+    ).to(torch.float32)
+
+
 def _build_block_token_index_arrays(
     *,
     token_starts: np.ndarray,
@@ -1989,12 +3093,117 @@ def _build_block_token_index_arrays(
     return global_indices.astype(np.int64, copy=False), local_indices.astype(np.int64, copy=False)
 
 
+def _build_block_token_index_tensors(
+    *,
+    token_starts: Any,
+    token_counts: Any,
+    local_starts: Any | None = None,
+) -> tuple[Any, Any]:
+    torch = _load_torch()
+    token_starts_t = torch.as_tensor(token_starts, dtype=torch.int64, device=getattr(token_starts, "device", None)).reshape(-1)
+    token_counts_t = torch.as_tensor(token_counts, dtype=torch.int64, device=token_starts_t.device).reshape(-1)
+    if int(token_starts_t.numel()) == 0:
+        empty = torch.empty((0,), dtype=torch.int64, device=token_starts_t.device)
+        return empty, empty
+    max_count = int(token_counts_t.max().item()) if int(token_counts_t.numel()) > 0 else 0
+    if max_count <= 0:
+        empty = torch.empty((0,), dtype=torch.int64, device=token_starts_t.device)
+        return empty, empty
+    offsets = torch.arange(max_count, dtype=torch.int64, device=token_starts_t.device).unsqueeze(0)
+    valid_mask = offsets < token_counts_t.unsqueeze(1)
+    if local_starts is None:
+        local_starts_t = torch.cumsum(token_counts_t, dim=0) - token_counts_t
+    else:
+        local_starts_t = torch.as_tensor(local_starts, dtype=torch.int64, device=token_starts_t.device).reshape(-1)
+    global_indices = (token_starts_t.unsqueeze(1) + offsets)[valid_mask]
+    local_indices = (local_starts_t.unsqueeze(1) + offsets)[valid_mask]
+    return global_indices, local_indices
+
+
+def _build_block_local_starts_array(block_token_counts: Any) -> np.ndarray:
+    block_token_counts_np = np.asarray(block_token_counts, dtype=np.int64).reshape(-1)
+    if block_token_counts_np.size == 0:
+        return np.empty((0,), dtype=np.int64)
+    return np.cumsum(
+        np.concatenate((np.asarray([0], dtype=np.int64), block_token_counts_np[:-1])),
+        dtype=np.int64,
+    )
+
+
+def _block_modes_to_m0_mask(block_modes: Any) -> np.ndarray:
+    block_modes_np = np.asarray(block_modes)
+    if block_modes_np.size == 0:
+        return np.zeros(block_modes_np.shape, dtype=bool)
+    normalized = np.char.upper(block_modes_np.astype(str))
+    return normalized == "M0"
+
+
+def _refresh_cuda_block_selection_caches(state: PersistentFullAttentionLayerState) -> None:
+    torch = _load_torch()
+    if str(getattr(state.key_cache.device, "type", "")) != "cuda":
+        state.block_token_starts_cuda = None
+        state.block_token_counts_cuda = None
+        state.block_local_starts_cuda = None
+        state.block_k_mode_m0_cuda = None
+        return
+    state.block_token_starts_cuda = torch.as_tensor(
+        np.asarray(state.block_token_starts, dtype=np.int64),
+        dtype=torch.int64,
+        device=state.key_cache.device,
+    )
+    state.block_token_counts_cuda = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.int64),
+        dtype=torch.int64,
+        device=state.key_cache.device,
+    )
+    state.block_local_starts_cuda = torch.as_tensor(
+        _build_block_local_starts_array(state.block_token_counts),
+        dtype=torch.int64,
+        device=state.key_cache.device,
+    )
+    block_size = int(
+        state.value_block_cuda_cache.shape[2]
+        if state.value_block_cuda_cache is not None
+        else max(int(state.block_token_counts_cuda.max().item()), 1)
+    )
+    block_offsets = torch.arange(block_size, dtype=torch.int64, device=state.key_cache.device).unsqueeze(0)
+    state.block_token_valid_mask_cuda = block_offsets < state.block_token_counts_cuda.unsqueeze(1)
+    state.block_k_mode_m0_cuda = torch.as_tensor(
+        _block_modes_to_m0_mask(state.block_k_mode),
+        dtype=torch.bool,
+        device=state.key_cache.device,
+    )
+
+
+def _resolve_layer_mixed_mode_max_k_comp_error(
+    *,
+    config: PersistentServingConfig,
+    layer_id: int,
+) -> float | None:
+    max_k_comp_error = getattr(config, "full_attention_mixed_mode_execution_max_k_comp_error", None)
+    per_layer_thresholds = getattr(
+        config,
+        "full_attention_mixed_mode_execution_max_k_comp_error_by_layer",
+        None,
+    )
+    if per_layer_thresholds is not None:
+        try:
+            if int(layer_id) in per_layer_thresholds:
+                max_k_comp_error = float(per_layer_thresholds[int(layer_id)])
+        except Exception:
+            pass
+    if max_k_comp_error is None:
+        return None
+    return float(max_k_comp_error)
+
+
 def _mixed_mode_execution_enabled_for_slice(
     *,
     config: PersistentServingConfig,
     mode: Any,
     kind: str,
     k_comp_error: float | None = None,
+    layer_id: int | None = None,
 ) -> bool:
     normalized_mode = _normalize_stage8_mode_name(mode)
     if normalized_mode != "M0":
@@ -2004,7 +3213,11 @@ def _mixed_mode_execution_enabled_for_slice(
     ):
         return False
     if str(kind).upper() == "K":
-        max_k_comp_error = getattr(config, "full_attention_mixed_mode_execution_max_k_comp_error", None)
+        max_k_comp_error = (
+            _resolve_layer_mixed_mode_max_k_comp_error(config=config, layer_id=int(layer_id))
+            if layer_id is not None
+            else getattr(config, "full_attention_mixed_mode_execution_max_k_comp_error", None)
+        )
         if max_k_comp_error is not None and float(k_comp_error or 0.0) > float(max_k_comp_error):
             return False
     return True
@@ -2040,6 +3253,7 @@ def _refresh_cached_mixed_execution_blocks(
         or state.mixed_key_bias_cache is None
         or state.mixed_key_fused_scaled_score_cache is None
         or state.mixed_key_bias_score_cache is None
+        or state.mixed_key_fused_with_bias_score_cache is None
         or state.mixed_value_fused_scaled_cache is None
         or state.mixed_value_bias_cache is None
     ):
@@ -2065,6 +3279,7 @@ def _refresh_cached_mixed_execution_blocks(
                     mode=key_mode,
                     kind="K",
                     k_comp_error=key_comp_error,
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="K",
                 dotcache_config=dotcache_config,
@@ -2075,6 +3290,7 @@ def _refresh_cached_mixed_execution_blocks(
                     config=config,
                     mode=value_mode,
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="V",
                 dotcache_config=dotcache_config,
@@ -2092,6 +3308,7 @@ def _refresh_cached_mixed_execution_blocks(
             state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_fused_with_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             if (
@@ -2102,6 +3319,30 @@ def _refresh_cached_mixed_execution_blocks(
                 state.mixed_key_packed_payload_cache[kv_head_idx, :, token_start : token_start + token_count, :].fill(0)
                 state.mixed_key_packed_scales_cache[kv_head_idx, token_start : token_start + token_count, :].fill(0.0)
                 state.mixed_key_packed_bias_cache[kv_head_idx, token_start : token_start + token_count, :].fill(0.0)
+            if (
+                state.mixed_key_packed_payload_cuda_cache is not None
+                and state.mixed_key_packed_scales_cuda_cache is not None
+                and state.mixed_key_packed_bias_cuda_cache is not None
+            ):
+                state.mixed_key_packed_payload_cuda_cache[
+                    kv_head_idx, :, token_start : token_start + token_count, :
+                ].zero_()
+                state.mixed_key_packed_scales_cuda_cache[
+                    kv_head_idx, token_start : token_start + token_count, :
+                ].zero_()
+                state.mixed_key_packed_bias_cuda_cache[
+                    kv_head_idx, token_start : token_start + token_count, :
+                ].zero_()
+            if (
+                state.mixed_key_packed_payload_block_cuda_cache is not None
+                and state.mixed_key_packed_scales_block_cuda_cache is not None
+                and state.mixed_key_packed_bias_block_cuda_cache is not None
+            ):
+                state.mixed_key_packed_payload_block_cuda_cache[kv_head_idx, :, int(block_idx), :, :].zero_()
+                state.mixed_key_packed_scales_block_cuda_cache[kv_head_idx, :, int(block_idx), :].zero_()
+                state.mixed_key_packed_bias_block_cuda_cache[kv_head_idx, :, int(block_idx), :].zero_()
+            if state.value_block_cuda_cache is not None:
+                state.value_block_cuda_cache[kv_head_idx, int(block_idx), :, :].zero_()
             direct_key_slice, direct_key_bias, packed_key_payload, packed_key_scales, packed_key_bias, direct_key_valid = _prepare_direct_m0_execution_artifacts(
                 tensor_slice=key_slice,
                 mode=key_mode,
@@ -2127,6 +3368,17 @@ def _refresh_cached_mixed_execution_blocks(
                 state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                     direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device)
                 )
+                state.mixed_key_fused_with_bias_score_cache[
+                    kv_head_idx, token_start : token_start + token_count, :
+                ].copy_(
+                    torch.cat(
+                        [
+                            direct_key_slice.to(dtype=score_dtype, device=state.key_cache.device),
+                            direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device),
+                        ],
+                        dim=-1,
+                    )
+                )
                 if (
                     packed_key_payload is not None
                     and packed_key_scales is not None
@@ -2144,6 +3396,76 @@ def _refresh_cached_mixed_execution_blocks(
                     state.mixed_key_packed_bias_cache[
                         kv_head_idx, token_start : token_start + token_count, :
                     ] = packed_key_bias
+                if (
+                    packed_key_payload is not None
+                    and packed_key_scales is not None
+                    and packed_key_bias is not None
+                    and state.mixed_key_packed_payload_cuda_cache is not None
+                    and state.mixed_key_packed_scales_cuda_cache is not None
+                    and state.mixed_key_packed_bias_cuda_cache is not None
+                ):
+                    state.mixed_key_packed_payload_cuda_cache[
+                        kv_head_idx, :, token_start : token_start + token_count, :
+                    ].copy_(
+                        torch.as_tensor(
+                            packed_key_payload,
+                            dtype=torch.int32,
+                            device=state.key_cache.device,
+                        )
+                    )
+                    state.mixed_key_packed_scales_cuda_cache[
+                        kv_head_idx, token_start : token_start + token_count, :
+                    ].copy_(
+                        torch.as_tensor(
+                            packed_key_scales,
+                            dtype=torch.float32,
+                            device=state.key_cache.device,
+                        )
+                    )
+                    state.mixed_key_packed_bias_cuda_cache[
+                        kv_head_idx, token_start : token_start + token_count, :
+                    ].copy_(
+                        torch.as_tensor(
+                            packed_key_bias,
+                            dtype=torch.float32,
+                            device=state.key_cache.device,
+                        )
+                    )
+                if (
+                    packed_key_payload is not None
+                    and packed_key_scales is not None
+                    and packed_key_bias is not None
+                    and state.mixed_key_packed_payload_block_cuda_cache is not None
+                    and state.mixed_key_packed_scales_block_cuda_cache is not None
+                    and state.mixed_key_packed_bias_block_cuda_cache is not None
+                ):
+                    state.mixed_key_packed_payload_block_cuda_cache[
+                        kv_head_idx, :, int(block_idx), :token_count, :
+                    ].copy_(
+                        torch.as_tensor(
+                            packed_key_payload,
+                            dtype=torch.int32,
+                            device=state.key_cache.device,
+                        )
+                    )
+                    state.mixed_key_packed_scales_block_cuda_cache[
+                        kv_head_idx, :, int(block_idx), :token_count
+                    ].copy_(
+                        torch.as_tensor(
+                            np.asarray(packed_key_scales, dtype=np.float32).transpose(1, 0),
+                            dtype=torch.float32,
+                            device=state.key_cache.device,
+                        )
+                    )
+                    state.mixed_key_packed_bias_block_cuda_cache[
+                        kv_head_idx, :, int(block_idx), :token_count
+                    ].copy_(
+                        torch.as_tensor(
+                            np.asarray(packed_key_bias, dtype=np.float32).transpose(1, 0),
+                            dtype=torch.float32,
+                            device=state.key_cache.device,
+                        )
+                    )
             if direct_value_valid and direct_value_slice is not None and direct_value_bias is not None:
                 state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                     direct_value_slice.to(dtype=torch.float32, device=state.value_cache.device)
@@ -2151,18 +3473,28 @@ def _refresh_cached_mixed_execution_blocks(
                 state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                     direct_value_bias.to(dtype=torch.float32, device=state.value_cache.device)
                 )
+            if state.value_block_cuda_cache is not None:
+                state.value_block_cuda_cache[kv_head_idx, int(block_idx), :token_count, :].copy_(
+                    value_slice.to(dtype=torch.float32, device=state.value_cache.device)
+                )
     return (time.perf_counter() - start) * 1000.0
 
 
 def _prepare_selected_block_execution_tensors(
     *,
     state: PersistentFullAttentionLayerState,
-    block_ids: list[int],
+    block_ids: Any,
     config: PersistentServingConfig,
     dotcache_config: Any | None,
 ):
     torch = _load_torch()
-    resolved_block_ids = [int(block_id) for block_id in block_ids]
+    if torch.is_tensor(block_ids):
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids.detach().to(device="cpu", dtype=torch.int64).reshape(-1).tolist()
+        ]
+    else:
+        resolved_block_ids = [int(block_id) for block_id in block_ids]
     if not resolved_block_ids:
         raise ValueError("selected block ids must not be empty")
     if not (
@@ -2195,6 +3527,7 @@ def _prepare_selected_block_execution_tensors(
                     mode=state.block_k_mode[block_id, kv_head_idx],
                     kind="K",
                     k_comp_error=float(state.block_k_comp_error[block_id, kv_head_idx].item()),
+                    layer_id=int(state.layer_id),
                 ):
                     block_used_m0 = True
                     break
@@ -2202,6 +3535,7 @@ def _prepare_selected_block_execution_tensors(
                     config=config,
                     mode=state.block_v_mode[block_id, kv_head_idx],
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ):
                     block_used_m0 = True
                     break
@@ -2238,6 +3572,7 @@ def _prepare_selected_block_execution_tensors(
                     mode=key_mode,
                     kind="K",
                     k_comp_error=key_comp_error,
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="K",
                 dotcache_config=dotcache_config,
@@ -2248,6 +3583,7 @@ def _prepare_selected_block_execution_tensors(
                     config=config,
                     mode=value_mode,
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="V",
                 dotcache_config=dotcache_config,
@@ -2273,6 +3609,8 @@ def _decode_selected_block_tensors_exact_torch(
     value_cache: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
+    return_stream_stats: bool = False,
+    return_attn_weights: bool = True,
 ):
     torch = _load_torch()
     query_tensor = query.to(dtype=torch.float32)
@@ -2281,8 +3619,28 @@ def _decode_selected_block_tensors_exact_torch(
     q_head_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
     total_tokens = int(key_tensor.shape[1])
     output = torch.empty((query_tensor.shape[0], value_tensor.shape[-1]), dtype=torch.float32, device=query_tensor.device)
-    attn_weights = torch.zeros(
-        (1, int(query_tensor.shape[0]), 1, total_tokens),
+    attn_weights = (
+        torch.zeros(
+            (1, int(query_tensor.shape[0]), 1, total_tokens),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        if bool(return_attn_weights)
+        else None
+    )
+    per_head_logits: list[Any] = [
+        torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
+        for _ in range(int(query_tensor.shape[0]))
+    ]
+    tranche_m = torch.full((int(query_tensor.shape[0]),), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    tranche_l = torch.zeros((int(query_tensor.shape[0]),), dtype=torch.float32, device=query_tensor.device)
+    tranche_h = torch.zeros(
+        (int(query_tensor.shape[0]), int(value_tensor.shape[-1])),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    block_mass_numerators = torch.zeros(
+        (int(query_tensor.shape[0]), total_tokens),
         dtype=torch.float32,
         device=query_tensor.device,
     )
@@ -2295,44 +3653,122 @@ def _decode_selected_block_tensors_exact_torch(
         k_slice = key_tensor[int(kv_head)]
         v_slice = value_tensor[int(kv_head)]
         logits = torch.matmul(q_slice, k_slice.transpose(0, 1)) * float(query_scale)
-        weights = torch.softmax(logits, dim=-1)
-        output[head_index_tensor] = torch.matmul(weights.to(dtype=torch.float32), v_slice)
-        attn_weights[0, head_index_tensor, 0, :] = weights.to(dtype=torch.float32)
-    return output, attn_weights
+        if int(logits.shape[-1]) <= 0:
+            continue
+        head_m = logits.max(dim=-1).values.to(dtype=torch.float32)
+        exp_scores = torch.exp(logits - head_m[:, None])
+        head_l = exp_scores.sum(dim=-1).to(dtype=torch.float32)
+        head_h = torch.matmul(exp_scores.to(dtype=torch.float32), v_slice)
+        weights = exp_scores / head_l[:, None].clamp_min(1e-8)
+        output[head_index_tensor] = head_h / head_l[:, None].clamp_min(1e-8)
+        if attn_weights is not None:
+            attn_weights[0, head_index_tensor, 0, :] = weights.to(dtype=torch.float32)
+        block_mass_numerators.index_copy_(0, head_index_tensor, exp_scores.to(dtype=torch.float32))
+        for local_head_idx, q_head_idx in enumerate(head_ids.tolist()):
+            per_head_logits[int(q_head_idx)] = logits[int(local_head_idx)].to(dtype=torch.float32)
+            tranche_m[int(q_head_idx)] = head_m[int(local_head_idx)]
+            tranche_l[int(q_head_idx)] = head_l[int(local_head_idx)]
+            tranche_h[int(q_head_idx)] = head_h[int(local_head_idx)]
+    if not bool(return_stream_stats):
+        return output, attn_weights
+    return {
+        "output": output,
+        "attn_weights": attn_weights,
+        "stream_stats": {
+            "per_head_logits": per_head_logits,
+            "m": tranche_m,
+            "l": tranche_l,
+            "h": tranche_h,
+            "block_mass_numerators": block_mass_numerators,
+        },
+    }
 
 
 def _decode_selected_blocks_direct_m0_torch(
     *,
     state: PersistentFullAttentionLayerState,
-    block_ids: list[int],
+    block_ids: Any,
     query: Any,
     q_head_to_kv_head: np.ndarray,
     query_scale: float,
     config: PersistentServingConfig,
     dotcache_config: Any | None = None,
+    return_stream_stats: bool = False,
+    return_attn_weights: bool = True,
 ):
     torch = _load_torch()
     _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch, score_exact_logits_flat_torch = _load_torch_mixed_execution_ops()
+    score_m0_logits_packed32_grouped_torch, unpack_metadata = _load_torch_grouped_packed_ops()
+    (
+        score_direct_m0_logits_triton,
+        softmax_weights_triton,
+        fused_context_triton,
+        fused_indexed_context_triton,
+        fused_selected_blocks_context_triton,
+        triton_direct_m0_available,
+        direct_m0_softmax_available,
+        triton_direct_m0_fused_available,
+    ) = _load_triton_direct_m0_ops()
+    (
+        fused_selected_blocks_context_cuda,
+        fused_selected_blocks_stream_stats_cuda,
+        softmax_value_context_cuda,
+        native_direct_m0_available,
+        native_direct_m0_final_mix_available,
+    ) = _load_native_direct_m0_ops()
     query_tensor = query.to(dtype=torch.float32)
     q_head_to_kv = np.asarray(q_head_to_kv_head, dtype=np.int64)
-    resolved_block_ids = [int(block_id) for block_id in block_ids]
+    if torch.is_tensor(block_ids):
+        resolved_block_ids = [
+            int(block_id)
+            for block_id in block_ids.detach().to(device="cpu", dtype=torch.int64).reshape(-1).tolist()
+        ]
+    else:
+        resolved_block_ids = [int(block_id) for block_id in block_ids]
     resolved_block_ids_np = np.asarray(resolved_block_ids, dtype=np.int64)
-    token_starts_np = np.asarray(state.block_token_starts[resolved_block_ids_np], dtype=np.int64)
-    token_counts_np = np.asarray(state.block_token_counts[resolved_block_ids_np], dtype=np.int64)
-    local_starts_np = np.cumsum(
-        np.concatenate((np.asarray([0], dtype=np.int64), token_counts_np[:-1])),
-        dtype=np.int64,
+    use_cuda_selection_cache = (
+        str(query_tensor.device.type) == "cuda"
+        and state.block_token_starts_cuda is not None
+        and state.block_token_counts_cuda is not None
+        and state.block_local_starts_cuda is not None
+        and state.block_k_mode_m0_cuda is not None
     )
-    token_counts = [int(value) for value in token_counts_np.tolist()]
-    selected_global_indices_np, _selected_local_indices_np = _build_block_token_index_arrays(
-        token_starts=token_starts_np,
-        token_counts=token_counts_np,
-        local_starts=local_starts_np,
-    )
-    selected_global_indices = torch.as_tensor(
-        selected_global_indices_np,
-        dtype=torch.int64,
-        device=state.value_cache.device,
+    if use_cuda_selection_cache:
+        resolved_block_ids_t = torch.as_tensor(
+            resolved_block_ids_np,
+            dtype=torch.int64,
+            device=query_tensor.device,
+        )
+        token_starts_t = state.block_token_starts_cuda.index_select(0, resolved_block_ids_t)
+        token_counts_t = state.block_token_counts_cuda.index_select(0, resolved_block_ids_t)
+        local_starts_t = torch.cumsum(token_counts_t, dim=0) - token_counts_t
+        selected_global_indices, _selected_local_indices = _build_block_token_index_tensors(
+            token_starts=token_starts_t,
+            token_counts=token_counts_t,
+            local_starts=local_starts_t,
+        )
+        token_starts_np = None
+        token_counts_np = None
+        local_starts_np = None
+    else:
+        resolved_block_ids_t = None
+        token_starts_np = np.asarray(state.block_token_starts[resolved_block_ids_np], dtype=np.int64)
+        token_counts_np = np.asarray(state.block_token_counts[resolved_block_ids_np], dtype=np.int64)
+        local_starts_np = _build_block_local_starts_array(token_counts_np)
+        selected_global_indices_np, _selected_local_indices_np = _build_block_token_index_arrays(
+            token_starts=token_starts_np,
+            token_counts=token_counts_np,
+            local_starts=local_starts_np,
+        )
+        selected_global_indices = torch.as_tensor(
+            selected_global_indices_np,
+            dtype=torch.int64,
+            device=state.value_cache.device,
+        )
+    token_counts = (
+        [int(value) for value in token_counts_t.detach().to(device="cpu", dtype=torch.int64).tolist()]
+        if use_cuda_selection_cache
+        else [int(value) for value in token_counts_np.tolist()]
     )
     gathered_values = state.value_cache.index_select(1, selected_global_indices).to(
         device=query_tensor.device,
@@ -2347,53 +3783,136 @@ def _decode_selected_blocks_direct_m0_torch(
         and score_dtype == state.mixed_key_score_cache.dtype
     )
     strategy = str(getattr(config, "full_attention_mixed_mode_execution_strategy", "cached_reconstruct") or "cached_reconstruct").strip().lower()
+    detailed_mixed_timing = bool(getattr(config, "full_attention_mixed_mode_detailed_timing", False))
+    collect_stream_stats = bool(return_stream_stats)
+    experimental_grouped_block_streaming = os.environ.get(
+        "DOTCACHE_ENABLE_GROUPED_BLOCK_STREAMING_CUDA",
+        "0",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     output = torch.empty(
         (query_tensor.shape[0], gathered_values.shape[-1]),
         dtype=torch.float32,
         device=query_tensor.device,
     )
-    attn_weights = torch.zeros(
-        (1, int(query_tensor.shape[0]), 1, total_tokens),
-        dtype=torch.float32,
-        device=query_tensor.device,
+    attn_weights = (
+        torch.zeros(
+            (1, int(query_tensor.shape[0]), 1, total_tokens),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        if bool(return_attn_weights)
+        else None
     )
     timing = {
         "direct_m0_assembly_ms": 0.0,
+        "direct_m0_query_prep_ms": 0.0,
+        "direct_m0_gather_ms": 0.0,
         "direct_m0_score_ms": 0.0,
         "exact_m3_score_ms": 0.0,
+        "aux_exact_m3_score_ms": 0.0,
         "final_mix_ms": 0.0,
+        "final_mix_logits_ms": 0.0,
+        "final_mix_softmax_ms": 0.0,
+        "final_mix_value_ms": 0.0,
     }
     executed_m0_blocks: set[int] = set()
-    for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
-        head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
-        if head_ids.size == 0:
-            continue
-        head_index_tensor = torch.as_tensor(head_ids, dtype=torch.int64, device=query_tensor.device)
+    exact_key_m3_blocks: set[int] = set()
+    per_head_logits: list[Any] | None = None
+    tranche_m: Any | None = None
+    tranche_l: Any | None = None
+    tranche_h: Any | None = None
+    block_max_logits: Any | None = None
+    block_mass_numerators: Any | None = None
+    if collect_stream_stats:
+        per_head_logits = (
+            [
+                torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
+                for _ in range(int(query_tensor.shape[0]))
+            ]
+            if bool(return_attn_weights)
+            else None
+        )
+        tranche_m = torch.full((int(query_tensor.shape[0]),), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+        tranche_l = torch.zeros((int(query_tensor.shape[0]),), dtype=torch.float32, device=query_tensor.device)
+        tranche_h = torch.zeros(
+            (int(query_tensor.shape[0]), int(gathered_values.shape[-1])),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        block_max_logits = torch.full(
+            (int(len(resolved_block_ids)),),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        block_mass_numerators = torch.zeros(
+            (int(query_tensor.shape[0]), int(len(resolved_block_ids))),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+    token_block_ids: Any | None = None
+    if total_tokens > 0 and token_counts and collect_stream_stats:
+        token_block_ids = torch.repeat_interleave(
+            torch.arange(int(len(token_counts)), dtype=torch.int64, device=query_tensor.device),
+            torch.as_tensor(token_counts, dtype=torch.int64, device=query_tensor.device),
+        )
+    cuda_exact_value_mix_cache: dict[int, Any] = {}
+    if use_cuda_selection_cache:
+        q_head_to_kv_tensor = torch.as_tensor(q_head_to_kv, dtype=torch.int64, device=query_tensor.device)
+        kv_heads_iter = [int(value) for value in torch.unique(q_head_to_kv_tensor, sorted=True).tolist()]
+    else:
+        q_head_to_kv_tensor = None
+        kv_heads_iter = sorted(set(int(value) for value in q_head_to_kv.tolist()))
+    layer_max_k_comp_error = _resolve_layer_mixed_mode_max_k_comp_error(
+        config=config,
+        layer_id=int(state.layer_id),
+    )
+    for kv_head in kv_heads_iter:
+        if use_cuda_selection_cache:
+            head_index_tensor = torch.nonzero(q_head_to_kv_tensor == int(kv_head), as_tuple=False).flatten()
+            if int(head_index_tensor.numel()) == 0:
+                continue
+        else:
+            head_ids_np = np.flatnonzero(q_head_to_kv == int(kv_head))
+            if head_ids_np.size == 0:
+                continue
+            head_ids = head_ids_np.tolist()
+            head_index_tensor = torch.as_tensor(head_ids, dtype=torch.int64, device=query_tensor.device)
         q_slice = query_tensor[head_index_tensor]
-        _synchronize_torch_device(q_slice)
-        assembly_start = time.perf_counter()
         logits = torch.empty((int(q_slice.shape[0]), total_tokens), dtype=torch.float32, device=query_tensor.device)
-        key_modes = np.asarray(state.block_k_mode[resolved_block_ids_np, int(kv_head)], dtype=object)
-        key_comp_errors = (
-            state.block_k_comp_error[resolved_block_ids_np, int(kv_head)]
-            .detach()
-            .to(device="cpu", dtype=torch.float32)
-            .numpy()
-        )
-        m0_block_mask = np.fromiter(
-            (
-                _mixed_mode_execution_enabled_for_slice(
-                    config=config,
-                    mode=mode,
-                    kind="K",
-                    k_comp_error=float(comp_error),
-                )
-                for mode, comp_error in zip(key_modes.tolist(), key_comp_errors.tolist(), strict=False)
-            ),
-            dtype=bool,
-            count=int(len(resolved_block_ids)),
-        )
-        m3_block_mask = np.logical_not(m0_block_mask)
+        if use_cuda_selection_cache:
+            assert resolved_block_ids_t is not None
+            block_modes_m0 = state.block_k_mode_m0_cuda.index_select(0, resolved_block_ids_t)[:, int(kv_head)]
+            key_comp_errors_t = state.block_k_comp_error.index_select(0, resolved_block_ids_t)[:, int(kv_head)]
+            m0_block_mask_t = block_modes_m0
+            if layer_max_k_comp_error is not None:
+                m0_block_mask_t = m0_block_mask_t & (key_comp_errors_t <= float(layer_max_k_comp_error))
+            m3_block_mask_t = torch.logical_not(m0_block_mask_t)
+            m0_block_mask = None
+            m3_block_mask = None
+        else:
+            key_modes = np.asarray(state.block_k_mode[resolved_block_ids_np, int(kv_head)], dtype=object)
+            key_comp_errors = (
+                state.block_k_comp_error[resolved_block_ids_np, int(kv_head)]
+                .detach()
+                .to(device="cpu", dtype=torch.float32)
+                .numpy()
+            )
+            m0_block_mask = np.fromiter(
+                (
+                    _mixed_mode_execution_enabled_for_slice(
+                        config=config,
+                        mode=mode,
+                        kind="K",
+                        k_comp_error=float(comp_error),
+                        layer_id=int(state.layer_id),
+                    )
+                    for mode, comp_error in zip(key_modes.tolist(), key_comp_errors.tolist(), strict=False)
+                ),
+                dtype=bool,
+                count=int(len(resolved_block_ids)),
+            )
+            m3_block_mask = np.logical_not(m0_block_mask)
         direct_padded_head_dim = (
             int(state.mixed_key_fused_scaled_cache.shape[-1])
             if state.mixed_key_fused_scaled_cache is not None
@@ -2407,25 +3926,63 @@ def _decode_selected_blocks_direct_m0_torch(
             if direct_padded_head_dim is not None and state.mixed_key_bias_cache is not None
             else None
         )
-        m0_global_indices_np, m0_local_indices_np = _build_block_token_index_arrays(
-            token_starts=token_starts_np[m0_block_mask],
-            token_counts=token_counts_np[m0_block_mask],
-            local_starts=local_starts_np[m0_block_mask],
+        if use_cuda_selection_cache:
+            m0_global_indices, m0_local_indices = _build_block_token_index_tensors(
+                token_starts=token_starts_t[m0_block_mask_t],
+                token_counts=token_counts_t[m0_block_mask_t],
+                local_starts=local_starts_t[m0_block_mask_t],
+            )
+            m3_global_indices, m3_local_indices = _build_block_token_index_tensors(
+                token_starts=token_starts_t[m3_block_mask_t],
+                token_counts=token_counts_t[m3_block_mask_t],
+                local_starts=local_starts_t[m3_block_mask_t],
+            )
+            m0_token_count = int(m0_global_indices.numel())
+            m3_token_count = int(m3_global_indices.numel())
+            m0_global_indices_np = None
+            m3_global_indices_np = None
+            m0_block_ids_t = resolved_block_ids_t[m0_block_mask_t]
+            m3_block_ids_t = resolved_block_ids_t[m3_block_mask_t]
+        else:
+            m0_global_indices_np, m0_local_indices_np = _build_block_token_index_arrays(
+                token_starts=token_starts_np[m0_block_mask],
+                token_counts=token_counts_np[m0_block_mask],
+                local_starts=local_starts_np[m0_block_mask],
+            )
+            m3_global_indices_np, m3_local_indices_np = _build_block_token_index_arrays(
+                token_starts=token_starts_np[m3_block_mask],
+                token_counts=token_counts_np[m3_block_mask],
+                local_starts=local_starts_np[m3_block_mask],
+            )
+            m0_token_count = int(m0_global_indices_np.size)
+            m3_token_count = int(m3_global_indices_np.size)
+            m0_block_ids_t = None
+            m3_block_ids_t = None
+        if (
+            int(m0_block_ids_t.numel()) > 0
+            if m0_block_ids_t is not None
+            else bool(np.any(m0_block_mask))
+        ):
+            resolved_m0_block_ids = (
+                m0_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                if m0_block_ids_t is not None
+                else resolved_block_ids_np[m0_block_mask].tolist()
+            )
+            executed_m0_blocks.update(int(block_id) for block_id in resolved_m0_block_ids)
+        use_cuda_fast_final_mix = _can_use_cuda_direct_m0_fast_final_mix(
+            query_tensor=q_slice,
+            collect_stream_stats=collect_stream_stats,
+            total_tokens=total_tokens,
+            m0_token_count=m0_token_count,
+            m3_token_count=m3_token_count,
+            score_dtype=score_dtype,
         )
-        m3_global_indices_np, m3_local_indices_np = _build_block_token_index_arrays(
-            token_starts=token_starts_np[m3_block_mask],
-            token_counts=token_counts_np[m3_block_mask],
-            local_starts=local_starts_np[m3_block_mask],
-        )
-        if bool(np.any(m0_block_mask)):
-            executed_m0_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m0_block_mask].tolist())
-        _synchronize_torch_device(q_slice)
-        timing["direct_m0_assembly_ms"] += (time.perf_counter() - assembly_start) * 1000.0
-        if m0_global_indices_np.size > 0:
+        if m0_token_count > 0:
             assert direct_group_size is not None
             assert direct_padded_head_dim is not None
-            _synchronize_torch_device(q_slice)
-            direct_m0_score_start = time.perf_counter()
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                query_prep_start = time.perf_counter()
             if score_dtype == query_tensor.dtype:
                 q_slice_score = q_slice
             else:
@@ -2435,28 +3992,284 @@ def _decode_selected_blocks_direct_m0_torch(
                 padded_head_dim=direct_padded_head_dim,
                 group_size=direct_group_size,
             )
-            m0_global_indices = torch.as_tensor(
-                m0_global_indices_np,
-                dtype=torch.int64,
-                device=(
-                    state.mixed_key_fused_scaled_score_cache.device
-                    if use_fast_score_cache
-                    else state.mixed_key_fused_scaled_cache.device
-                ),
-            )
-            m0_local_indices = torch.as_tensor(
-                m0_local_indices_np,
-                dtype=torch.int64,
-                device=query_tensor.device,
-            )
-            if use_fast_score_cache:
-                fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
-                bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
-            else:
-                fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
-                bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
+            query_prep_elapsed_ms = 0.0
+            if detailed_mixed_timing:
+                _synchronize_torch_device(query_padded)
+                query_prep_elapsed_ms = (time.perf_counter() - query_prep_start) * 1000.0
+                timing["direct_m0_query_prep_ms"] += float(query_prep_elapsed_ms)
+                gather_start = time.perf_counter()
             m0_logits = None
-            if strategy == "direct_m0_metal_packed" and dotcache_config is not None:
+            grouped_block_valid_mask = None
+            grouped_block_values = None
+            can_use_grouped_block_cuda_score_path = (
+                use_cuda_selection_cache
+                and (use_cuda_fast_final_mix or experimental_grouped_block_streaming)
+                and m0_block_ids_t is not None
+                and int(m0_block_ids_t.numel()) > 0
+                and int(getattr(dotcache_config, "bits_k", 0)) == 8
+                and int(getattr(dotcache_config, "group_size", 0)) == 32
+                and state.mixed_key_packed_payload_block_cuda_cache is not None
+                and state.mixed_key_packed_scales_block_cuda_cache is not None
+                and state.mixed_key_packed_bias_block_cuda_cache is not None
+                and state.value_block_cuda_cache is not None
+            )
+            if can_use_grouped_block_cuda_score_path:
+                try:
+                    packed_queries = query_padded.reshape(int(q_slice.shape[0]), -1, direct_group_size).contiguous()
+                    packed_query_group_sums = query_group_sums.contiguous()
+                    if (
+                        native_direct_m0_available()
+                        and collect_stream_stats
+                        and not bool(return_attn_weights)
+                    ):
+                        h_value, head_m, head_l, native_block_max, native_block_masses = fused_selected_blocks_stream_stats_cuda(
+                            payload_words=state.mixed_key_packed_payload_block_cuda_cache[int(kv_head)],
+                            scales=state.mixed_key_packed_scales_block_cuda_cache[int(kv_head)],
+                            bias=state.mixed_key_packed_bias_block_cuda_cache[int(kv_head)],
+                            selected_block_ids=m0_block_ids_t.to(device=query_tensor.device, dtype=torch.int64),
+                            valid_mask=state.block_token_valid_mask_cuda,
+                            queries=packed_queries.to(dtype=torch.float32),
+                            query_group_sums=packed_query_group_sums.to(dtype=torch.float32),
+                            values=state.value_block_cuda_cache[int(kv_head)].to(dtype=torch.float32),
+                            query_scale=query_scale,
+                        )
+                        combined_h = h_value
+                        combined_m = head_m
+                        combined_l = head_l
+                        combined_block_mass = torch.zeros(
+                            (int(q_slice.shape[0]), int(len(token_counts))),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        )
+                        combined_block_mass[:, m0_block_mask_t] = native_block_masses[:, : int(m0_block_ids_t.numel())]
+                        combined_block_max = torch.full(
+                            (int(len(token_counts)),),
+                            float("-inf"),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        )
+                        combined_block_max[m0_block_mask_t] = native_block_max[:, : int(m0_block_ids_t.numel())].max(dim=0).values
+                        if m3_token_count > 0:
+                            resolved_m3_block_ids = (
+                                m3_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                                if m3_block_ids_t is not None
+                                else resolved_block_ids_np[m3_block_mask].tolist()
+                            )
+                            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_m3_block_ids)
+                            if use_cuda_selection_cache:
+                                m3_global_indices_native = m3_global_indices.to(
+                                    device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
+                                    dtype=torch.int64,
+                                )
+                                m3_local_indices_native = m3_local_indices.to(device=query_tensor.device, dtype=torch.int64)
+                            else:
+                                m3_global_indices_native = torch.as_tensor(
+                                    m3_global_indices_np,
+                                    dtype=torch.int64,
+                                    device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
+                                )
+                                m3_local_indices_native = torch.as_tensor(
+                                    m3_local_indices_np,
+                                    dtype=torch.int64,
+                                    device=query_tensor.device,
+                                )
+                            if use_fast_score_cache:
+                                m3_keys = state.mixed_key_score_cache[int(kv_head)].index_select(0, m3_global_indices_native).to(
+                                    device=query_tensor.device,
+                                    dtype=score_dtype,
+                                )
+                            else:
+                                m3_keys = state.key_cache[int(kv_head)].index_select(0, m3_global_indices_native).to(
+                                    device=query_tensor.device,
+                                    dtype=score_dtype,
+                                )
+                            m3_logits = score_exact_logits_flat_torch(m3_keys, q_slice_score) * float(query_scale)
+                            m3_head_m = m3_logits.max(dim=-1).values.to(dtype=torch.float32)
+                            m3_exp_scores = torch.exp(m3_logits - m3_head_m.unsqueeze(1))
+                            m3_head_l = m3_exp_scores.sum(dim=-1).to(dtype=torch.float32)
+                            m3_values = gathered_values[int(kv_head)].index_select(0, m3_local_indices_native)
+                            m3_head_h = torch.matmul(m3_exp_scores.to(dtype=torch.float32), m3_values)
+                            merged_m = torch.maximum(combined_m.to(dtype=torch.float32), m3_head_m)
+                            native_rescale = torch.exp((combined_m.to(dtype=torch.float32) - merged_m).clamp_min(-80.0))
+                            m3_rescale = torch.exp((m3_head_m - merged_m).clamp_min(-80.0))
+                            combined_h = combined_h * native_rescale.unsqueeze(1) + m3_head_h * m3_rescale.unsqueeze(1)
+                            combined_l = combined_l * native_rescale + m3_head_l * m3_rescale
+                            combined_m = merged_m
+                            if token_block_ids is not None:
+                                expanded_m3_block_ids = token_block_ids.index_select(
+                                    0,
+                                    m3_local_indices_native,
+                                ).unsqueeze(0).expand(int(q_slice.shape[0]), -1)
+                                m3_block_mass = torch.zeros_like(combined_block_mass)
+                                m3_block_mass.scatter_add_(
+                                    1,
+                                    expanded_m3_block_ids,
+                                    m3_exp_scores.to(dtype=torch.float32),
+                                )
+                                combined_block_mass = combined_block_mass * native_rescale.unsqueeze(1) + m3_block_mass * m3_rescale.unsqueeze(1)
+                                m3_token_max_logits = m3_logits.max(dim=0).values.to(dtype=torch.float32)
+                                m3_block_max = torch.full(
+                                    (int(len(token_counts)),),
+                                    float("-inf"),
+                                    dtype=torch.float32,
+                                    device=query_tensor.device,
+                                )
+                                m3_block_max.scatter_reduce_(
+                                    0,
+                                    token_block_ids.index_select(0, m3_local_indices_native),
+                                    m3_token_max_logits,
+                                    reduce="amax",
+                                    include_self=True,
+                                )
+                                combined_block_max = torch.maximum(combined_block_max, m3_block_max)
+                        context = combined_h / combined_l[:, None].clamp_min(1e-8)
+                        if detailed_mixed_timing:
+                            _synchronize_torch_device(q_slice)
+                            gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                            timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                            timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                        output[head_index_tensor] = context
+                        assert tranche_m is not None
+                        assert tranche_l is not None
+                        assert tranche_h is not None
+                        assert block_max_logits is not None
+                        assert block_mass_numerators is not None
+                        if per_head_logits is not None:
+                            for q_head_idx in head_index_tensor.tolist():
+                                per_head_logits[int(q_head_idx)] = torch.empty(
+                                    (0,),
+                                    dtype=torch.float32,
+                                    device=query_tensor.device,
+                                )
+                        tranche_m.index_copy_(0, head_index_tensor, combined_m.to(dtype=torch.float32))
+                        tranche_l.index_copy_(0, head_index_tensor, combined_l.to(dtype=torch.float32))
+                        tranche_h.index_copy_(0, head_index_tensor, combined_h.to(dtype=torch.float32))
+                        block_mass_numerators.index_copy_(
+                            0,
+                            head_index_tensor,
+                            combined_block_mass.to(dtype=torch.float32),
+                        )
+                        block_max_logits[:] = torch.maximum(
+                            block_max_logits,
+                            combined_block_max,
+                        )
+                        continue
+                    if native_direct_m0_available() and use_cuda_fast_final_mix:
+                        context = fused_selected_blocks_context_cuda(
+                            payload_words=state.mixed_key_packed_payload_block_cuda_cache[int(kv_head)],
+                            scales=state.mixed_key_packed_scales_block_cuda_cache[int(kv_head)],
+                            bias=state.mixed_key_packed_bias_block_cuda_cache[int(kv_head)],
+                            selected_block_ids=m0_block_ids_t.to(device=query_tensor.device, dtype=torch.int64),
+                            valid_mask=state.block_token_valid_mask_cuda,
+                            queries=packed_queries.to(dtype=torch.float32),
+                            query_group_sums=packed_query_group_sums.to(dtype=torch.float32),
+                            values=state.value_block_cuda_cache[int(kv_head)].to(dtype=torch.float32),
+                            query_scale=query_scale,
+                        )
+                        if detailed_mixed_timing:
+                            _synchronize_torch_device(q_slice)
+                            gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                            timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                            timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                        output[head_index_tensor] = context
+                        if attn_weights is not None:
+                            attn_weights[0, head_index_tensor, 0, :] = 0.0
+                        continue
+                    if triton_direct_m0_fused_available() and use_cuda_fast_final_mix:
+                        context = fused_selected_blocks_context_triton(
+                            payload_words=state.mixed_key_packed_payload_block_cuda_cache[int(kv_head)],
+                            scales=state.mixed_key_packed_scales_block_cuda_cache[int(kv_head)],
+                            bias=state.mixed_key_packed_bias_block_cuda_cache[int(kv_head)],
+                            selected_block_ids=m0_block_ids_t.to(device=query_tensor.device, dtype=torch.int64),
+                            valid_mask=state.block_token_valid_mask_cuda,
+                            queries=packed_queries,
+                            query_group_sums=packed_query_group_sums,
+                            values=state.value_block_cuda_cache[int(kv_head)],
+                            query_scale=query_scale,
+                        )
+                        if detailed_mixed_timing:
+                            _synchronize_torch_device(q_slice)
+                            gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                            timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                            timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                            timing["final_mix_ms"] += 0.0
+                        output[head_index_tensor] = context
+                        if attn_weights is not None:
+                            attn_weights[0, head_index_tensor, 0, :] = 0.0
+                        continue
+                    unpack_shifts, unpack_mask = unpack_metadata(8, device_type="cuda")
+                    grouped_payload = state.mixed_key_packed_payload_block_cuda_cache[int(kv_head)].index_select(
+                        1,
+                        m0_block_ids_t,
+                    ).unsqueeze(0)
+                    grouped_scales = state.mixed_key_packed_scales_block_cuda_cache[int(kv_head)].index_select(
+                        1,
+                        m0_block_ids_t,
+                    ).unsqueeze(0)
+                    grouped_bias = state.mixed_key_packed_bias_block_cuda_cache[int(kv_head)].index_select(
+                        1,
+                        m0_block_ids_t,
+                    ).unsqueeze(0)
+                    m0_logits = score_m0_logits_packed32_grouped_torch(
+                        grouped_payload,
+                        packed_queries.unsqueeze(0),
+                        grouped_scales,
+                        grouped_bias,
+                        packed_query_group_sums.unsqueeze(0),
+                        unpack_shifts=unpack_shifts,
+                        unpack_mask=unpack_mask,
+                    )[0]
+                    grouped_block_valid_mask = state.block_token_valid_mask_cuda.index_select(0, m0_block_ids_t).reshape(-1)
+                    grouped_block_values = state.value_block_cuda_cache[int(kv_head)].index_select(
+                        0,
+                        m0_block_ids_t,
+                    ).reshape(-1, int(state.value_block_cuda_cache.shape[-1]))
+                    if grouped_block_valid_mask is not None and not use_cuda_fast_final_mix:
+                        flat_grouped_logits = m0_logits.reshape(int(q_slice.shape[0]), -1)
+                        m0_logits = flat_grouped_logits[:, grouped_block_valid_mask]
+                        grouped_block_values = grouped_block_values[grouped_block_valid_mask]
+                except Exception:
+                    m0_logits = None
+                    grouped_block_valid_mask = None
+                    grouped_block_values = None
+            if m0_logits is None:
+                if use_cuda_selection_cache:
+                    m0_global_indices = m0_global_indices.to(
+                        device=(
+                            state.mixed_key_fused_scaled_score_cache.device
+                            if use_fast_score_cache
+                            else state.mixed_key_fused_scaled_cache.device
+                        ),
+                        dtype=torch.int64,
+                    )
+                    m0_local_indices = m0_local_indices.to(device=query_tensor.device, dtype=torch.int64)
+                else:
+                    m0_global_indices = torch.as_tensor(
+                        m0_global_indices_np,
+                        dtype=torch.int64,
+                        device=(
+                            state.mixed_key_fused_scaled_score_cache.device
+                            if use_fast_score_cache
+                            else state.mixed_key_fused_scaled_cache.device
+                        ),
+                    )
+                    m0_local_indices = torch.as_tensor(
+                        m0_local_indices_np,
+                        dtype=torch.int64,
+                        device=query_tensor.device,
+                    )
+                if use_fast_score_cache:
+                    if state.mixed_key_fused_with_bias_score_cache is not None:
+                        combined_concat = state.mixed_key_fused_with_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+                        fused_concat = combined_concat[:, :direct_padded_head_dim].contiguous().unsqueeze(0)
+                        bias_concat = combined_concat[:, direct_padded_head_dim:].contiguous()
+                    else:
+                        fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                        bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+                else:
+                    fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                    bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
+            if m0_logits is None and strategy == "direct_m0_metal_packed" and dotcache_config is not None:
                 packed_payload = None
                 packed_scales = None
                 packed_bias = None
@@ -2499,35 +4312,246 @@ def _decode_selected_blocks_direct_m0_torch(
                     scheme=str(getattr(dotcache_config, "quant_scheme_k", "affine")),
                     group_size=int(getattr(dotcache_config, "group_size", 0)),
                 )
+            elif m0_logits is None and (
+                dotcache_config is not None
+                and triton_direct_m0_available()
+                and str(query_tensor.device.type) == "cuda"
+                and (
+                    (
+                        state.mixed_key_packed_payload_cuda_cache is not None
+                        and state.mixed_key_packed_scales_cuda_cache is not None
+                        and state.mixed_key_packed_bias_cuda_cache is not None
+                    )
+                    or (
+                        state.mixed_key_packed_payload_cache is not None
+                        and state.mixed_key_packed_scales_cache is not None
+                        and state.mixed_key_packed_bias_cache is not None
+                    )
+                )
+                and int(getattr(dotcache_config, "bits_k", 0)) == 8
+                and int(getattr(dotcache_config, "group_size", 0)) == 32
+            ):
+                try:
+                    if (
+                        state.mixed_key_packed_payload_cuda_cache is not None
+                        and state.mixed_key_packed_scales_cuda_cache is not None
+                        and state.mixed_key_packed_bias_cuda_cache is not None
+                    ):
+                        packed_payload = state.mixed_key_packed_payload_cuda_cache[int(kv_head)].index_select(
+                            1,
+                            m0_global_indices,
+                        ).transpose(0, 1).contiguous()
+                        packed_scales = state.mixed_key_packed_scales_cuda_cache[int(kv_head)].index_select(
+                            0,
+                            m0_global_indices,
+                        ).contiguous()
+                        packed_bias = state.mixed_key_packed_bias_cuda_cache[int(kv_head)].index_select(
+                            0,
+                            m0_global_indices,
+                        ).contiguous()
+                    else:
+                        packed_payload = torch.as_tensor(
+                            np.asarray(
+                                np.take(
+                                    state.mixed_key_packed_payload_cache[int(kv_head)],
+                                    m0_global_indices_np,
+                                    axis=1,
+                                ),
+                                dtype=np.int32,
+                            ),
+                            dtype=torch.int32,
+                            device=query_tensor.device,
+                        ).transpose(0, 1).contiguous()
+                        packed_scales = torch.as_tensor(
+                            np.asarray(
+                                state.mixed_key_packed_scales_cache[int(kv_head), m0_global_indices_np, :],
+                                dtype=np.float32,
+                            ),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        ).contiguous()
+                        packed_bias = torch.as_tensor(
+                            np.asarray(
+                                state.mixed_key_packed_bias_cache[int(kv_head), m0_global_indices_np, :],
+                                dtype=np.float32,
+                            ),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        ).contiguous()
+                    packed_queries = query_padded.reshape(int(q_slice.shape[0]), -1, direct_group_size).contiguous()
+                    packed_query_group_sums = query_group_sums.contiguous()
+                    m0_logits = score_direct_m0_logits_triton(
+                        payload_words=packed_payload,
+                        queries=packed_queries,
+                        scales=packed_scales,
+                        bias=packed_bias,
+                        query_group_sums=packed_query_group_sums,
+                    )
+                except Exception:
+                    m0_logits = None
             if m0_logits is None:
+                if detailed_mixed_timing:
+                    _synchronize_torch_device(fused_concat)
+                    gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                    timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                    timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                    direct_m0_score_start = time.perf_counter()
                 m0_logits = score_m0_logits_fused_torch(
                     fused_concat,
                     query_padded,
                     bias_concat.transpose(0, 1).unsqueeze(0),
                     query_group_sums,
                 )
+            else:
+                if detailed_mixed_timing:
+                    gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                    timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                    timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                    direct_m0_score_start = time.perf_counter()
             if int(getattr(m0_logits, "ndim", 0)) == 3 and int(m0_logits.shape[0]) == 1:
                 m0_logits = m0_logits.squeeze(0)
-            _synchronize_torch_device(q_slice)
-            timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
+            if use_cuda_fast_final_mix:
+                use_native_final_mix = native_direct_m0_final_mix_available() and attn_weights is None
+                if detailed_mixed_timing:
+                    _synchronize_torch_device(q_slice)
+                    final_mix_start = time.perf_counter()
+                    final_mix_softmax_start = final_mix_start
+                gathered_values_mm = cuda_exact_value_mix_cache.get(int(kv_head))
+                if gathered_values_mm is None:
+                    gathered_values_mm = gathered_values[int(kv_head)].to(dtype=score_dtype)
+                    cuda_exact_value_mix_cache[int(kv_head)] = gathered_values_mm
+                if grouped_block_valid_mask is not None and grouped_block_values is not None:
+                    masked_logits = m0_logits.masked_fill(~grouped_block_valid_mask.unsqueeze(0), float("-inf"))
+                    if use_native_final_mix:
+                        context = _cuda_direct_m0_native_final_mix_exact_values(
+                            logits=masked_logits,
+                            gathered_values=grouped_block_values,
+                            query_scale=query_scale,
+                            score_dtype=score_dtype,
+                            softmax_value_context_cuda=softmax_value_context_cuda,
+                        )
+                        weights = None
+                    else:
+                        context, padded_weights = _cuda_direct_m0_fast_final_mix_exact_values(
+                            logits=masked_logits,
+                            gathered_values=grouped_block_values.to(dtype=score_dtype),
+                            query_scale=query_scale,
+                            score_dtype=score_dtype,
+                        )
+                        weights = padded_weights[:, grouped_block_valid_mask]
+                elif (
+                    triton_direct_m0_fused_available()
+                    and int(getattr(dotcache_config, "bits_k", 0)) == 8
+                    and int(getattr(dotcache_config, "group_size", 0)) == 32
+                    and state.mixed_key_packed_payload_cuda_cache is not None
+                    and state.mixed_key_packed_scales_cuda_cache is not None
+                    and state.mixed_key_packed_bias_cuda_cache is not None
+                ):
+                    try:
+                        packed_queries = query_padded.reshape(int(q_slice.shape[0]), -1, direct_group_size).contiguous()
+                        packed_query_group_sums = query_group_sums.contiguous()
+                        context = fused_indexed_context_triton(
+                            payload_words=state.mixed_key_packed_payload_cuda_cache[int(kv_head)].contiguous(),
+                            scales=state.mixed_key_packed_scales_cuda_cache[int(kv_head)].contiguous(),
+                            bias=state.mixed_key_packed_bias_cuda_cache[int(kv_head)].contiguous(),
+                            token_indices=m0_global_indices.to(device=query_tensor.device, dtype=torch.int64),
+                            queries=packed_queries,
+                            query_group_sums=packed_query_group_sums,
+                            values=state.value_cache[int(kv_head)],
+                            query_scale=query_scale,
+                        )
+                        weights = torch.zeros(
+                            (int(q_slice.shape[0]), total_tokens),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        )
+                    except Exception:
+                        if use_native_final_mix:
+                            context = _cuda_direct_m0_native_final_mix_exact_values(
+                                logits=m0_logits,
+                                gathered_values=gathered_values_mm,
+                                query_scale=query_scale,
+                                score_dtype=score_dtype,
+                                softmax_value_context_cuda=softmax_value_context_cuda,
+                            )
+                            weights = None
+                        else:
+                            context, weights = _cuda_direct_m0_triton_softmax_final_mix_exact_values(
+                                logits=m0_logits,
+                                gathered_values=gathered_values_mm,
+                                query_scale=query_scale,
+                                score_dtype=score_dtype,
+                                softmax_weights_triton=softmax_weights_triton,
+                            )
+                elif use_native_final_mix:
+                    context = _cuda_direct_m0_native_final_mix_exact_values(
+                        logits=m0_logits,
+                        gathered_values=gathered_values_mm,
+                        query_scale=query_scale,
+                        score_dtype=score_dtype,
+                        softmax_value_context_cuda=softmax_value_context_cuda,
+                    )
+                    weights = None
+                elif direct_m0_softmax_available():
+                    context, weights = _cuda_direct_m0_triton_softmax_final_mix_exact_values(
+                        logits=m0_logits,
+                        gathered_values=gathered_values_mm,
+                        query_scale=query_scale,
+                        score_dtype=score_dtype,
+                        softmax_weights_triton=softmax_weights_triton,
+                    )
+                else:
+                    context, weights = _cuda_direct_m0_fast_final_mix_exact_values(
+                        logits=m0_logits,
+                        gathered_values=gathered_values_mm,
+                        query_scale=query_scale,
+                        score_dtype=score_dtype,
+                    )
+                if detailed_mixed_timing:
+                    _synchronize_torch_device(q_slice)
+                    timing["final_mix_softmax_ms"] += (time.perf_counter() - final_mix_softmax_start) * 1000.0
+                    timing["final_mix_value_ms"] += 0.0
+                    timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+                output[head_index_tensor] = context
+                if attn_weights is not None:
+                    assert weights is not None
+                    attn_weights[0, head_index_tensor, 0, :] = weights
+                continue
             logits.index_copy_(1, m0_local_indices, m0_logits.to(dtype=torch.float32))
-        if m3_global_indices_np.size > 0:
-            _synchronize_torch_device(q_slice)
-            exact_m3_score_start = time.perf_counter()
+        if m3_token_count > 0:
+            resolved_m3_block_ids = (
+                m3_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                if m3_block_ids_t is not None
+                else resolved_block_ids_np[m3_block_mask].tolist()
+            )
+            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_m3_block_ids)
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                exact_m3_score_start = time.perf_counter()
             if score_dtype == query_tensor.dtype:
                 q_slice_score = q_slice
             else:
                 q_slice_score = q_slice.to(dtype=score_dtype)
-            m3_global_indices = torch.as_tensor(
-                m3_global_indices_np,
-                dtype=torch.int64,
-                device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
-            )
-            m3_local_indices = torch.as_tensor(
-                m3_local_indices_np,
-                dtype=torch.int64,
-                device=query_tensor.device,
-            )
+            if use_cuda_selection_cache:
+                m3_global_indices = m3_global_indices.to(
+                    device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
+                    dtype=torch.int64,
+                )
+                m3_local_indices = m3_local_indices.to(device=query_tensor.device, dtype=torch.int64)
+            else:
+                m3_global_indices = torch.as_tensor(
+                    m3_global_indices_np,
+                    dtype=torch.int64,
+                    device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
+                )
+                m3_local_indices = torch.as_tensor(
+                    m3_local_indices_np,
+                    dtype=torch.int64,
+                    device=query_tensor.device,
+                )
             if use_fast_score_cache:
                 m3_keys = state.mixed_key_score_cache[int(kv_head)].index_select(0, m3_global_indices).to(
                     device=query_tensor.device,
@@ -2539,22 +4563,133 @@ def _decode_selected_blocks_direct_m0_torch(
                     dtype=score_dtype,
                 )
             m3_logits = score_exact_logits_flat_torch(m3_keys, q_slice_score)
-            _synchronize_torch_device(q_slice)
-            timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
+            if token_block_ids is not None:
+                exact_block_indices = (
+                    token_block_ids.index_select(0, m3_local_indices)
+                    .unique()
+                    .detach()
+                    .to(device="cpu", dtype=torch.int64)
+                    .tolist()
+                )
+                exact_key_m3_blocks.update(int(resolved_block_ids[int(local_block_idx)]) for local_block_idx in exact_block_indices)
             logits.index_copy_(1, m3_local_indices, m3_logits)
-        _synchronize_torch_device(q_slice)
-        final_mix_start = time.perf_counter()
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            final_mix_start = time.perf_counter()
         logits = logits * float(query_scale)
-        weights = torch.softmax(logits, dim=-1).to(dtype=torch.float32)
-        context = torch.matmul(weights, gathered_values[int(kv_head)])
-        _synchronize_torch_device(q_slice)
-        timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+        if int(logits.shape[-1]) > 0 and token_block_ids is not None and block_max_logits is not None:
+            token_max_logits = logits.max(dim=0).values.to(dtype=torch.float32)
+            block_max_tensor = torch.full(
+                (int(len(token_counts)),),
+                float("-inf"),
+                dtype=torch.float32,
+                device=query_tensor.device,
+            )
+            block_max_tensor.scatter_reduce_(
+                0,
+                token_block_ids,
+                token_max_logits,
+                reduce="amax",
+                include_self=True,
+            )
+            block_max_logits = torch.maximum(block_max_logits, block_max_tensor)
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            timing["final_mix_logits_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+            final_mix_softmax_start = time.perf_counter()
+        if collect_stream_stats:
+            head_m = logits.max(dim=-1).values
+            if attn_weights is None:
+                logits.sub_(head_m.unsqueeze(1))
+                exp_scores = logits.exp_()
+            else:
+                exp_scores = torch.exp(logits - head_m.unsqueeze(1))
+            head_l = exp_scores.sum(dim=-1)
+            inv_head_l = head_l.clamp_min(1e-8).reciprocal()
+            weights = (
+                exp_scores * inv_head_l.unsqueeze(1)
+                if attn_weights is not None
+                else None
+            )
+        else:
+            head_m = None
+            head_l = None
+            head_h = None
+            weights = torch.softmax(logits, dim=-1)
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            timing["final_mix_softmax_ms"] += (time.perf_counter() - final_mix_softmax_start) * 1000.0
+            final_mix_value_start = time.perf_counter()
+        if collect_stream_stats:
+            assert head_l is not None
+            head_h = torch.matmul(exp_scores, gathered_values[int(kv_head)])
+            context = head_h * inv_head_l.unsqueeze(1)
+        else:
+            context = torch.matmul(weights, gathered_values[int(kv_head)])
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            timing["final_mix_value_ms"] += (time.perf_counter() - final_mix_value_start) * 1000.0
+            timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
         output[head_index_tensor] = context
-        attn_weights[0, head_index_tensor, 0, :] = weights
+        if attn_weights is not None:
+            attn_weights[0, head_index_tensor, 0, :] = weights
+        if collect_stream_stats:
+            assert tranche_m is not None
+            assert tranche_l is not None
+            assert tranche_h is not None
+            assert head_m is not None
+            assert head_l is not None
+            assert head_h is not None
+            assert block_mass_numerators is not None
+            if token_block_ids is not None:
+                num_kv_q_heads = int(head_index_tensor.numel())
+                expanded_block_ids = token_block_ids.unsqueeze(0).expand(num_kv_q_heads, -1)
+                head_block_mass = torch.zeros(
+                    (num_kv_q_heads, int(len(token_counts))),
+                    dtype=torch.float32,
+                    device=query_tensor.device,
+                )
+                head_block_mass.scatter_add_(
+                    1,
+                    expanded_block_ids,
+                    exp_scores.to(dtype=torch.float32),
+                )
+                block_mass_numerators.index_copy_(0, head_index_tensor, head_block_mass)
+            if attn_weights is not None:
+                assert per_head_logits is not None
+                for local_head_idx, q_head_idx in enumerate(head_index_tensor.tolist()):
+                    per_head_logits[int(q_head_idx)] = logits[int(local_head_idx)].to(dtype=torch.float32)
+            tranche_m.index_copy_(0, head_index_tensor, head_m.to(dtype=torch.float32))
+            tranche_l.index_copy_(0, head_index_tensor, head_l.to(dtype=torch.float32))
+            tranche_h.index_copy_(0, head_index_tensor, head_h.to(dtype=torch.float32))
     executed_mode_counts = {
         "M0": int(len(executed_m0_blocks)),
         "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
+        "EXACT_KEY_M3": int(len(exact_key_m3_blocks)),
     }
+    if collect_stream_stats:
+        assert block_max_logits is not None
+        assert tranche_m is not None
+        assert tranche_l is not None
+        assert tranche_h is not None
+        return {
+            "output": output,
+            "attn_weights": attn_weights,
+            "token_counts": token_counts,
+            "executed_mode_counts": executed_mode_counts,
+            "timing": timing,
+            "stream_stats": {
+                "per_head_logits": per_head_logits,
+                "m": tranche_m,
+                "l": tranche_l,
+                "h": tranche_h,
+                "block_mass_numerators": block_mass_numerators,
+                "block_max_logits": block_max_logits.detach().to(dtype=torch.float32),
+            },
+        }
     return output, attn_weights, token_counts, executed_mode_counts, timing
 
 
@@ -2564,12 +4699,25 @@ def _update_block_prev_attention_ema(
     selected_block_ids: list[int],
     selected_block_token_counts: list[int],
     attn_weights: Any,
+    block_attention_masses: Any | None = None,
     decay: float = 0.9,
 ) -> None:
     torch = _load_torch()
-    if attn_weights is None:
+    if attn_weights is None and block_attention_masses is None:
         return
     state.block_prev_attention_ema.mul_(float(decay))
+    if block_attention_masses is not None:
+        masses = block_attention_masses.to(dtype=torch.float32, device=state.block_prev_attention_ema.device)
+        if masses.ndim == 2:
+            collapsed = masses.mean(dim=0)
+        else:
+            collapsed = masses.reshape(-1)
+        for block_id in selected_block_ids:
+            state.block_prev_attention_ema[int(block_id)] += (1.0 - float(decay)) * collapsed[int(block_id)].to(
+                dtype=state.block_prev_attention_ema.dtype,
+                device=state.block_prev_attention_ema.device,
+            )
+        return
     weights = attn_weights.to(dtype=torch.float32)
     if weights.ndim == 4:
         collapsed = weights.mean(dim=(0, 2))
@@ -2634,9 +4782,10 @@ class PersistentFullAttentionState:
             padded_head_dim = int(math.ceil(head_dim / group_size) * group_size)
             num_groups = max(int(padded_head_dim // group_size), 1)
             token_count = int(kv_keys.shape[1])
+            block_size = int(config.block_size)
             block_token_starts, block_token_counts, metadata_valid = _build_block_layout(
                 token_count=token_count,
-                block_size=int(config.block_size),
+                block_size=block_size,
             )
             num_blocks = int(len(block_token_starts))
             (
@@ -2646,7 +4795,13 @@ class PersistentFullAttentionState:
                 block_k_subradii,
                 block_v_center,
                 block_v_radius,
+                block_v_subcenters,
+                block_v_subradii,
+                block_v_sub_norm_max,
+                block_v_subtoken_counts,
                 block_v_norm_max,
+                block_v_pos_sum,
+                block_v_neg_sum,
                 block_prev_attention_ema,
                 block_k_comp_error,
                 block_compression_metadata_valid,
@@ -2656,7 +4811,8 @@ class PersistentFullAttentionState:
                     value_cache=kv_values,
                     num_blocks=num_blocks,
                     device=resolved_device,
-                    key_centroid_count=int(config.full_attention_key_centroid_count),
+                    key_centroid_count=_resolve_layer_key_centroid_count(config, int(layer_id)),
+                    value_centroid_count=_resolve_layer_value_centroid_count(config, int(layer_id)),
                 )
             )
             if layer_prefill_metadata is not None:
@@ -2724,6 +4880,15 @@ class PersistentFullAttentionState:
                     if bool(config.enable_full_attention_mixed_mode_execution)
                     else None
                 ),
+                mixed_key_fused_with_bias_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim + num_groups),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
                 mixed_key_packed_payload_cache=(
                     np.zeros(
                         (
@@ -2761,6 +4926,113 @@ class PersistentFullAttentionState:
                     if bool(config.enable_full_attention_mixed_mode_execution) and packed_key_cache_spec is not None
                     else None
                 ),
+                mixed_key_packed_payload_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            num_groups,
+                            int(kv_keys.shape[1]),
+                            int(packed_key_cache_spec[1]),
+                        ),
+                        dtype=torch.int32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
+                mixed_key_packed_scales_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            int(kv_keys.shape[1]),
+                            num_groups,
+                        ),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
+                mixed_key_packed_bias_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            int(kv_keys.shape[1]),
+                            num_groups,
+                        ),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
+                mixed_key_packed_payload_block_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            num_groups,
+                            num_blocks,
+                            block_size,
+                            int(packed_key_cache_spec[1]),
+                        ),
+                        dtype=torch.int32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
+                mixed_key_packed_scales_block_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            num_groups,
+                            num_blocks,
+                            block_size,
+                        ),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
+                mixed_key_packed_bias_block_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_keys.shape[0]),
+                            num_groups,
+                            num_blocks,
+                            block_size,
+                        ),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and packed_key_cache_spec is not None
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
                 mixed_value_fused_scaled_cache=(
                     torch.zeros(
                         (int(kv_values.shape[0]), int(kv_values.shape[1]), padded_head_dim),
@@ -2779,15 +5051,48 @@ class PersistentFullAttentionState:
                     if bool(config.enable_full_attention_mixed_mode_execution)
                     else None
                 ),
+                value_block_cuda_cache=(
+                    torch.zeros(
+                        (
+                            int(kv_values.shape[0]),
+                            num_blocks,
+                            block_size,
+                            int(kv_values.shape[-1]),
+                        ),
+                        dtype=torch.float32,
+                        device=resolved_device,
+                    )
+                    if (
+                        bool(config.enable_full_attention_mixed_mode_execution)
+                        and str(resolved_device.type) == "cuda"
+                    )
+                    else None
+                ),
                 block_token_starts=block_token_starts,
                 block_token_counts=block_token_counts,
+                block_token_starts_cuda=None,
+                block_token_counts_cuda=None,
+                block_local_starts_cuda=None,
+                block_token_valid_mask_cuda=None,
+                block_k_mode_m0_cuda=None,
                 block_k_center=block_k_center,
                 block_k_radius=block_k_radius,
                 block_k_subcenters=block_k_subcenters,
                 block_k_subradii=block_k_subradii,
                 block_v_center=block_v_center,
                 block_v_radius=block_v_radius,
+                block_v_subcenters=block_v_subcenters,
+                block_v_subradii=block_v_subradii,
+                block_v_sub_norm_max=block_v_sub_norm_max,
+                block_v_subtoken_counts=block_v_subtoken_counts,
                 block_v_norm_max=block_v_norm_max,
+                block_v_pos_sum=block_v_pos_sum,
+                block_v_neg_sum=block_v_neg_sum,
+                block_streaming_value_upper_log_cache=torch.zeros(
+                    (num_blocks,),
+                    dtype=torch.float32,
+                    device=resolved_device,
+                ),
                 block_prev_attention_ema=block_prev_attention_ema,
                 block_region_ids=_build_block_region_ids(num_blocks=num_blocks),
                 block_k_mode=block_k_mode,
@@ -2796,11 +5101,17 @@ class PersistentFullAttentionState:
                 block_compression_metadata_valid=block_compression_metadata_valid,
                 metadata_valid=metadata_valid,
             )
+            _refresh_cuda_block_selection_caches(layers[int(layer_id)])
             cache_refresh_ms = _recompute_full_attention_block_metadata(
                 state=layers[int(layer_id)],
                 block_indices=np.arange(num_blocks, dtype=np.int64),
                 config=config,
                 dotcache_config=dotcache_config,
+            )
+            _refresh_cached_streaming_value_upper_scores(
+                state=layers[int(layer_id)],
+                block_indices=np.arange(num_blocks, dtype=np.int64),
+                q_head_to_kv_head=q_head_to_kv_head,
             )
             if cache_refresh_ms > 0.0:
                 telemetry.require_layer(int(layer_id)).mixed_execution_cache_refresh_ms_total += float(cache_refresh_ms)
@@ -2809,6 +5120,7 @@ class PersistentFullAttentionState:
                     torch.as_tensor(initial_comp_error, dtype=torch.float32, device=resolved_device)
                 )
                 layers[int(layer_id)].block_compression_metadata_valid[...] = initial_compression_valid
+                _refresh_cuda_block_selection_caches(layers[int(layer_id)])
                 if bool(config.enable_full_attention_mixed_mode_execution):
                     cache_refresh_ms = _refresh_cached_mixed_execution_blocks(
                         state=layers[int(layer_id)],
@@ -2886,7 +5198,11 @@ class PersistentFullAttentionState:
                 ],
                 dim=1,
             )
-        if state.mixed_key_fused_scaled_score_cache is not None and state.mixed_key_bias_score_cache is not None:
+        if (
+            state.mixed_key_fused_scaled_score_cache is not None
+            and state.mixed_key_bias_score_cache is not None
+            and state.mixed_key_fused_with_bias_score_cache is not None
+        ):
             state.mixed_key_fused_scaled_score_cache = torch.cat(
                 [
                     state.mixed_key_fused_scaled_score_cache,
@@ -2912,6 +5228,21 @@ class PersistentFullAttentionState:
                             int(state.mixed_key_bias_score_cache.shape[-1]),
                         ),
                         dtype=state.mixed_key_bias_score_cache.dtype,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_fused_with_bias_score_cache = torch.cat(
+                [
+                    state.mixed_key_fused_with_bias_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_fused_with_bias_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_fused_with_bias_score_cache.dtype,
                         device=self.device,
                     ),
                 ],
@@ -2965,6 +5296,57 @@ class PersistentFullAttentionState:
                 ],
                 axis=1,
             )
+        if (
+            state.mixed_key_packed_payload_cuda_cache is not None
+            and state.mixed_key_packed_scales_cuda_cache is not None
+            and state.mixed_key_packed_bias_cuda_cache is not None
+        ):
+            state.mixed_key_packed_payload_cuda_cache = torch.cat(
+                [
+                    state.mixed_key_packed_payload_cuda_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(state.mixed_key_packed_payload_cuda_cache.shape[1]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_payload_cuda_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_packed_payload_cuda_cache.dtype,
+                        device=state.mixed_key_packed_payload_cuda_cache.device,
+                    ),
+                ],
+                dim=2,
+            )
+            state.mixed_key_packed_scales_cuda_cache = torch.cat(
+                [
+                    state.mixed_key_packed_scales_cuda_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_scales_cuda_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_packed_scales_cuda_cache.dtype,
+                        device=state.mixed_key_packed_scales_cuda_cache.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_packed_bias_cuda_cache = torch.cat(
+                [
+                    state.mixed_key_packed_bias_cuda_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_packed_bias_cuda_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_packed_bias_cuda_cache.dtype,
+                        device=state.mixed_key_packed_bias_cuda_cache.device,
+                    ),
+                ],
+                dim=1,
+            )
         if state.mixed_value_fused_scaled_cache is not None and state.mixed_value_bias_cache is not None:
             state.mixed_value_fused_scaled_cache = torch.cat(
                 [
@@ -3008,6 +5390,79 @@ class PersistentFullAttentionState:
         state.block_token_starts = block_token_starts
         state.block_token_counts = block_token_counts
         state.metadata_valid = metadata_valid
+        if new_num_blocks > previous_num_blocks:
+            added_block_count = int(new_num_blocks - previous_num_blocks)
+            if (
+                state.mixed_key_packed_payload_block_cuda_cache is not None
+                and state.mixed_key_packed_scales_block_cuda_cache is not None
+                and state.mixed_key_packed_bias_block_cuda_cache is not None
+            ):
+                state.mixed_key_packed_payload_block_cuda_cache = torch.cat(
+                    [
+                        state.mixed_key_packed_payload_block_cuda_cache,
+                        torch.zeros(
+                            (
+                                int(key_tensor.shape[0]),
+                                int(state.mixed_key_packed_payload_block_cuda_cache.shape[1]),
+                                added_block_count,
+                                int(state.mixed_key_packed_payload_block_cuda_cache.shape[3]),
+                                int(state.mixed_key_packed_payload_block_cuda_cache.shape[4]),
+                            ),
+                            dtype=state.mixed_key_packed_payload_block_cuda_cache.dtype,
+                            device=state.mixed_key_packed_payload_block_cuda_cache.device,
+                        ),
+                    ],
+                    dim=2,
+                )
+                state.mixed_key_packed_scales_block_cuda_cache = torch.cat(
+                    [
+                        state.mixed_key_packed_scales_block_cuda_cache,
+                        torch.zeros(
+                            (
+                                int(key_tensor.shape[0]),
+                                int(state.mixed_key_packed_scales_block_cuda_cache.shape[1]),
+                                added_block_count,
+                                int(state.mixed_key_packed_scales_block_cuda_cache.shape[3]),
+                            ),
+                            dtype=state.mixed_key_packed_scales_block_cuda_cache.dtype,
+                            device=state.mixed_key_packed_scales_block_cuda_cache.device,
+                        ),
+                    ],
+                    dim=2,
+                )
+                state.mixed_key_packed_bias_block_cuda_cache = torch.cat(
+                    [
+                        state.mixed_key_packed_bias_block_cuda_cache,
+                        torch.zeros(
+                            (
+                                int(key_tensor.shape[0]),
+                                int(state.mixed_key_packed_bias_block_cuda_cache.shape[1]),
+                                added_block_count,
+                                int(state.mixed_key_packed_bias_block_cuda_cache.shape[3]),
+                            ),
+                            dtype=state.mixed_key_packed_bias_block_cuda_cache.dtype,
+                            device=state.mixed_key_packed_bias_block_cuda_cache.device,
+                        ),
+                    ],
+                    dim=2,
+                )
+            if state.value_block_cuda_cache is not None:
+                state.value_block_cuda_cache = torch.cat(
+                    [
+                        state.value_block_cuda_cache,
+                        torch.zeros(
+                            (
+                                int(value_tensor.shape[0]),
+                                added_block_count,
+                                int(state.value_block_cuda_cache.shape[2]),
+                                int(state.value_block_cuda_cache.shape[3]),
+                            ),
+                            dtype=state.value_block_cuda_cache.dtype,
+                            device=state.value_block_cuda_cache.device,
+                        ),
+                    ],
+                    dim=1,
+                )
         if new_num_blocks != previous_num_blocks:
             previous_state = {
                 "block_k_center": state.block_k_center.clone(),
@@ -3016,7 +5471,13 @@ class PersistentFullAttentionState:
                 "block_k_subradii": state.block_k_subradii.clone(),
                 "block_v_center": state.block_v_center.clone(),
                 "block_v_radius": state.block_v_radius.clone(),
+                "block_v_subcenters": state.block_v_subcenters.clone(),
+                "block_v_subradii": state.block_v_subradii.clone(),
+                "block_v_sub_norm_max": state.block_v_sub_norm_max.clone(),
+                "block_v_subtoken_counts": state.block_v_subtoken_counts.clone(),
                 "block_v_norm_max": state.block_v_norm_max.clone(),
+                "block_v_pos_sum": state.block_v_pos_sum.clone(),
+                "block_v_neg_sum": state.block_v_neg_sum.clone(),
                 "block_prev_attention_ema": state.block_prev_attention_ema.clone(),
                 "block_k_comp_error": state.block_k_comp_error.clone(),
                 "block_region_ids": np.asarray(state.block_region_ids, dtype=np.int32).copy(),
@@ -3026,6 +5487,11 @@ class PersistentFullAttentionState:
                     state.block_compression_metadata_valid,
                     dtype=np.float32,
                 ).copy(),
+                "block_streaming_value_upper_log_cache": (
+                    None
+                    if state.block_streaming_value_upper_log_cache is None
+                    else state.block_streaming_value_upper_log_cache.clone()
+                ),
                 "metadata_valid": previous_metadata_valid,
             }
             (
@@ -3035,7 +5501,13 @@ class PersistentFullAttentionState:
                 state.block_k_subradii,
                 state.block_v_center,
                 state.block_v_radius,
+                state.block_v_subcenters,
+                state.block_v_subradii,
+                state.block_v_sub_norm_max,
+                state.block_v_subtoken_counts,
                 state.block_v_norm_max,
+                state.block_v_pos_sum,
+                state.block_v_neg_sum,
                 state.block_prev_attention_ema,
                 state.block_k_comp_error,
                 state.block_compression_metadata_valid,
@@ -3044,7 +5516,13 @@ class PersistentFullAttentionState:
                 value_cache=state.value_cache,
                 num_blocks=new_num_blocks,
                 device=self.device,
-                key_centroid_count=int(self.config.full_attention_key_centroid_count),
+                key_centroid_count=int(state.block_k_subcenters.shape[2]),
+                value_centroid_count=int(state.block_v_subcenters.shape[2]),
+            )
+            state.block_streaming_value_upper_log_cache = torch.zeros(
+                (new_num_blocks,),
+                dtype=torch.float32,
+                device=self.device,
             )
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             (
@@ -3065,6 +5543,10 @@ class PersistentFullAttentionState:
                 previous=previous_state,
                 prefix_block_count=previous_num_blocks,
             )
+            if previous_state["block_streaming_value_upper_log_cache"] is not None and int(previous_num_blocks) > 0:
+                state.block_streaming_value_upper_log_cache[:previous_num_blocks].copy_(
+                    previous_state["block_streaming_value_upper_log_cache"][:previous_num_blocks]
+                )
             if int(previous_num_blocks) < int(new_num_blocks):
                 state.block_k_mode[previous_num_blocks:new_num_blocks] = resolved_block_k_mode[
                     previous_num_blocks:new_num_blocks
@@ -3079,11 +5561,17 @@ class PersistentFullAttentionState:
         else:
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             recompute_block_indices = np.asarray([new_num_blocks - 1], dtype=np.int64)
+        _refresh_cuda_block_selection_caches(state)
         cache_refresh_ms = _recompute_full_attention_block_metadata(
             state=state,
             block_indices=recompute_block_indices,
             config=self.config,
             dotcache_config=self.dotcache_config,
+        )
+        _refresh_cached_streaming_value_upper_scores(
+            state=state,
+            block_indices=recompute_block_indices,
+            q_head_to_kv_head=self.q_head_to_kv_head,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         self.telemetry.append_update_ms_total += elapsed_ms
@@ -3107,6 +5595,7 @@ class PersistentFullAttentionState:
         priority_scores, upper_bounds = _resolve_block_score_inputs(
             state=state,
             config=resolved_config,
+            layer_id=int(layer_id),
             query=query,
             q_head_to_kv_head=self.q_head_to_kv_head,
             query_scale=float(query_scale),
@@ -3289,11 +5778,13 @@ class PersistentFullAttentionState:
             config=config_override or self.config,
             dotcache_config=self.dotcache_config,
         )
+        executed_mode_counts["EXACT_KEY_M3"] = int(executed_mode_counts.get("M3", 0))
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(executed_mode_counts.get("EXACT_KEY_M3", 0))
         return gathered_keys, gathered_values, token_counts, executed_mode_counts
 
     def decode_selected_blocks(
@@ -3310,9 +5801,15 @@ class PersistentFullAttentionState:
         start = time.perf_counter()
         timing = {
             "direct_m0_assembly_ms": 0.0,
+            "direct_m0_query_prep_ms": 0.0,
+            "direct_m0_gather_ms": 0.0,
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
+            "aux_exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
+            "final_mix_logits_ms": 0.0,
+            "final_mix_softmax_ms": 0.0,
+            "final_mix_value_ms": 0.0,
         }
         if (
             bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
@@ -3335,6 +5832,7 @@ class PersistentFullAttentionState:
                 config=resolved_config,
                 dotcache_config=self.dotcache_config,
             )
+            executed_mode_counts["EXACT_KEY_M3"] = int(executed_mode_counts.get("M3", 0))
             output, attn_weights = _decode_selected_block_tensors_exact_torch(
                 query=query,
                 key_cache=gathered_keys,
@@ -3346,11 +5844,26 @@ class PersistentFullAttentionState:
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
         layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(timing.get("direct_m0_assembly_ms", 0.0))
+        layer_telemetry.mixed_execution_direct_m0_query_prep_ms_total += float(
+            timing.get("direct_m0_query_prep_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_gather_ms_total += float(
+            timing.get("direct_m0_gather_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(timing.get("direct_m0_score_ms", 0.0))
         layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(timing.get("exact_m3_score_ms", 0.0))
+        layer_telemetry.mixed_execution_aux_exact_m3_score_ms_total += float(
+            timing.get("aux_exact_m3_score_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_final_mix_ms_total += float(timing.get("final_mix_ms", 0.0))
+        layer_telemetry.mixed_execution_final_mix_logits_ms_total += float(timing.get("final_mix_logits_ms", 0.0))
+        layer_telemetry.mixed_execution_final_mix_softmax_ms_total += float(
+            timing.get("final_mix_softmax_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_value_ms_total += float(timing.get("final_mix_value_ms", 0.0))
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(executed_mode_counts.get("EXACT_KEY_M3", 0))
         return output, attn_weights, token_counts, executed_mode_counts
 
     def full_layer_tensors(self, layer_id: int):
@@ -3416,35 +5929,214 @@ class PersistentFullAttentionState:
         query: Any,
         *,
         query_scale: float,
+        config_override: PersistentServingConfig | None = None,
         check_interval: int | None = None,
         stop_on_certificate: bool = False,
         policy_choice: dict[str, Any] | None = None,
+        return_attn_weights: bool = True,
+        return_checkpoint_records: bool = True,
+        return_checkpoint_per_head: bool = True,
+        return_certificate_summary_only: bool = False,
     ) -> dict[str, Any]:
         torch = _load_torch()
         state = self.layers[int(layer_id)]
-        selection = self.select_blocks(
-            layer_id,
-            query,
-            query_scale=query_scale,
-            policy_choice=policy_choice,
-        )
-        priority_scores = selection["priority_scores"]
-        upper_bounds = selection["upper_bounds"]
-        selected_processing_ids = [int(block_id) for block_id in selection.get("processing_block_ids", [])]
-        selected_seen = set(selected_processing_ids)
-        remainder_candidates = [
-            int(block_id)
-            for block_id in range(int(len(state.block_token_starts)))
-            if int(block_id) not in selected_seen
-        ]
-        remainder_ranked = _rank_optional_block_ids(
-            candidate_block_ids=remainder_candidates,
-            priority_scores=priority_scores,
-            upper_bounds=upper_bounds,
-            use_upper_bounds_first=bool(self.config.full_attention_optional_use_upper_bounds_first),
-        )
-        processing_order = [*selected_processing_ids, *remainder_ranked]
+        processing_order: list[int] | None = None
+        processing_order_t = None
+        resolved_config = config_override or self.config
+        streaming_order_mode = str(
+            getattr(resolved_config, "full_attention_streaming_order_mode", "shortlist") or "shortlist"
+        ).strip().lower()
+        disable_cuda_streaming_frontier_fast_path = os.environ.get(
+            "DOTCACHE_DISABLE_CUDA_STREAMING_FRONTIER_FAST_PATH",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        use_cuda_streaming_frontier_fast_path = bool(resolved_config.enable_early_exit) and (
+            str(getattr(query.device, "type", "")) == "cuda"
+        ) and not bool(disable_cuda_streaming_frontier_fast_path) and streaming_order_mode in {
+            "residual_proxy",
+            "residual_proxy_envelope",
+            "residual_value_upper",
+            "priority_value_hybrid",
+        }
+        if use_cuda_streaming_frontier_fast_path:
+            selection_start = time.perf_counter()
+            num_blocks = int(len(state.block_token_starts))
+            score_result = self.score_blocks(
+                layer_id,
+                query,
+                query_scale=query_scale,
+                config_override=resolved_config,
+            )
+            priority_scores = score_result["priority_scores"]
+            upper_bounds = score_result["upper_bounds"].clone()
+            recent_ids, mandatory_recent_ids = _resolve_recent_policy(
+                num_blocks=num_blocks,
+                recent_blocks=int(resolved_config.full_attention_recent_block_count),
+                mandatory_recent_blocks=resolved_config.full_attention_mandatory_recent_block_count,
+            )
+            mandatory_ids = _mandatory_block_ids(
+                num_blocks=num_blocks,
+                sink_blocks=int(resolved_config.full_attention_sink_block_count),
+                mandatory_recent_blocks=mandatory_recent_ids,
+            )
+            mandatory_block_id_set = set(int(block_id) for block_id in mandatory_ids)
+            soft_recent_ids = [int(block_id) for block_id in recent_ids if int(block_id) not in mandatory_block_id_set]
+            non_mandatory_candidates = [
+                int(block_id) for block_id in range(num_blocks) if int(block_id) not in mandatory_block_id_set
+            ]
+            if streaming_order_mode == "residual_value_upper":
+                proxy_scores = _resolve_streaming_value_upper_scores(
+                    state=state,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                )
+            elif streaming_order_mode == "priority_value_hybrid":
+                value_upper_scores = _resolve_streaming_value_upper_scores(
+                    state=state,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                )
+                proxy_scores = priority_scores + float(
+                    getattr(resolved_config, "full_attention_streaming_priority_value_upper_weight", 0.25)
+                ) * value_upper_scores
+            else:
+                proxy_scores = _resolve_streaming_proxy_scores(
+                    state=state,
+                    config=resolved_config,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    upper_bounds=upper_bounds,
+                    layer_id=int(layer_id),
+                    mode=streaming_order_mode,
+                )
+            all_block_ids = torch.arange(num_blocks, dtype=torch.int64, device=proxy_scores.device)
+            if mandatory_ids:
+                mandatory_ids_t = torch.as_tensor(mandatory_ids, dtype=torch.int64, device=proxy_scores.device)
+                non_mandatory_mask = torch.ones((num_blocks,), dtype=torch.bool, device=proxy_scores.device)
+                non_mandatory_mask.index_fill_(0, mandatory_ids_t, False)
+                non_mandatory_ids_t = all_block_ids[non_mandatory_mask]
+            else:
+                mandatory_ids_t = torch.empty((0,), dtype=torch.int64, device=proxy_scores.device)
+                non_mandatory_ids_t = all_block_ids
+            if int(non_mandatory_ids_t.numel()) > 0:
+                ranked_non_mandatory_scores = proxy_scores.index_select(0, non_mandatory_ids_t).to(dtype=torch.float32)
+                ranked_non_mandatory_order = torch.argsort(
+                    ranked_non_mandatory_scores,
+                    descending=True,
+                    stable=True,
+                )
+                ranked_non_mandatory_t = non_mandatory_ids_t.index_select(0, ranked_non_mandatory_order)
+            else:
+                ranked_non_mandatory_t = torch.empty((0,), dtype=torch.int64, device=proxy_scores.device)
+            processing_order_t = torch.cat((mandatory_ids_t, ranked_non_mandatory_t), dim=0)
+            selection = {
+                "selected_block_ids": [int(block_id) for block_id in mandatory_ids],
+                "processing_block_ids": [int(block_id) for block_id in mandatory_ids],
+                "mandatory_block_ids": [int(block_id) for block_id in mandatory_ids],
+                "soft_recent_block_ids": [int(block_id) for block_id in soft_recent_ids],
+                "exploration_block_ids": [],
+                "optional_block_ids": [],
+                "ranked_optional_candidate_ids": [],
+                "priority_scores": priority_scores,
+                "upper_bounds": upper_bounds,
+                "compression_candidate_block_ids": [int(block_id) for block_id in mandatory_ids],
+                "compression_invalid_block_ids": [],
+                "selected_k_mode_counts": {},
+                "policy_preferred_optional_block_ids": [],
+                "policy_preferred_bias_weight": 0.0,
+            }
+            self.telemetry.require_layer(int(layer_id)).selection_ms_total += (
+                (time.perf_counter() - selection_start) * 1000.0
+            )
+        else:
+            selection = self.select_blocks(
+                layer_id,
+                query,
+                query_scale=query_scale,
+                config_override=resolved_config,
+                policy_choice=policy_choice,
+            )
+            priority_scores = selection["priority_scores"]
+            upper_bounds = selection["upper_bounds"].clone()
+            mandatory_ids = [int(block_id) for block_id in selection.get("mandatory_block_ids", [])]
+            exploration_ids = [int(block_id) for block_id in selection.get("exploration_block_ids", [])]
+            optional_ids = [int(block_id) for block_id in selection.get("optional_block_ids", [])]
+            mandatory_block_id_set = set(int(block_id) for block_id in mandatory_ids)
+            ranked_optional_candidate_ids = [
+                int(block_id) for block_id in selection.get("ranked_optional_candidate_ids", [])
+            ]
+            selected_processing_ids: list[int] = []
+            selected_seen: set[int] = set()
+
+            def _append_processing_ids(block_ids: list[int]) -> None:
+                for block_id in block_ids:
+                    if int(block_id) in selected_seen:
+                        continue
+                    selected_processing_ids.append(int(block_id))
+                    selected_seen.add(int(block_id))
+
+            _append_processing_ids(mandatory_ids)
+            _append_processing_ids(exploration_ids)
+            _append_processing_ids(
+                [int(block_id) for block_id in ranked_optional_candidate_ids if int(block_id) in set(optional_ids)]
+            )
+            _append_processing_ids(optional_ids)
+            if bool(resolved_config.enable_early_exit) and streaming_order_mode in {
+                "residual_proxy",
+                "residual_proxy_envelope",
+                "residual_value_upper",
+                "priority_value_hybrid",
+            }:
+                non_mandatory_candidates = [
+                    int(block_id)
+                    for block_id in range(int(len(state.block_token_starts)))
+                    if int(block_id) not in mandatory_block_id_set
+                ]
+                if streaming_order_mode == "residual_value_upper":
+                    proxy_scores = _resolve_streaming_value_upper_scores(
+                        state=state,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        upper_bounds=upper_bounds,
+                    )
+                elif streaming_order_mode == "priority_value_hybrid":
+                    value_upper_scores = _resolve_streaming_value_upper_scores(
+                        state=state,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        upper_bounds=upper_bounds,
+                    )
+                    proxy_scores = priority_scores + float(
+                        getattr(resolved_config, "full_attention_streaming_priority_value_upper_weight", 0.25)
+                    ) * value_upper_scores
+                else:
+                    proxy_scores = _resolve_streaming_proxy_scores(
+                        state=state,
+                        config=resolved_config,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        upper_bounds=upper_bounds,
+                        layer_id=int(layer_id),
+                        mode=streaming_order_mode,
+                    )
+                ranked_non_mandatory = _rank_optional_block_ids(
+                    candidate_block_ids=non_mandatory_candidates,
+                    priority_scores=proxy_scores,
+                    upper_bounds=proxy_scores,
+                    use_upper_bounds_first=True,
+                )
+                processing_order = [*mandatory_ids, *ranked_non_mandatory]
+            else:
+                remainder_candidates = [
+                    int(block_id)
+                    for block_id in range(int(len(state.block_token_starts)))
+                    if int(block_id) not in selected_seen
+                ]
+                remainder_ranked = _rank_optional_block_ids(
+                    candidate_block_ids=remainder_candidates,
+                    priority_scores=priority_scores,
+                    upper_bounds=upper_bounds,
+                    use_upper_bounds_first=bool(resolved_config.full_attention_optional_use_upper_bounds_first),
+                )
+                processing_order = [*selected_processing_ids, *remainder_ranked]
         query_tensor = query.to(dtype=torch.float32)
+        query_norm = torch.linalg.vector_norm(query_tensor, dim=-1)
         q_to_kv = np.asarray(self.q_head_to_kv_head, dtype=np.int64)
         num_heads = int(query_tensor.shape[0])
         value_dim = int(state.value_cache.shape[-1])
@@ -3459,115 +6151,435 @@ class PersistentFullAttentionState:
         processed_block_ids: list[int] = []
         processed_token_count = 0
         max_bound_excess = 0.0
-        checkpoints: list[dict[str, Any]] = []
+        checkpoints: list[dict[str, Any]] | None = (
+            [] if bool(return_checkpoint_records) and not bool(return_certificate_summary_only) else None
+        )
         first_certified_stop: dict[str, Any] | None = None
-        unresolved_block_ids = set(int(block_id) for block_id in processing_order)
+        final_checkpoint: dict[str, Any] | None = None
+        unresolved_block_ids = (
+            None
+            if use_cuda_streaming_frontier_fast_path
+            else set(int(block_id) for block_id in processing_order)
+        )
+        per_head_processed_logits: list[list[Any]] | None = (
+            [[] for _ in range(num_heads)]
+            if bool(return_attn_weights)
+            else None
+        )
+        block_mass_accum = torch.zeros(
+            (num_heads, int(len(state.block_token_starts))),
+            dtype=torch.float32,
+            device=query_tensor.device,
+        )
+        processed_block_token_counts: list[int] = []
         resolved_check_interval = max(
-            int(self.config.full_attention_check_interval if check_interval is None else check_interval),
+            int(resolved_config.full_attention_check_interval if check_interval is None else check_interval),
             1,
         )
+        streaming_refine_top_k = max(int(getattr(resolved_config, "full_attention_streaming_refine_top_k", 0)), 0)
+        exact_value_rerank_layers = getattr(resolved_config, "full_attention_streaming_exact_value_rerank_layers", None)
+        exact_value_rerank_enabled = False
+        if bool(resolved_config.enable_early_exit) and exact_value_rerank_layers:
+            try:
+                exact_value_rerank_enabled = int(layer_id) in {
+                    int(value) for value in list(exact_value_rerank_layers)
+                }
+            except Exception:
+                exact_value_rerank_enabled = False
+        exact_value_rerank_max_remaining_blocks = getattr(
+            resolved_config,
+            "full_attention_streaming_exact_value_rerank_max_remaining_blocks",
+            None,
+        )
+        if exact_value_rerank_max_remaining_blocks is not None:
+            try:
+                exact_value_rerank_max_remaining_blocks = max(int(exact_value_rerank_max_remaining_blocks), 0)
+            except Exception:
+                exact_value_rerank_max_remaining_blocks = None
+        residual_tracker: _StreamingResidualUpperTracker | None = None
+        if (
+            not bool(resolved_config.full_attention_region_residual_caps)
+            and int(resolved_config.full_attention_residual_cluster_count) <= 0
+        ):
+            residual_tracker = _StreamingResidualUpperTracker.from_state(
+                state=state,
+                q_head_to_kv_head=q_to_kv,
+                upper_bounds=upper_bounds,
+                num_heads=num_heads,
+            )
+        executed_mode_counts_total = {"M0": 0, "M3": 0, "EXACT_KEY_M3": 0}
+        mixed_timing_totals = {
+            "direct_m0_assembly_ms": 0.0,
+            "direct_m0_query_prep_ms": 0.0,
+            "direct_m0_gather_ms": 0.0,
+            "direct_m0_score_ms": 0.0,
+            "exact_m3_score_ms": 0.0,
+            "aux_exact_m3_score_ms": 0.0,
+            "final_mix_ms": 0.0,
+            "final_mix_logits_ms": 0.0,
+            "final_mix_softmax_ms": 0.0,
+            "final_mix_value_ms": 0.0,
+        }
+        use_cuda_streaming_loop_fast_path = bool(use_cuda_streaming_frontier_fast_path) and (
+            not bool(return_attn_weights)
+            and int(streaming_refine_top_k) <= 0
+            and not bool(exact_value_rerank_enabled)
+                and residual_tracker is not None
+        )
+        if processing_order is None and processing_order_t is not None and not bool(use_cuda_streaming_loop_fast_path):
+            processing_order = [
+                int(block_id)
+                for block_id in processing_order_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+            ]
+        processing_order_count = (
+            int(processing_order_t.numel()) if processing_order_t is not None else int(len(processing_order or []))
+        )
 
-        for order_index, block_id in enumerate(processing_order, start=1):
-            token_start = int(state.block_token_starts[int(block_id)])
-            token_count = int(state.block_token_counts[int(block_id)])
-            unresolved_block_ids.discard(int(block_id))
-            if token_count <= 0:
-                continue
-            processed_block_ids.append(int(block_id))
-            processed_token_count += int(token_count)
-            for q_head_idx in range(num_heads):
-                kv_head_idx = int(q_to_kv[q_head_idx])
-                q_vec = query_tensor[q_head_idx]
-                k_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
-                    device=query_tensor.device,
-                    dtype=torch.float32,
-                )
-                v_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
-                    device=query_tensor.device,
-                    dtype=torch.float32,
-                )
-                logits = torch.matmul(k_slice, q_vec) * float(query_scale)
-                if int(logits.numel()) == 0:
+        next_block_index = 0
+        while next_block_index < processing_order_count:
+            tranche_active_block_ids_t = None
+            if processing_order_t is not None and bool(use_cuda_streaming_loop_fast_path):
+                tranche_count = min(int(resolved_check_interval), int(processing_order_count - next_block_index))
+                tranche_block_ids_t = processing_order_t.narrow(0, int(next_block_index), int(tranche_count))
+                next_block_index += int(tranche_count)
+                if state.block_token_counts_cuda is not None:
+                    tranche_active_mask = state.block_token_counts_cuda.index_select(0, tranche_block_ids_t) > 0
+                    tranche_active_block_ids_t = tranche_block_ids_t[tranche_active_mask]
+                else:
+                    tranche_active_block_ids_t = tranche_block_ids_t
+                if int(tranche_active_block_ids_t.numel()) <= 0:
                     continue
-                block_max = float(logits.max().item())
-                max_bound_excess = max(max_bound_excess, block_max - float(upper_bounds[int(block_id)].item()))
-                m_old = float(m[q_head_idx].item())
-                m_new = float(max(m_old, block_max))
-                rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
-                exp_scores = torch.exp(logits - float(m_new))
-                l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
-                h_accum[q_head_idx] = h_accum[q_head_idx] * float(rescale) + torch.sum(
-                    exp_scores[:, None] * v_slice,
-                    dim=0,
-                )
-                m[q_head_idx] = float(m_new)
-
-            if order_index % int(resolved_check_interval) != 0 and order_index != len(processing_order):
+                tranche_active_block_ids = [
+                    int(block_id)
+                    for block_id in tranche_active_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                ]
+            else:
+                assert processing_order is not None
+                tranche_block_ids = [
+                    int(block_id)
+                    for block_id in processing_order[next_block_index : next_block_index + int(resolved_check_interval)]
+                ]
+                next_block_index += int(len(tranche_block_ids))
+                tranche_active_block_ids = [
+                    int(block_id)
+                    for block_id in tranche_block_ids
+                    if int(state.block_token_counts[int(block_id)]) > 0
+                ]
+            if unresolved_block_ids is not None:
+                for block_id in tranche_block_ids:
+                    unresolved_block_ids.discard(int(block_id))
+            if not tranche_active_block_ids:
                 continue
-            per_head = []
+            if (
+                bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
+                and bool(getattr(resolved_config, "enable_compression", False))
+                and _can_use_direct_m0_execution(state=state, config=resolved_config)
+            ):
+                tranche_result = _decode_selected_blocks_direct_m0_torch(
+                    state=state,
+                    block_ids=(tranche_active_block_ids_t if tranche_active_block_ids_t is not None else tranche_active_block_ids),
+                    query=query_tensor,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    query_scale=float(query_scale),
+                    config=resolved_config,
+                    dotcache_config=self.dotcache_config,
+                    return_stream_stats=True,
+                    return_attn_weights=bool(return_attn_weights),
+                )
+                tranche_token_counts = [int(token_count) for token_count in tranche_result["token_counts"]]
+                tranche_stream_stats = tranche_result["stream_stats"]
+                executed_mode_counts_total["M0"] += int(tranche_result["executed_mode_counts"].get("M0", 0))
+                executed_mode_counts_total["M3"] += int(tranche_result["executed_mode_counts"].get("M3", 0))
+                executed_mode_counts_total["EXACT_KEY_M3"] += int(
+                    tranche_result["executed_mode_counts"].get("EXACT_KEY_M3", 0)
+                )
+                for timing_key in mixed_timing_totals:
+                    mixed_timing_totals[timing_key] += float(tranche_result["timing"].get(timing_key, 0.0))
+                tranche_block_max_logits = tranche_stream_stats.get("block_max_logits")
+                if tranche_block_max_logits is None:
+                    tranche_block_max_logits = np.full((len(tranche_active_block_ids),), float("-inf"), dtype=np.float32)
+            else:
+                if (
+                    bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
+                    and bool(getattr(resolved_config, "enable_compression", False))
+                ):
+                    gathered_keys, gathered_values, tranche_token_counts, _executed_mode_counts = (
+                        _prepare_selected_block_execution_tensors(
+                            state=state,
+                            block_ids=(tranche_active_block_ids_t if tranche_active_block_ids_t is not None else tranche_active_block_ids),
+                            config=resolved_config,
+                            dotcache_config=self.dotcache_config,
+                        )
+                    )
+                    executed_mode_counts_total["M0"] += int(_executed_mode_counts.get("M0", 0))
+                    executed_mode_counts_total["M3"] += int(_executed_mode_counts.get("M3", 0))
+                    executed_mode_counts_total["EXACT_KEY_M3"] += int(
+                        _executed_mode_counts.get("EXACT_KEY_M3", 0)
+                    )
+                else:
+                    gathered_keys, gathered_values, tranche_token_counts = _gather_selected_block_tensors(
+                        state=state,
+                        block_ids=(tranche_active_block_ids_t if tranche_active_block_ids_t is not None else tranche_active_block_ids),
+                    )
+                tranche_result = _decode_selected_block_tensors_exact_torch(
+                    query=query_tensor,
+                    key_cache=gathered_keys,
+                    value_cache=gathered_values,
+                    q_head_to_kv_head=self.q_head_to_kv_head,
+                    query_scale=float(query_scale),
+                    return_stream_stats=True,
+                    return_attn_weights=bool(return_attn_weights),
+                )
+                tranche_stream_stats = tranche_result["stream_stats"]
+                tranche_block_max_logits = np.full((int(len(tranche_active_block_ids)),), float("-inf"), dtype=np.float32)
+                block_offset = 0
+                for block_idx, block_token_count in enumerate(tranche_token_counts):
+                    resolved_block_token_count = int(block_token_count)
+                    if resolved_block_token_count <= 0:
+                        continue
+                    block_max = float("-inf")
+                    for q_head_idx in range(num_heads):
+                        logits = tranche_stream_stats["per_head_logits"][q_head_idx]
+                        if int(logits.numel()) <= 0:
+                            continue
+                        block_logits = logits[block_offset : block_offset + resolved_block_token_count]
+                        if int(block_logits.numel()) > 0:
+                            block_max = max(block_max, float(block_logits.max().item()))
+                    tranche_block_max_logits[int(block_idx)] = float(block_max)
+                    block_offset += resolved_block_token_count
+            tranche_token_total = int(sum(int(token_count) for token_count in tranche_token_counts))
+            processed_block_ids.extend(int(block_id) for block_id in tranche_active_block_ids)
+            processed_block_token_counts.extend(int(token_count) for token_count in tranche_token_counts)
+            processed_token_count += int(tranche_token_total)
+            if torch.is_tensor(tranche_block_max_logits):
+                if tranche_active_block_ids_t is not None:
+                    tranche_block_ids_tensor = tranche_active_block_ids_t.to(device=query_tensor.device, dtype=torch.long)
+                else:
+                    tranche_block_ids_tensor = torch.as_tensor(
+                        tranche_active_block_ids,
+                        dtype=torch.long,
+                        device=query_tensor.device,
+                    )
+                tranche_upper_bounds = upper_bounds.index_select(0, tranche_block_ids_tensor).to(dtype=torch.float32)
+                finite_block_mask = torch.isfinite(tranche_block_max_logits)
+                if bool(finite_block_mask.any().item()):
+                    tranche_excess = torch.where(
+                        finite_block_mask,
+                        tranche_block_max_logits.to(dtype=torch.float32) - tranche_upper_bounds,
+                        torch.full_like(tranche_upper_bounds, float("-inf")),
+                    )
+                    max_bound_excess = max(max_bound_excess, float(tranche_excess.max().item()))
+            else:
+                for block_id, block_max in zip(tranche_active_block_ids, tranche_block_max_logits.tolist(), strict=False):
+                    if math.isfinite(float(block_max)):
+                        max_bound_excess = max(
+                            max_bound_excess,
+                            float(block_max) - float(upper_bounds[int(block_id)].item()),
+                        )
+            if per_head_processed_logits is not None:
+                for q_head_idx in range(num_heads):
+                    logits = tranche_stream_stats["per_head_logits"][q_head_idx]
+                    if int(logits.numel()) > 0:
+                        per_head_processed_logits[q_head_idx].append(logits.to(dtype=torch.float32))
+            tranche_m_tensor = tranche_stream_stats["m"].to(dtype=torch.float32)
+            tranche_l_tensor = tranche_stream_stats["l"].to(dtype=torch.float32)
+            tranche_h_tensor = tranche_stream_stats["h"].to(dtype=torch.float32)
+            valid_head_mask = torch.isfinite(tranche_m_tensor)
+            if bool(valid_head_mask.any().item()):
+                m_old_tensor = m.to(dtype=torch.float32)
+                merged_m = torch.maximum(m_old_tensor, tranche_m_tensor)
+                old_rescale = torch.where(
+                    torch.isfinite(m_old_tensor),
+                    torch.exp((m_old_tensor - merged_m).clamp(min=-80.0, max=0.0)),
+                    torch.zeros_like(m_old_tensor),
+                )
+                tranche_rescale = torch.where(
+                    valid_head_mask,
+                    torch.exp((tranche_m_tensor - merged_m).clamp(min=-80.0, max=0.0)),
+                    torch.zeros_like(tranche_m_tensor),
+                )
+                l.mul_(old_rescale)
+                l.add_(tranche_l_tensor * tranche_rescale)
+                h_accum.mul_(old_rescale.unsqueeze(1))
+                h_accum.add_(tranche_h_tensor * tranche_rescale.unsqueeze(1))
+                m.copy_(torch.where(valid_head_mask, merged_m, m_old_tensor))
+                block_mass_nums = tranche_stream_stats.get("block_mass_numerators")
+                if block_mass_nums is not None:
+                    if int(block_mass_nums.shape[-1]) != int(len(tranche_active_block_ids)):
+                        collapsed_block_mass = torch.zeros(
+                            (num_heads, int(len(tranche_active_block_ids))),
+                            dtype=torch.float32,
+                            device=query_tensor.device,
+                        )
+                        offset = 0
+                        for block_idx, token_count in enumerate(tranche_token_counts):
+                            resolved_token_count = int(token_count)
+                            if resolved_token_count > 0:
+                                collapsed_block_mass[:, int(block_idx)] = block_mass_nums[
+                                    :,
+                                    offset : offset + resolved_token_count,
+                                ].sum(dim=-1)
+                            offset += resolved_token_count
+                        block_mass_nums = collapsed_block_mass
+                    tranche_block_ids_tensor = torch.as_tensor(
+                        tranche_active_block_ids,
+                        dtype=torch.long,
+                        device=query_tensor.device,
+                    )
+                    block_mass_accum.mul_(old_rescale.unsqueeze(1))
+                    updated_block_mass = block_mass_accum.index_select(1, tranche_block_ids_tensor)
+                    updated_block_mass = updated_block_mass + (
+                        block_mass_nums.to(dtype=torch.float32) * tranche_rescale.unsqueeze(1)
+                    )
+                    block_mass_accum.index_copy_(1, tranche_block_ids_tensor, updated_block_mass)
+            if residual_tracker is not None:
+                residual_tracker.mark_processed_blocks(
+                    tranche_active_block_ids,
+                    m_values=m,
+                )
+            if streaming_refine_top_k > 0 and unresolved_block_ids:
+                refine_candidates = sorted(
+                    [int(block_id) for block_id in unresolved_block_ids],
+                    key=lambda block_id: float(upper_bounds[int(block_id)].item()),
+                    reverse=True,
+                )[: min(int(streaming_refine_top_k), len(unresolved_block_ids))]
+                if refine_candidates:
+                    refine_candidates_np = np.asarray(refine_candidates, dtype=np.int64)
+                    _refine_upper_bounds_exact_for_block_ids(
+                        state=state,
+                        block_ids=refine_candidates,
+                        query_tensor=query_tensor,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        query_scale=float(query_scale),
+                        upper_bounds=upper_bounds,
+                    )
+                    if residual_tracker is not None:
+                        residual_tracker.tighten_upper_bounds(
+                            refine_candidates,
+                            new_upper_bounds=np.asarray(
+                                upper_bounds.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                                dtype=np.float64,
+                            ),
+                        )
+
+            per_head = (
+                []
+                if bool(return_checkpoint_per_head)
+                and bool(return_checkpoint_records)
+                and not bool(return_certificate_summary_only)
+                else None
+            )
             residual_mass_upper = 0.0
             residual_value_upper = 0.0
             beta_upper = 0.0
             delta_upper = 0.0
-            remaining_token_count = int(
-                sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids)
+            remaining_token_count = (
+                int(residual_tracker.remaining_token_count)
+                if residual_tracker is not None
+                else int(sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids))
             )
-            for q_head_idx in range(num_heads):
-                kv_head_idx = int(q_to_kv[q_head_idx])
-                m_value = float(m[q_head_idx].item())
-                l_value = float(l[q_head_idx].item())
-                head_residual_mass, head_residual_value = _residual_value_upper_for_blocks(
-                    state=state,
-                    block_ids=unresolved_block_ids,
-                    kv_head_idx=kv_head_idx,
-                    q_vec=query_tensor[q_head_idx],
-                    q_norm=float(torch.linalg.vector_norm(query_tensor[q_head_idx]).item()),
-                    query_scale=float(query_scale),
-                    m_value=m_value,
-                    upper_bounds=upper_bounds,
-                    use_region_caps=bool(self.config.full_attention_region_residual_caps),
-                    residual_cluster_count=int(self.config.full_attention_residual_cluster_count),
+            remaining_block_count = (
+                max(int(processing_order_count) - int(next_block_index), 0)
+                if bool(use_cuda_streaming_loop_fast_path)
+                else int(len(unresolved_block_ids))
+            )
+            if residual_tracker is not None:
+                m_np = np.asarray(m.detach().to(device="cpu", dtype=torch.float32).numpy(), dtype=np.float64)
+                l_np = np.asarray(l.detach().to(device="cpu", dtype=torch.float32).numpy(), dtype=np.float64)
+                residual_mass_by_head, residual_value_by_head = residual_tracker.bounds_for_all_q_heads()
+                denom_by_head = l_np + residual_mass_by_head
+                beta_by_head = np.divide(
+                    residual_mass_by_head,
+                    denom_by_head,
+                    out=np.zeros_like(residual_mass_by_head),
+                    where=denom_by_head > 0.0,
                 )
-                denom = float(l_value + head_residual_mass)
-                head_beta = float(head_residual_mass / denom) if denom > 0.0 else 0.0
-                head_delta = float(head_residual_value / denom) if denom > 0.0 else 0.0
-                residual_mass_upper = max(residual_mass_upper, float(head_residual_mass))
-                residual_value_upper = max(residual_value_upper, float(head_residual_value))
-                beta_upper = max(beta_upper, float(head_beta))
-                delta_upper = max(delta_upper, float(head_delta))
-                per_head.append(
-                    {
-                        "q_head_id": int(q_head_idx),
-                        "kv_head_id": int(kv_head_idx),
-                        "m": float(m_value),
-                        "l": float(l_value),
-                        "residual_mass_upper": float(head_residual_mass),
-                        "residual_value_upper": float(head_residual_value),
-                        "beta_upper": float(head_beta),
-                        "delta_upper": float(head_delta),
-                    }
+                delta_by_head = np.divide(
+                    residual_value_by_head,
+                    denom_by_head,
+                    out=np.zeros_like(residual_value_by_head),
+                    where=denom_by_head > 0.0,
                 )
+                residual_mass_upper = float(np.max(residual_mass_by_head, initial=0.0))
+                residual_value_upper = float(np.max(residual_value_by_head, initial=0.0))
+                beta_upper = float(np.max(beta_by_head, initial=0.0))
+                delta_upper = float(np.max(delta_by_head, initial=0.0))
+                if per_head is not None:
+                    for q_head_idx in range(num_heads):
+                        per_head.append(
+                            {
+                                "q_head_id": int(q_head_idx),
+                                "kv_head_id": int(q_to_kv[q_head_idx]),
+                                "m": float(m_np[int(q_head_idx)]),
+                                "l": float(l_np[int(q_head_idx)]),
+                                "residual_mass_upper": float(residual_mass_by_head[int(q_head_idx)]),
+                                "residual_value_upper": float(residual_value_by_head[int(q_head_idx)]),
+                                "beta_upper": float(beta_by_head[int(q_head_idx)]),
+                                "delta_upper": float(delta_by_head[int(q_head_idx)]),
+                            }
+                        )
+            else:
+                for q_head_idx in range(num_heads):
+                    kv_head_idx = int(q_to_kv[q_head_idx])
+                    m_value = float(m[q_head_idx].item())
+                    l_value = float(l[q_head_idx].item())
+                    head_residual_mass, head_residual_value = _residual_value_upper_for_blocks(
+                        state=state,
+                        block_ids=unresolved_block_ids,
+                        kv_head_idx=kv_head_idx,
+                        q_vec=query_tensor[q_head_idx],
+                        q_norm=float(query_norm[q_head_idx].item()),
+                        query_scale=float(query_scale),
+                        m_value=m_value,
+                        upper_bounds=upper_bounds,
+                        use_region_caps=bool(resolved_config.full_attention_region_residual_caps),
+                        residual_cluster_count=int(resolved_config.full_attention_residual_cluster_count),
+                    )
+                    denom = float(l_value + head_residual_mass)
+                    head_beta = float(head_residual_mass / denom) if denom > 0.0 else 0.0
+                    head_delta = float(head_residual_value / denom) if denom > 0.0 else 0.0
+                    residual_mass_upper = max(residual_mass_upper, float(head_residual_mass))
+                    residual_value_upper = max(residual_value_upper, float(head_residual_value))
+                    beta_upper = max(beta_upper, float(head_beta))
+                    delta_upper = max(delta_upper, float(head_delta))
+                    if per_head is not None:
+                        per_head.append(
+                            {
+                                "q_head_id": int(q_head_idx),
+                                "kv_head_id": int(kv_head_idx),
+                                "m": float(m_value),
+                                "l": float(l_value),
+                                "residual_mass_upper": float(head_residual_mass),
+                                "residual_value_upper": float(head_residual_value),
+                                "beta_upper": float(head_beta),
+                                "delta_upper": float(head_delta),
+                            }
+                        )
             instability_reasons: list[str] = []
             if metadata_invalid_block_ids:
                 instability_reasons.append("invalid_metadata")
-            if float(max_bound_excess) > float(self.config.full_attention_bound_eps):
+            if float(max_bound_excess) > float(resolved_config.full_attention_bound_eps):
                 instability_reasons.append("bound_exceeded")
             instability_flag = bool(instability_reasons)
+            mandatory_complete = mandatory_block_id_set.issubset(processed_block_ids)
             certified_can_stop = (
-                int(len(processed_block_ids)) >= max(int(self.config.full_attention_min_processed_blocks), 1)
+                bool(mandatory_complete)
+                and
+                int(len(processed_block_ids)) >= max(int(resolved_config.full_attention_min_processed_blocks), 1)
                 and not instability_flag
-                and float(beta_upper) < float(self.config.full_attention_mass_eps)
-                and float(delta_upper) < float(self.config.full_attention_value_eps)
+                and float(beta_upper) < float(resolved_config.full_attention_mass_eps)
+                and float(delta_upper) < float(resolved_config.full_attention_value_eps)
             )
             checkpoint = {
                 "processed_block_count": int(len(processed_block_ids)),
                 "processed_token_count": int(processed_token_count),
-                "remaining_block_count": int(len(unresolved_block_ids)),
+                "remaining_block_count": int(remaining_block_count),
                 "remaining_token_count": int(remaining_token_count),
                 "beta_upper": float(beta_upper),
                 "delta_upper": float(delta_upper),
                 "residual_mass_upper": float(residual_mass_upper),
                 "residual_value_upper": float(residual_value_upper),
+                "mandatory_complete": bool(mandatory_complete),
                 "max_bound_excess": float(max(0.0, max_bound_excess)),
                 "instability_flag": bool(instability_flag),
                 "instability_reasons": instability_reasons,
@@ -3575,31 +6587,141 @@ class PersistentFullAttentionState:
                 "fallback_recommended": bool(
                     instability_flag
                     or (
-                        len(unresolved_block_ids) > 0
+                        int(remaining_block_count) > 0
                         and (
-                            float(beta_upper) >= float(self.config.full_attention_mass_eps)
-                            or float(delta_upper) >= float(self.config.full_attention_value_eps)
+                            float(beta_upper) >= float(resolved_config.full_attention_mass_eps)
+                            or float(delta_upper) >= float(resolved_config.full_attention_value_eps)
                         )
                     )
                 ),
-                "per_head": per_head,
+                "per_head": ([] if per_head is None else per_head),
             }
-            checkpoints.append(checkpoint)
+            final_checkpoint = checkpoint
+            if checkpoints is not None:
+                checkpoints.append(checkpoint)
             if first_certified_stop is None and bool(certified_can_stop):
                 first_certified_stop = checkpoint
             if bool(stop_on_certificate) and bool(certified_can_stop):
                 break
+            if bool(exact_value_rerank_enabled) and next_block_index < len(processing_order):
+                remaining_block_ids = [int(block_id) for block_id in processing_order[next_block_index:]]
+                if (
+                    exact_value_rerank_max_remaining_blocks is not None
+                    and len(remaining_block_ids) > int(exact_value_rerank_max_remaining_blocks)
+                ):
+                    continue
+                remaining_mandatory_ids = [
+                    int(block_id)
+                    for block_id in remaining_block_ids
+                    if int(block_id) in mandatory_block_id_set
+                ]
+                remaining_non_mandatory_ids = [
+                    int(block_id)
+                    for block_id in remaining_block_ids
+                    if int(block_id) not in mandatory_block_id_set
+                ]
+                if remaining_non_mandatory_ids:
+                    exact_value_scores = _resolve_streaming_exact_value_scores(
+                        state=state,
+                        block_ids=remaining_non_mandatory_ids,
+                        query_tensor=query_tensor,
+                        q_head_to_kv_head=self.q_head_to_kv_head,
+                        query_scale=float(query_scale),
+                        m_values=m,
+                        l_values=l,
+                    )
+                    reranked_non_mandatory_ids = _rank_optional_block_ids(
+                        candidate_block_ids=remaining_non_mandatory_ids,
+                        priority_scores=exact_value_scores,
+                        upper_bounds=exact_value_scores,
+                        use_upper_bounds_first=True,
+                    )
+                    processing_order = [
+                        *processing_order[:next_block_index],
+                        *remaining_mandatory_ids,
+                        *reranked_non_mandatory_ids,
+                    ]
         output = h_accum / l[:, None].clamp_min(1e-8)
+        block_attention_masses = block_mass_accum / l[:, None].clamp_min(1e-8)
+        attn_weights = None
+        if bool(return_attn_weights):
+            attn_weights = torch.zeros(
+                (1, int(num_heads), 1, int(processed_token_count)),
+                dtype=torch.float32,
+                device=query_tensor.device,
+            )
+        for q_head_idx in range(num_heads):
+            if per_head_processed_logits is None or not per_head_processed_logits[q_head_idx]:
+                continue
+            head_logits = torch.cat(per_head_processed_logits[q_head_idx], dim=0)
+            head_weights = torch.exp(head_logits - m[q_head_idx]) / l[q_head_idx].clamp_min(1e-8)
+            if attn_weights is not None:
+                attn_weights[0, q_head_idx, 0, : int(head_logits.shape[0])] = head_weights.to(dtype=torch.float32)
+        if final_checkpoint is None and checkpoints:
+            final_checkpoint = checkpoints[-1]
+        if final_checkpoint is None and first_certified_stop is not None:
+            final_checkpoint = first_certified_stop
+        layer_telemetry = self.telemetry.require_layer(int(layer_id))
+        layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts_total.get("M0", 0))
+        layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts_total.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(
+            executed_mode_counts_total.get("EXACT_KEY_M3", 0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(
+            mixed_timing_totals.get("direct_m0_assembly_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_query_prep_ms_total += float(
+            mixed_timing_totals.get("direct_m0_query_prep_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_gather_ms_total += float(
+            mixed_timing_totals.get("direct_m0_gather_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(
+            mixed_timing_totals.get("direct_m0_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(
+            mixed_timing_totals.get("exact_m3_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_aux_exact_m3_score_ms_total += float(
+            mixed_timing_totals.get("aux_exact_m3_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_ms_total += float(
+            mixed_timing_totals.get("final_mix_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_logits_ms_total += float(
+            mixed_timing_totals.get("final_mix_logits_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_softmax_ms_total += float(
+            mixed_timing_totals.get("final_mix_softmax_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_value_ms_total += float(
+            mixed_timing_totals.get("final_mix_value_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_prepare_ms_total += float(sum(mixed_timing_totals.values()))
+        state.last_first_certified_stop = None if first_certified_stop is None else dict(first_certified_stop)
+        state.last_checkpoint_count = int(len(checkpoints) if checkpoints is not None else 0)
+        if final_checkpoint is not None:
+            state.last_residual_certificate = final_checkpoint
         return {
             "output": output,
+            "attn_weights": attn_weights,
+            "block_attention_masses": block_attention_masses,
             "selection": selection,
-            "processing_order_block_ids": [int(block_id) for block_id in processing_order],
+            "processing_order_block_ids": (
+                [int(block_id) for block_id in processing_order]
+                if processing_order is not None
+                else [
+                    int(block_id)
+                    for block_id in processing_order_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                ]
+            ),
             "processed_block_ids": [int(block_id) for block_id in processed_block_ids],
+            "processed_block_token_counts": [int(token_count) for token_count in processed_block_token_counts],
             "processed_block_count": int(len(processed_block_ids)),
             "processed_token_count": int(processed_token_count),
-            "checkpoint_records": checkpoints,
+            "checkpoint_records": ([] if checkpoints is None else checkpoints),
             "first_certified_stop": first_certified_stop,
-            "final_checkpoint": checkpoints[-1] if checkpoints else None,
+            "final_checkpoint": final_checkpoint,
         }
 
     def update_block_attention_ema(
@@ -3609,6 +6731,7 @@ class PersistentFullAttentionState:
         selected_block_ids: list[int],
         selected_block_token_counts: list[int],
         attn_weights: Any,
+        block_attention_masses: Any | None = None,
     ) -> None:
         state = self.layers[int(layer_id)]
         _update_block_prev_attention_ema(
@@ -3616,6 +6739,7 @@ class PersistentFullAttentionState:
             selected_block_ids=selected_block_ids,
             selected_block_token_counts=selected_block_token_counts,
             attn_weights=attn_weights,
+            block_attention_masses=block_attention_masses,
         )
 
     def decode_layer(self, layer_id: int, query: Any, *, query_scale: float):
@@ -3642,8 +6766,12 @@ class PersistentFullAttentionState:
             total += _nbytes_tensor_like(state.value_cache)
             total += _nbytes_tensor_like(state.mixed_key_cache)
             total += _nbytes_tensor_like(state.mixed_value_cache)
+            total += _nbytes_tensor_like(state.mixed_key_score_cache)
             total += _nbytes_tensor_like(state.mixed_key_fused_scaled_cache)
             total += _nbytes_tensor_like(state.mixed_key_bias_cache)
+            total += _nbytes_tensor_like(state.mixed_key_fused_scaled_score_cache)
+            total += _nbytes_tensor_like(state.mixed_key_bias_score_cache)
+            total += _nbytes_tensor_like(state.mixed_key_fused_with_bias_score_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_payload_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_scales_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_bias_cache)
@@ -3734,6 +6862,16 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_assembly_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer": {
+                str(layer_id): float(
+                    self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_query_prep_ms_total
+                )
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_gather_ms_total)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_score_ms_total)
                 for layer_id in sorted(self.layers)
@@ -3742,8 +6880,26 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_exact_m3_score_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_aux_exact_m3_score_ms_total)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_logits_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_logits_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_softmax_ms_total_by_layer": {
+                str(layer_id): float(
+                    self.telemetry.require_layer(layer_id).mixed_execution_final_mix_softmax_ms_total
+                )
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_value_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_value_ms_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_mixed_execution_cache_refresh_ms_total_by_layer": {
@@ -3764,6 +6920,10 @@ class PersistentFullAttentionState:
             },
             "persistent_full_attention_executed_m3_block_count_total_by_layer": {
                 str(layer_id): int(self.telemetry.require_layer(layer_id).executed_m3_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).executed_exact_key_m3_block_count_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_last_fallback_rung_by_layer": {
@@ -3814,11 +6974,71 @@ class PersistentFullAttentionState:
                 )
                 for layer_id, state in sorted(self.layers.items())
             },
+            "persistent_full_attention_last_processed_block_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else int(state.last_residual_certificate.get("processed_block_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_block_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else int(state.last_first_certified_stop.get("processed_block_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_token_count_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else int(state.last_first_certified_stop.get("processed_token_count", 0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_beta_upper_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else float(state.last_first_certified_stop.get("beta_upper", 0.0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_first_certified_stop_delta_upper_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_first_certified_stop is None
+                    else float(state.last_first_certified_stop.get("delta_upper", 0.0))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_checkpoint_count_by_layer": {
+                str(layer_id): int(state.last_checkpoint_count)
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_mandatory_complete_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else bool(state.last_residual_certificate.get("mandatory_complete", True))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
+            "persistent_full_attention_last_certified_can_stop_by_layer": {
+                str(layer_id): (
+                    None
+                    if state.last_residual_certificate is None
+                    else bool(state.last_residual_certificate.get("certified_can_stop", False))
+                )
+                for layer_id, state in sorted(self.layers.items())
+            },
             "persistent_full_attention_fallback_recommended_by_layer": {
                 str(layer_id): (
                     None
                     if state.last_residual_certificate is None
-                    else bool(state.last_residual_certificate["fallback_recommended"])
+                    else bool(state.last_residual_certificate.get("fallback_recommended", False))
                 )
                 for layer_id, state in sorted(self.layers.items())
             },
@@ -4161,6 +7381,35 @@ class PersistentHybridRuntimeState:
             config_override=config_override,
         )
 
+    def stream_full_attention_layer(
+        self,
+        layer_id: int,
+        query: Any,
+        *,
+        query_scale: float,
+        config_override: PersistentServingConfig | None = None,
+        check_interval: int | None = None,
+        stop_on_certificate: bool = False,
+        policy_choice: dict[str, Any] | None = None,
+        return_attn_weights: bool = True,
+        return_checkpoint_records: bool = True,
+        return_checkpoint_per_head: bool = True,
+        return_certificate_summary_only: bool = False,
+    ) -> dict[str, Any]:
+        return self.full_attention.stream_decode_layer(
+            layer_id,
+            query,
+            query_scale=query_scale,
+            config_override=config_override,
+            check_interval=check_interval,
+            stop_on_certificate=stop_on_certificate,
+            policy_choice=policy_choice,
+            return_attn_weights=return_attn_weights,
+            return_checkpoint_records=return_checkpoint_records,
+            return_checkpoint_per_head=return_checkpoint_per_head,
+            return_certificate_summary_only=return_certificate_summary_only,
+        )
+
     def gather_full_attention_layer_tensors(self, layer_id: int):
         return self.full_attention.full_layer_tensors(layer_id)
 
@@ -4171,12 +7420,14 @@ class PersistentHybridRuntimeState:
         selected_block_ids: list[int],
         selected_block_token_counts: list[int],
         attn_weights: Any,
+        block_attention_masses: Any | None = None,
     ) -> None:
         self.full_attention.update_block_attention_ema(
             layer_id,
             selected_block_ids=selected_block_ids,
             selected_block_token_counts=selected_block_token_counts,
             attn_weights=attn_weights,
+            block_attention_masses=block_attention_masses,
         )
 
     def certify_full_attention_selected_blocks(

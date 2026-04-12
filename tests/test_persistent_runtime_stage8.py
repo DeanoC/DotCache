@@ -529,6 +529,67 @@ def test_stage8_direct_m0_decode_batches_multiple_m0_blocks_per_head() -> None:
     assert torch.allclose(direct_weights, cached_weights, atol=1e-4, rtol=1e-4)
 
 
+def test_stage8_direct_m0_decode_honors_per_layer_k_comp_error_override() -> None:
+    base_kwargs = dict(
+        prefill_tensors={
+            3: (
+                torch.tensor(
+                    [[[[1.125, -0.375, 0.2, 0.9], [0.875, 0.625, -0.1, 0.4], [0.5, 0.5, 0.5, -0.5], [0.0, 1.0, -1.0, 0.5]]]],
+                    dtype=torch.float32,
+                ),
+                torch.tensor(
+                    [[[[0.4, 1.2, -0.3, 0.8], [1.4, 0.6, 0.9, -0.2], [1.0, 0.0, 0.5, 0.5], [0.0, 1.0, 0.5, -0.5]]]],
+                    dtype=torch.float32,
+                ),
+            )
+        },
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        dotcache_config=DotCacheConfig(
+            head_dim=4,
+            group_size=4,
+            bits_k=8,
+            bits_v=8,
+            tokens_per_page=2,
+            default_mode_k="M3",
+            default_mode_v="M3",
+        ),
+        prefill_block_metadata_by_layer={
+            3: {
+                "block_k_mode": np.asarray([["M0"], ["M3"]], dtype="<U2"),
+                "block_v_mode": np.asarray([["M3"], ["M3"]], dtype="<U2"),
+                "block_k_comp_error": np.asarray([[0.15], [0.0]], dtype=np.float32),
+                "block_compression_metadata_valid": np.asarray([[1.0], [1.0]], dtype=np.float32),
+            }
+        },
+    )
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        config=PersistentServingConfig(
+            block_size=2,
+            enable_compression=True,
+            enable_full_attention_mixed_mode_execution=True,
+            full_attention_mixed_mode_execution_strategy="direct_m0",
+            full_attention_mixed_mode_execution_allow_value_m0=False,
+            full_attention_mixed_mode_execution_max_k_comp_error=0.10,
+            full_attention_mixed_mode_execution_max_k_comp_error_by_layer={3: 0.20},
+        ),
+        **base_kwargs,
+    )
+    query = torch.tensor([[0.25, -0.5, 0.75, 0.1]], dtype=torch.float32)
+
+    _output, _weights, token_counts, mode_counts = state.decode_selected_blocks(
+        3,
+        block_ids=[0, 1],
+        query=query,
+        query_scale=1.0,
+    )
+
+    assert token_counts == [2, 2]
+    assert mode_counts["M0"] == 1
+    assert mode_counts["M3"] == 1
+    assert mode_counts["EXACT_KEY_M3"] == 1
+
+
 def test_stage8_direct_m0_metal_packed_strategy_falls_back_to_torch_on_cpu() -> None:
     base_kwargs = dict(
         prefill_tensors={

@@ -1,0 +1,54 @@
+{
+  "records": [
+    {
+      "case_tag": "repo_readme",
+      "prompt_file_path": "../../README.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "model_roadmap",
+      "prompt_file_path": "../../docs/model_roadmap.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "page_selection_eval",
+      "prompt_file_path": "../../docs/dotcache_page_selection_standardized_evaluation.md",
+      "prompt_length": 3072
+    },
+    {
+      "case_tag": "state_cache_roadmap",
+      "prompt_file_path": "../../docs/state_cache_roadmap.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "performance_journal",
+      "prompt_file_path": "../../docs/performance_journal.md",
+      "prompt_length": 4096
+    },
+    {
+      "case_tag": "submission_execution_plan",
+      "prompt_file_path": "../../docs/dotcache_submission_execution_plan.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "decode_pseudocode",
+      "prompt_file_path": "../../docs/qwen35_dotcache_decode_pseudocode.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "statecache_showcase",
+      "prompt_file_path": "../../docs/qwen35_statecache_showcase.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "local_layer_profiles",
+      "prompt_file_path": "../../docs/local_layer_profiles.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "layer_revision_tracker",
+      "prompt_file_path": "../../docs/dotcache_layer_page_selection_revision_tracker.md",
+      "prompt_length": 2048
+    }
+  ]
+}

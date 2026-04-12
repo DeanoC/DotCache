@@ -40,6 +40,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits-k", type=int, default=4)
     parser.add_argument("--bits-v", type=int, default=4)
     parser.add_argument("--decode-steps", type=int, default=8)
+    parser.add_argument("--enable-early-exit", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--full-attention-check-interval", type=int, default=None)
+    parser.add_argument("--full-attention-streaming-order-mode", default=None)
+    parser.add_argument("--full-attention-streaming-proxy-value-weight-by-layer", default=None)
+    parser.add_argument("--full-attention-streaming-priority-value-upper-weight", type=float, default=None)
+    parser.add_argument("--full-attention-streaming-exact-value-rerank-layers", default=None)
+    parser.add_argument("--full-attention-streaming-exact-value-rerank-max-remaining-blocks", type=int, default=None)
+    parser.add_argument("--full-attention-refine-top-k", type=int, default=None)
+    parser.add_argument("--full-attention-refine-top-k-by-layer", default=None)
+    parser.add_argument("--full-attention-streaming-refine-top-k", type=int, default=None)
+    parser.add_argument("--full-attention-probe-refine-top-k", type=int, default=None)
+    parser.add_argument("--full-attention-probe-sample-count", type=int, default=None)
+    parser.add_argument("--full-attention-mass-eps", type=float, default=None)
+    parser.add_argument("--full-attention-value-eps", type=float, default=None)
+    parser.add_argument("--full-attention-min-processed-blocks", type=int, default=None)
+    parser.add_argument("--full-attention-region-residual-caps", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--full-attention-residual-cluster-count", type=int, default=None)
+    parser.add_argument("--full-attention-key-centroid-count", type=int, default=None)
+    parser.add_argument("--full-attention-key-centroid-count-by-layer", default=None)
+    parser.add_argument("--full-attention-value-centroid-count", type=int, default=None)
+    parser.add_argument("--full-attention-value-centroid-count-by-layer", default=None)
     parser.add_argument("--enable-full-attention-mixed-mode-execution", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--enable-full-attention-mixed-mode-execution-allow-value-m0", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
@@ -48,6 +69,7 @@ def parse_args() -> argparse.Namespace:
         default="cached_reconstruct",
     )
     parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error", default="0.10")
+    parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error-by-layer", default=None)
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--prompt-files", nargs="*", default=[])
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
@@ -97,15 +119,22 @@ def _resolve_prompt_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if manifest_path:
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest_file = Path(manifest_path).resolve()
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        manifest_dir = manifest_file.parent
         for record in manifest.get("records", []):
             prompt_file_path = record.get("prompt_file_path")
             if not prompt_file_path:
                 continue
+            prompt_path = Path(str(prompt_file_path))
+            if not prompt_path.is_absolute():
+                prompt_path = (manifest_dir / prompt_path).resolve()
+            else:
+                prompt_path = prompt_path.resolve()
             records.append(
                 {
                     "case_tag": str(record.get("case_tag", Path(str(prompt_file_path)).stem)),
-                    "prompt_file_path": str(Path(prompt_file_path).resolve()),
+                    "prompt_file_path": str(prompt_path),
                     "prompt_length": int(record.get("prompt_length", 0)),
                 }
             )
@@ -127,13 +156,36 @@ def _resolve_prompt_records(
 def _persistent_base_config(
     policy_path: str | None = None,
     *,
+    enable_early_exit: bool = False,
+    full_attention_check_interval: int | None = None,
+    full_attention_streaming_order_mode: str | None = None,
+    full_attention_refine_top_k: int | None = None,
+    full_attention_refine_top_k_by_layer: dict[int, int] | None = None,
+    full_attention_streaming_priority_value_upper_weight: float | None = None,
+    full_attention_streaming_exact_value_rerank_layers: list[int] | None = None,
+    full_attention_streaming_exact_value_rerank_max_remaining_blocks: int | None = None,
+    full_attention_streaming_refine_top_k: int | None = None,
+    full_attention_probe_refine_top_k: int | None = None,
+    full_attention_probe_sample_count: int | None = None,
+    full_attention_mass_eps: float | None = None,
+    full_attention_value_eps: float | None = None,
+    full_attention_min_processed_blocks: int | None = None,
+    full_attention_region_residual_caps: bool | None = None,
+    full_attention_residual_cluster_count: int | None = None,
+    full_attention_key_centroid_count: int | None = None,
+    full_attention_key_centroid_count_by_layer: dict[int, int] | None = None,
+    full_attention_value_centroid_count: int | None = None,
+    full_attention_value_centroid_count_by_layer: dict[int, int] | None = None,
+    full_attention_streaming_proxy_value_weight_by_layer: dict[int, float] | None = None,
     enable_mixed_execution: bool = False,
     mixed_execution_strategy: str = "cached_reconstruct",
     allow_value_m0: bool = False,
     max_k_comp_error: float | None = 0.10,
+    max_k_comp_error_by_layer: dict[int, float] | None = None,
 ) -> PersistentServingConfig:
-    return PersistentServingConfig(
+    config = PersistentServingConfig(
         enable_priority=True,
+        enable_early_exit=bool(enable_early_exit),
         enable_compression=bool(enable_mixed_execution),
         enable_full_attention_mixed_mode_execution=bool(enable_mixed_execution),
         full_attention_mixed_mode_execution_strategy=str(mixed_execution_strategy),
@@ -163,6 +215,71 @@ def _persistent_base_config(
         full_attention_priority_value_norm_weight=0.05,
         full_attention_shortlist_policy_path=policy_path,
     )
+    if full_attention_check_interval is not None:
+        config.full_attention_check_interval = max(int(full_attention_check_interval), 1)
+    if full_attention_streaming_order_mode is not None:
+        config.full_attention_streaming_order_mode = str(full_attention_streaming_order_mode)
+    if full_attention_refine_top_k is not None:
+        config.full_attention_refine_top_k = max(int(full_attention_refine_top_k), 0)
+    if full_attention_refine_top_k_by_layer is not None:
+        config.full_attention_refine_top_k_by_layer = {
+            int(layer_id): max(int(top_k), 0)
+            for layer_id, top_k in dict(full_attention_refine_top_k_by_layer).items()
+        }
+    if full_attention_streaming_exact_value_rerank_layers is not None:
+        config.full_attention_streaming_exact_value_rerank_layers = [
+            int(layer_id) for layer_id in list(full_attention_streaming_exact_value_rerank_layers)
+        ]
+    if full_attention_streaming_priority_value_upper_weight is not None:
+        config.full_attention_streaming_priority_value_upper_weight = float(
+            full_attention_streaming_priority_value_upper_weight
+        )
+    if full_attention_streaming_exact_value_rerank_max_remaining_blocks is not None:
+        config.full_attention_streaming_exact_value_rerank_max_remaining_blocks = max(
+            int(full_attention_streaming_exact_value_rerank_max_remaining_blocks),
+            0,
+        )
+    if full_attention_streaming_refine_top_k is not None:
+        config.full_attention_streaming_refine_top_k = max(int(full_attention_streaming_refine_top_k), 0)
+    if full_attention_probe_refine_top_k is not None:
+        config.full_attention_probe_refine_top_k = max(int(full_attention_probe_refine_top_k), 0)
+    if full_attention_probe_sample_count is not None:
+        config.full_attention_probe_sample_count = max(int(full_attention_probe_sample_count), 0)
+    if full_attention_mass_eps is not None:
+        config.full_attention_mass_eps = float(full_attention_mass_eps)
+    if full_attention_value_eps is not None:
+        config.full_attention_value_eps = float(full_attention_value_eps)
+    if full_attention_min_processed_blocks is not None:
+        config.full_attention_min_processed_blocks = max(int(full_attention_min_processed_blocks), 1)
+    if full_attention_region_residual_caps is not None:
+        config.full_attention_region_residual_caps = bool(full_attention_region_residual_caps)
+    if full_attention_residual_cluster_count is not None:
+        config.full_attention_residual_cluster_count = max(int(full_attention_residual_cluster_count), 0)
+    if full_attention_key_centroid_count is not None:
+        config.full_attention_key_centroid_count = max(int(full_attention_key_centroid_count), 1)
+    if full_attention_key_centroid_count_by_layer is not None:
+        config.full_attention_key_centroid_count_by_layer = {
+            int(layer_id): max(int(count), 1)
+            for layer_id, count in dict(full_attention_key_centroid_count_by_layer).items()
+        }
+    if full_attention_value_centroid_count is not None:
+        config.full_attention_value_centroid_count = max(int(full_attention_value_centroid_count), 1)
+    if full_attention_value_centroid_count_by_layer is not None:
+        config.full_attention_value_centroid_count_by_layer = {
+            int(layer_id): max(int(count), 1)
+            for layer_id, count in dict(full_attention_value_centroid_count_by_layer).items()
+        }
+    if full_attention_streaming_proxy_value_weight_by_layer is not None:
+        config.full_attention_streaming_proxy_value_weight_by_layer = {
+            int(layer_id): float(weight)
+            for layer_id, weight in dict(full_attention_streaming_proxy_value_weight_by_layer).items()
+        }
+    if max_k_comp_error_by_layer is not None:
+        config.full_attention_mixed_mode_execution_max_k_comp_error_by_layer = {
+            int(layer_id): float(value)
+            for layer_id, value in dict(max_k_comp_error_by_layer).items()
+        }
+    return config
 
 
 def _matching_prefix_length(reference_ids: list[int], candidate_ids: list[int]) -> int:
@@ -201,8 +318,16 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_policy_bias_ms_per_case": 0.0,
             "hand_tuned_direct_m0_assembly_ms_per_case": 0.0,
             "bias_direct_m0_assembly_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_query_prep_ms_per_case": 0.0,
+            "bias_direct_m0_query_prep_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_gather_ms_per_case": 0.0,
+            "bias_direct_m0_gather_ms_per_case": 0.0,
             "hand_tuned_direct_m0_score_ms_per_case": 0.0,
             "bias_direct_m0_score_ms_per_case": 0.0,
+            "hand_tuned_executed_m0_blocks_per_case": 0.0,
+            "bias_executed_m0_blocks_per_case": 0.0,
+            "hand_tuned_executed_m3_blocks_per_case": 0.0,
+            "bias_executed_m3_blocks_per_case": 0.0,
             "hand_tuned_exact_m3_score_ms_per_case": 0.0,
             "bias_exact_m3_score_ms_per_case": 0.0,
             "hand_tuned_final_mix_ms_per_case": 0.0,
@@ -278,17 +403,55 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_direct_m0_assembly_ms_per_case": float(
             sum(float(record["bias_direct_m0_assembly_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_direct_m0_query_prep_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_query_prep_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_query_prep_ms_per_case": float(
+            sum(float(record["bias_direct_m0_query_prep_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_direct_m0_gather_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_gather_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_gather_ms_per_case": float(
+            sum(float(record["bias_direct_m0_gather_ms_total"]) for record in records) / case_count
+        ),
         "hand_tuned_direct_m0_score_ms_per_case": float(
             sum(float(record["hand_tuned_direct_m0_score_ms_total"]) for record in records) / case_count
         ),
         "bias_direct_m0_score_ms_per_case": float(
             sum(float(record["bias_direct_m0_score_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_executed_m0_blocks_per_case": float(
+            sum(float(record["hand_tuned_executed_m0_block_count_total"]) for record in records) / case_count
+        ),
+        "bias_executed_m0_blocks_per_case": float(
+            sum(float(record["bias_executed_m0_block_count_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_executed_m3_blocks_per_case": float(
+            sum(float(record["hand_tuned_executed_m3_block_count_total"]) for record in records) / case_count
+        ),
+        "bias_executed_m3_blocks_per_case": float(
+            sum(float(record["bias_executed_m3_block_count_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record.get("hand_tuned_executed_exact_key_m3_block_count_total", 0.0)) for record in records)
+            / case_count
+        ),
+        "bias_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record.get("bias_executed_exact_key_m3_block_count_total", 0.0)) for record in records)
+            / case_count
+        ),
         "hand_tuned_exact_m3_score_ms_per_case": float(
             sum(float(record["hand_tuned_exact_m3_score_ms_total"]) for record in records) / case_count
         ),
         "bias_exact_m3_score_ms_per_case": float(
             sum(float(record["bias_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record.get("hand_tuned_aux_exact_m3_score_ms_total", 0.0)) for record in records) / case_count
+        ),
+        "bias_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record.get("bias_aux_exact_m3_score_ms_total", 0.0)) for record in records) / case_count
         ),
         "hand_tuned_final_mix_ms_per_case": float(
             sum(float(record["hand_tuned_final_mix_ms_total"]) for record in records) / case_count
@@ -337,8 +500,20 @@ def _render_markdown(*, records: list[dict[str, Any]], summary: dict[str, Any], 
         f"- hand-tuned direct-M0 assembly ms/case: {float(summary['hand_tuned_direct_m0_assembly_ms_per_case']):.4f}"
     )
     lines.append(f"- bias direct-M0 assembly ms/case: {float(summary['bias_direct_m0_assembly_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned direct-M0 query-prep ms/case: {float(summary['hand_tuned_direct_m0_query_prep_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias direct-M0 query-prep ms/case: {float(summary['bias_direct_m0_query_prep_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned direct-M0 gather ms/case: {float(summary['hand_tuned_direct_m0_gather_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias direct-M0 gather ms/case: {float(summary['bias_direct_m0_gather_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned direct-M0 score ms/case: {float(summary['hand_tuned_direct_m0_score_ms_per_case']):.4f}")
     lines.append(f"- bias direct-M0 score ms/case: {float(summary['bias_direct_m0_score_ms_per_case']):.4f}")
+    lines.append(f"- hand-tuned executed M0 blocks/case: {float(summary['hand_tuned_executed_m0_blocks_per_case']):.2f}")
+    lines.append(f"- bias executed M0 blocks/case: {float(summary['bias_executed_m0_blocks_per_case']):.2f}")
+    lines.append(f"- hand-tuned executed M3 blocks/case: {float(summary['hand_tuned_executed_m3_blocks_per_case']):.2f}")
+    lines.append(f"- bias executed M3 blocks/case: {float(summary['bias_executed_m3_blocks_per_case']):.2f}")
     lines.append(f"- hand-tuned exact-M3 score ms/case: {float(summary['hand_tuned_exact_m3_score_ms_per_case']):.4f}")
     lines.append(f"- bias exact-M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned final-mix ms/case: {float(summary['hand_tuned_final_mix_ms_per_case']):.4f}")
@@ -368,6 +543,51 @@ def main() -> None:
     args = parse_args()
     if not transformers_available():
         raise SystemExit("bench_qwen35_persistent_serving_policy_compare.py requires the optional transformers dependencies")
+    full_attention_refine_top_k_by_layer = (
+        {
+            int(layer_id): max(int(top_k), 0)
+            for layer_id, top_k in json.loads(str(args.full_attention_refine_top_k_by_layer)).items()
+        }
+        if args.full_attention_refine_top_k_by_layer
+        else None
+    )
+    full_attention_key_centroid_count_by_layer = (
+        {
+            int(layer_id): max(int(count), 1)
+            for layer_id, count in json.loads(str(args.full_attention_key_centroid_count_by_layer)).items()
+        }
+        if args.full_attention_key_centroid_count_by_layer
+        else None
+    )
+    full_attention_streaming_proxy_value_weight_by_layer = (
+        {
+            int(layer_id): float(weight)
+            for layer_id, weight in json.loads(str(args.full_attention_streaming_proxy_value_weight_by_layer)).items()
+        }
+        if args.full_attention_streaming_proxy_value_weight_by_layer
+        else None
+    )
+    full_attention_streaming_exact_value_rerank_layers = (
+        [int(layer_id) for layer_id in json.loads(str(args.full_attention_streaming_exact_value_rerank_layers))]
+        if args.full_attention_streaming_exact_value_rerank_layers
+        else None
+    )
+    full_attention_value_centroid_count_by_layer = (
+        {
+            int(layer_id): max(int(count), 1)
+            for layer_id, count in json.loads(str(args.full_attention_value_centroid_count_by_layer)).items()
+        }
+        if args.full_attention_value_centroid_count_by_layer
+        else None
+    )
+    full_attention_mixed_mode_execution_max_k_comp_error_by_layer = (
+        {
+            int(layer_id): float(value)
+            for layer_id, value in json.loads(str(args.full_attention_mixed_mode_execution_max_k_comp_error_by_layer)).items()
+        }
+        if args.full_attention_mixed_mode_execution_max_k_comp_error_by_layer
+        else None
+    )
     prompt_records = _resolve_prompt_records(
         manifest_path=args.manifest_path,
         prompt_files=[str(path) for path in args.prompt_files],
@@ -404,10 +624,36 @@ def main() -> None:
         dotcache_config=dotcache_config,
         persistent_serving_config=_persistent_base_config(
             policy_path=None,
+            enable_early_exit=bool(args.enable_early_exit),
+            full_attention_check_interval=args.full_attention_check_interval,
+            full_attention_streaming_order_mode=args.full_attention_streaming_order_mode,
+            full_attention_refine_top_k=args.full_attention_refine_top_k,
+            full_attention_refine_top_k_by_layer=full_attention_refine_top_k_by_layer,
+            full_attention_streaming_priority_value_upper_weight=(
+                args.full_attention_streaming_priority_value_upper_weight
+            ),
+            full_attention_streaming_exact_value_rerank_layers=full_attention_streaming_exact_value_rerank_layers,
+            full_attention_streaming_exact_value_rerank_max_remaining_blocks=(
+                args.full_attention_streaming_exact_value_rerank_max_remaining_blocks
+            ),
+            full_attention_streaming_refine_top_k=args.full_attention_streaming_refine_top_k,
+            full_attention_probe_refine_top_k=args.full_attention_probe_refine_top_k,
+            full_attention_probe_sample_count=args.full_attention_probe_sample_count,
+            full_attention_mass_eps=args.full_attention_mass_eps,
+            full_attention_value_eps=args.full_attention_value_eps,
+            full_attention_min_processed_blocks=args.full_attention_min_processed_blocks,
+            full_attention_region_residual_caps=args.full_attention_region_residual_caps,
+            full_attention_residual_cluster_count=args.full_attention_residual_cluster_count,
+            full_attention_key_centroid_count=args.full_attention_key_centroid_count,
+            full_attention_key_centroid_count_by_layer=full_attention_key_centroid_count_by_layer,
+            full_attention_value_centroid_count=args.full_attention_value_centroid_count,
+            full_attention_value_centroid_count_by_layer=full_attention_value_centroid_count_by_layer,
+            full_attention_streaming_proxy_value_weight_by_layer=full_attention_streaming_proxy_value_weight_by_layer,
             enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         ),
         backend=str(args.backend),
     )
@@ -439,10 +685,36 @@ def main() -> None:
         )
         persistent_adapter.persistent_serving_config = _persistent_base_config(
             policy_path=None,
+            enable_early_exit=bool(args.enable_early_exit),
+            full_attention_check_interval=args.full_attention_check_interval,
+            full_attention_streaming_order_mode=args.full_attention_streaming_order_mode,
+            full_attention_refine_top_k=args.full_attention_refine_top_k,
+            full_attention_refine_top_k_by_layer=full_attention_refine_top_k_by_layer,
+            full_attention_streaming_priority_value_upper_weight=(
+                args.full_attention_streaming_priority_value_upper_weight
+            ),
+            full_attention_streaming_exact_value_rerank_layers=full_attention_streaming_exact_value_rerank_layers,
+            full_attention_streaming_exact_value_rerank_max_remaining_blocks=(
+                args.full_attention_streaming_exact_value_rerank_max_remaining_blocks
+            ),
+            full_attention_streaming_refine_top_k=args.full_attention_streaming_refine_top_k,
+            full_attention_probe_refine_top_k=args.full_attention_probe_refine_top_k,
+            full_attention_probe_sample_count=args.full_attention_probe_sample_count,
+            full_attention_mass_eps=args.full_attention_mass_eps,
+            full_attention_value_eps=args.full_attention_value_eps,
+            full_attention_min_processed_blocks=args.full_attention_min_processed_blocks,
+            full_attention_region_residual_caps=args.full_attention_region_residual_caps,
+            full_attention_residual_cluster_count=args.full_attention_residual_cluster_count,
+            full_attention_key_centroid_count=args.full_attention_key_centroid_count,
+            full_attention_key_centroid_count_by_layer=full_attention_key_centroid_count_by_layer,
+            full_attention_value_centroid_count=args.full_attention_value_centroid_count,
+            full_attention_value_centroid_count_by_layer=full_attention_value_centroid_count_by_layer,
+            full_attention_streaming_proxy_value_weight_by_layer=full_attention_streaming_proxy_value_weight_by_layer,
             enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         )
         hand_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
@@ -455,10 +727,36 @@ def main() -> None:
         )
         persistent_adapter.persistent_serving_config = _persistent_base_config(
             policy_path=str(args.shortlist_policy_path),
+            enable_early_exit=bool(args.enable_early_exit),
+            full_attention_check_interval=args.full_attention_check_interval,
+            full_attention_streaming_order_mode=args.full_attention_streaming_order_mode,
+            full_attention_refine_top_k=args.full_attention_refine_top_k,
+            full_attention_refine_top_k_by_layer=full_attention_refine_top_k_by_layer,
+            full_attention_streaming_priority_value_upper_weight=(
+                args.full_attention_streaming_priority_value_upper_weight
+            ),
+            full_attention_streaming_exact_value_rerank_layers=full_attention_streaming_exact_value_rerank_layers,
+            full_attention_streaming_exact_value_rerank_max_remaining_blocks=(
+                args.full_attention_streaming_exact_value_rerank_max_remaining_blocks
+            ),
+            full_attention_streaming_refine_top_k=args.full_attention_streaming_refine_top_k,
+            full_attention_probe_refine_top_k=args.full_attention_probe_refine_top_k,
+            full_attention_probe_sample_count=args.full_attention_probe_sample_count,
+            full_attention_mass_eps=args.full_attention_mass_eps,
+            full_attention_value_eps=args.full_attention_value_eps,
+            full_attention_min_processed_blocks=args.full_attention_min_processed_blocks,
+            full_attention_region_residual_caps=args.full_attention_region_residual_caps,
+            full_attention_residual_cluster_count=args.full_attention_residual_cluster_count,
+            full_attention_key_centroid_count=args.full_attention_key_centroid_count,
+            full_attention_key_centroid_count_by_layer=full_attention_key_centroid_count_by_layer,
+            full_attention_value_centroid_count=args.full_attention_value_centroid_count,
+            full_attention_value_centroid_count_by_layer=full_attention_value_centroid_count_by_layer,
+            full_attention_streaming_proxy_value_weight_by_layer=full_attention_streaming_proxy_value_weight_by_layer,
             enable_mixed_execution=bool(args.enable_full_attention_mixed_mode_execution),
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         )
         bias_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
@@ -489,6 +787,38 @@ def main() -> None:
             "dense_decode_ms_per_step": float(dense_result.get("dense_decode_ms_per_step", 0.0)),
             "hand_tuned_decode_ms_per_step": float(hand_result.get("persistent_decode_ms_per_step", 0.0)),
             "bias_decode_ms_per_step": float(bias_result.get("persistent_decode_ms_per_step", 0.0)),
+            "hand_tuned_last_processed_block_count": hand_result.get(
+                "persistent_full_attention_last_processed_block_count_by_layer",
+                {},
+            ).get("3"),
+            "bias_last_processed_block_count": bias_result.get(
+                "persistent_full_attention_last_processed_block_count_by_layer",
+                {},
+            ).get("3"),
+            "hand_tuned_last_certified_can_stop": hand_result.get(
+                "persistent_full_attention_last_certified_can_stop_by_layer",
+                {},
+            ).get("3"),
+            "bias_last_certified_can_stop": bias_result.get(
+                "persistent_full_attention_last_certified_can_stop_by_layer",
+                {},
+            ).get("3"),
+            "hand_tuned_first_certified_stop_block_count": hand_result.get(
+                "persistent_full_attention_last_first_certified_stop_block_count_by_layer",
+                {},
+            ).get("3"),
+            "bias_first_certified_stop_block_count": bias_result.get(
+                "persistent_full_attention_last_first_certified_stop_block_count_by_layer",
+                {},
+            ).get("3"),
+            "hand_tuned_last_checkpoint_count": hand_result.get(
+                "persistent_full_attention_last_checkpoint_count_by_layer",
+                {},
+            ).get("3"),
+            "bias_last_checkpoint_count": bias_result.get(
+                "persistent_full_attention_last_checkpoint_count_by_layer",
+                {},
+            ).get("3"),
             "hand_tuned_shortlist_policy_mode": str(hand_result.get("persistent_runtime_shortlist_policy_mode", "")),
             "bias_shortlist_policy_mode": str(bias_result.get("persistent_runtime_shortlist_policy_mode", "")),
             "hand_tuned_shortlist_policy_applied_count": int(
@@ -593,6 +923,42 @@ def main() -> None:
                     ).values()
                 )
             ),
+            "hand_tuned_direct_m0_query_prep_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_query_prep_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_direct_m0_gather_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_gather_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
             "hand_tuned_direct_m0_score_ms_total": float(
                 sum(
                     float(value)
@@ -611,6 +977,60 @@ def main() -> None:
                     ).values()
                 )
             ),
+            "hand_tuned_executed_m0_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_m0_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_m0_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_m0_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_executed_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_executed_exact_key_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_exact_key_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
             "hand_tuned_exact_m3_score_ms_total": float(
                 sum(
                     float(value)
@@ -625,6 +1045,24 @@ def main() -> None:
                     float(value)
                     for value in bias_result.get(
                         "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_aux_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_aux_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
                         {},
                     ).values()
                 )
@@ -664,6 +1102,36 @@ def main() -> None:
             "shortlist_policy_path": str(args.shortlist_policy_path),
             "persistent_shortlist_policy_mode_default": "bias",
             "persistent_shortlist_policy_bias_weight_default": 0.10,
+            "enable_early_exit": bool(args.enable_early_exit),
+            "full_attention_check_interval": args.full_attention_check_interval,
+            "full_attention_refine_top_k": args.full_attention_refine_top_k,
+            "full_attention_refine_top_k_by_layer": full_attention_refine_top_k_by_layer,
+            "full_attention_streaming_exact_value_rerank_layers": (
+                full_attention_streaming_exact_value_rerank_layers
+            ),
+            "full_attention_streaming_priority_value_upper_weight": (
+                args.full_attention_streaming_priority_value_upper_weight
+            ),
+            "full_attention_streaming_exact_value_rerank_max_remaining_blocks": (
+                args.full_attention_streaming_exact_value_rerank_max_remaining_blocks
+            ),
+            "full_attention_mass_eps": args.full_attention_mass_eps,
+            "full_attention_value_eps": args.full_attention_value_eps,
+            "full_attention_min_processed_blocks": args.full_attention_min_processed_blocks,
+            "full_attention_probe_refine_top_k": args.full_attention_probe_refine_top_k,
+            "full_attention_probe_sample_count": args.full_attention_probe_sample_count,
+            "full_attention_region_residual_caps": args.full_attention_region_residual_caps,
+            "full_attention_residual_cluster_count": args.full_attention_residual_cluster_count,
+            "full_attention_key_centroid_count": args.full_attention_key_centroid_count,
+            "full_attention_key_centroid_count_by_layer": full_attention_key_centroid_count_by_layer,
+            "full_attention_value_centroid_count": args.full_attention_value_centroid_count,
+            "full_attention_value_centroid_count_by_layer": full_attention_value_centroid_count_by_layer,
+            "full_attention_streaming_proxy_value_weight_by_layer": (
+                full_attention_streaming_proxy_value_weight_by_layer
+            ),
+            "full_attention_mixed_mode_execution_max_k_comp_error_by_layer": (
+                full_attention_mixed_mode_execution_max_k_comp_error_by_layer
+            ),
             "enable_full_attention_mixed_mode_execution": bool(args.enable_full_attention_mixed_mode_execution),
             "full_attention_mixed_mode_execution_strategy": mixed_execution_strategy,
             "enable_full_attention_mixed_mode_execution_allow_value_m0": bool(allow_value_m0),

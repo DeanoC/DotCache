@@ -68,6 +68,92 @@ Qwen35DeltaNetStateCacheStage = Literal["readout_only_m0", "post_update_m0"]
 Qwen35DeltaNetStateCacheMode = Literal["M0", "M3"]
 Qwen35DeltaNetStateCacheScope = Literal["recurrent_only", "conv_only", "conv_plus_recurrent"]
 Qwen35DeltaNetStateCacheReadoutPolicy = Literal["890m_context_banded_v1"]
+
+
+_PERSISTENT_TRACE_FIELDS = (
+    "decode_ms_total",
+    "score_ms_total",
+    "selection_ms_total",
+    "optional_selection_ms_total",
+    "diverse_selection_ms_total",
+    "compression_selection_ms_total",
+    "policy_bias_ms_total",
+    "mixed_execution_direct_m0_assembly_ms_total",
+    "mixed_execution_direct_m0_query_prep_ms_total",
+    "mixed_execution_direct_m0_gather_ms_total",
+    "mixed_execution_direct_m0_score_ms_total",
+    "mixed_execution_exact_m3_score_ms_total",
+    "mixed_execution_aux_exact_m3_score_ms_total",
+    "mixed_execution_final_mix_ms_total",
+    "mixed_execution_final_mix_softmax_ms_total",
+)
+
+
+def _snapshot_persistent_trace_telemetry(
+    runtime_state: PersistentHybridRuntimeState,
+    *,
+    layer_id: int,
+) -> dict[str, float]:
+    layer_telemetry = runtime_state.full_attention.telemetry.require_layer(int(layer_id))
+    return {
+        field_name: float(getattr(layer_telemetry, field_name, 0.0))
+        for field_name in _PERSISTENT_TRACE_FIELDS
+    }
+
+
+def _record_persistent_trace_delta(
+    trace: ExecutionTrace | None,
+    *,
+    before: dict[str, float] | None,
+    after: dict[str, float] | None,
+) -> None:
+    if trace is None or before is None or after is None:
+        return
+
+    def delta(field_name: str) -> float:
+        return max(float(after.get(field_name, 0.0)) - float(before.get(field_name, 0.0)), 0.0)
+
+    prepare_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "selection_ms_total",
+            "optional_selection_ms_total",
+            "diverse_selection_ms_total",
+            "compression_selection_ms_total",
+            "policy_bias_ms_total",
+        )
+    )
+    chunk_assembly_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "mixed_execution_direct_m0_assembly_ms_total",
+            "mixed_execution_direct_m0_query_prep_ms_total",
+            "mixed_execution_direct_m0_gather_ms_total",
+        )
+    )
+    score_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "score_ms_total",
+            "mixed_execution_direct_m0_score_ms_total",
+            "mixed_execution_exact_m3_score_ms_total",
+            "mixed_execution_aux_exact_m3_score_ms_total",
+        )
+    )
+    total_decode_ms = delta("decode_ms_total")
+    mix_ms = max(total_decode_ms - prepare_ms - chunk_assembly_ms - score_ms, 0.0)
+    softmax_ms = delta("mixed_execution_final_mix_softmax_ms_total")
+
+    if prepare_ms > 0.0:
+        trace.record_timing("prepare", prepare_ms)
+    if chunk_assembly_ms > 0.0:
+        trace.record_timing("chunk_assembly", chunk_assembly_ms)
+    if score_ms > 0.0:
+        trace.record_timing("score", score_ms)
+    if mix_ms > 0.0:
+        trace.record_timing("mix", mix_ms)
+    if softmax_ms > 0.0:
+        trace.record_timing("softmax", softmax_ms)
 Qwen35DeltaNetStateCacheRecurrentModePolicy = Literal["890m_m3_outlier_pair_midband_v1"]
 Qwen35DeltaNetStateCacheRecurrentGroupSizePolicy = Literal["890m_long_horizon_group_escape_v1"]
 Qwen35DeltaNetStateCacheReadoutModePolicy = Literal["890m_m3_outlier_pair_midband_v1"]
@@ -3130,102 +3216,193 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             ] + extra_ids
             return next_selection
 
-        selection, certificate = _select_and_cert(effective_persistent_config)
-        final_config = effective_persistent_config
-        final_selection = selection
-        final_certificate = certificate
-        fallback_rung = 0
-        compression_rerank = False
-        dense_fallback = False
-        if _should_enter_fallback(effective_persistent_config, selection, certificate):
-            fallback_step = max(int(effective_persistent_config.full_attention_fallback_widen_step), 1)
-            fallback_max_optional_top_k = int(effective_persistent_config.full_attention_fallback_max_optional_top_k)
-            if fallback_max_optional_top_k <= 0:
-                fallback_max_optional_top_k = int(full_block_count)
-
-            expanded_selection = _extend_selection_with_next_optional_tranche(
-                selection,
-                tranche_size=fallback_step,
-            )
-            if expanded_selection is not None:
-                fallback_rung = 1
-                final_selection = expanded_selection
-                final_certificate = runtime_state.certify_full_attention_selected_blocks(
-                    self.layer_idx,
-                    query=query_step,
-                    query_scale=float(self.base_attention.scaling),
-                    selected_block_ids=final_selection["selected_block_ids"],
-                    upper_bounds=selection["upper_bounds"],
-                    config_override=final_config,
-                )
-
-            if _should_enter_fallback(final_config, final_selection, final_certificate):
-                current_top_k = int(final_config.full_attention_optional_top_k)
-                widened_top_k = min(
-                    int(fallback_max_optional_top_k),
-                    max(int(current_top_k), 0) + int(fallback_step),
-                )
-                if bool(final_config.enable_priority) and int(current_top_k) > 0 and int(widened_top_k) > int(current_top_k):
-                    fallback_rung = 2
-                    final_config = replace(final_config, full_attention_optional_top_k=int(widened_top_k))
-                    final_selection, final_certificate = _select_and_cert(final_config)
-
-            if _should_enter_fallback(final_config, final_selection, final_certificate) and bool(final_config.enable_compression):
-                fallback_rung = 3
-                compression_rerank = True
-                final_config = replace(final_config, enable_compression=False)
-                final_selection, final_certificate = _select_and_cert(final_config)
-
-            if _should_enter_fallback(final_config, final_selection, final_certificate):
-                fallback_rung = 4
-                final_config = replace(
-                    final_config,
-                    enable_compression=False,
-                    enable_priority=False,
-                    full_attention_optional_top_k=0,
-                )
-                all_block_ids = [int(block_id) for block_id in range(int(full_block_count))]
-                full_score_result = runtime_state.score_full_attention_blocks(
-                    self.layer_idx,
-                    query_step,
-                    query_scale=float(self.base_attention.scaling),
-                    config_override=final_config,
-                )
-                final_selection = {
-                    "selected_block_ids": all_block_ids,
-                    "processing_block_ids": all_block_ids,
-                    "mandatory_block_ids": all_block_ids,
-                    "soft_recent_block_ids": [],
-                    "exploration_block_ids": [],
-                    "optional_block_ids": [],
-                    "ranked_optional_candidate_ids": [],
-                    "priority_scores": full_score_result["priority_scores"],
-                    "upper_bounds": full_score_result["upper_bounds"],
-                    "compression_candidate_block_ids": all_block_ids,
-                    "compression_invalid_block_ids": [],
-                    "selected_k_mode_counts": {},
-                    "policy_preferred_optional_block_ids": [],
-                    "policy_preferred_bias_weight": 0.0,
-                }
-                final_certificate = runtime_state.certify_full_attention_selected_blocks(
-                    self.layer_idx,
-                    query=query_step,
-                    query_scale=float(self.base_attention.scaling),
-                    selected_block_ids=all_block_ids,
-                    upper_bounds=full_score_result["upper_bounds"],
-                    config_override=final_config,
-                )
-
-            if _should_enter_fallback(final_config, final_selection, final_certificate):
-                fallback_rung = 5
-                dense_fallback = True
-                final_config = replace(final_config, enable_compression=False, enable_priority=False)
-
         self.adapter.record_persistent_shortlist_policy_application(
             layer_id=self.layer_idx,
             choice=policy_choice,
         )
-        selected_block_ids = [int(block_id) for block_id in final_selection["selected_block_ids"]]
+        final_config = effective_persistent_config
+        final_selection: dict[str, Any] | None = None
+        final_certificate: dict[str, Any] | None = None
+        fallback_rung = 0
+        compression_rerank = False
+        dense_fallback = False
+        decode_trace = ExecutionTrace(capture_timings=self.adapter.profile_backend) if self.adapter.profile_backend else None
+        persistent_trace_before = (
+            _snapshot_persistent_trace_telemetry(runtime_state, layer_id=self.layer_idx)
+            if decode_trace is not None
+            else None
+        )
+        mixed_streaming_eligible = (
+            bool(final_config.enable_full_attention_mixed_mode_execution)
+            and not bool(final_config.full_attention_mixed_mode_execution_allow_value_m0)
+        )
+        use_streaming_early_exit = bool(final_config.enable_early_exit) and (
+            not bool(final_config.enable_full_attention_mixed_mode_execution)
+            or mixed_streaming_eligible
+        )
+
+        if use_streaming_early_exit:
+            use_cuda_stream_block_masses = str(hidden_states.device.type) == "cuda"
+            streaming_result, decode_ms = _timed_call(
+                lambda: runtime_state.stream_full_attention_layer(
+                    self.layer_idx,
+                    query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    config_override=final_config,
+                    check_interval=int(final_config.full_attention_check_interval),
+                    stop_on_certificate=True,
+                    policy_choice=policy_choice,
+                    return_attn_weights=not bool(use_cuda_stream_block_masses),
+                    return_checkpoint_records=not bool(use_cuda_stream_block_masses),
+                    return_checkpoint_per_head=not bool(use_cuda_stream_block_masses),
+                    return_certificate_summary_only=bool(use_cuda_stream_block_masses),
+                ),
+                device=hidden_states.device,
+            )
+            final_selection = dict(streaming_result["selection"])
+            selected_block_ids = [int(block_id) for block_id in streaming_result["processed_block_ids"]]
+            selected_block_token_counts = [
+                int(token_count) for token_count in streaming_result["processed_block_token_counts"]
+            ]
+            selected_token_count = int(streaming_result["processed_token_count"])
+            full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
+            selected_context = streaming_result["output"]
+            _attn_weights = streaming_result["attn_weights"]
+            _block_attention_masses = streaming_result.get("block_attention_masses")
+            final_certificate = (
+                streaming_result.get("first_certified_stop")
+                or streaming_result.get("final_checkpoint")
+            )
+            if final_certificate is None:
+                final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                    self.layer_idx,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    selected_block_ids=selected_block_ids,
+                    upper_bounds=final_selection["upper_bounds"],
+                    config_override=final_config,
+                )
+        else:
+            selection, certificate = _select_and_cert(effective_persistent_config)
+            final_selection = selection
+            final_certificate = certificate
+            if _should_enter_fallback(effective_persistent_config, selection, certificate):
+                fallback_step = max(int(effective_persistent_config.full_attention_fallback_widen_step), 1)
+                fallback_max_optional_top_k = int(effective_persistent_config.full_attention_fallback_max_optional_top_k)
+                if fallback_max_optional_top_k <= 0:
+                    fallback_max_optional_top_k = int(full_block_count)
+
+                expanded_selection = _extend_selection_with_next_optional_tranche(
+                    selection,
+                    tranche_size=fallback_step,
+                )
+                if expanded_selection is not None:
+                    fallback_rung = 1
+                    final_selection = expanded_selection
+                    final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                        self.layer_idx,
+                        query=query_step,
+                        query_scale=float(self.base_attention.scaling),
+                        selected_block_ids=final_selection["selected_block_ids"],
+                        upper_bounds=selection["upper_bounds"],
+                        config_override=final_config,
+                    )
+
+                if _should_enter_fallback(final_config, final_selection, final_certificate):
+                    current_top_k = int(final_config.full_attention_optional_top_k)
+                    widened_top_k = min(
+                        int(fallback_max_optional_top_k),
+                        max(int(current_top_k), 0) + int(fallback_step),
+                    )
+                    if bool(final_config.enable_priority) and int(current_top_k) > 0 and int(widened_top_k) > int(current_top_k):
+                        fallback_rung = 2
+                        final_config = replace(final_config, full_attention_optional_top_k=int(widened_top_k))
+                        final_selection, final_certificate = _select_and_cert(final_config)
+
+                if _should_enter_fallback(final_config, final_selection, final_certificate) and bool(final_config.enable_compression):
+                    fallback_rung = 3
+                    compression_rerank = True
+                    final_config = replace(final_config, enable_compression=False)
+                    final_selection, final_certificate = _select_and_cert(final_config)
+
+                if _should_enter_fallback(final_config, final_selection, final_certificate):
+                    fallback_rung = 4
+                    final_config = replace(
+                        final_config,
+                        enable_compression=False,
+                        enable_priority=False,
+                        full_attention_optional_top_k=0,
+                    )
+                    all_block_ids = [int(block_id) for block_id in range(int(full_block_count))]
+                    full_score_result = runtime_state.score_full_attention_blocks(
+                        self.layer_idx,
+                        query_step,
+                        query_scale=float(self.base_attention.scaling),
+                        config_override=final_config,
+                    )
+                    final_selection = {
+                        "selected_block_ids": all_block_ids,
+                        "processing_block_ids": all_block_ids,
+                        "mandatory_block_ids": all_block_ids,
+                        "soft_recent_block_ids": [],
+                        "exploration_block_ids": [],
+                        "optional_block_ids": [],
+                        "ranked_optional_candidate_ids": [],
+                        "priority_scores": full_score_result["priority_scores"],
+                        "upper_bounds": full_score_result["upper_bounds"],
+                        "compression_candidate_block_ids": all_block_ids,
+                        "compression_invalid_block_ids": [],
+                        "selected_k_mode_counts": {},
+                        "policy_preferred_optional_block_ids": [],
+                        "policy_preferred_bias_weight": 0.0,
+                    }
+                    final_certificate = runtime_state.certify_full_attention_selected_blocks(
+                        self.layer_idx,
+                        query=query_step,
+                        query_scale=float(self.base_attention.scaling),
+                        selected_block_ids=all_block_ids,
+                        upper_bounds=full_score_result["upper_bounds"],
+                        config_override=final_config,
+                    )
+
+                if _should_enter_fallback(final_config, final_selection, final_certificate):
+                    fallback_rung = 5
+                    dense_fallback = True
+                    final_config = replace(final_config, enable_compression=False, enable_priority=False)
+
+            selected_block_ids = [int(block_id) for block_id in final_selection["selected_block_ids"]]
+            if bool(dense_fallback):
+                _layer_key_cache, _layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
+                    self.layer_idx
+                )
+                selected_block_token_counts = [
+                    int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in full_block_ids
+                ]
+                selected_block_ids = full_block_ids
+                selected_token_count = int(full_token_count)
+            else:
+                selected_block_token_counts = [
+                    int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in selected_block_ids
+                ]
+                selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
+                full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
+            (
+                selected_context,
+                _attn_weights,
+                _selected_block_token_counts,
+                _executed_mode_counts,
+            ), decode_ms = _timed_call(
+                lambda: runtime_state.decode_full_attention_selected_blocks(
+                    self.layer_idx,
+                    block_ids=selected_block_ids,
+                    query=query_step,
+                    query_scale=float(self.base_attention.scaling),
+                    config_override=final_config,
+                ),
+                device=hidden_states.device,
+            )
+            _block_attention_masses = None
+
         runtime_state.record_full_attention_selection_outcome(
             self.layer_idx,
             selected_block_ids=selected_block_ids,
@@ -3233,36 +3410,12 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             compression_rerank=compression_rerank,
             dense_fallback=dense_fallback,
         )
-        if bool(dense_fallback):
-            _layer_key_cache, _layer_value_cache, full_token_count, full_block_ids = runtime_state.gather_full_attention_layer_tensors(
-                self.layer_idx
-            )
-            selected_block_token_counts = [
-                int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in full_block_ids
-            ]
-            selected_block_ids = full_block_ids
-            selected_token_count = int(full_token_count)
-        else:
-            selected_block_token_counts = [
-                int(full_attention_layer_state.block_token_counts[int(block_id)]) for block_id in selected_block_ids
-            ]
-            selected_token_count = int(sum(int(count) for count in selected_block_token_counts))
-            full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
-        (selected_context, _attn_weights, _selected_block_token_counts, _executed_mode_counts), decode_ms = _timed_call(
-            lambda: runtime_state.decode_full_attention_selected_blocks(
-                self.layer_idx,
-                block_ids=selected_block_ids,
-                query=query_step,
-                query_scale=float(self.base_attention.scaling),
-                config_override=final_config,
-            ),
-            device=hidden_states.device,
-        )
         runtime_state.update_full_attention_block_attention_ema(
             self.layer_idx,
             selected_block_ids=selected_block_ids,
             selected_block_token_counts=selected_block_token_counts,
             attn_weights=_attn_weights,
+            block_attention_masses=_block_attention_masses,
         )
         context_states = selected_context.reshape(*input_shape, -1).contiguous()
         runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
@@ -3283,6 +3436,13 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             self.layer_idx,
             float(decode_ms),
         )
+        if decode_trace is not None:
+            _record_persistent_trace_delta(
+                decode_trace,
+                before=persistent_trace_before,
+                after=_snapshot_persistent_trace_telemetry(runtime_state, layer_id=self.layer_idx),
+            )
+            self.adapter.decode_backend_trace.merge(decode_trace)
         gated_context = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device) * torch.sigmoid(gate)
         projected_output, output_projection_ms = _timed_call(
             lambda: self.base_attention.o_proj(gated_context),
@@ -8703,6 +8863,1098 @@ def _resolve_history_aware_persistent_serving_config(
     )
 
 
+def _compute_true_streaming_checkpoint_diagnostics(
+    *,
+    runtime: PersistentFullAttentionState,
+    layer_id: int,
+    query_tensor: Any,
+    query_scale: float,
+    streaming_result: dict[str, Any],
+) -> dict[str, Any]:
+    if torch is None:
+        return {
+            "checkpoint_records": [],
+            "first_true_certified_stop": None,
+            "max_beta_over_true_beta_ratio": None,
+            "max_delta_over_true_delta_ratio": None,
+        }
+    checkpoint_records = list(streaming_result.get("checkpoint_records", []))
+    processing_order = [int(block_id) for block_id in streaming_result.get("processing_order_block_ids", [])]
+    if not checkpoint_records or not processing_order:
+        return {
+            "checkpoint_records": [],
+            "first_true_certified_stop": None,
+            "max_beta_over_true_beta_ratio": None,
+            "max_delta_over_true_delta_ratio": None,
+        }
+    state = runtime.layers[int(layer_id)]
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(runtime.q_head_to_kv_head, dtype=np.int64)
+    block_token_counts = [int(state.block_token_counts[block_id]) for block_id in processing_order]
+    upper_bounds = runtime.score_blocks(int(layer_id), query_fp32, query_scale=float(query_scale))["upper_bounds"]
+
+    per_head_block_logits: list[list[Any]] = []
+    per_head_block_values: list[list[Any]] = []
+    for q_head_idx in range(int(query_fp32.shape[0])):
+        kv_head_idx = int(q_to_kv[q_head_idx])
+        q_vec = query_fp32[q_head_idx]
+        head_block_logits: list[Any] = []
+        head_block_values: list[Any] = []
+        for block_id in processing_order:
+            token_start = int(state.block_token_starts[block_id])
+            token_count = int(state.block_token_counts[block_id])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                dtype=torch.float32,
+                device=query_fp32.device,
+            )
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                dtype=torch.float32,
+                device=query_fp32.device,
+            )
+            head_block_logits.append(torch.matmul(key_slice, q_vec) * float(query_scale))
+            head_block_values.append(value_slice)
+        per_head_block_logits.append(head_block_logits)
+        per_head_block_values.append(head_block_values)
+
+    truth_records: list[dict[str, Any]] = []
+    first_true_certified_stop: dict[str, Any] | None = None
+    max_beta_over_true_beta_ratio = 0.0
+    max_delta_over_true_delta_ratio = 0.0
+    min_true_stop_ratio = float("inf")
+    min_bound_stop_ratio = float("inf")
+    min_true_stop_ratio_checkpoint: dict[str, Any] | None = None
+    min_nonterminal_true_stop_ratio = float("inf")
+    min_nonterminal_bound_stop_ratio = float("inf")
+    min_nonterminal_true_stop_ratio_checkpoint: dict[str, Any] | None = None
+    for checkpoint in checkpoint_records:
+        processed_block_count = int(checkpoint["processed_block_count"])
+        unresolved_start = max(min(processed_block_count, len(processing_order)), 0)
+        unresolved_block_ids = processing_order[unresolved_start:]
+        true_beta_upper = 0.0
+        true_delta_upper = 0.0
+        true_residual_mass_upper = 0.0
+        true_residual_value_upper = 0.0
+        true_remaining_token_count = int(sum(block_token_counts[unresolved_start:]))
+        true_unresolved_bound_gap_upper = 0.0
+        for head_checkpoint in checkpoint.get("per_head", []):
+            q_head_idx = int(head_checkpoint["q_head_id"])
+            m_value = float(head_checkpoint["m"])
+            l_value = float(head_checkpoint["l"])
+            true_mass = 0.0
+            true_value_accum = None
+            true_max_logit = float("-inf")
+            bound_max_logit = float("-inf")
+            for unresolved_offset, block_id in enumerate(unresolved_block_ids, start=unresolved_start):
+                block_logits = per_head_block_logits[q_head_idx][int(unresolved_offset)]
+                if int(block_logits.numel()) <= 0:
+                    continue
+                scaled = torch.exp(block_logits - float(m_value))
+                true_mass += float(scaled.sum().item())
+                block_value = per_head_block_values[q_head_idx][int(unresolved_offset)]
+                contribution = torch.sum(scaled[:, None] * block_value, dim=0)
+                true_value_accum = contribution if true_value_accum is None else (true_value_accum + contribution)
+                true_max_logit = max(true_max_logit, float(block_logits.max().item()))
+                bound_max_logit = max(bound_max_logit, float(upper_bounds[int(block_id)].item()))
+            denom = float(l_value + true_mass)
+            true_value = (
+                float(torch.linalg.vector_norm(true_value_accum).item()) if true_value_accum is not None else 0.0
+            )
+            true_beta = float(true_mass / denom) if denom > 0.0 else 0.0
+            true_delta = float(true_value / denom) if denom > 0.0 else 0.0
+            true_beta_upper = max(true_beta_upper, true_beta)
+            true_delta_upper = max(true_delta_upper, true_delta)
+            true_residual_mass_upper = max(true_residual_mass_upper, float(true_mass))
+            true_residual_value_upper = max(true_residual_value_upper, float(true_value))
+            if math.isfinite(true_max_logit) and math.isfinite(bound_max_logit):
+                true_unresolved_bound_gap_upper = max(
+                    true_unresolved_bound_gap_upper,
+                    float(bound_max_logit - true_max_logit),
+                )
+        beta_ratio = (
+            float(checkpoint["beta_upper"]) / true_beta_upper
+            if true_beta_upper > 0.0
+            else (1.0 if float(checkpoint["beta_upper"]) <= 0.0 else float("inf"))
+        )
+        delta_ratio = (
+            float(checkpoint["delta_upper"]) / true_delta_upper
+            if true_delta_upper > 0.0
+            else (1.0 if float(checkpoint["delta_upper"]) <= 0.0 else float("inf"))
+        )
+        max_beta_over_true_beta_ratio = max(max_beta_over_true_beta_ratio, float(beta_ratio))
+        max_delta_over_true_delta_ratio = max(max_delta_over_true_delta_ratio, float(delta_ratio))
+        true_stop_ratio = max(
+            float(true_beta_upper) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(true_delta_upper) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        bound_stop_ratio = max(
+            float(checkpoint["beta_upper"]) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(checkpoint["delta_upper"]) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        truth_checkpoint = {
+            "processed_block_count": int(processed_block_count),
+            "processed_token_count": int(checkpoint["processed_token_count"]),
+            "remaining_block_count": int(len(unresolved_block_ids)),
+            "remaining_token_count": int(true_remaining_token_count),
+            "beta_upper": float(checkpoint["beta_upper"]),
+            "delta_upper": float(checkpoint["delta_upper"]),
+            "true_beta_upper": float(true_beta_upper),
+            "true_delta_upper": float(true_delta_upper),
+            "residual_mass_upper": float(checkpoint["residual_mass_upper"]),
+            "residual_value_upper": float(checkpoint["residual_value_upper"]),
+            "true_residual_mass_upper": float(true_residual_mass_upper),
+            "true_residual_value_upper": float(true_residual_value_upper),
+            "beta_over_true_beta_ratio": float(beta_ratio),
+            "delta_over_true_delta_ratio": float(delta_ratio),
+            "true_stop_ratio": float(true_stop_ratio),
+            "bound_stop_ratio": float(bound_stop_ratio),
+            "true_unresolved_bound_gap_upper": float(true_unresolved_bound_gap_upper),
+        }
+        truth_records.append(truth_checkpoint)
+        if float(true_stop_ratio) < float(min_true_stop_ratio):
+            min_true_stop_ratio = float(true_stop_ratio)
+            min_bound_stop_ratio = float(bound_stop_ratio)
+            min_true_stop_ratio_checkpoint = truth_checkpoint
+        if int(len(unresolved_block_ids)) > 0 and float(true_stop_ratio) < float(min_nonterminal_true_stop_ratio):
+            min_nonterminal_true_stop_ratio = float(true_stop_ratio)
+            min_nonterminal_bound_stop_ratio = float(bound_stop_ratio)
+            min_nonterminal_true_stop_ratio_checkpoint = truth_checkpoint
+        if (
+            first_true_certified_stop is None
+            and bool(checkpoint.get("mandatory_complete", False))
+            and int(processed_block_count) >= max(int(runtime.config.full_attention_min_processed_blocks), 1)
+            and float(true_beta_upper) < float("inf")
+            and float(true_delta_upper) < float("inf")
+            and float(true_beta_upper) < float(runtime.config.full_attention_mass_eps)
+            and float(true_delta_upper) < float(runtime.config.full_attention_value_eps)
+        ):
+            first_true_certified_stop = truth_checkpoint
+    return {
+        "checkpoint_records": truth_records,
+        "first_true_certified_stop": first_true_certified_stop,
+        "max_beta_over_true_beta_ratio": float(max_beta_over_true_beta_ratio),
+        "max_delta_over_true_delta_ratio": float(max_delta_over_true_delta_ratio),
+        "min_true_stop_ratio": (
+            None if not math.isfinite(min_true_stop_ratio) else float(min_true_stop_ratio)
+        ),
+        "min_bound_stop_ratio_at_true_frontier": (
+            None if not math.isfinite(min_bound_stop_ratio) else float(min_bound_stop_ratio)
+        ),
+        "min_true_stop_ratio_checkpoint": min_true_stop_ratio_checkpoint,
+        "min_nonterminal_true_stop_ratio": (
+            None if not math.isfinite(min_nonterminal_true_stop_ratio) else float(min_nonterminal_true_stop_ratio)
+        ),
+        "min_nonterminal_bound_stop_ratio_at_true_frontier": (
+            None
+            if not math.isfinite(min_nonterminal_bound_stop_ratio)
+            else float(min_nonterminal_bound_stop_ratio)
+        ),
+        "min_nonterminal_true_stop_ratio_checkpoint": min_nonterminal_true_stop_ratio_checkpoint,
+    }
+
+
+def _compute_exact_snapshot_block_statistics(
+    *,
+    runtime: PersistentFullAttentionState,
+    layer_id: int,
+    query_tensor: Any,
+    query_scale: float,
+) -> dict[str, Any]:
+    if torch is None:
+        raise RuntimeError("torch is required for snapshot block statistics")
+    state = runtime.layers[int(layer_id)]
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(runtime.q_head_to_kv_head, dtype=np.int64)
+    num_heads = int(query_fp32.shape[0])
+    block_ids = [int(block_id) for block_id in range(int(len(state.block_token_starts)))]
+    per_head_block_logits: list[dict[int, Any]] = []
+    per_head_block_values: list[dict[int, Any]] = []
+    for q_head_idx in range(num_heads):
+        kv_head_idx = int(q_to_kv[q_head_idx])
+        q_vec = query_fp32[q_head_idx]
+        head_logits: dict[int, Any] = {}
+        head_values: dict[int, Any] = {}
+        for block_id in block_ids:
+            token_start = int(state.block_token_starts[block_id])
+            token_count = int(state.block_token_counts[block_id])
+            key_slice = state.key_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                dtype=torch.float32,
+                device=query_fp32.device,
+            )
+            value_slice = state.value_cache[kv_head_idx, token_start : token_start + token_count, :].to(
+                dtype=torch.float32,
+                device=query_fp32.device,
+            )
+            head_logits[int(block_id)] = torch.matmul(key_slice, q_vec) * float(query_scale)
+            head_values[int(block_id)] = value_slice
+        per_head_block_logits.append(head_logits)
+        per_head_block_values.append(head_values)
+
+    full_m = torch.full((num_heads,), float("-inf"), dtype=torch.float32, device=query_fp32.device)
+    full_l = torch.zeros((num_heads,), dtype=torch.float32, device=query_fp32.device)
+    for q_head_idx in range(num_heads):
+        all_logits = [
+            per_head_block_logits[q_head_idx][block_id]
+            for block_id in block_ids
+            if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+        ]
+        if not all_logits:
+            continue
+        concatenated = torch.cat(all_logits, dim=0)
+        m_value = float(concatenated.max().item())
+        full_m[q_head_idx] = float(m_value)
+        full_l[q_head_idx] = torch.exp(concatenated - float(m_value)).sum()
+
+    block_metrics: dict[int, dict[str, Any]] = {}
+    for block_id in block_ids:
+        token_count = int(state.block_token_counts[block_id])
+        metric = {
+            "block_id": int(block_id),
+            "token_count": int(token_count),
+            "mass": 0.0,
+            "value_norm": 0.0,
+            "stop_score": 0.0,
+            "max_logit": float("-inf"),
+        }
+        for q_head_idx in range(num_heads):
+            logits = per_head_block_logits[q_head_idx][int(block_id)]
+            if int(logits.numel()) <= 0:
+                continue
+            weights = torch.exp(logits - float(full_m[q_head_idx]))
+            mass = float(weights.sum().item() / max(float(full_l[q_head_idx].item()), 1e-8))
+            value_vec = torch.sum(weights[:, None] * per_head_block_values[q_head_idx][int(block_id)], dim=0)
+            value_norm = float(torch.linalg.vector_norm(value_vec).item() / max(float(full_l[q_head_idx].item()), 1e-8))
+            metric["mass"] = max(float(metric["mass"]), mass)
+            metric["value_norm"] = max(float(metric["value_norm"]), value_norm)
+            metric["max_logit"] = max(float(metric["max_logit"]), float(logits.max().item()))
+        metric["stop_score"] = max(
+            float(metric["mass"]) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(metric["value_norm"]) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        block_metrics[int(block_id)] = metric
+    return {
+        "block_metrics": block_metrics,
+        "per_head_block_logits": per_head_block_logits,
+        "per_head_block_values": per_head_block_values,
+    }
+
+
+def _simulate_true_streaming_for_processing_order(
+    *,
+    runtime: PersistentFullAttentionState,
+    layer_id: int,
+    query_tensor: Any,
+    processing_order_block_ids: Sequence[int],
+    mandatory_block_ids: Sequence[int],
+    query_scale: float,
+    check_interval: int,
+) -> dict[str, Any]:
+    if torch is None:
+        raise RuntimeError("torch is required for snapshot oracle ordering simulation")
+    state = runtime.layers[int(layer_id)]
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(runtime.q_head_to_kv_head, dtype=np.int64)
+    stats = _compute_exact_snapshot_block_statistics(
+        runtime=runtime,
+        layer_id=int(layer_id),
+        query_tensor=query_fp32,
+        query_scale=float(query_scale),
+    )
+    per_head_block_logits = stats["per_head_block_logits"]
+    per_head_block_values = stats["per_head_block_values"]
+    order = [int(block_id) for block_id in processing_order_block_ids]
+    mandatory_set = {int(block_id) for block_id in mandatory_block_ids}
+    num_heads = int(query_fp32.shape[0])
+    value_dim = int(state.value_cache.shape[-1])
+    m = torch.full((num_heads,), float("-inf"), dtype=torch.float32, device=query_fp32.device)
+    l = torch.zeros((num_heads,), dtype=torch.float32, device=query_fp32.device)
+    h_accum = torch.zeros((num_heads, value_dim), dtype=torch.float32, device=query_fp32.device)
+    processed_block_ids: list[int] = []
+    processed_token_count = 0
+    checkpoints: list[dict[str, Any]] = []
+    first_true_certified_stop: dict[str, Any] | None = None
+    min_nonterminal_stop_ratio = float("inf")
+    min_nonterminal_checkpoint: dict[str, Any] | None = None
+    resolved_check_interval = max(int(check_interval), 1)
+
+    for tranche_start in range(0, len(order), resolved_check_interval):
+        tranche_block_ids = [int(block_id) for block_id in order[tranche_start : tranche_start + resolved_check_interval]]
+        active_block_ids = [block_id for block_id in tranche_block_ids if int(state.block_token_counts[block_id]) > 0]
+        if not active_block_ids:
+            continue
+        processed_block_ids.extend(active_block_ids)
+        processed_token_count += int(sum(int(state.block_token_counts[block_id]) for block_id in active_block_ids))
+        processed_set = set(processed_block_ids)
+        unresolved_block_ids = [block_id for block_id in order if int(block_id) not in processed_set]
+        for q_head_idx in range(num_heads):
+            logits_slices = [
+                per_head_block_logits[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            if not logits_slices:
+                continue
+            kv_head_idx = int(q_to_kv[q_head_idx])
+            value_slices = [
+                per_head_block_values[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            logits = torch.cat(logits_slices, dim=0)
+            values = torch.cat(value_slices, dim=0).to(dtype=torch.float32, device=query_fp32.device)
+            tranche_max = float(logits.max().item())
+            m_old = float(m[q_head_idx].item())
+            m_new = float(max(m_old, tranche_max))
+            rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
+            exp_scores = torch.exp(logits - float(m_new))
+            l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
+            h_accum[q_head_idx] = h_accum[q_head_idx] * float(rescale) + torch.sum(
+                exp_scores[:, None] * values,
+                dim=0,
+            )
+            m[q_head_idx] = float(m_new)
+            _ = kv_head_idx
+
+        true_beta_upper = 0.0
+        true_delta_upper = 0.0
+        true_residual_mass_upper = 0.0
+        true_residual_value_upper = 0.0
+        for q_head_idx in range(num_heads):
+            true_mass = 0.0
+            true_value_accum = None
+            for block_id in unresolved_block_ids:
+                logits = per_head_block_logits[q_head_idx][int(block_id)]
+                if int(logits.numel()) <= 0:
+                    continue
+                scaled = torch.exp(logits - float(m[q_head_idx]))
+                true_mass += float(scaled.sum().item())
+                block_value = per_head_block_values[q_head_idx][int(block_id)]
+                contribution = torch.sum(scaled[:, None] * block_value, dim=0)
+                true_value_accum = contribution if true_value_accum is None else (true_value_accum + contribution)
+            denom = float(l[q_head_idx].item() + true_mass)
+            true_value = (
+                float(torch.linalg.vector_norm(true_value_accum).item()) if true_value_accum is not None else 0.0
+            )
+            true_beta = float(true_mass / denom) if denom > 0.0 else 0.0
+            true_delta = float(true_value / denom) if denom > 0.0 else 0.0
+            true_beta_upper = max(true_beta_upper, true_beta)
+            true_delta_upper = max(true_delta_upper, true_delta)
+            true_residual_mass_upper = max(true_residual_mass_upper, float(true_mass))
+            true_residual_value_upper = max(true_residual_value_upper, float(true_value))
+        true_stop_ratio = max(
+            float(true_beta_upper) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(true_delta_upper) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        checkpoint = {
+            "processed_block_count": int(len(processed_block_ids)),
+            "processed_token_count": int(processed_token_count),
+            "remaining_block_count": int(len(unresolved_block_ids)),
+            "remaining_token_count": int(
+                sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids)
+            ),
+            "true_beta_upper": float(true_beta_upper),
+            "true_delta_upper": float(true_delta_upper),
+            "true_residual_mass_upper": float(true_residual_mass_upper),
+            "true_residual_value_upper": float(true_residual_value_upper),
+            "true_stop_ratio": float(true_stop_ratio),
+        }
+        checkpoints.append(checkpoint)
+        mandatory_complete = mandatory_set.issubset(set(processed_block_ids))
+        if (
+            first_true_certified_stop is None
+            and bool(mandatory_complete)
+            and int(len(processed_block_ids)) >= max(int(runtime.config.full_attention_min_processed_blocks), 1)
+            and float(true_beta_upper) < float(runtime.config.full_attention_mass_eps)
+            and float(true_delta_upper) < float(runtime.config.full_attention_value_eps)
+        ):
+            first_true_certified_stop = checkpoint
+        if int(len(unresolved_block_ids)) > 0 and float(true_stop_ratio) < float(min_nonterminal_stop_ratio):
+            min_nonterminal_stop_ratio = float(true_stop_ratio)
+            min_nonterminal_checkpoint = checkpoint
+
+    return {
+        "processing_order_block_ids": order,
+        "checkpoint_records": checkpoints,
+        "processed_block_count": int(len(processed_block_ids)),
+        "processed_token_count": int(processed_token_count),
+        "first_true_certified_stop": first_true_certified_stop,
+        "min_nonterminal_true_stop_ratio": (
+            None if not math.isfinite(min_nonterminal_stop_ratio) else float(min_nonterminal_stop_ratio)
+        ),
+        "min_nonterminal_true_stop_ratio_checkpoint": min_nonterminal_checkpoint,
+    }
+
+
+def _simulate_true_streaming_for_dynamic_exact_signal(
+    *,
+    runtime: PersistentFullAttentionState,
+    layer_id: int,
+    query_tensor: Any,
+    mandatory_block_ids: Sequence[int],
+    query_scale: float,
+    check_interval: int,
+    signal_name: str,
+) -> dict[str, Any]:
+    if torch is None:
+        raise RuntimeError("torch is required for snapshot oracle ordering simulation")
+    state = runtime.layers[int(layer_id)]
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    stats = _compute_exact_snapshot_block_statistics(
+        runtime=runtime,
+        layer_id=int(layer_id),
+        query_tensor=query_fp32,
+        query_scale=float(query_scale),
+    )
+    per_head_block_logits = stats["per_head_block_logits"]
+    per_head_block_values = stats["per_head_block_values"]
+    mandatory_ids = [int(block_id) for block_id in mandatory_block_ids]
+    mandatory_set = set(mandatory_ids)
+    remaining_block_ids = [
+        int(block_id)
+        for block_id in range(int(len(state.block_token_starts)))
+        if int(block_id) not in mandatory_set
+    ]
+    q_to_kv = np.asarray(runtime.q_head_to_kv_head, dtype=np.int64)
+    num_heads = int(query_fp32.shape[0])
+    value_dim = int(state.value_cache.shape[-1])
+    m = torch.full((num_heads,), float("-inf"), dtype=torch.float32, device=query_fp32.device)
+    l = torch.zeros((num_heads,), dtype=torch.float32, device=query_fp32.device)
+    h_accum = torch.zeros((num_heads, value_dim), dtype=torch.float32, device=query_fp32.device)
+    processed_block_ids: list[int] = []
+    processed_token_count = 0
+    checkpoints: list[dict[str, Any]] = []
+    first_true_certified_stop: dict[str, Any] | None = None
+    min_nonterminal_stop_ratio = float("inf")
+    min_nonterminal_checkpoint: dict[str, Any] | None = None
+    resolved_check_interval = max(int(check_interval), 1)
+
+    def _apply_blocks(active_block_ids: list[int]) -> None:
+        nonlocal processed_token_count
+        if not active_block_ids:
+            return
+        processed_block_ids.extend(active_block_ids)
+        processed_token_count += int(sum(int(state.block_token_counts[block_id]) for block_id in active_block_ids))
+        for q_head_idx in range(num_heads):
+            logits_slices = [
+                per_head_block_logits[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            if not logits_slices:
+                continue
+            value_slices = [
+                per_head_block_values[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            logits = torch.cat(logits_slices, dim=0)
+            values = torch.cat(value_slices, dim=0).to(dtype=torch.float32, device=query_fp32.device)
+            tranche_max = float(logits.max().item())
+            m_old = float(m[q_head_idx].item())
+            m_new = float(max(m_old, tranche_max))
+            rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
+            exp_scores = torch.exp(logits - float(m_new))
+            l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
+            h_accum[q_head_idx] = h_accum[q_head_idx] * float(rescale) + torch.sum(
+                exp_scores[:, None] * values,
+                dim=0,
+            )
+            m[q_head_idx] = float(m_new)
+
+    def _checkpoint(order_snapshot: list[int]) -> None:
+        nonlocal first_true_certified_stop, min_nonterminal_stop_ratio, min_nonterminal_checkpoint
+        processed_set = set(processed_block_ids)
+        unresolved_block_ids = [block_id for block_id in order_snapshot if int(block_id) not in processed_set]
+        true_beta_upper = 0.0
+        true_delta_upper = 0.0
+        true_residual_mass_upper = 0.0
+        true_residual_value_upper = 0.0
+        for q_head_idx in range(num_heads):
+            true_mass = 0.0
+            true_value_accum = None
+            for block_id in unresolved_block_ids:
+                logits = per_head_block_logits[q_head_idx][int(block_id)]
+                if int(logits.numel()) <= 0:
+                    continue
+                scaled = torch.exp(logits - float(m[q_head_idx]))
+                true_mass += float(scaled.sum().item())
+                block_value = per_head_block_values[q_head_idx][int(block_id)]
+                contribution = torch.sum(scaled[:, None] * block_value, dim=0)
+                true_value_accum = contribution if true_value_accum is None else (true_value_accum + contribution)
+            denom = float(l[q_head_idx].item() + true_mass)
+            true_value = (
+                float(torch.linalg.vector_norm(true_value_accum).item()) if true_value_accum is not None else 0.0
+            )
+            true_beta = float(true_mass / denom) if denom > 0.0 else 0.0
+            true_delta = float(true_value / denom) if denom > 0.0 else 0.0
+            true_beta_upper = max(true_beta_upper, true_beta)
+            true_delta_upper = max(true_delta_upper, true_delta)
+            true_residual_mass_upper = max(true_residual_mass_upper, float(true_mass))
+            true_residual_value_upper = max(true_residual_value_upper, float(true_value))
+        true_stop_ratio = max(
+            float(true_beta_upper) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(true_delta_upper) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        checkpoint = {
+            "processed_block_count": int(len(processed_block_ids)),
+            "processed_token_count": int(processed_token_count),
+            "remaining_block_count": int(len(unresolved_block_ids)),
+            "remaining_token_count": int(
+                sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids)
+            ),
+            "true_beta_upper": float(true_beta_upper),
+            "true_delta_upper": float(true_delta_upper),
+            "true_residual_mass_upper": float(true_residual_mass_upper),
+            "true_residual_value_upper": float(true_residual_value_upper),
+            "true_stop_ratio": float(true_stop_ratio),
+        }
+        checkpoints.append(checkpoint)
+        if (
+            first_true_certified_stop is None
+            and int(len(processed_block_ids)) >= max(int(runtime.config.full_attention_min_processed_blocks), 1)
+            and float(true_beta_upper) < float(runtime.config.full_attention_mass_eps)
+            and float(true_delta_upper) < float(runtime.config.full_attention_value_eps)
+        ):
+            first_true_certified_stop = checkpoint
+        if int(len(unresolved_block_ids)) > 0 and float(true_stop_ratio) < float(min_nonterminal_stop_ratio):
+            min_nonterminal_stop_ratio = float(true_stop_ratio)
+            min_nonterminal_checkpoint = checkpoint
+
+    _apply_blocks(mandatory_ids)
+    current_order = [*mandatory_ids, *remaining_block_ids]
+    if mandatory_ids:
+        _checkpoint(current_order)
+    while remaining_block_ids:
+        block_scores: dict[int, float] = {}
+        for block_id in remaining_block_ids:
+            per_block_score = 0.0
+            for q_head_idx in range(num_heads):
+                logits = per_head_block_logits[q_head_idx][int(block_id)]
+                if int(logits.numel()) <= 0:
+                    continue
+                scaled = torch.exp(logits - float(m[q_head_idx]))
+                block_mass = float(scaled.sum().item())
+                denom = float(l[q_head_idx].item() + block_mass)
+                if denom <= 0.0:
+                    continue
+                mass_score = float(block_mass / denom)
+                block_value = per_head_block_values[q_head_idx][int(block_id)]
+                contribution = torch.sum(scaled[:, None] * block_value, dim=0)
+                value_score = float(torch.linalg.vector_norm(contribution).item() / denom)
+                if signal_name == "mass":
+                    per_block_score = max(per_block_score, mass_score)
+                elif signal_name == "value":
+                    per_block_score = max(per_block_score, value_score)
+                elif signal_name == "stop":
+                    per_block_score = max(
+                        per_block_score,
+                        mass_score / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+                        value_score / max(float(runtime.config.full_attention_value_eps), 1e-12),
+                    )
+                else:  # pragma: no cover
+                    raise ValueError(f"unsupported dynamic signal: {signal_name}")
+            block_scores[int(block_id)] = float(per_block_score)
+        ranked_remaining = sorted(
+            remaining_block_ids,
+            key=lambda block_id: (-float(block_scores[int(block_id)]), int(block_id)),
+        )
+        tranche_block_ids = [int(block_id) for block_id in ranked_remaining[:resolved_check_interval]]
+        _apply_blocks(tranche_block_ids)
+        processed_set = set(processed_block_ids)
+        remaining_block_ids = [int(block_id) for block_id in remaining_block_ids if int(block_id) not in processed_set]
+        current_order = [*processed_block_ids, *remaining_block_ids]
+        _checkpoint(current_order)
+
+    return {
+        "processing_order_block_ids": [int(block_id) for block_id in processed_block_ids],
+        "checkpoint_records": checkpoints,
+        "processed_block_count": int(len(processed_block_ids)),
+        "processed_token_count": int(processed_token_count),
+        "first_true_certified_stop": first_true_certified_stop,
+        "min_nonterminal_true_stop_ratio": (
+            None if not math.isfinite(min_nonterminal_stop_ratio) else float(min_nonterminal_stop_ratio)
+        ),
+        "min_nonterminal_true_stop_ratio_checkpoint": min_nonterminal_checkpoint,
+    }
+
+
+def _simulate_true_streaming_for_dynamic_metadata_signal(
+    *,
+    runtime: PersistentFullAttentionState,
+    layer_id: int,
+    query_tensor: Any,
+    mandatory_block_ids: Sequence[int],
+    query_scale: float,
+    check_interval: int,
+    signal_name: str,
+) -> dict[str, Any]:
+    if torch is None:
+        raise RuntimeError("torch is required for snapshot oracle ordering simulation")
+    state = runtime.layers[int(layer_id)]
+    query_fp32 = query_tensor.to(dtype=torch.float32)
+    q_to_kv = np.asarray(runtime.q_head_to_kv_head, dtype=np.int64)
+    score_result = runtime.score_blocks(int(layer_id), query_tensor, query_scale=float(query_scale))
+    upper_bounds = score_result["upper_bounds"].to(dtype=torch.float32, device=query_fp32.device)
+    num_heads = int(query_fp32.shape[0])
+    value_dim = int(state.value_cache.shape[-1])
+    mandatory_ids = [int(block_id) for block_id in mandatory_block_ids]
+    mandatory_set = set(mandatory_ids)
+    remaining_block_ids = [
+        int(block_id)
+        for block_id in range(int(len(state.block_token_starts)))
+        if int(block_id) not in mandatory_set
+    ]
+    token_counts = torch.as_tensor(
+        np.asarray(state.block_token_counts, dtype=np.float32),
+        dtype=torch.float32,
+        device=query_fp32.device,
+    ).clamp_min(1.0)
+    block_v_center_norm_by_q_head = []
+    block_v_radius_by_q_head = []
+    block_v_norm_max_by_q_head = []
+    block_v_box_norm_by_q_head = []
+    for q_head_idx in range(num_heads):
+        kv_head_idx = int(q_to_kv[q_head_idx])
+        block_v_center_norm_by_q_head.append(
+            torch.linalg.vector_norm(
+                state.block_v_center[:, kv_head_idx, :].to(dtype=torch.float32, device=query_fp32.device),
+                dim=-1,
+            )
+        )
+        block_v_radius_by_q_head.append(
+            state.block_v_radius[:, kv_head_idx].to(dtype=torch.float32, device=query_fp32.device)
+        )
+        block_v_norm_max_by_q_head.append(
+            state.block_v_norm_max[:, kv_head_idx].to(dtype=torch.float32, device=query_fp32.device)
+        )
+        block_v_box_norm_by_q_head.append(
+            torch.linalg.vector_norm(
+                torch.maximum(
+                    state.block_v_pos_sum[:, kv_head_idx, :].to(dtype=torch.float32, device=query_fp32.device).abs(),
+                    state.block_v_neg_sum[:, kv_head_idx, :].to(dtype=torch.float32, device=query_fp32.device).abs(),
+                ),
+                dim=-1,
+            )
+        )
+
+    stats = _compute_exact_snapshot_block_statistics(
+        runtime=runtime,
+        layer_id=int(layer_id),
+        query_tensor=query_fp32,
+        query_scale=float(query_scale),
+    )
+    per_head_block_logits = stats["per_head_block_logits"]
+    per_head_block_values = stats["per_head_block_values"]
+    m = torch.full((num_heads,), float("-inf"), dtype=torch.float32, device=query_fp32.device)
+    l = torch.zeros((num_heads,), dtype=torch.float32, device=query_fp32.device)
+    h_accum = torch.zeros((num_heads, value_dim), dtype=torch.float32, device=query_fp32.device)
+    processed_block_ids: list[int] = []
+    processed_token_count = 0
+    checkpoints: list[dict[str, Any]] = []
+    first_true_certified_stop: dict[str, Any] | None = None
+    min_nonterminal_stop_ratio = float("inf")
+    min_nonterminal_checkpoint: dict[str, Any] | None = None
+    resolved_check_interval = max(int(check_interval), 1)
+
+    def _apply_blocks(active_block_ids: list[int]) -> None:
+        nonlocal processed_token_count
+        if not active_block_ids:
+            return
+        processed_block_ids.extend(active_block_ids)
+        processed_token_count += int(sum(int(state.block_token_counts[block_id]) for block_id in active_block_ids))
+        for q_head_idx in range(num_heads):
+            logits_slices = [
+                per_head_block_logits[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            if not logits_slices:
+                continue
+            value_slices = [
+                per_head_block_values[q_head_idx][block_id]
+                for block_id in active_block_ids
+                if int(per_head_block_logits[q_head_idx][block_id].numel()) > 0
+            ]
+            logits = torch.cat(logits_slices, dim=0)
+            values = torch.cat(value_slices, dim=0).to(dtype=torch.float32, device=query_fp32.device)
+            tranche_max = float(logits.max().item())
+            m_old = float(m[q_head_idx].item())
+            m_new = float(max(m_old, tranche_max))
+            rescale = math.exp(max(min(m_old - m_new, 0.0), -80.0)) if math.isfinite(m_old) else 0.0
+            exp_scores = torch.exp(logits - float(m_new))
+            l[q_head_idx] = l[q_head_idx] * float(rescale) + exp_scores.sum()
+            h_accum[q_head_idx] = h_accum[q_head_idx] * float(rescale) + torch.sum(
+                exp_scores[:, None] * values,
+                dim=0,
+            )
+            m[q_head_idx] = float(m_new)
+
+    def _checkpoint(order_snapshot: list[int]) -> None:
+        nonlocal first_true_certified_stop, min_nonterminal_stop_ratio, min_nonterminal_checkpoint
+        processed_set = set(processed_block_ids)
+        unresolved_block_ids = [block_id for block_id in order_snapshot if int(block_id) not in processed_set]
+        true_beta_upper = 0.0
+        true_delta_upper = 0.0
+        true_residual_mass_upper = 0.0
+        true_residual_value_upper = 0.0
+        for q_head_idx in range(num_heads):
+            true_mass = 0.0
+            true_value_accum = None
+            for block_id in unresolved_block_ids:
+                logits = per_head_block_logits[q_head_idx][int(block_id)]
+                if int(logits.numel()) <= 0:
+                    continue
+                scaled = torch.exp(logits - float(m[q_head_idx]))
+                true_mass += float(scaled.sum().item())
+                block_value = per_head_block_values[q_head_idx][int(block_id)]
+                contribution = torch.sum(scaled[:, None] * block_value, dim=0)
+                true_value_accum = contribution if true_value_accum is None else (true_value_accum + contribution)
+            denom = float(l[q_head_idx].item() + true_mass)
+            true_value = (
+                float(torch.linalg.vector_norm(true_value_accum).item()) if true_value_accum is not None else 0.0
+            )
+            true_beta = float(true_mass / denom) if denom > 0.0 else 0.0
+            true_delta = float(true_value / denom) if denom > 0.0 else 0.0
+            true_beta_upper = max(true_beta_upper, true_beta)
+            true_delta_upper = max(true_delta_upper, true_delta)
+            true_residual_mass_upper = max(true_residual_mass_upper, float(true_mass))
+            true_residual_value_upper = max(true_residual_value_upper, float(true_value))
+        true_stop_ratio = max(
+            float(true_beta_upper) / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+            float(true_delta_upper) / max(float(runtime.config.full_attention_value_eps), 1e-12),
+        )
+        checkpoint = {
+            "processed_block_count": int(len(processed_block_ids)),
+            "processed_token_count": int(processed_token_count),
+            "remaining_block_count": int(len(unresolved_block_ids)),
+            "remaining_token_count": int(
+                sum(int(state.block_token_counts[int(block_id)]) for block_id in unresolved_block_ids)
+            ),
+            "true_beta_upper": float(true_beta_upper),
+            "true_delta_upper": float(true_delta_upper),
+            "true_residual_mass_upper": float(true_residual_mass_upper),
+            "true_residual_value_upper": float(true_residual_value_upper),
+            "true_stop_ratio": float(true_stop_ratio),
+        }
+        checkpoints.append(checkpoint)
+        if (
+            first_true_certified_stop is None
+            and int(len(processed_block_ids)) >= max(int(runtime.config.full_attention_min_processed_blocks), 1)
+            and float(true_beta_upper) < float(runtime.config.full_attention_mass_eps)
+            and float(true_delta_upper) < float(runtime.config.full_attention_value_eps)
+        ):
+            first_true_certified_stop = checkpoint
+        if int(len(unresolved_block_ids)) > 0 and float(true_stop_ratio) < float(min_nonterminal_stop_ratio):
+            min_nonterminal_stop_ratio = float(true_stop_ratio)
+            min_nonterminal_checkpoint = checkpoint
+
+    _apply_blocks(mandatory_ids)
+    current_order = [*mandatory_ids, *remaining_block_ids]
+    if mandatory_ids:
+        _checkpoint(current_order)
+    while remaining_block_ids:
+        block_scores: dict[int, float] = {}
+        for block_id in remaining_block_ids:
+            per_block_score = 0.0
+            block_upper = float(upper_bounds[int(block_id)].item())
+            token_count = float(token_counts[int(block_id)].item())
+            for q_head_idx in range(num_heads):
+                m_value = float(m[q_head_idx].item())
+                scaled = math.exp(min(block_upper - m_value, 80.0)) if math.isfinite(m_value) else math.exp(
+                    min(block_upper, 80.0)
+                )
+                block_mass_upper = token_count * scaled
+                denom = float(l[q_head_idx].item()) + block_mass_upper
+                if denom <= 0.0:
+                    continue
+                mass_score = float(block_mass_upper / denom)
+                center_radius = (
+                    float(block_v_center_norm_by_q_head[q_head_idx][int(block_id)].item())
+                    + float(block_v_radius_by_q_head[q_head_idx][int(block_id)].item())
+                )
+                norm_max = float(block_v_norm_max_by_q_head[q_head_idx][int(block_id)].item())
+                box_norm = float(block_v_box_norm_by_q_head[q_head_idx][int(block_id)].item())
+                value_upper = min(
+                    block_mass_upper * center_radius,
+                    block_mass_upper * norm_max,
+                    scaled * box_norm,
+                )
+                value_score = float(value_upper / denom)
+                if signal_name == "mass":
+                    per_block_score = max(per_block_score, mass_score)
+                elif signal_name == "value":
+                    per_block_score = max(per_block_score, value_score)
+                elif signal_name == "stop":
+                    per_block_score = max(
+                        per_block_score,
+                        mass_score / max(float(runtime.config.full_attention_mass_eps), 1e-12),
+                        value_score / max(float(runtime.config.full_attention_value_eps), 1e-12),
+                    )
+                else:  # pragma: no cover
+                    raise ValueError(f"unsupported dynamic metadata signal: {signal_name}")
+            block_scores[int(block_id)] = float(per_block_score)
+        ranked_remaining = sorted(
+            remaining_block_ids,
+            key=lambda block_id: (-float(block_scores[int(block_id)]), int(block_id)),
+        )
+        tranche_block_ids = [int(block_id) for block_id in ranked_remaining[:resolved_check_interval]]
+        _apply_blocks(tranche_block_ids)
+        processed_set = set(processed_block_ids)
+        remaining_block_ids = [int(block_id) for block_id in remaining_block_ids if int(block_id) not in processed_set]
+        current_order = [*processed_block_ids, *remaining_block_ids]
+        _checkpoint(current_order)
+
+    return {
+        "processing_order_block_ids": [int(block_id) for block_id in processed_block_ids],
+        "checkpoint_records": checkpoints,
+        "processed_block_count": int(len(processed_block_ids)),
+        "processed_token_count": int(processed_token_count),
+        "first_true_certified_stop": first_true_certified_stop,
+        "min_nonterminal_true_stop_ratio": (
+            None if not math.isfinite(min_nonterminal_stop_ratio) else float(min_nonterminal_stop_ratio)
+        ),
+        "min_nonterminal_true_stop_ratio_checkpoint": min_nonterminal_checkpoint,
+    }
+
+
+def run_qwen35_persistent_full_attention_snapshot_oracle_ordering_compare(
+    snapshot_or_path: Any,
+    *,
+    persistent_serving_config: PersistentServingConfig | None = None,
+    dotcache_config: DotCacheConfig | None = None,
+    query_scale: float | None = None,
+    prev_attention_transform: str = "sqrt",
+    prev_attention_neighbor_blend: float = 0.2,
+    prev_attention_smoothing_passes: int = 1,
+    prev_attention_floor: float = 1e-6,
+) -> dict[str, Any]:
+    from ..backends.mps_persistent_experimental import load_paged_attention_snapshot
+
+    snapshot = load_paged_attention_snapshot(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else snapshot_or_path
+    resolved_config = persistent_serving_config or PersistentServingConfig()
+    effective_config = _resolve_history_aware_persistent_serving_config(
+        resolved_config,
+        history_snapshot_count=0,
+    )
+    runtime, query_tensor, key_history, _value_history, resolved_query_scale, _shaped_prev_attn = (
+        _build_persistent_full_attention_snapshot_runtime(
+            snapshot,
+            persistent_serving_config=effective_config,
+            dotcache_config=dotcache_config,
+            query_scale=query_scale,
+            prev_attention_values=None,
+            prev_attention_transform=prev_attention_transform,
+            prev_attention_neighbor_blend=prev_attention_neighbor_blend,
+            prev_attention_smoothing_passes=prev_attention_smoothing_passes,
+            prev_attention_floor=prev_attention_floor,
+        )
+    )
+    selection = runtime.select_blocks(0, query_tensor, query_scale=resolved_query_scale)
+    baseline_streaming = runtime.stream_decode_layer(
+        0,
+        query_tensor,
+        query_scale=resolved_query_scale,
+        check_interval=int(effective_config.full_attention_check_interval),
+        stop_on_certificate=False,
+    )
+    block_stats = _compute_exact_snapshot_block_statistics(
+        runtime=runtime,
+        layer_id=0,
+        query_tensor=query_tensor,
+        query_scale=float(resolved_query_scale),
+    )["block_metrics"]
+    mandatory_ids = [int(block_id) for block_id in selection["mandatory_block_ids"]]
+    mandatory_set = set(mandatory_ids)
+    baseline_order = [int(block_id) for block_id in baseline_streaming["processing_order_block_ids"]]
+    runtime_index = {int(block_id): idx for idx, block_id in enumerate(baseline_order)}
+    non_mandatory_ids = [int(block_id) for block_id in baseline_order if int(block_id) not in mandatory_set]
+
+    def _stable_sorted_non_mandatory(key_name: str) -> list[int]:
+        return sorted(
+            non_mandatory_ids,
+            key=lambda block_id: (
+                -float(block_stats[int(block_id)][key_name]),
+                runtime_index[int(block_id)],
+            ),
+        )
+
+    variant_orders = {
+        "runtime": baseline_order,
+        "oracle_mass": [*mandatory_ids, *_stable_sorted_non_mandatory("mass")],
+        "oracle_value": [*mandatory_ids, *_stable_sorted_non_mandatory("value_norm")],
+        "oracle_stop": [*mandatory_ids, *_stable_sorted_non_mandatory("stop_score")],
+    }
+    results: dict[str, Any] = {}
+    for variant_name, order in variant_orders.items():
+        simulated = _simulate_true_streaming_for_processing_order(
+            runtime=runtime,
+            layer_id=0,
+            query_tensor=query_tensor,
+            processing_order_block_ids=order,
+            mandatory_block_ids=mandatory_ids,
+            query_scale=float(resolved_query_scale),
+            check_interval=int(effective_config.full_attention_check_interval),
+        )
+        first_true_stop = simulated.get("first_true_certified_stop")
+        min_nonterminal_checkpoint = simulated.get("min_nonterminal_true_stop_ratio_checkpoint")
+        results[str(variant_name)] = {
+            "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+            "full_token_count": int(key_history.shape[0]),
+            "streaming_checkpoint_count": int(len(simulated["checkpoint_records"])),
+            "streaming_first_true_certified_stop_block_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_block_count"])
+            ),
+            "streaming_first_true_certified_stop_token_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_token_count"])
+            ),
+            "streaming_first_true_certified_stop_beta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_beta_upper"])
+            ),
+            "streaming_first_true_certified_stop_delta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_delta_upper"])
+            ),
+            "streaming_truth_min_nonterminal_stop_ratio": simulated["min_nonterminal_true_stop_ratio"],
+            "streaming_truth_nonterminal_frontier_block_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_block_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_token_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_token_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_beta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_beta_upper"])
+            ),
+            "streaming_truth_nonterminal_frontier_delta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_delta_upper"])
+            ),
+        }
+    for variant_name, signal_name in {
+        "dynamic_oracle_mass": "mass",
+        "dynamic_oracle_value": "value",
+        "dynamic_oracle_stop": "stop",
+    }.items():
+        simulated = _simulate_true_streaming_for_dynamic_exact_signal(
+            runtime=runtime,
+            layer_id=0,
+            query_tensor=query_tensor,
+            mandatory_block_ids=mandatory_ids,
+            query_scale=float(resolved_query_scale),
+            check_interval=int(effective_config.full_attention_check_interval),
+            signal_name=signal_name,
+        )
+        first_true_stop = simulated.get("first_true_certified_stop")
+        min_nonterminal_checkpoint = simulated.get("min_nonterminal_true_stop_ratio_checkpoint")
+        results[str(variant_name)] = {
+            "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+            "full_token_count": int(key_history.shape[0]),
+            "streaming_checkpoint_count": int(len(simulated["checkpoint_records"])),
+            "streaming_first_true_certified_stop_block_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_block_count"])
+            ),
+            "streaming_first_true_certified_stop_token_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_token_count"])
+            ),
+            "streaming_first_true_certified_stop_beta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_beta_upper"])
+            ),
+            "streaming_first_true_certified_stop_delta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_delta_upper"])
+            ),
+            "streaming_truth_min_nonterminal_stop_ratio": simulated["min_nonterminal_true_stop_ratio"],
+            "streaming_truth_nonterminal_frontier_block_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_block_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_token_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_token_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_beta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_beta_upper"])
+            ),
+            "streaming_truth_nonterminal_frontier_delta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_delta_upper"])
+            ),
+        }
+    for variant_name, signal_name in {
+        "dynamic_metadata_mass": "mass",
+        "dynamic_metadata_value": "value",
+        "dynamic_metadata_stop": "stop",
+    }.items():
+        simulated = _simulate_true_streaming_for_dynamic_metadata_signal(
+            runtime=runtime,
+            layer_id=0,
+            query_tensor=query_tensor,
+            mandatory_block_ids=mandatory_ids,
+            query_scale=float(resolved_query_scale),
+            check_interval=int(effective_config.full_attention_check_interval),
+            signal_name=signal_name,
+        )
+        first_true_stop = simulated.get("first_true_certified_stop")
+        min_nonterminal_checkpoint = simulated.get("min_nonterminal_true_stop_ratio_checkpoint")
+        results[str(variant_name)] = {
+            "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+            "full_token_count": int(key_history.shape[0]),
+            "streaming_checkpoint_count": int(len(simulated["checkpoint_records"])),
+            "streaming_first_true_certified_stop_block_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_block_count"])
+            ),
+            "streaming_first_true_certified_stop_token_count": (
+                None if first_true_stop is None else int(first_true_stop["processed_token_count"])
+            ),
+            "streaming_first_true_certified_stop_beta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_beta_upper"])
+            ),
+            "streaming_first_true_certified_stop_delta_upper": (
+                None if first_true_stop is None else float(first_true_stop["true_delta_upper"])
+            ),
+            "streaming_truth_min_nonterminal_stop_ratio": simulated["min_nonterminal_true_stop_ratio"],
+            "streaming_truth_nonterminal_frontier_block_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_block_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_token_count": (
+                None
+                if min_nonterminal_checkpoint is None
+                else int(min_nonterminal_checkpoint["processed_token_count"])
+            ),
+            "streaming_truth_nonterminal_frontier_beta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_beta_upper"])
+            ),
+            "streaming_truth_nonterminal_frontier_delta_upper": (
+                None
+                if min_nonterminal_checkpoint is None
+                else float(min_nonterminal_checkpoint["true_delta_upper"])
+            ),
+        }
+    return {
+        "snapshot_source": str(getattr(snapshot, "source", "paged_attention_snapshot")),
+        "snapshot_path": str(snapshot_or_path) if isinstance(snapshot_or_path, (str, Path)) else None,
+        "query_scale": float(resolved_query_scale),
+        "case": {
+            "full_block_count": int(len(runtime.layers[0].block_token_starts)),
+            "full_token_count": int(key_history.shape[0]),
+            "mandatory_block_count": int(len(mandatory_ids)),
+        },
+        "variants": results,
+    }
+
+
 def run_qwen35_persistent_full_attention_snapshot_comparison(
     snapshot_or_path: Any,
     *,
@@ -8791,6 +10043,16 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
     streaming_rel_error = streaming_abs_error / full_output.abs().clamp_min(1e-8)
     streaming_first_stop = streaming.get("first_certified_stop")
     streaming_final_checkpoint = streaming.get("final_checkpoint")
+    streaming_truth = _compute_true_streaming_checkpoint_diagnostics(
+        runtime=runtime,
+        layer_id=0,
+        query_tensor=query_tensor,
+        query_scale=float(resolved_query_scale),
+        streaming_result=streaming,
+    )
+    streaming_true_first_stop = streaming_truth.get("first_true_certified_stop")
+    streaming_truth_frontier = streaming_truth.get("min_true_stop_ratio_checkpoint")
+    streaming_truth_nonterminal_frontier = streaming_truth.get("min_nonterminal_true_stop_ratio_checkpoint")
     runtime_summary = runtime.summary()
     selected_k_mode_counts = selection.get("selected_k_mode_counts", {})
     return {
@@ -8853,6 +10115,94 @@ def run_qwen35_persistent_full_attention_snapshot_comparison(
         ),
         "streaming_final_delta_upper": (
             None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
+        ),
+        "streaming_first_true_certified_stop_block_count": (
+            None
+            if streaming_true_first_stop is None
+            else int(streaming_true_first_stop["processed_block_count"])
+        ),
+        "streaming_first_true_certified_stop_token_count": (
+            None
+            if streaming_true_first_stop is None
+            else int(streaming_true_first_stop["processed_token_count"])
+        ),
+        "streaming_first_true_certified_stop_beta_upper": (
+            None
+            if streaming_true_first_stop is None
+            else float(streaming_true_first_stop["true_beta_upper"])
+        ),
+        "streaming_first_true_certified_stop_delta_upper": (
+            None
+            if streaming_true_first_stop is None
+            else float(streaming_true_first_stop["true_delta_upper"])
+        ),
+        "streaming_truth_max_beta_over_true_beta_ratio": float(
+            streaming_truth["max_beta_over_true_beta_ratio"]
+        ),
+        "streaming_truth_max_delta_over_true_delta_ratio": float(
+            streaming_truth["max_delta_over_true_delta_ratio"]
+        ),
+        "streaming_truth_min_stop_ratio": streaming_truth["min_true_stop_ratio"],
+        "streaming_truth_bound_stop_ratio_at_true_frontier": (
+            streaming_truth["min_bound_stop_ratio_at_true_frontier"]
+        ),
+        "streaming_truth_frontier_block_count": (
+            None
+            if streaming_truth_frontier is None
+            else int(streaming_truth_frontier["processed_block_count"])
+        ),
+        "streaming_truth_min_nonterminal_stop_ratio": streaming_truth["min_nonterminal_true_stop_ratio"],
+        "streaming_truth_bound_stop_ratio_at_nonterminal_true_frontier": (
+            streaming_truth["min_nonterminal_bound_stop_ratio_at_true_frontier"]
+        ),
+        "streaming_truth_nonterminal_frontier_block_count": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else int(streaming_truth_nonterminal_frontier["processed_block_count"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_beta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_beta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_delta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_delta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_bound_beta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["beta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_bound_delta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["delta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_beta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_beta_upper"])
+            / max(float(effective_config.full_attention_mass_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_true_delta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_delta_upper"])
+            / max(float(effective_config.full_attention_value_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_bound_beta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["beta_upper"])
+            / max(float(effective_config.full_attention_mass_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_bound_delta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["delta_upper"])
+            / max(float(effective_config.full_attention_value_eps), 1e-12)
         ),
         "persistent_full_attention_m0_metadata_block_count": int(
             runtime_summary["persistent_full_attention_m0_metadata_blocks_by_layer"]["0"]
@@ -9012,6 +10362,16 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
     )
     streaming_first_stop = streaming.get("first_certified_stop")
     streaming_final_checkpoint = streaming.get("final_checkpoint")
+    streaming_truth = _compute_true_streaming_checkpoint_diagnostics(
+        runtime=runtime,
+        layer_id=0,
+        query_tensor=query_tensor,
+        query_scale=float(resolved_query_scale),
+        streaming_result=streaming,
+    )
+    streaming_true_first_stop = streaming_truth.get("first_true_certified_stop")
+    streaming_truth_frontier = streaming_truth.get("min_true_stop_ratio_checkpoint")
+    streaming_truth_nonterminal_frontier = streaming_truth.get("min_nonterminal_true_stop_ratio_checkpoint")
     score_result = runtime.score_blocks(0, query_tensor, query_scale=resolved_query_scale)
     layer_state = runtime.layers[0]
     selected_set = set(int(block_id) for block_id in selection["selected_block_ids"])
@@ -9080,6 +10440,95 @@ def debug_qwen35_persistent_full_attention_snapshot_selection(
         "streaming_final_delta_upper": (
             None if streaming_final_checkpoint is None else float(streaming_final_checkpoint["delta_upper"])
         ),
+        "streaming_first_true_certified_stop_block_count": (
+            None
+            if streaming_true_first_stop is None
+            else int(streaming_true_first_stop["processed_block_count"])
+        ),
+        "streaming_first_true_certified_stop_token_count": (
+            None
+            if streaming_true_first_stop is None
+            else int(streaming_true_first_stop["processed_token_count"])
+        ),
+        "streaming_first_true_certified_stop_beta_upper": (
+            None
+            if streaming_true_first_stop is None
+            else float(streaming_true_first_stop["true_beta_upper"])
+        ),
+        "streaming_first_true_certified_stop_delta_upper": (
+            None
+            if streaming_true_first_stop is None
+            else float(streaming_true_first_stop["true_delta_upper"])
+        ),
+        "streaming_truth_max_beta_over_true_beta_ratio": float(
+            streaming_truth["max_beta_over_true_beta_ratio"]
+        ),
+        "streaming_truth_max_delta_over_true_delta_ratio": float(
+            streaming_truth["max_delta_over_true_delta_ratio"]
+        ),
+        "streaming_truth_min_stop_ratio": streaming_truth["min_true_stop_ratio"],
+        "streaming_truth_bound_stop_ratio_at_true_frontier": (
+            streaming_truth["min_bound_stop_ratio_at_true_frontier"]
+        ),
+        "streaming_truth_frontier_block_count": (
+            None
+            if streaming_truth_frontier is None
+            else int(streaming_truth_frontier["processed_block_count"])
+        ),
+        "streaming_truth_min_nonterminal_stop_ratio": streaming_truth["min_nonterminal_true_stop_ratio"],
+        "streaming_truth_bound_stop_ratio_at_nonterminal_true_frontier": (
+            streaming_truth["min_nonterminal_bound_stop_ratio_at_true_frontier"]
+        ),
+        "streaming_truth_nonterminal_frontier_block_count": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else int(streaming_truth_nonterminal_frontier["processed_block_count"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_beta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_beta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_delta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_delta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_bound_beta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["beta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_bound_delta_upper": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["delta_upper"])
+        ),
+        "streaming_truth_nonterminal_frontier_true_beta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_beta_upper"])
+            / max(float(effective_config.full_attention_mass_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_true_delta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["true_delta_upper"])
+            / max(float(effective_config.full_attention_value_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_bound_beta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["beta_upper"])
+            / max(float(effective_config.full_attention_mass_eps), 1e-12)
+        ),
+        "streaming_truth_nonterminal_frontier_bound_delta_ratio": (
+            None
+            if streaming_truth_nonterminal_frontier is None
+            else float(streaming_truth_nonterminal_frontier["delta_upper"])
+            / max(float(effective_config.full_attention_value_eps), 1e-12)
+        ),
+        "streaming_truth_checkpoint_records": streaming_truth["checkpoint_records"],
         "query_scale": float(resolved_query_scale),
         "config": {
             "block_size": int(resolved_config.block_size),
@@ -12206,6 +13655,7 @@ __all__ = [
     "export_qwen35_attention_subset_paged_attention_snapshot",
     "export_qwen35_attention_subset_paged_attention_snapshot_corpus",
     "run_qwen35_persistent_full_attention_snapshot_comparison",
+    "run_qwen35_persistent_full_attention_snapshot_oracle_ordering_compare",
     "run_qwen35_attention_subset_prefill_ablation_harness",
     "run_qwen35_hybrid_combined_localization_harness",
     "run_qwen35_attention_subset_dotcache_harness",
