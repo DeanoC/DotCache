@@ -3421,6 +3421,21 @@ fn from_device_tensor(tensor: Tensor) -> HipTensor {
     HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
+pub(crate) fn state_buffer_from_host_bytes(
+    bytes: Vec<u8>,
+    shape: Vec<usize>,
+    dtype: DType,
+    device: &Device,
+) -> Result<StateBuffer> {
+    HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+        bytes: bytes.into(),
+        shape,
+        dtype,
+        device: device.clone(),
+    }))
+    .into_state_buffer()
+}
+
 pub(crate) fn to_state_buffer(tensor: Tensor) -> Result<StateBuffer> {
     HipTensor::from_scaffold_tensor(tensor).into_state_buffer()
 }
@@ -12186,6 +12201,40 @@ pub(crate) fn delta_chunk_fused_buffer(
         value,
     )?)
     .into_state_buffer()
+}
+
+pub(crate) fn unpack_delta_chunk_step_output(
+    fused: &StateBuffer,
+    chunk_size: usize,
+    k_head_dim: usize,
+) -> Result<(StateBuffer, StateBuffer)> {
+    let fused = HipTensor::from_state_buffer(fused);
+    if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
+        if let Some(fused_host) = fused.storage.as_host_buffer() {
+            let output = HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+                fused_host.narrow_copy(1, 0, chunk_size)?,
+            ))
+            .into_state_buffer()?;
+            let recurrent_state =
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+                    fused_host.narrow_copy(1, chunk_size, k_head_dim)?,
+                ))
+                .into_state_buffer()?;
+            return Ok((output, recurrent_state));
+        }
+        let output = HipTensor::from_device_buffer(fused.narrow(1, 0, chunk_size)?).into_state_buffer()?;
+        let recurrent_state = HipTensor::from_device_buffer(
+            fused.narrow(1, chunk_size, k_head_dim)?.contiguous()?,
+        )
+        .into_state_buffer()?;
+        return Ok((output, recurrent_state));
+    }
+    let output = fused.narrow(1, 0, chunk_size)?.into_state_buffer()?;
+    let recurrent_state = fused
+        .narrow(1, chunk_size, k_head_dim)?
+        .contiguous()?
+        .into_state_buffer()?;
+    Ok((output, recurrent_state))
 }
 
 fn delta_chunk_recurrent_read_tensors_hip(

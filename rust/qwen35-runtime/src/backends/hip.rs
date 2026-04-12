@@ -26,6 +26,15 @@ pub(crate) fn tensor_to_buffer(xs: Tensor) -> Result<StateBuffer> {
     transport::tensor_to_state(xs)
 }
 
+pub(crate) fn state_buffer_from_host_bytes(
+    bytes: Vec<u8>,
+    shape: Vec<usize>,
+    dtype: DType,
+    device: &Device,
+) -> Result<StateBuffer> {
+    transport::state_buffer_from_host_bytes(bytes, shape, dtype, device)
+}
+
 pub(crate) fn zeros_state(device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer> {
     transport::zeros_state(dims.to_vec(), dtype, device)
 }
@@ -593,6 +602,14 @@ pub(crate) fn unpack_chunk_fused(
     k_head_dim: usize,
 ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
     transport::unpack_chunk_fused(fused, chunk_size, k_head_dim)
+}
+
+pub(crate) fn unpack_delta_chunk_step_output(
+    fused: &StateBuffer,
+    chunk_size: usize,
+    k_head_dim: usize,
+) -> Result<(StateBuffer, StateBuffer)> {
+    transport::unpack_delta_chunk_step_output(fused, chunk_size, k_head_dim)
 }
 
 pub(crate) fn delta_base_attn_scan(

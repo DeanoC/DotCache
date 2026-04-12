@@ -7936,6 +7936,141 @@ fn delta_chunk_step_raw(
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepRaw)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn delta_chunk_step_raw_host_buffer(
+    prev_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let prev_state = prev_state.contiguous()?;
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    let beta = beta.contiguous()?;
+    let g = g.contiguous()?;
+    let ordinal = match prev_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(query.device().same_device(prev_state.device())
+        && key.device().same_device(prev_state.device())
+        && value.device().same_device(prev_state.device())
+        && beta.device().same_device(prev_state.device())
+        && g.device().same_device(prev_state.device()))
+    {
+        return Ok(None);
+    }
+    let (prev_storage, prev_layout) = prev_state.storage_and_layout();
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (beta_storage, beta_layout) = beta.storage_and_layout();
+    let (g_storage, g_layout) = g.storage_and_layout();
+    let (
+        Storage::Hip(prev_storage),
+        Storage::Hip(query_storage),
+        Storage::Hip(key_storage),
+        Storage::Hip(value_storage),
+        Storage::Hip(beta_storage),
+        Storage::Hip(g_storage),
+    ) = (
+        &*prev_storage,
+        &*query_storage,
+        &*key_storage,
+        &*value_storage,
+        &*beta_storage,
+        &*g_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(prev_layout.is_contiguous()
+        && query_layout.is_contiguous()
+        && key_layout.is_contiguous()
+        && value_layout.is_contiguous()
+        && beta_layout.is_contiguous()
+        && g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+
+    let (batch_heads, k_head_dim, v_head_dim) = prev_layout.shape().dims3()?;
+    let (query_bh, chunk_size, query_k) = query_layout.shape().dims3()?;
+    let (key_bh, key_chunk, key_k) = key_layout.shape().dims3()?;
+    let (value_bh, value_chunk, value_v) = value_layout.shape().dims3()?;
+    let (beta_bh, beta_chunk) = beta_layout.shape().dims2()?;
+    let (g_bh, g_chunk) = g_layout.shape().dims2()?;
+    if query_bh != batch_heads
+        || key_bh != batch_heads
+        || value_bh != batch_heads
+        || beta_bh != batch_heads
+        || g_bh != batch_heads
+        || key_chunk != chunk_size
+        || value_chunk != chunk_size
+        || beta_chunk != chunk_size
+        || g_chunk != chunk_size
+        || query_k != k_head_dim
+        || key_k != k_head_dim
+        || value_v != v_head_dim
+    {
+        return Ok(None);
+    }
+
+    let dtype = prev_state.dtype();
+    if !(dtype == query.dtype()
+        && dtype == key.dtype()
+        && dtype == value.dtype()
+        && dtype == beta.dtype()
+        && dtype == g.dtype())
+    {
+        return Ok(None);
+    }
+
+    let out_shape = vec![batch_heads, chunk_size + k_head_dim, v_head_dim];
+    let mut output = vec![0u8; out_shape.iter().product::<usize>() * dtype.size_in_bytes()];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
+            hip::dtype_code(dtype)?,
+            ordinal,
+            batch_heads,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            prev_storage.raw_device_ptr_with_offset(prev_layout.start_offset())? as *const c_void,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            beta_storage.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+            g_storage.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-chunk-step-raw-host-buffer", status));
+    }
+    Ok(Some((output, out_shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_chunk_step_raw_host_buffer(
+    _prev_state: &Tensor,
+    _query: &Tensor,
+    _key: &Tensor,
+    _value: &Tensor,
+    _beta: &Tensor,
+    _g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaChunkStepWindowedRaw;
 
@@ -8437,6 +8572,150 @@ fn delta_chunk_step_windowed_raw(
     g: &Tensor,
 ) -> Result<Tensor> {
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepWindowedRaw)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn delta_chunk_step_windowed_raw_host_buffer(
+    prev_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let prev_state = prev_state.contiguous()?;
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    let beta = beta.contiguous()?;
+    let g = g.contiguous()?;
+    let ordinal = match prev_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(query.device().same_device(prev_state.device())
+        && key.device().same_device(prev_state.device())
+        && value.device().same_device(prev_state.device())
+        && beta.device().same_device(prev_state.device())
+        && g.device().same_device(prev_state.device()))
+    {
+        return Ok(None);
+    }
+    let (prev_storage, prev_layout) = prev_state.storage_and_layout();
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (beta_storage, beta_layout) = beta.storage_and_layout();
+    let (g_storage, g_layout) = g.storage_and_layout();
+    let (
+        Storage::Hip(prev_storage),
+        Storage::Hip(query_storage),
+        Storage::Hip(key_storage),
+        Storage::Hip(value_storage),
+        Storage::Hip(beta_storage),
+        Storage::Hip(g_storage),
+    ) = (
+        &*prev_storage,
+        &*query_storage,
+        &*key_storage,
+        &*value_storage,
+        &*beta_storage,
+        &*g_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(prev_layout.is_contiguous()
+        && query_layout.is_contiguous()
+        && key_layout.is_contiguous()
+        && value_layout.is_contiguous()
+        && beta_layout.is_contiguous()
+        && g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+
+    let (batch_heads, k_head_dim, v_head_dim) = prev_layout.shape().dims3()?;
+    let (query_bh, num_chunks, chunk_size, query_k) = query_layout.shape().dims4()?;
+    let (key_bh, key_num_chunks, key_chunk, key_k) = key_layout.shape().dims4()?;
+    let (value_bh, value_num_chunks, value_chunk, value_v) = value_layout.shape().dims4()?;
+    let (beta_bh, beta_num_chunks, beta_chunk) = beta_layout.shape().dims3()?;
+    let (g_bh, g_num_chunks, g_chunk) = g_layout.shape().dims3()?;
+    if query_bh != batch_heads
+        || key_bh != batch_heads
+        || value_bh != batch_heads
+        || beta_bh != batch_heads
+        || g_bh != batch_heads
+        || key_num_chunks != num_chunks
+        || value_num_chunks != num_chunks
+        || beta_num_chunks != num_chunks
+        || g_num_chunks != num_chunks
+        || key_chunk != chunk_size
+        || value_chunk != chunk_size
+        || beta_chunk != chunk_size
+        || g_chunk != chunk_size
+        || query_k != k_head_dim
+        || key_k != k_head_dim
+        || value_v != v_head_dim
+    {
+        return Ok(None);
+    }
+
+    let dtype = prev_state.dtype();
+    if !(dtype == query.dtype()
+        && dtype == key.dtype()
+        && dtype == value.dtype()
+        && dtype == beta.dtype()
+        && dtype == g.dtype())
+    {
+        return Ok(None);
+    }
+
+    let total_tokens = num_chunks * chunk_size;
+    let out_shape = vec![batch_heads, total_tokens + k_head_dim, v_head_dim];
+    let mut output = vec![0u8; out_shape.iter().product::<usize>() * dtype.size_in_bytes()];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        candle::hip::ffi::qwen35_hip_delta_chunk_windowed(
+            candle::hip::qwen35_dtype_code(dtype)?,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            prev_storage.raw_device_ptr_with_offset(prev_layout.start_offset())? as *const c_void,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            beta_storage.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+            g_storage.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(candle::hip::qwen35_error(
+            "delta-chunk-step-windowed-raw-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((output, out_shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_chunk_step_windowed_raw_host_buffer(
+    _prev_state: &Tensor,
+    _query: &Tensor,
+    _key: &Tensor,
+    _value: &Tensor,
+    _beta: &Tensor,
+    _g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    Ok(None)
 }
 
 #[allow(dead_code)]
@@ -13456,31 +13735,71 @@ impl GatedDeltaNet {
                 profile.transfer_millis += pack_elapsed;
 
                 let scan_start = profile_start(device)?;
-                let fused = delta_chunk_step_windowed_raw(
-                    &initial_state,
-                    &query_scan,
-                    &key_scan,
-                    &value_scan,
-                    &beta_scan,
-                    &g_scan,
-                )?;
-                profile.linear_full_kernel_execute_millis += profile_elapsed(scan_start, device)?;
+                let (output, last_recurrent_state) = if let Some((bytes, shape)) =
+                    delta_chunk_step_windowed_raw_host_buffer(
+                        &initial_state,
+                        &query_scan,
+                        &key_scan,
+                        &value_scan,
+                        &beta_scan,
+                        &g_scan,
+                    )?
+                {
+                    let fused = crate::backends::hip::state_buffer_from_host_bytes(
+                        bytes,
+                        shape,
+                        compute_dtype,
+                        query.device(),
+                    )?;
+                    profile.linear_full_kernel_execute_millis +=
+                        profile_elapsed(scan_start, device)?;
 
-                let unpack_start = profile_start(device)?;
-                let output = fused
-                    .narrow(1, 0, total_sequence_length)?
-                    .reshape((batch_size, num_heads, total_sequence_length, v_head_dim))?
-                    .narrow(2, 0, sequence_length)?
-                    .transpose(1, 2)?
-                    .contiguous()?
-                    .to_dtype(initial_dtype)?;
-                let last_recurrent_state = fused
-                    .narrow(1, total_sequence_length, k_head_dim)?
-                    .reshape((batch_heads, k_head_dim, v_head_dim))?
-                    .contiguous()?;
-                let unpack_elapsed = profile_elapsed(unpack_start, device)?;
-                profile.linear_full_kernel_unpack_millis += unpack_elapsed;
-                profile.transfer_millis += unpack_elapsed;
+                    let unpack_start = profile_start(device)?;
+                    let backend = backend_buffer_api::for_device(device);
+                    let (output, last_recurrent_state) =
+                        backend.unpack_scan_fused_output_and_state(
+                            &fused,
+                            total_sequence_length,
+                            sequence_length,
+                            batch_size,
+                            num_heads,
+                            v_head_dim,
+                            k_head_dim,
+                            initial_dtype,
+                        )?;
+                    let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+                    profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+                    profile.transfer_millis += unpack_elapsed;
+                    (output.clone_tensor(), last_recurrent_state.clone_tensor())
+                } else {
+                    let fused = delta_chunk_step_windowed_raw(
+                        &initial_state,
+                        &query_scan,
+                        &key_scan,
+                        &value_scan,
+                        &beta_scan,
+                        &g_scan,
+                    )?;
+                    profile.linear_full_kernel_execute_millis +=
+                        profile_elapsed(scan_start, device)?;
+
+                    let unpack_start = profile_start(device)?;
+                    let output = fused
+                        .narrow(1, 0, total_sequence_length)?
+                        .reshape((batch_size, num_heads, total_sequence_length, v_head_dim))?
+                        .narrow(2, 0, sequence_length)?
+                        .transpose(1, 2)?
+                        .contiguous()?
+                        .to_dtype(initial_dtype)?;
+                    let last_recurrent_state = fused
+                        .narrow(1, total_sequence_length, k_head_dim)?
+                        .reshape((batch_heads, k_head_dim, v_head_dim))?
+                        .contiguous()?;
+                    let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+                    profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+                    profile.transfer_millis += unpack_elapsed;
+                    (output, last_recurrent_state)
+                };
                 profile.linear_chunk_scan_millis += profile.linear_full_kernel_pack_millis
                     + profile.linear_full_kernel_execute_millis
                     + profile.linear_full_kernel_unpack_millis;
@@ -13509,18 +13828,51 @@ impl GatedDeltaNet {
                 profile.transfer_millis += pack_elapsed;
 
                 let kernel_start = profile_start(device)?;
-                let fused = delta_chunk_step_raw(&prev_state_i, &q_i, &k_i, &v_i, &beta_i, &g_i)?;
-                profile.linear_full_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+                if let Some((bytes, shape)) = delta_chunk_step_raw_host_buffer(
+                    &prev_state_i,
+                    &q_i,
+                    &k_i,
+                    &v_i,
+                    &beta_i,
+                    &g_i,
+                )? {
+                    let fused = crate::backends::hip::state_buffer_from_host_bytes(
+                        bytes,
+                        shape,
+                        compute_dtype,
+                        query.device(),
+                    )?;
+                    profile.linear_full_kernel_execute_millis +=
+                        profile_elapsed(kernel_start, device)?;
 
-                let unpack_start = profile_start(device)?;
-                outputs.push(fused.narrow(1, 0, chunk_size)?.unsqueeze(1)?);
-                last_recurrent_state = fused
-                    .narrow(1, chunk_size, k_head_dim)?
-                    .reshape((batch_heads, k_head_dim, v_head_dim))?
-                    .contiguous()?;
-                let unpack_elapsed = profile_elapsed(unpack_start, device)?;
-                profile.linear_full_kernel_unpack_millis += unpack_elapsed;
-                profile.transfer_millis += unpack_elapsed;
+                    let unpack_start = profile_start(device)?;
+                    let (output_i, recurrent_state) =
+                        crate::backends::hip::unpack_delta_chunk_step_output(
+                            &fused,
+                            chunk_size,
+                            k_head_dim,
+                        )?;
+                    outputs.push(output_i.clone_tensor().unsqueeze(1)?);
+                    last_recurrent_state = recurrent_state.clone_tensor();
+                    let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+                    profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+                    profile.transfer_millis += unpack_elapsed;
+                } else {
+                    let fused =
+                        delta_chunk_step_raw(&prev_state_i, &q_i, &k_i, &v_i, &beta_i, &g_i)?;
+                    profile.linear_full_kernel_execute_millis +=
+                        profile_elapsed(kernel_start, device)?;
+
+                    let unpack_start = profile_start(device)?;
+                    outputs.push(fused.narrow(1, 0, chunk_size)?.unsqueeze(1)?);
+                    last_recurrent_state = fused
+                        .narrow(1, chunk_size, k_head_dim)?
+                        .reshape((batch_heads, k_head_dim, v_head_dim))?
+                        .contiguous()?;
+                    let unpack_elapsed = profile_elapsed(unpack_start, device)?;
+                    profile.linear_full_kernel_unpack_millis += unpack_elapsed;
+                    profile.transfer_millis += unpack_elapsed;
+                }
             }
             profile.linear_chunk_scan_millis += profile_elapsed(scan_start, device)?;
             let output = Tensor::cat(&outputs.iter().collect::<Vec<_>>(), 1)?
