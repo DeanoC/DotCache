@@ -212,6 +212,37 @@ impl HipHostBuffer {
     pub(crate) fn upload_to_state_buffer(self) -> Result<StateBuffer> {
         StateBuffer::from_tensor(self.upload_to_device_buffer()?.into_tensor())
     }
+
+    fn to_native_host_buffer(&self) -> HipNativeBuffer {
+        HipNativeBuffer {
+            expr: HipNativeExpr::HostBytes {
+                bytes: self.bytes.clone(),
+            },
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        }
+    }
+
+    fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
+        HipNativeBuffer::pad_with_zeros(Arc::new(self.to_native_host_buffer()), dim, left, right)
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for padded host buffer".into())
+            })
+    }
+
+    fn cat(buffers: &[&HipHostBuffer], dim: usize) -> Result<Self> {
+        let sources = buffers
+            .iter()
+            .map(|buffer| Arc::new(buffer.to_native_host_buffer()))
+            .collect::<Vec<_>>();
+        HipNativeBuffer::concat(sources, dim)
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for concatenated host buffers".into())
+            })
+    }
 }
 
 impl HipDeviceBuffer {
@@ -380,6 +411,11 @@ impl HipDeviceBuffer {
         if left == 0 && right == 0 {
             return Ok(self.clone());
         }
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(
+                buffer.pad_with_zeros(dim, left, right)?,
+            ));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?.pad_with_zeros(dim, left, right)?,
         ))
@@ -391,6 +427,17 @@ impl HipDeviceBuffer {
         }
         if buffers.len() == 1 {
             return Ok(buffers[0].clone());
+        }
+        let host_buffers = buffers
+            .iter()
+            .map(|buffer| buffer.try_host_buffer())
+            .collect::<Result<Vec<_>>>()?;
+        if host_buffers.iter().all(|buffer| buffer.is_some()) {
+            let refs = host_buffers.iter().flatten().collect::<Vec<_>>();
+            return Ok(Self::from_pending_host_upload(HipHostBuffer::cat(
+                refs.as_slice(),
+                dim,
+            )?));
         }
         let tensors = buffers
             .iter()
@@ -3881,9 +3928,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_device_upload_views_roundtrip_to_host_without_materialization() -> Result<()> {
-        let tensor = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]).transpose(0, 1)?;
-        let buffer = tensor.try_host_buffer()?.expect("host-backed buffer expected");
+    fn device_leaf_pending_upload_views_roundtrip_to_host_without_materialization() -> Result<()> {
+        let buffer = HipHostBuffer {
+            bytes: [1.0f32, 2.0, 3.0, 4.0]
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+                .into(),
+            shape: vec![2, 2],
+            dtype: DType::F32,
+            device: Device::Cpu,
+        };
         let uploaded = buffer
             .upload_to_device_buffer()?
             .reshape(vec![1, 4])?
@@ -3891,7 +3946,39 @@ mod tests {
         assert!(!uploaded.is_materialized());
         let host = uploaded.try_host_buffer()?.expect("pending upload should stay host-extractable");
         assert_eq!(host.shape(), &[1, 2]);
-        assert_eq!(host_buffer_values_f32(&host)?, vec![3.0, 2.0]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![2.0, 3.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_cat_stays_pending() -> Result<()> {
+        let lhs = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer");
+        let rhs = host_f32_tensor(&[1, 2], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer");
+        let lhs = lhs.upload_to_device_buffer()?;
+        let rhs = rhs.upload_to_device_buffer()?;
+        let out = HipDeviceBuffer::cat(&[&lhs, &rhs], 1)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[1, 4]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_pad_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.pad_with_zeros(1, 1, 1)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[1, 4]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![0.0, 1.0, 2.0, 0.0]);
         Ok(())
     }
 
