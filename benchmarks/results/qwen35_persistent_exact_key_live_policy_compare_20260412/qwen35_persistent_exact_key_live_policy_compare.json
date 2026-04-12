@@ -1,0 +1,2770 @@
+{
+  "manifest_paths": [
+    "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+    "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+    "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+    "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json"
+  ],
+  "policies": [
+    {
+      "name": "baseline",
+      "description": "Current global policy with no layer-15 override.",
+      "overall_avg_ms_per_step": 683.9922666273196,
+      "exact_match_rate_vs_baseline": 1.0,
+      "per_manifest_avg_ms_per_step": {
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json": 838.6311699832731,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json": 464.9992725462653,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json": 694.3592406256357,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json": 621.5715703146998
+      },
+      "rows": [
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 458.1715470121708,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 460.5163643718697,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 476.30990625475533,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 748.3057237550383,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 711.0191455067252,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 1047.028801862325,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 1210.731307255628,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 725.7560206344351,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 588.9460208854871,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 467.0680313720368,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "layer_revision_tracker",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_layer_page_selection_revision_tracker.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 751.8290208681719,
+          "generated_ids": [
+            415,
+            52889,
+            14,
+            28980,
+            14520,
+            349,
+            7976,
+            38068
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 698.9268385004834,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 714.2938698816579,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 947.6064897462493,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 1216.406640371133,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 699.8767240074812,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 453.3231717578019,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 420.0516091368627,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 574.210010614479,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "cuda_shortlist_paper_table",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_cuda_shortlist_paper_table.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 775.5009998872993,
+          "generated_ids": [
+            3397,
+            29378,
+            310,
+            2070,
+            38710,
+            81347,
+            13,
+            561
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 620.4974792635767,
+          "generated_ids": [
+            369,
+            1381,
+            264,
+            15728,
+            20619,
+            364,
+            27044,
+            14934
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "real_mixed_probe_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_real_mixed_probe.py",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 574.9802761347382,
+          "generated_ids": [
+            58405,
+            25779,
+            20759,
+            5500,
+            11607,
+            763,
+            2153,
+            7
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "serving_policy_compare_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_serving_policy_compare.py",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 739.2903488798765,
+          "generated_ids": [
+            514,
+            735,
+            2168,
+            283,
+            2168,
+            11,
+            198,
+            262
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "stage9_backend_comparison",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_backend_comparison_20260412.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 452.36610923166154,
+          "generated_ids": [
+            276,
+            3557,
+            415,
+            11591,
+            19503,
+            325,
+            33902,
+            87301
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 566.7942084910464,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "layer15_always_024",
+      "description": "Always set layer 15 to 0.24.",
+      "overall_avg_ms_per_step": 694.6161591671989,
+      "exact_match_rate_vs_baseline": 1.0,
+      "per_manifest_avg_ms_per_step": {
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json": 847.8005712264954,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json": 468.7403384668869,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json": 695.6256661032967,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json": 652.6871458978954
+      },
+      "rows": [
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 504.9978278912022,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 461.644161514414,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 439.5790259950445,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 744.6873596200021,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 807.4559792366927,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 977.5578228654922,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1242.6437812464428,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 718.7665521341842,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 595.6919322561589,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 449.83335938013624,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "layer_revision_tracker",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_layer_page_selection_revision_tracker.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 738.9248491308535,
+          "generated_ids": [
+            415,
+            52889,
+            14,
+            28980,
+            14520,
+            349,
+            7976,
+            38068
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 759.6567133659846,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 708.723781252047,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 960.5008541257121,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1195.5928072493407,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 699.1525885241572,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 447.4592708866112,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 432.2929007394123,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 564.1195363787119,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "cuda_shortlist_paper_table",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_cuda_shortlist_paper_table.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 729.4043333822628,
+          "generated_ids": [
+            3397,
+            29378,
+            310,
+            2070,
+            38710,
+            81347,
+            13,
+            561
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 586.6334271413507,
+          "generated_ids": [
+            369,
+            1381,
+            264,
+            15728,
+            20619,
+            364,
+            27044,
+            14934
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "real_mixed_probe_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_real_mixed_probe.py",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 602.3669010101003,
+          "generated_ids": [
+            58405,
+            25779,
+            20759,
+            5500,
+            11607,
+            763,
+            2153,
+            7
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "serving_policy_compare_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_serving_policy_compare.py",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 930.7778961228905,
+          "generated_ids": [
+            514,
+            735,
+            2168,
+            283,
+            2168,
+            11,
+            198,
+            262
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "stage9_backend_comparison",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_backend_comparison_20260412.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 475.5747501112637,
+          "generated_ids": [
+            276,
+            3557,
+            415,
+            11591,
+            19503,
+            325,
+            33902,
+            87301
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 591.3655676195049,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "layer15_len_ge_1800_024",
+      "description": "Use layer 15 -> 0.24 only when prompt length is at least 1800 tokens.",
+      "overall_avg_ms_per_step": 723.100506439223,
+      "exact_match_rate_vs_baseline": 1.0,
+      "per_manifest_avg_ms_per_step": {
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json": 875.4969992041879,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json": 516.9450919590114,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json": 741.4143062225776,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json": 643.2587212754394
+      },
+      "rows": [
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 490.4832291213097,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 577.0818906385102,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 483.27015611721436,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 764.4257814899902,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 742.7510676207021,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1033.4303854979225,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1256.2372501270147,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 852.3994220013265,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 603.7380884881713,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 463.3976252298453,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "layer_revision_tracker",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_layer_page_selection_revision_tracker.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 742.7183959953254,
+          "generated_ids": [
+            415,
+            52889,
+            14,
+            28980,
+            14520,
+            349,
+            7976,
+            38068
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 808.8864062447101,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 728.1559842449497,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1058.666275741416,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1300.141208266723,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 771.6846874973271,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 478.12259374768473,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 459.6147082411335,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 602.755177016661,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "cuda_shortlist_paper_table",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_cuda_shortlist_paper_table.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 772.7005937485956,
+          "generated_ids": [
+            3397,
+            29378,
+            310,
+            2070,
+            38710,
+            81347,
+            13,
+            561
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 602.6983542615199,
+          "generated_ids": [
+            369,
+            1381,
+            264,
+            15728,
+            20619,
+            364,
+            27044,
+            14934
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "real_mixed_probe_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_real_mixed_probe.py",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 606.0338278766721,
+          "generated_ids": [
+            58405,
+            25779,
+            20759,
+            5500,
+            11607,
+            763,
+            2153,
+            7
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "serving_policy_compare_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_serving_policy_compare.py",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 784.6427552503883,
+          "generated_ids": [
+            514,
+            735,
+            2168,
+            283,
+            2168,
+            11,
+            198,
+            262
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "stage9_backend_comparison",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_backend_comparison_20260412.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 479.33585912687704,
+          "generated_ids": [
+            276,
+            3557,
+            415,
+            11591,
+            19503,
+            325,
+            33902,
+            87301
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 614.1409373885836,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "layer15_code_or_len_ge_1800_024",
+      "description": "Use layer 15 -> 0.24 for code files or prompts of at least 1800 tokens.",
+      "overall_avg_ms_per_step": 756.6313327092212,
+      "exact_match_rate_vs_baseline": 1.0,
+      "per_manifest_avg_ms_per_step": {
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json": 859.0582967917726,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json": 481.9326198315442,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json": 768.8377182341355,
+        "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json": 771.209749190651
+      },
+      "rows": [
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 466.1147397418972,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 462.243703121203,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_external_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 517.4394166315324,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 822.3876248666784,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 708.4204163766117,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1011.7605677587562,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1266.8572345064604,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 746.512796737079,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_broad_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 598.4111405050498,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "decode_pseudocode",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_dotcache_decode_pseudocode.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 460.2896823780611,
+          "generated_ids": [
+            17,
+            23,
+            15,
+            15,
+            15,
+            63,
+            735,
+            198
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "layer_revision_tracker",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_layer_page_selection_revision_tracker.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 736.3937031259411,
+          "generated_ids": [
+            415,
+            52889,
+            14,
+            28980,
+            14520,
+            349,
+            7976,
+            38068
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "local_layer_profiles",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/local_layer_profiles.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 731.6731874961988,
+          "generated_ids": [
+            4557,
+            25,
+            271,
+            12,
+            1118,
+            1440,
+            25,
+            1510
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 715.9709062398179,
+          "generated_ids": [
+            1510,
+            312,
+            2186,
+            14548,
+            12283,
+            380,
+            15,
+            1137
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "page_selection_eval",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_page_selection_standardized_evaluation.md",
+          "prompt_length": 3072,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 992.2377501279698,
+          "generated_ids": [
+            524,
+            264,
+            36367,
+            20619,
+            13,
+            198,
+            20,
+            13
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "performance_journal",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/performance_journal.md",
+          "prompt_length": 4096,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 1252.1183386197663,
+          "generated_ids": [
+            32364,
+            14397,
+            25,
+            1510,
+            16,
+            17,
+            15,
+            24
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "repo_readme",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/README.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 777.3471561158658,
+          "generated_ids": [
+            26527,
+            63,
+            2243,
+            11,
+            321,
+            67940,
+            264,
+            1428
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "state_cache_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/state_cache_roadmap.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 658.7848490016768,
+          "generated_ids": [
+            1137,
+            10027,
+            14813,
+            27335,
+            17703,
+            220,
+            15,
+            220
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "statecache_showcase",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_statecache_showcase.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 616.8976561166346,
+          "generated_ids": [
+            63,
+            10885,
+            198,
+            12,
+            1510,
+            18,
+            17,
+            18295
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_real_mixed_repo_promptfiles_large_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 746.6639531194232,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "cuda_shortlist_paper_table",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_cuda_shortlist_paper_table.md",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 882.2059581361827,
+          "generated_ids": [
+            3397,
+            29378,
+            310,
+            2070,
+            38710,
+            81347,
+            13,
+            561
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "model_roadmap",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/model_roadmap.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 659.214062623505,
+          "generated_ids": [
+            369,
+            1381,
+            264,
+            15728,
+            20619,
+            364,
+            27044,
+            14934
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "real_mixed_probe_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_real_mixed_probe.py",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 778.8808906116174,
+          "generated_ids": [
+            58405,
+            25779,
+            20759,
+            5500,
+            11607,
+            763,
+            2153,
+            7
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "serving_policy_compare_code",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/bench_qwen35_persistent_serving_policy_compare.py",
+          "prompt_length": 2048,
+          "max_k_comp_error_by_layer": {
+            "15": 0.24
+          },
+          "decode_ms_per_step": 933.0590052559273,
+          "generated_ids": [
+            514,
+            735,
+            2168,
+            283,
+            2168,
+            11,
+            198,
+            262
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 0.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "stage9_backend_comparison",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_backend_comparison_20260412.md",
+          "prompt_length": 1024,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 623.7119481374975,
+          "generated_ids": [
+            276,
+            3557,
+            415,
+            11591,
+            19503,
+            325,
+            33902,
+            87301
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        },
+        {
+          "manifest_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json",
+          "case_tag": "submission_execution_plan",
+          "prompt_file_path": "/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/dotcache_submission_execution_plan.md",
+          "prompt_length": 1536,
+          "max_k_comp_error_by_layer": {},
+          "decode_ms_per_step": 750.1866303791758,
+          "generated_ids": [
+            12,
+            42466,
+            22449,
+            17587,
+            271,
+            50215,
+            9375,
+            15705
+          ],
+          "executed_exact_key_m3_by_layer": {
+            "3": 0.0,
+            "7": 0.0,
+            "11": 0.0,
+            "15": 8.0,
+            "19": 0.0,
+            "23": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}

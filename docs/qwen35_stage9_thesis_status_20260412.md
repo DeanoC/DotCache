@@ -283,6 +283,26 @@ So the cross-corpus read is now a little richer:
 
 That makes the next useful policy shape more likely to be cost-aware and context-sensitive rather than a single global threshold bump.
 
+Live policy compare result on the real mixed Stage 9 lane:
+
+- benchmark artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md)
+
+Across the portable `external`, `broad`, `large`, and the newer public-validation manifest, the current baseline policy still ranked best in the live runtime:
+
+- baseline: `683.99 ms/step`
+- layer15_always_024: `694.62`
+- layer15_len_ge_1800_024: `723.10`
+- layer15_code_or_len_ge_1800_024: `756.63`
+
+All of those alternatives preserved exact-match vs baseline, but none improved runtime.
+
+That is a useful negative result:
+
+- the cheap layer-15 heuristics are not good enough to promote into the runtime
+- the offline frontier signal was directionally interesting but not sufficient for live policy choice
+- if we revisit this frontier, it should be with a stronger cost model or richer runtime features, not a simple threshold heuristic
+
 Third focused portable-large study:
 
 - benchmark artifact:

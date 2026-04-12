@@ -90,3 +90,6 @@ Update:
 
 - broader public-corpus validation has now started with:
   - [docs/qwen35_stage9_public_validation_20260412.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_public_validation_20260412.md)
+- cheap live exact-key fallback heuristics have now been tested too:
+  - [benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md)
+  - current baseline still wins in the live runtime, so no layer-15 heuristic is being promoted from that study
