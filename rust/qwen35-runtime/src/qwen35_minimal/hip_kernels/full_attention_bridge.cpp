@@ -1125,6 +1125,91 @@ int binary_broadcast_device(
 }
 
 template <typename T>
+int batched_matmul_device(
+    int device_ordinal,
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_dims,
+    const int* rhs_batch_dims,
+    const int* out_batch_dims,
+    const void* lhs,
+    const void* rhs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* lhs_batch_dims_dev = nullptr;
+    int* rhs_batch_dims_dev = nullptr;
+    int* out_batch_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(batch_rank) * sizeof(int);
+    if (batch_rank > 0) {
+        if (hipMalloc(&lhs_batch_dims_dev, bytes) != hipSuccess) return 141;
+        if (hipMalloc(&rhs_batch_dims_dev, bytes) != hipSuccess) {
+            hipFree(lhs_batch_dims_dev);
+            return 141;
+        }
+        if (hipMalloc(&out_batch_dims_dev, bytes) != hipSuccess) {
+            hipFree(lhs_batch_dims_dev);
+            hipFree(rhs_batch_dims_dev);
+            return 141;
+        }
+        if (hipMemcpy(lhs_batch_dims_dev, lhs_batch_dims, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(rhs_batch_dims_dev, rhs_batch_dims, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(out_batch_dims_dev, out_batch_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+            hipFree(lhs_batch_dims_dev);
+            hipFree(rhs_batch_dims_dev);
+            hipFree(out_batch_dims_dev);
+            return 141;
+        }
+    }
+    constexpr int block = 256;
+    const size_t total = batch_elems * static_cast<size_t>(m) * static_cast<size_t>(n);
+    const unsigned int grid =
+        static_cast<unsigned int>((total + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_batched_matmul_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_rank,
+        batch_elems,
+        m,
+        n,
+        k,
+        lhs_batch_dims_dev,
+        rhs_batch_dims_dev,
+        out_batch_dims_dev,
+        static_cast<const T*>(lhs),
+        static_cast<const T*>(rhs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        if (batch_rank > 0) {
+            hipFree(lhs_batch_dims_dev);
+            hipFree(rhs_batch_dims_dev);
+            hipFree(out_batch_dims_dev);
+        }
+        return 142;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        if (batch_rank > 0) {
+            hipFree(lhs_batch_dims_dev);
+            hipFree(rhs_batch_dims_dev);
+            hipFree(out_batch_dims_dev);
+        }
+        return 143;
+    }
+    if (batch_rank > 0) {
+        hipFree(lhs_batch_dims_dev);
+        hipFree(rhs_batch_dims_dev);
+        hipFree(out_batch_dims_dev);
+    }
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -2927,6 +3012,69 @@ extern "C" int dotcache_qwen35_hip_binary_broadcast(
             out);
     default:
         return 140;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_batched_matmul(
+    int dtype,
+    size_t device_ordinal,
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_dims,
+    const int* rhs_batch_dims,
+    const int* out_batch_dims,
+    const void* lhs,
+    const void* rhs,
+    void* out
+) {
+    switch (dtype) {
+    case 0:
+        return batched_matmul_device<half>(
+            static_cast<int>(device_ordinal),
+            batch_rank,
+            batch_elems,
+            m,
+            n,
+            k,
+            lhs_batch_dims,
+            rhs_batch_dims,
+            out_batch_dims,
+            lhs,
+            rhs,
+            out);
+    case 1:
+        return batched_matmul_device<float>(
+            static_cast<int>(device_ordinal),
+            batch_rank,
+            batch_elems,
+            m,
+            n,
+            k,
+            lhs_batch_dims,
+            rhs_batch_dims,
+            out_batch_dims,
+            lhs,
+            rhs,
+            out);
+    case 2:
+        return batched_matmul_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            batch_rank,
+            batch_elems,
+            m,
+            n,
+            k,
+            lhs_batch_dims,
+            rhs_batch_dims,
+            out_batch_dims,
+            lhs,
+            rhs,
+            out);
+    default:
+        return 144;
     }
 }
 

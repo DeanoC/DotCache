@@ -57,6 +57,28 @@ __device__ inline float dotcache_qwen35_binary_op_apply(int op, float lhs, float
     }
 }
 
+__device__ inline size_t dotcache_qwen35_broadcast_elem_index(
+    size_t out_index,
+    int rank,
+    const int* out_dims,
+    const int* src_dims
+) {
+    if (rank == 0) {
+        return 0;
+    }
+    size_t src_index = 0;
+    size_t stride = 1;
+    for (int dim = rank - 1; dim >= 0; --dim) {
+        const size_t coord = out_index % static_cast<size_t>(out_dims[dim]);
+        out_index /= static_cast<size_t>(out_dims[dim]);
+        if (src_dims[dim] != 1) {
+            src_index += coord * stride;
+        }
+        stride *= static_cast<size_t>(src_dims[dim]);
+    }
+    return src_index;
+}
+
 template <typename T>
 __device__ inline float dotcache_qwen35_dot_row(
     const T* lhs,
@@ -1777,6 +1799,46 @@ __global__ void dotcache_qwen35_binary_broadcast_kernel(
     const float lhs_f = dotcache_qwen35_to_float(lhs[lhs_offset]);
     const float rhs_f = dotcache_qwen35_to_float(rhs[rhs_offset]);
     out[idx] = dotcache_qwen35_from_float<T>(dotcache_qwen35_binary_op_apply(op, lhs_f, rhs_f));
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_batched_matmul_kernel(
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_dims,
+    const int* rhs_batch_dims,
+    const int* out_batch_dims,
+    const T* lhs,
+    const T* rhs,
+    T* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = batch_elems * static_cast<size_t>(m) * static_cast<size_t>(n);
+    if (idx >= total) {
+        return;
+    }
+
+    const size_t matrix_idx = idx % (static_cast<size_t>(m) * static_cast<size_t>(n));
+    const size_t batch_idx = idx / (static_cast<size_t>(m) * static_cast<size_t>(n));
+    const int row = static_cast<int>(matrix_idx / static_cast<size_t>(n));
+    const int col = static_cast<int>(matrix_idx % static_cast<size_t>(n));
+
+    const size_t lhs_batch_idx = dotcache_qwen35_broadcast_elem_index(
+        batch_idx, batch_rank, out_batch_dims, lhs_batch_dims);
+    const size_t rhs_batch_idx = dotcache_qwen35_broadcast_elem_index(
+        batch_idx, batch_rank, out_batch_dims, rhs_batch_dims);
+
+    const size_t lhs_base = lhs_batch_idx * static_cast<size_t>(m) * static_cast<size_t>(k);
+    const size_t rhs_base = rhs_batch_idx * static_cast<size_t>(k) * static_cast<size_t>(n);
+    float acc = 0.0f;
+    for (int kk = 0; kk < k; ++kk) {
+        acc += dotcache_qwen35_to_float(lhs[lhs_base + static_cast<size_t>(row) * static_cast<size_t>(k) + static_cast<size_t>(kk)]) *
+               dotcache_qwen35_to_float(rhs[rhs_base + static_cast<size_t>(kk) * static_cast<size_t>(n) + static_cast<size_t>(col)]);
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(acc);
 }
 
 template <typename T>

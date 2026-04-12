@@ -14,7 +14,7 @@ use crate::qwen35_minimal_impl::model::{
     hip_broadcast_add_host_buffer, hip_broadcast_div_host_buffer, hip_broadcast_mul_host_buffer,
     hip_broadcast_sub_host_buffer, hip_cast_host_buffer, hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
-    hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
+    hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
     hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
@@ -1484,9 +1484,14 @@ impl HipDeviceBuffer {
                 lhs_buffer.matmul(&rhs_buffer)?,
             ));
         }
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?.matmul(&rhs.materialize_tensor()?)?,
-        ))
+        let lhs = self.materialize_tensor()?;
+        let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = matmul_hip_host_buffer(&lhs, &rhs)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from matmul host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(lhs.matmul(&rhs)?))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -4526,6 +4531,20 @@ fn binary_broadcast_hip_host_buffer(
     helper: fn(&Tensor, &Tensor) -> Result<Option<(Vec<u8>, Vec<usize>)>>,
 ) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = helper(lhs, rhs)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: lhs.dtype(),
+            device: lhs.device().clone(),
+        }),
+    )))
+}
+
+fn matmul_hip_host_buffer(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_matmul_host_buffer(lhs, rhs)? else {
         return Ok(None);
     };
     Ok(Some(HipTensor::from_device_buffer(

@@ -3106,6 +3106,140 @@ pub(crate) fn hip_broadcast_div_host_buffer(
     hip_binary_broadcast_host_buffer(lhs, rhs, 3)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_matmul_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    const MAX_BATCH_RANK: usize = 8;
+
+    let lhs = lhs.contiguous()?;
+    let rhs = rhs.contiguous()?;
+    let ordinal = match lhs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    match rhs.device().location() {
+        DeviceLocation::Hip { gpu_id } if gpu_id == ordinal => {}
+        _ => return Ok(None),
+    }
+    if lhs.dtype() != rhs.dtype() {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(lhs.dtype()) else {
+        return Ok(None);
+    };
+
+    let lhs_shape = lhs.dims();
+    let rhs_shape = rhs.dims();
+    if lhs_shape.is_empty() || rhs_shape.is_empty() {
+        return Ok(None);
+    }
+    let lhs_rank = lhs_shape.len();
+    let rhs_rank = rhs_shape.len();
+    let lhs_k = lhs_shape[lhs_rank - 1];
+    let rhs_k = rhs_shape[rhs_rank.saturating_sub(2)];
+    if lhs_k != rhs_k {
+        return Ok(None);
+    }
+    let m = if lhs_rank >= 2 { lhs_shape[lhs_rank - 2] } else { 1 };
+    let n = rhs_shape[rhs_rank - 1];
+    let lhs_batch = &lhs_shape[..lhs_rank.saturating_sub(2)];
+    let rhs_batch = &rhs_shape[..rhs_rank.saturating_sub(2)];
+
+    let batch_rank = lhs_batch.len().max(rhs_batch.len());
+    if batch_rank > MAX_BATCH_RANK {
+        return Ok(None);
+    }
+    let mut out_batch_dims = [1i32; MAX_BATCH_RANK];
+    let mut lhs_batch_dims = [1i32; MAX_BATCH_RANK];
+    let mut rhs_batch_dims = [1i32; MAX_BATCH_RANK];
+    let lhs_pad = batch_rank.saturating_sub(lhs_batch.len());
+    let rhs_pad = batch_rank.saturating_sub(rhs_batch.len());
+    let mut batch_elems = 1usize;
+    for dim in 0..batch_rank {
+        let lhs_dim = if dim < lhs_pad { 1 } else { lhs_batch[dim - lhs_pad] };
+        let rhs_dim = if dim < rhs_pad { 1 } else { rhs_batch[dim - rhs_pad] };
+        if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+            return Ok(None);
+        }
+        let out_dim = lhs_dim.max(rhs_dim);
+        out_batch_dims[dim] = i32::try_from(out_dim)
+            .map_err(|_| candle::Error::Msg("matmul batch dim overflow".into()))?;
+        lhs_batch_dims[dim] = i32::try_from(lhs_dim)
+            .map_err(|_| candle::Error::Msg("matmul lhs batch dim overflow".into()))?;
+        rhs_batch_dims[dim] = i32::try_from(rhs_dim)
+            .map_err(|_| candle::Error::Msg("matmul rhs batch dim overflow".into()))?;
+        batch_elems = batch_elems.saturating_mul(out_dim);
+    }
+
+    let (lhs_storage, lhs_layout) = lhs.storage_and_layout();
+    let (rhs_storage, rhs_layout) = rhs.storage_and_layout();
+    let Storage::Hip(lhs_storage) = &*lhs_storage else {
+        return Ok(None);
+    };
+    let Storage::Hip(rhs_storage) = &*rhs_storage else {
+        return Ok(None);
+    };
+    if !lhs_layout.is_contiguous() || !rhs_layout.is_contiguous() {
+        return Ok(None);
+    }
+
+    let mut out_shape = lhs_batch
+        .iter()
+        .zip(rhs_batch.iter())
+        .map(|(a, b)| (*a).max(*b))
+        .collect::<Vec<_>>();
+    if out_shape.len() != batch_rank {
+        out_shape = out_batch_dims[..batch_rank].iter().map(|&d| d as usize).collect();
+    }
+    if lhs_rank >= 2 {
+        out_shape.push(m);
+    }
+    out_shape.push(n);
+
+    let total_elems = batch_elems
+        .saturating_mul(m)
+        .saturating_mul(n);
+    let mut out = vec![0u8; total_elems.saturating_mul(lhs.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_batched_matmul(
+            dtype_code,
+            ordinal,
+            i32::try_from(batch_rank).map_err(|_| candle::Error::Msg("matmul batch rank overflow".into()))?,
+            batch_elems,
+            i32::try_from(m).map_err(|_| candle::Error::Msg("matmul m overflow".into()))?,
+            i32::try_from(n).map_err(|_| candle::Error::Msg("matmul n overflow".into()))?,
+            i32::try_from(lhs_k).map_err(|_| candle::Error::Msg("matmul k overflow".into()))?,
+            lhs_batch_dims.as_ptr(),
+            rhs_batch_dims.as_ptr(),
+            out_batch_dims.as_ptr(),
+            lhs_storage.raw_device_ptr_with_offset(lhs_layout.start_offset())? as *const c_void,
+            rhs_storage.raw_device_ptr_with_offset(rhs_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-matmul-host-buffer", status));
+    }
+    Ok(Some((out, out_shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_matmul_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (lhs, rhs);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipL2Norm {
     n_rows: usize,

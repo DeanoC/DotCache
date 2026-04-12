@@ -554,5 +554,21 @@ pub mod ffi {
             out_dims: *const c_int,
             out: *mut c_void,
         ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_batched_matmul(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_rank: c_int,
+            batch_elems: usize,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            lhs_batch_dims: *const c_int,
+            rhs_batch_dims: *const c_int,
+            out_batch_dims: *const c_int,
+            lhs: *const c_void,
+            rhs: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
     }
 }
