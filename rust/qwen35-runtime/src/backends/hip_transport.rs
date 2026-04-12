@@ -116,11 +116,34 @@ pub(crate) struct HipNativeBuffer {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HipDeviceBuffer {
-    tensor: Tensor,
+    storage: HipDeviceStorage,
     shape: Vec<usize>,
     dtype: DType,
     device: Device,
     view_ops: Vec<HipDeviceViewOp>,
+}
+
+#[derive(Debug, Clone)]
+enum HipDeviceStorage {
+    CandleTensor(Tensor),
+}
+
+impl HipDeviceStorage {
+    fn from_tensor(tensor: Tensor) -> Self {
+        Self::CandleTensor(tensor)
+    }
+
+    fn as_tensor(&self) -> &Tensor {
+        match self {
+            Self::CandleTensor(tensor) => tensor,
+        }
+    }
+
+    fn into_tensor(self) -> Tensor {
+        match self {
+            Self::CandleTensor(tensor) => tensor,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +204,7 @@ impl HipDeviceBuffer {
             shape: tensor.dims().to_vec(),
             dtype: tensor.dtype(),
             device: tensor.device().clone(),
-            tensor,
+            storage: HipDeviceStorage::from_tensor(tensor),
             view_ops: Vec::new(),
         }
     }
@@ -203,14 +226,14 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
-        self.view_ops.is_empty() && self.tensor.is_contiguous()
+        self.view_ops.is_empty() && self.storage.as_tensor().is_contiguous()
     }
 
     fn with_view_op(&self, op: HipDeviceViewOp, shape: Vec<usize>) -> Self {
         let mut view_ops = self.view_ops.clone();
         view_ops.push(op);
         Self {
-            tensor: self.tensor.clone(),
+            storage: self.storage.clone(),
             shape,
             dtype: self.dtype,
             device: self.device.clone(),
@@ -232,7 +255,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
-        let mut tensor = self.tensor.clone();
+        let mut tensor = self.storage.as_tensor().clone();
         for op in &self.view_ops {
             tensor = match op {
                 HipDeviceViewOp::Narrow { dim, start, len } => tensor.narrow(*dim, *start, *len)?,
@@ -656,7 +679,7 @@ impl HipDeviceBuffer {
 
     pub(crate) fn into_tensor(self) -> Tensor {
         if self.view_ops.is_empty() {
-            self.tensor
+            self.storage.into_tensor()
         } else {
             self.materialize_tensor()
                 .expect("valid HipDeviceBuffer views should materialize")
