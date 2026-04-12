@@ -5139,6 +5139,174 @@ fn mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+#[allow(clippy::too_many_arguments)]
+fn mapped_linear_decode_step_hip_host_buffer(
+    mixed_qkv: &HipMappedHostBuffer,
+    prev_conv_state: &HipMappedHostBuffer,
+    weights: &Tensor,
+    a_beta_raw: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+    initial_state: &HipMappedHostBuffer,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let ordinal = match mixed_qkv.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_conv_state.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && a_beta_raw.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && dt_bias.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && a_log_exp.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && initial_state.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && weights.device().same_device(&mixed_qkv.buffer.device))
+    {
+        return Ok(None);
+    }
+    let weights = weights.contiguous()?;
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let Storage::Hip(weights_storage) = &*weights_storage else {
+        return Ok(None);
+    };
+    if !weights_layout.is_contiguous() || initial_state.buffer.dtype != DType::F32 {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle_core::hip::qwen35_dtype_code(mixed_qkv.buffer.dtype) else {
+        return Ok(None);
+    };
+    if mixed_qkv.buffer.dtype != prev_conv_state.buffer.dtype
+        || mixed_qkv.buffer.dtype != a_beta_raw.buffer.dtype
+        || mixed_qkv.buffer.dtype != dt_bias.buffer.dtype
+        || mixed_qkv.buffer.dtype != a_log_exp.buffer.dtype
+        || mixed_qkv.buffer.dtype != weights.dtype()
+    {
+        return Ok(None);
+    }
+    let [batch_size, _conv_dim, seq_len] = *mixed_qkv.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let [_, _, state_len] = *prev_conv_state.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    if seq_len != 1 {
+        return Ok(None);
+    }
+    let packed_width = 2 * head_k_dim + head_v_dim + 2;
+    let packed_len = batch_size
+        .saturating_mul(num_v_heads)
+        .saturating_mul(packed_width);
+    let mut packed = vec![0u8; packed_len.saturating_mul(DType::F32.size_in_bytes())];
+    let packed_host_ptr = packed.as_mut_ptr() as *const c_void;
+    let packed_device_ptr =
+        hip::register_host_mapping_for_device(ordinal, packed_host_ptr, packed.len())?;
+    let prepare_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
+            dtype_code,
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+            mixed_qkv.raw_device_ptr(),
+            prev_conv_state.raw_device_ptr(),
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_beta_raw.raw_device_ptr(),
+            dt_bias.raw_device_ptr(),
+            a_log_exp.raw_device_ptr(),
+            packed_device_ptr as *mut c_void,
+        )
+    };
+    if prepare_status != 0 {
+        hip::unregister_host_mapping(packed_host_ptr);
+        return Err(hip::hip_error(
+            "linear-decode-prepare-mapped-host-buffer",
+            prepare_status,
+        ));
+    }
+    let output_width = num_v_heads * head_v_dim + num_v_heads * head_k_dim * head_v_dim;
+    let output_shape = vec![batch_size, output_width];
+    let mut out = vec![
+        0u8;
+        batch_size
+            .saturating_mul(output_width)
+            .saturating_mul(DType::F32.size_in_bytes())
+    ];
+    let out_host_ptr = out.as_mut_ptr() as *const c_void;
+    let out_device_ptr = hip::register_host_mapping_for_device(ordinal, out_host_ptr, out.len())?;
+    let apply_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            packed_device_ptr as *const c_void,
+            initial_state.raw_device_ptr(),
+            out_device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(out_host_ptr);
+    hip::unregister_host_mapping(packed_host_ptr);
+    if apply_status != 0 {
+        return Err(hip::hip_error(
+            "linear-decode-apply-mapped-host-buffer",
+            apply_status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape: output_shape,
+            dtype: DType::F32,
+            device: mixed_qkv.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+#[allow(clippy::too_many_arguments)]
+fn mapped_linear_decode_step_hip_host_buffer(
+    mixed_qkv: &HipMappedHostBuffer,
+    prev_conv_state: &HipMappedHostBuffer,
+    weights: &Tensor,
+    a_beta_raw: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+    initial_state: &HipMappedHostBuffer,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    );
+    Ok(None)
+}
+
 fn embedding_lookup_hip_host_buffer(
     embeddings: &Tensor,
     indexes: &Tensor,
@@ -9572,6 +9740,60 @@ pub(crate) fn linear_decode_step(
     kernel_size: usize,
     head_repeat: usize,
 ) -> Result<HipTensor> {
+    let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
+    let prev_conv_state_hip = HipTensor::from_scaffold_tensor(prev_conv_state.clone());
+    let a_beta_raw_hip = HipTensor::from_scaffold_tensor(a_beta_raw.clone());
+    let dt_bias_hip = HipTensor::from_scaffold_tensor(dt_bias.clone());
+    let a_log_exp_hip = HipTensor::from_scaffold_tensor(a_log_exp.clone());
+    let initial_state_hip = HipTensor::from_scaffold_tensor(initial_state.clone());
+    if let (
+        Some(mixed_qkv),
+        Some(prev_conv_state),
+        Some(a_beta_raw),
+        Some(dt_bias),
+        Some(a_log_exp),
+        Some(initial_state),
+    ) = (
+        mixed_qkv_hip.0 .0.direct_materialized_device_buffer(),
+        prev_conv_state_hip.0 .0.direct_materialized_device_buffer(),
+        a_beta_raw_hip.0 .0.direct_materialized_device_buffer(),
+        dt_bias_hip.0 .0.direct_materialized_device_buffer(),
+        a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(mixed_qkv_mapped),
+            HipDeviceStorage::MappedHostBuffer(prev_conv_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(a_beta_raw_mapped),
+            HipDeviceStorage::MappedHostBuffer(dt_bias_mapped),
+            HipDeviceStorage::MappedHostBuffer(a_log_exp_mapped),
+            HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
+        ) = (
+            &mixed_qkv.storage,
+            &prev_conv_state.storage,
+            &a_beta_raw.storage,
+            &dt_bias.storage,
+            &a_log_exp.storage,
+            &initial_state.storage,
+        ) {
+            if let Some(out) = mapped_linear_decode_step_hip_host_buffer(
+                mixed_qkv_mapped,
+                prev_conv_state_mapped,
+                weights,
+                a_beta_raw_mapped,
+                dt_bias_mapped,
+                a_log_exp_mapped,
+                initial_state_mapped,
+                num_v_heads,
+                head_k_dim,
+                head_v_dim,
+                kernel_size,
+                head_repeat,
+            )? {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = linear_decode_step_hip_host_buffer(
         mixed_qkv,
         prev_conv_state,
