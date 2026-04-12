@@ -271,6 +271,10 @@ pub(crate) fn value_decay(
     transport::value_decay_buffer(a, dt_bias, a_log_exp)
 }
 
+pub(crate) fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+    transport::rope(xs, cos, sin)
+}
+
 pub(crate) fn full_attention_prefill(
     query: &Tensor,
     key: &Tensor,

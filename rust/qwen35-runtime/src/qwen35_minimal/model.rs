@@ -13,6 +13,7 @@ use super::rotary;
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::{linear_b, linear_no_bias};
 use super::with_tracing::Linear;
+use crate::backends;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use crate::{BufferMutability, BufferViewDesc, ImmutableBufferView, ImmutableWeightHandle, ScalarType, TargetSpec};
@@ -1123,8 +1124,16 @@ impl RotaryEmbedding {
         if self.rotary_dim >= head_dim {
             let cos = self.cos.narrow(0, seqlen_offset, seq_len)?;
             let sin = self.sin.narrow(0, seqlen_offset, seq_len)?;
-            let q_embed = rotary::rope(&q.contiguous()?, &cos, &sin)?;
-            let k_embed = rotary::rope(&k.contiguous()?, &cos, &sin)?;
+            let q_embed = if q.device().is_hip() {
+                backends::hip::rope(q, &cos, &sin)?
+            } else {
+                rotary::rope(&q.contiguous()?, &cos, &sin)?
+            };
+            let k_embed = if k.device().is_hip() {
+                backends::hip::rope(k, &cos, &sin)?
+            } else {
+                rotary::rope(&k.contiguous()?, &cos, &sin)?
+            };
             return Ok((q_embed, k_embed));
         }
 
@@ -1134,8 +1143,16 @@ impl RotaryEmbedding {
         let k_pass = k.narrow(D::Minus1, self.rotary_dim, head_dim - self.rotary_dim)?;
         let cos = self.cos.narrow(0, seqlen_offset, seq_len)?;
         let sin = self.sin.narrow(0, seqlen_offset, seq_len)?;
-        let q_rot = rotary::rope(&q_rot.contiguous()?, &cos, &sin)?;
-        let k_rot = rotary::rope(&k_rot.contiguous()?, &cos, &sin)?;
+        let q_rot = if q.device().is_hip() {
+            backends::hip::rope(&q_rot, &cos, &sin)?
+        } else {
+            rotary::rope(&q_rot.contiguous()?, &cos, &sin)?
+        };
+        let k_rot = if k.device().is_hip() {
+            backends::hip::rope(&k_rot, &cos, &sin)?
+        } else {
+            rotary::rope(&k_rot.contiguous()?, &cos, &sin)?
+        };
         Ok((
             Tensor::cat(&[&q_rot, &q_pass], D::Minus1)?,
             Tensor::cat(&[&k_rot, &k_pass], D::Minus1)?,
