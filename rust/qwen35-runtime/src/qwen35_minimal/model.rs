@@ -2895,6 +2895,63 @@ pub(crate) fn hip_sigmoid_host_buffer(xs: &Tensor) -> Result<Option<(Vec<u8>, Ve
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_cast_host_buffer(
+    xs: &Tensor,
+    output_dtype: DType,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(input_dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let Ok(output_dtype_code) = hip::dtype_code(output_dtype) else {
+        return Ok(None);
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let total_elems = layout.shape().elem_count();
+    let mut out = vec![0u8; total_elems.saturating_mul(output_dtype.size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cast(
+            input_dtype_code,
+            output_dtype_code,
+            ordinal,
+            total_elems,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-cast-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_cast_host_buffer(
+    xs: &Tensor,
+    output_dtype: DType,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (xs, output_dtype);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipL2Norm {
     n_rows: usize,

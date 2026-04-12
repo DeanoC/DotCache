@@ -1027,6 +1027,31 @@ int sigmoid_device(
     return 0;
 }
 
+template <typename In, typename Out>
+int cast_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_cast_kernel<In, Out>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const In*>(xs),
+        static_cast<Out*>(out));
+    if (hipGetLastError() != hipSuccess) return 135;
+    if (hipDeviceSynchronize() != hipSuccess) return 136;
+    return 0;
+}
+
 template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
@@ -2730,6 +2755,52 @@ extern "C" int dotcache_qwen35_hip_sigmoid(
             out);
     default:
         return 133;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_cast(
+    int input_dtype,
+    int output_dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (input_dtype) {
+    case 0:
+        switch (output_dtype) {
+        case 0:
+            return cast_device<half, half>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 1:
+            return cast_device<half, float>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 2:
+            return cast_device<half, hip_bfloat16>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        default:
+            return 137;
+        }
+    case 1:
+        switch (output_dtype) {
+        case 0:
+            return cast_device<float, half>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 1:
+            return cast_device<float, float>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 2:
+            return cast_device<float, hip_bfloat16>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        default:
+            return 137;
+        }
+    case 2:
+        switch (output_dtype) {
+        case 0:
+            return cast_device<hip_bfloat16, half>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 1:
+            return cast_device<hip_bfloat16, float>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        case 2:
+            return cast_device<hip_bfloat16, hip_bfloat16>(static_cast<int>(device_ordinal), static_cast<int>(total_elems), xs, out);
+        default:
+            return 137;
+        }
+    default:
+        return 135;
     }
 }
 
