@@ -126,6 +126,7 @@ pub(crate) struct HipDeviceBuffer {
 #[derive(Debug, Clone)]
 enum HipDeviceStorage {
     CandleTensor(Tensor),
+    PendingHostUpload(HipHostBuffer),
 }
 
 impl HipDeviceStorage {
@@ -133,15 +134,35 @@ impl HipDeviceStorage {
         Self::CandleTensor(tensor)
     }
 
-    fn as_tensor(&self) -> &Tensor {
+    fn from_pending_host_upload(buffer: HipHostBuffer) -> Self {
+        Self::PendingHostUpload(buffer)
+    }
+
+    fn is_contiguous(&self) -> bool {
         match self {
-            Self::CandleTensor(tensor) => tensor,
+            Self::CandleTensor(tensor) => tensor.is_contiguous(),
+            Self::PendingHostUpload(_) => true,
         }
     }
 
-    fn into_tensor(self) -> Tensor {
+    fn is_materialized(&self) -> bool {
         match self {
-            Self::CandleTensor(tensor) => tensor,
+            Self::CandleTensor(_) => true,
+            Self::PendingHostUpload(_) => false,
+        }
+    }
+
+    fn materialize_tensor(&self) -> Result<Tensor> {
+        match self {
+            Self::CandleTensor(tensor) => Ok(tensor.clone()),
+            Self::PendingHostUpload(buffer) => buffer.clone().upload_to_tensor(),
+        }
+    }
+
+    fn into_tensor(self) -> Result<Tensor> {
+        match self {
+            Self::CandleTensor(tensor) => Ok(tensor),
+            Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
     }
 }
@@ -181,22 +202,27 @@ impl HipHostBuffer {
     }
 
     pub(crate) fn upload_to_device_buffer(self) -> Result<HipDeviceBuffer> {
-        Ok(HipDeviceBuffer::from_tensor(Tensor::from_raw_buffer(
-            self.bytes.as_ref(),
-            self.dtype,
-            &self.shape,
-            &self.device,
-        )?))
+        Ok(HipDeviceBuffer::from_pending_host_upload(self))
     }
 
     pub(crate) fn upload_to_tensor(self) -> Result<Tensor> {
-        self.upload_to_device_buffer().map(HipDeviceBuffer::into_tensor)
+        Tensor::from_raw_buffer(self.bytes.as_ref(), self.dtype, &self.shape, &self.device)
     }
 }
 
 impl HipDeviceBuffer {
     fn has_pending_views(&self) -> bool {
         !self.view_ops.is_empty()
+    }
+
+    fn from_pending_host_upload(buffer: HipHostBuffer) -> Self {
+        Self {
+            shape: buffer.shape.clone(),
+            dtype: buffer.dtype,
+            device: buffer.device.clone(),
+            storage: HipDeviceStorage::from_pending_host_upload(buffer),
+            view_ops: Vec::new(),
+        }
     }
 
     pub(crate) fn from_tensor(tensor: Tensor) -> Self {
@@ -226,7 +252,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
-        self.view_ops.is_empty() && self.storage.as_tensor().is_contiguous()
+        self.view_ops.is_empty() && self.storage.is_contiguous()
+    }
+
+    fn is_materialized(&self) -> bool {
+        self.storage.is_materialized()
     }
 
     fn with_view_op(&self, op: HipDeviceViewOp, shape: Vec<usize>) -> Self {
@@ -255,7 +285,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
-        let mut tensor = self.storage.as_tensor().clone();
+        let mut tensor = self.storage.materialize_tensor()?;
         for op in &self.view_ops {
             tensor = match op {
                 HipDeviceViewOp::Narrow { dim, start, len } => tensor.narrow(*dim, *start, *len)?,
@@ -679,7 +709,9 @@ impl HipDeviceBuffer {
 
     pub(crate) fn into_tensor(self) -> Tensor {
         if self.view_ops.is_empty() {
-            self.storage.into_tensor()
+            self.storage
+                .into_tensor()
+                .expect("valid HipDeviceBuffer storage should materialize")
         } else {
             self.materialize_tensor()
                 .expect("valid HipDeviceBuffer views should materialize")
@@ -697,7 +729,7 @@ impl HipNativeBuffer {
 
     fn direct_materialized_device_buffer(&self) -> Option<&HipDeviceBuffer> {
         self.direct_device_buffer()
-            .filter(|buffer| !buffer.has_pending_views())
+            .filter(|buffer| !buffer.has_pending_views() && buffer.is_materialized())
     }
 
     fn is_host_graph(&self) -> bool {
@@ -3801,7 +3833,9 @@ mod tests {
     fn host_buffer_uploads_into_device_leaf() -> Result<()> {
         let tensor = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]).transpose(0, 1)?;
         let buffer = tensor.try_host_buffer()?.expect("host-backed buffer expected");
-        let roundtrip = HipTensor::from_device_buffer(buffer.upload_to_device_buffer()?);
+        let uploaded = buffer.upload_to_device_buffer()?;
+        assert!(!uploaded.is_materialized());
+        let roundtrip = HipTensor::from_device_buffer(uploaded);
         assert!(matches!(roundtrip.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(roundtrip)?, vec![1.0, 3.0, 2.0, 4.0]);
         Ok(())
