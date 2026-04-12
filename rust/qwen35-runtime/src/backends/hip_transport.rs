@@ -672,6 +672,11 @@ impl HipNativeBuffer {
         }
     }
 
+    fn direct_materialized_device_buffer(&self) -> Option<&HipDeviceBuffer> {
+        self.direct_device_buffer()
+            .filter(|buffer| !buffer.has_pending_views())
+    }
+
     fn is_host_graph(&self) -> bool {
         match &self.expr {
             HipNativeExpr::DeviceBuffer(_) => false,
@@ -1780,7 +1785,10 @@ impl HipStorage {
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.direct_materialized_device_buffer(),
+            rhs.0.direct_materialized_device_buffer(),
+        ) {
             return Ok(Self::from_device_buffer(lhs.matmul(rhs)?));
         }
         if let Some(native) =
@@ -1794,7 +1802,10 @@ impl HipStorage {
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.direct_materialized_device_buffer(),
+            rhs.0.direct_materialized_device_buffer(),
+        ) {
             return Ok(Self::from_device_buffer(lhs.broadcast_add(rhs)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::broadcast_add(
@@ -1804,7 +1815,10 @@ impl HipStorage {
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.direct_materialized_device_buffer(),
+            rhs.0.direct_materialized_device_buffer(),
+        ) {
             return Ok(Self::from_device_buffer(lhs.broadcast_mul(rhs)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::broadcast_mul(
@@ -1814,7 +1828,7 @@ impl HipStorage {
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.exp()?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::exp(Arc::new(
@@ -1824,7 +1838,7 @@ impl HipStorage {
 
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         let dim_index = dim.to_index(&Shape::from(self.shape()), "hip-native-max-keepdim")?;
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.max_keepdim(dim_index)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::max_keepdim(
@@ -1834,7 +1848,10 @@ impl HipStorage {
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.direct_materialized_device_buffer(),
+            rhs.0.direct_materialized_device_buffer(),
+        ) {
             return Ok(Self::from_device_buffer(lhs.broadcast_sub(rhs)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::broadcast_sub(
@@ -1845,7 +1862,7 @@ impl HipStorage {
 
     pub(crate) fn sum_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         let dim_index = dim.to_index(&Shape::from(self.shape()), "hip-native-sum-keepdim")?;
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.sum_keepdim(dim_index)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::sum_keepdim(
@@ -1855,7 +1872,10 @@ impl HipStorage {
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.direct_materialized_device_buffer(),
+            rhs.0.direct_materialized_device_buffer(),
+        ) {
             return Ok(Self::from_device_buffer(lhs.broadcast_div(rhs)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::broadcast_div(
@@ -1865,7 +1885,7 @@ impl HipStorage {
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.recip()?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
@@ -1874,7 +1894,7 @@ impl HipStorage {
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.l2norm(eps)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::l2norm(
@@ -1884,7 +1904,7 @@ impl HipStorage {
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.sigmoid()?));
         }
         Self::from_native_buffer(HipNativeBuffer::add_scalar(
@@ -1897,7 +1917,7 @@ impl HipStorage {
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_device_buffer() {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.mul_scalar(value)?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::mul_scalar(
@@ -4177,6 +4197,29 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_generic_matmul_of_views_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+        let rhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![5f32, 6.0, 7.0, 8.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+
+        let out = lhs.matmul(&rhs)?;
+
+        assert!(!matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![23.0, 31.0, 34.0, 46.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_generic_sigmoid_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
@@ -4192,6 +4235,27 @@ mod tests {
         assert!((vals[0] - 0.5).abs() < 1e-6);
         assert!((vals[1] - 0.7310586).abs() < 1e-5);
         assert!((vals[2] - 0.26894143).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_sigmoid_of_view_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![0f32, 1.0, -1.0, 2.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+
+        let out = xs.sigmoid()?;
+
+        assert!(!matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 0.5).abs() < 1e-6);
+        assert!((vals[1] - 0.26894143).abs() < 1e-5);
+        assert!((vals[2] - 0.7310586).abs() < 1e-5);
+        assert!((vals[3] - 0.8807971).abs() < 1e-5);
         Ok(())
     }
 
