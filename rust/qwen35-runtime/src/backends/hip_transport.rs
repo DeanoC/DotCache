@@ -263,6 +263,41 @@ impl HipDeviceBuffer {
         self.storage.is_materialized()
     }
 
+    fn try_host_buffer(&self) -> Result<Option<HipHostBuffer>> {
+        let HipDeviceStorage::PendingHostUpload(buffer) = &self.storage else {
+            return Ok(None);
+        };
+        let mut native = HipNativeBuffer {
+            expr: HipNativeExpr::HostBytes {
+                bytes: buffer.bytes.clone(),
+            },
+            shape: buffer.shape.clone(),
+            dtype: buffer.dtype,
+            device: buffer.device.clone(),
+        };
+        for op in &self.view_ops {
+            native = match op {
+                HipDeviceViewOp::Narrow { dim, start, len } => {
+                    HipNativeBuffer::narrow(Arc::new(native), *dim, *start, *len)
+                }
+                HipDeviceViewOp::Select { dim, index } => {
+                    HipNativeBuffer::select(Arc::new(native), *dim, *index)
+                }
+                HipDeviceViewOp::Reshape { shape } => {
+                    HipNativeBuffer::reshape(Arc::new(native), shape.clone())
+                }
+                HipDeviceViewOp::Expand { shape } => {
+                    HipNativeBuffer::expand(Arc::new(native), shape.clone())
+                }
+                HipDeviceViewOp::Transpose { dim1, dim2 } => {
+                    HipNativeBuffer::transpose(Arc::new(native), *dim1, *dim2)
+                }
+                HipDeviceViewOp::Contiguous => native,
+            };
+        }
+        native.materialize_host_buffer()
+    }
+
     fn with_view_op(&self, op: HipDeviceViewOp, shape: Vec<usize>) -> Self {
         let mut view_ops = self.view_ops.clone();
         view_ops.push(op);
@@ -1204,6 +1239,9 @@ impl HipNativeBuffer {
         match &self.expr {
             HipNativeExpr::HostBytes { bytes } => Ok(Some(bytes.clone())),
             HipNativeExpr::DeviceBuffer(buffer) => {
+                if let Some(buffer) = buffer.try_host_buffer()? {
+                    return Ok(Some(buffer.bytes));
+                }
                 Self::tensor_to_host_float_bytes(&buffer.materialize_tensor()?, self.dtype)
             }
             HipNativeExpr::Reshape { source, .. } => self.host_bytes_reshape(source),
@@ -3839,6 +3877,21 @@ mod tests {
         let roundtrip = HipTensor::from_device_buffer(uploaded);
         assert!(matches!(roundtrip.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(roundtrip)?, vec![1.0, 3.0, 2.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_device_upload_views_roundtrip_to_host_without_materialization() -> Result<()> {
+        let tensor = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]).transpose(0, 1)?;
+        let buffer = tensor.try_host_buffer()?.expect("host-backed buffer expected");
+        let uploaded = buffer
+            .upload_to_device_buffer()?
+            .reshape(vec![1, 4])?
+            .narrow(1, 1, 2)?;
+        assert!(!uploaded.is_materialized());
+        let host = uploaded.try_host_buffer()?.expect("pending upload should stay host-extractable");
+        assert_eq!(host.shape(), &[1, 2]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![3.0, 2.0]);
         Ok(())
     }
 
