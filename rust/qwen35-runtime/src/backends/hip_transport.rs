@@ -384,7 +384,7 @@ impl HipDeviceBuffer {
             Some(conv_state) => Self::cat(&[conv_state, mixed_qkv], 2)?,
             None => mixed_qkv.pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?,
         };
-        let total_len = mixed_qkv.tensor.dims()[2];
+        let total_len = mixed_qkv.dims()[2];
         let state_len = kernel_size.saturating_sub(1);
         let next_state = if state_len == 0 {
             None
@@ -408,7 +408,7 @@ impl HipDeviceBuffer {
             return Ok(None);
         }
 
-        let seq_len = mixed_qkv.tensor.dims()[2];
+        let seq_len = mixed_qkv.dims()[2];
         let state = if seq_len >= state_len {
             mixed_qkv
                 .narrow(2, seq_len - state_len, state_len)?
@@ -417,19 +417,18 @@ impl HipDeviceBuffer {
             match prev_state {
                 Some(prev_state) => {
                     let keep = state_len - seq_len;
-                    let prev_tail =
-                        prev_state.narrow(2, prev_state.tensor.dims()[2] - keep, keep)?;
+                    let prev_tail = prev_state.narrow(2, prev_state.dims()[2] - keep, keep)?;
                     Self::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
                 }
                 None => {
                     let zeros = Self::zeros(
                         vec![
-                            mixed_qkv.tensor.dims()[0],
-                            mixed_qkv.tensor.dims()[1],
+                            mixed_qkv.dims()[0],
+                            mixed_qkv.dims()[1],
                             state_len - seq_len,
                         ],
-                        mixed_qkv.tensor.dtype(),
-                        mixed_qkv.tensor.device(),
+                        mixed_qkv.dtype(),
+                        mixed_qkv.device(),
                     )?;
                     Self::cat(&[&zeros, mixed_qkv], 2)?.contiguous()?
                 }
@@ -439,7 +438,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn concat_last_dim(lhs: &HipDeviceBuffer, rhs: &HipDeviceBuffer) -> Result<Self> {
-        Self::cat(&[lhs, rhs], lhs.tensor.dims().len() - 1)?.contiguous()
+        Self::cat(&[lhs, rhs], lhs.dims().len() - 1)?.contiguous()
     }
 
     pub(crate) fn pack_delta_state_scan(
@@ -494,7 +493,7 @@ impl HipDeviceBuffer {
         let packed = self
             .narrow(1, 0, seq_len * out_width)?
             .reshape(vec![batch_size, seq_len, out_width])?;
-        let last_dim = packed.tensor.dims().len() - 1;
+        let last_dim = packed.dims().len() - 1;
         let mixed_qkv = packed.narrow(last_dim, 0, conv_dim)?;
         let g = packed.narrow(last_dim, conv_dim, num_v_heads)?;
         let conv_state = self
@@ -532,13 +531,13 @@ impl HipDeviceBuffer {
 
     pub(crate) fn state_scan_chunk(&self, chunk_idx: usize) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.i((.., chunk_idx, .., ..))?,
+            tensor: self.tensor().i((.., chunk_idx, .., ..))?,
         })
     }
 
     pub(crate) fn state_scan_next_chunk(&self, next_chunk_idx: usize) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.i((.., next_chunk_idx, .., ..))?.contiguous()?,
+            tensor: self.tensor().i((.., next_chunk_idx, .., ..))?.contiguous()?,
         })
     }
 
@@ -555,7 +554,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn repeat_heads(&self, n_rep: usize) -> Result<Self> {
-        let [b_sz, seq_len, heads, head_dim] = <[usize; 4]>::try_from(self.tensor.dims())
+        let [b_sz, seq_len, heads, head_dim] = <[usize; 4]>::try_from(self.dims())
             .map_err(|_| candle_core::Error::Msg("unexpected rank, expected 4".into()))?;
         if n_rep == 1 {
             return Ok(self.clone());
@@ -566,7 +565,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn repeat_kv(&self, repeats: usize) -> Result<Self> {
-        let [b_sz, kv_heads, seq_len, head_dim] = <[usize; 4]>::try_from(self.tensor.dims())
+        let [b_sz, kv_heads, seq_len, head_dim] = <[usize; 4]>::try_from(self.dims())
             .map_err(|_| candle_core::Error::Msg("unexpected rank, expected 4".into()))?;
         if repeats <= 1 {
             return Ok(self.clone());
@@ -1020,7 +1019,7 @@ impl HipNativeBuffer {
         match &self.expr {
             HipNativeExpr::HostBytes { bytes } => Ok(Some(bytes.clone())),
             HipNativeExpr::DeviceBuffer(buffer) => {
-                Self::tensor_to_host_float_bytes(&buffer.tensor, self.dtype)
+                Self::tensor_to_host_float_bytes(buffer.tensor(), self.dtype)
             }
             HipNativeExpr::Reshape { source, .. } => self.host_bytes_reshape(source),
             HipNativeExpr::Narrow {
@@ -1110,9 +1109,9 @@ impl HipNativeBuffer {
 
     pub(crate) fn device_buffer(buffer: HipDeviceBuffer) -> Self {
         Self {
-            shape: buffer.tensor.dims().to_vec(),
-            dtype: buffer.tensor.dtype(),
-            device: buffer.tensor.device().clone(),
+            shape: buffer.dims().to_vec(),
+            dtype: buffer.dtype(),
+            device: buffer.device().clone(),
             expr: HipNativeExpr::DeviceBuffer(buffer),
         }
     }
@@ -2535,9 +2534,9 @@ fn rms_norm_hip(
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_device_buffer() {
-        if xs.tensor.device().is_hip() {
+        if xs.device().is_hip() {
             return Ok(from_kernel_tensor(hip_rms_norm(
-                &xs.tensor,
+                xs.tensor(),
                 weight,
                 eps,
                 add_unit_offset,
@@ -2848,7 +2847,7 @@ fn prepare_full_attention_inputs_hip(
         v_proj.0 .0.direct_device_buffer(),
     ) {
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
-        let last_dim = q_and_gate.tensor.dims().len() - 1;
+        let last_dim = q_and_gate.dims().len() - 1;
         let query_states = rms_norm_hip(
             &HipTensor::from_device_buffer(q_and_gate.narrow(last_dim, 0, head_dim)?),
             q_norm_weight,
@@ -2965,7 +2964,7 @@ fn prepare_linear_attention_inputs_hip(
         beta_raw.0 .0.direct_device_buffer(),
         g.0 .0.direct_device_buffer(),
     ) {
-        let last_dim = mixed_qkv.tensor.dims().len() - 1;
+        let last_dim = mixed_qkv.dims().len() - 1;
         let query = mixed_qkv
             .narrow(last_dim, 0, key_dim)?
             .reshape(vec![batch_size, seq_len, num_k_heads, head_k_dim])?
@@ -4096,10 +4095,10 @@ pub(crate) fn rms_norm_gated(
         hidden_states_hip.0 .0.direct_device_buffer(),
         gate_hip.0 .0.direct_device_buffer(),
     ) {
-        if hidden_states.tensor.device().is_hip() {
+        if hidden_states.device().is_hip() {
             return Ok(from_kernel_tensor(hip_rms_norm_gated(
-                &hidden_states.tensor,
-                &gate.tensor,
+                hidden_states.tensor(),
+                gate.tensor(),
                 weight,
                 eps,
             )?));
@@ -4141,10 +4140,10 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         gate_hip.0 .0.direct_device_buffer(),
         up_hip.0 .0.direct_device_buffer(),
     ) {
-        if gate.tensor.device().is_hip() {
+        if gate.device().is_hip() {
             return Ok(from_kernel_tensor(hip_swiglu_mul(
-                &gate.tensor,
-                &up.tensor,
+                gate.tensor(),
+                up.tensor(),
             )?));
         }
         return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
@@ -4193,8 +4192,8 @@ pub(crate) fn causal_mask(
 pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_device_buffer() {
-        if xs.tensor.device().is_hip() {
-            return Ok(from_device_tensor(hip_cumsum_last_dim(&xs.tensor)?));
+        if xs.device().is_hip() {
+            return Ok(from_device_tensor(hip_cumsum_last_dim(xs.tensor())?));
         }
         if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
             if let Some(buffer) = host.try_host_buffer()? {
@@ -4231,15 +4230,15 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         dt_bias_hip.0 .0.direct_device_buffer(),
         a_log_exp_hip.0 .0.direct_device_buffer(),
     ) {
-        if a.tensor.device().is_hip() {
+        if a.device().is_hip() {
             return Ok(from_device_tensor(hip_value_decay(
-                &a.tensor,
-                &dt_bias.tensor,
-                &a_log_exp.tensor,
+                a.tensor(),
+                dt_bias.tensor(),
+                a_log_exp.tensor(),
             )?));
         }
-        let softplus = ((a.tensor.broadcast_add(&dt_bias.tensor)?.exp()? + 1.0)?).log()?;
-        let out = softplus.broadcast_mul(&a_log_exp.tensor)?.neg()?;
+        let softplus = ((a.tensor().broadcast_add(dt_bias.tensor())?.exp()? + 1.0)?).log()?;
+        let out = softplus.broadcast_mul(a_log_exp.tensor())?.neg()?;
         return Ok(from_device_tensor(out));
     }
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
@@ -4306,13 +4305,13 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
         let x = xs
             .contiguous()?
             .reshape(vec![b_sz, n_head, seq_len, n_embd / 2, 2])?;
-        let last_dim = x.tensor.dims().len() - 1;
+        let last_dim = x.dims().len() - 1;
         let x0 = x.narrow(last_dim, 0, 1)?;
         let x1 = x.narrow(last_dim, 1, 1)?;
         let y0 = x0.broadcast_mul(&cos)?.broadcast_sub(&x1.broadcast_mul(&sin)?)?;
         let y1 = x0.broadcast_mul(&sin)?.broadcast_add(&x1.broadcast_mul(&cos)?)?;
         return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::cat(&[&y0, &y1], y0.tensor.dims().len() - 1)?
+            HipDeviceBuffer::cat(&[&y0, &y1], y0.dims().len() - 1)?
                 .reshape(vec![b_sz, n_head, seq_len, n_embd])?,
         ));
     }
