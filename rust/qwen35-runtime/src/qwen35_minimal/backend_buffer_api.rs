@@ -458,25 +458,13 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         mixed_qkv: &Tensor,
         kernel_size: usize,
     ) -> Result<(Tensor, Option<StateBuffer>)> {
-        let mixed_qkv = match prev_state {
-            Some(conv_state) => {
-                let conv_state = conv_state.clone_tensor_as(mixed_qkv.dtype())?;
-                Tensor::cat(&[&conv_state, mixed_qkv], 2)?
-            }
-            None => mixed_qkv.pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?,
-        };
-        let total_len = mixed_qkv.dim(2)?;
-        let state_len = kernel_size.saturating_sub(1);
-        let next_state = if state_len == 0 {
-            None
+        if mixed_qkv.device().is_cuda() {
+            backends::cuda::prepare_depthwise_conv_input(prev_state, mixed_qkv, kernel_size)
+        } else if mixed_qkv.device().is_metal() {
+            backends::metal::prepare_depthwise_conv_input(prev_state, mixed_qkv, kernel_size)
         } else {
-            Some(StateBuffer::from_tensor(
-                mixed_qkv
-                    .narrow(2, total_len - state_len, state_len)?
-                    .contiguous()?,
-            )?)
-        };
-        Ok((mixed_qkv, next_state))
+            backends::cpu::prepare_depthwise_conv_input(prev_state, mixed_qkv, kernel_size)
+        }
     }
     fn update_depthwise_conv_state(
         &self,
@@ -484,36 +472,22 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         mixed_qkv: &Tensor,
         kernel_size: usize,
     ) -> Result<Option<StateBuffer>> {
-        let state_len = kernel_size.saturating_sub(1);
-        if state_len == 0 {
-            return Ok(None);
-        }
-
-        let seq_len = mixed_qkv.dim(2)?;
-        let state = if seq_len >= state_len {
-            mixed_qkv.narrow(2, seq_len - state_len, state_len)?.contiguous()?
+        if mixed_qkv.device().is_cuda() {
+            backends::cuda::update_depthwise_conv_state(prev_state, mixed_qkv, kernel_size)
+        } else if mixed_qkv.device().is_metal() {
+            backends::metal::update_depthwise_conv_state(prev_state, mixed_qkv, kernel_size)
         } else {
-            match prev_state {
-                Some(prev_state) => {
-                    let prev_state = prev_state.clone_tensor_as(mixed_qkv.dtype())?;
-                    let keep = state_len - seq_len;
-                    let prev_tail = prev_state.narrow(2, prev_state.dim(2)? - keep, keep)?;
-                    Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
-                }
-                None => {
-                    let zeros = Tensor::zeros(
-                        vec![mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len - seq_len],
-                        mixed_qkv.dtype(),
-                        mixed_qkv.device(),
-                    )?;
-                    Tensor::cat(&[&zeros, mixed_qkv], 2)?.contiguous()?
-                }
-            }
-        };
-        Ok(Some(StateBuffer::from_tensor(state)?))
+            backends::cpu::update_depthwise_conv_state(prev_state, mixed_qkv, kernel_size)
+        }
     }
     fn concat_last_dim(&self, lhs: &StateBuffer, rhs: &StateBuffer) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(Tensor::cat(&[lhs.tensor(), rhs.tensor()], D::Minus1)?.contiguous()?)
+        if lhs.device().is_cuda() {
+            backends::cuda::concat_last_dim(lhs, rhs)
+        } else if lhs.device().is_metal() {
+            backends::metal::concat_last_dim(lhs, rhs)
+        } else {
+            backends::cpu::concat_last_dim(lhs, rhs)
+        }
     }
     fn pack_delta_state_scan(
         &self,
@@ -521,10 +495,25 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         k_cumdecay_scan: &Tensor,
         state_decay_feature: &Tensor,
     ) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(
-            Tensor::cat(&[weighted_key_scan, k_cumdecay_scan, state_decay_feature], 3)?
-                .contiguous()?,
-        )
+        if weighted_key_scan.device().is_cuda() {
+            backends::cuda::pack_delta_state_scan(
+                weighted_key_scan,
+                k_cumdecay_scan,
+                state_decay_feature,
+            )
+        } else if weighted_key_scan.device().is_metal() {
+            backends::metal::pack_delta_state_scan(
+                weighted_key_scan,
+                k_cumdecay_scan,
+                state_decay_feature,
+            )
+        } else {
+            backends::cpu::pack_delta_state_scan(
+                weighted_key_scan,
+                k_cumdecay_scan,
+                state_decay_feature,
+            )
+        }
     }
     fn pack_delta_chunk_fused(
         &self,
@@ -533,9 +522,13 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         q_state: &Tensor,
         state_decay: &Tensor,
     ) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(
-            Tensor::cat(&[weighted_key, k_cumdecay, q_state, state_decay], 2)?.contiguous()?,
-        )
+        if weighted_key.device().is_cuda() {
+            backends::cuda::pack_delta_chunk_fused(weighted_key, k_cumdecay, q_state, state_decay)
+        } else if weighted_key.device().is_metal() {
+            backends::metal::pack_delta_chunk_fused(weighted_key, k_cumdecay, q_state, state_decay)
+        } else {
+            backends::cpu::pack_delta_chunk_fused(weighted_key, k_cumdecay, q_state, state_decay)
+        }
     }
     fn unpack_linear_decode_output(
         &self,
@@ -547,17 +540,37 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         head_k_dim: usize,
         head_v_dim: usize,
     ) -> Result<(Tensor, StateBuffer)> {
-        let core_attn_out = fused
-            .tensor()
-            .narrow(1, 0, value_dim)?
-            .reshape((batch_size, seq_len, value_dim))?;
-        let recurrent_state = StateBuffer::from_tensor(
-            fused.tensor()
-                .narrow(1, value_dim, num_v_heads * head_k_dim * head_v_dim)?
-                .reshape((batch_size, num_v_heads, head_k_dim, head_v_dim))?
-                .contiguous()?,
-        )?;
-        Ok((core_attn_out, recurrent_state))
+        if fused.device().is_cuda() {
+            backends::cuda::unpack_linear_decode_output(
+                fused,
+                batch_size,
+                seq_len,
+                value_dim,
+                num_v_heads,
+                head_k_dim,
+                head_v_dim,
+            )
+        } else if fused.device().is_metal() {
+            backends::metal::unpack_linear_decode_output(
+                fused,
+                batch_size,
+                seq_len,
+                value_dim,
+                num_v_heads,
+                head_k_dim,
+                head_v_dim,
+            )
+        } else {
+            backends::cpu::unpack_linear_decode_output(
+                fused,
+                batch_size,
+                seq_len,
+                value_dim,
+                num_v_heads,
+                head_k_dim,
+                head_v_dim,
+            )
+        }
     }
     fn unpack_linear_prefill_output(
         &self,
@@ -568,20 +581,34 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         num_v_heads: usize,
         state_len: usize,
     ) -> Result<(Tensor, Tensor, StateBuffer)> {
-        let out_width = conv_dim + num_v_heads;
-        let packed = fused
-            .tensor()
-            .narrow(1, 0, seq_len * out_width)?
-            .reshape((batch_size, seq_len, out_width))?;
-        let mixed_qkv = packed.narrow(D::Minus1, 0, conv_dim)?;
-        let g = packed.narrow(D::Minus1, conv_dim, num_v_heads)?;
-        let conv_state = StateBuffer::from_tensor(
-            fused.tensor()
-                .narrow(1, seq_len * out_width, conv_dim * state_len)?
-                .reshape((batch_size, conv_dim, state_len))?
-                .contiguous()?,
-        )?;
-        Ok((mixed_qkv, g, conv_state))
+        if fused.device().is_cuda() {
+            backends::cuda::unpack_linear_prefill_output(
+                fused,
+                batch_size,
+                seq_len,
+                conv_dim,
+                num_v_heads,
+                state_len,
+            )
+        } else if fused.device().is_metal() {
+            backends::metal::unpack_linear_prefill_output(
+                fused,
+                batch_size,
+                seq_len,
+                conv_dim,
+                num_v_heads,
+                state_len,
+            )
+        } else {
+            backends::cpu::unpack_linear_prefill_output(
+                fused,
+                batch_size,
+                seq_len,
+                conv_dim,
+                num_v_heads,
+                state_len,
+            )
+        }
     }
     fn embedding_lookup(&self, embeddings: &Tensor, indexes: &Tensor) -> Result<StateBuffer> {
         StateBuffer::from_tensor(backend_ops::embedding_lookup(embeddings, indexes)?)
