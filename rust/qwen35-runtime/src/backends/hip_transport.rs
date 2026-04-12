@@ -5,8 +5,8 @@ use crate::qwen35_minimal_impl::model::{
     delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_immutable_embedding_lookup,
-    hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_host_buffer,
-    hip_swiglu_mul, hip_value_decay,
+    hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
+    hip_rms_norm_host_buffer, hip_swiglu_mul, hip_value_decay,
     immutable_output_projection, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_stateful_conv_hip, linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
@@ -4301,6 +4301,25 @@ fn rms_norm_hip_host_buffer(
     )))
 }
 
+fn rms_norm_gated_hip_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_rms_norm_gated_host_buffer(hidden, gate, weight, eps)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: hidden.dtype(),
+            device: hidden.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7745,6 +7764,9 @@ pub(crate) fn rms_norm_gated(
     weight: &Tensor,
     eps: f64,
 ) -> Result<HipTensor> {
+    if let Some(host) = rms_norm_gated_hip_host_buffer(hidden_states, gate, weight, eps)? {
+        return Ok(host);
+    }
     let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     if let (Some(hidden_states), Some(gate)) = (

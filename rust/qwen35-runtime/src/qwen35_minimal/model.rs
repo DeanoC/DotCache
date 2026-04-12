@@ -1480,6 +1480,88 @@ impl candle::CustomOp3 for HipRmsNormGated {
     }
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_rms_norm_gated_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let hidden = hidden.contiguous()?;
+    let gate = gate.contiguous()?;
+    let weight = weight.contiguous()?;
+    let ordinal = match hidden.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(gate.device().same_device(hidden.device()) && weight.device().same_device(hidden.device())) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(hidden.dtype()) else {
+        return Ok(None);
+    };
+    if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (hidden_storage, hidden_layout) = hidden.storage_and_layout();
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (Storage::Hip(hidden_storage), Storage::Hip(gate_storage), Storage::Hip(weight_storage)) =
+        (&*hidden_storage, &*gate_storage, &*weight_storage)
+    else {
+        return Ok(None);
+    };
+    if !(hidden_layout.is_contiguous() && gate_layout.is_contiguous() && weight_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let shape = hidden_layout.shape().dims().to_vec();
+    let n_cols = *shape.last().ok_or_else(|| {
+        candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = hidden_layout.shape().elem_count() / n_cols;
+    if gate_layout.shape().elem_count() != hidden_layout.shape().elem_count()
+        || weight_layout.shape().elem_count() != n_cols
+    {
+        return Ok(None);
+    }
+    let mut out =
+        vec![0u8; shape.iter().product::<usize>().saturating_mul(hidden.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            hidden_storage.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-gated-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_rms_norm_gated_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (hidden, gate, weight, eps);
+    Ok(None)
+}
+
 pub(crate) fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Tensor> {
     let xs = xs.contiguous()?;
     let weight = weight.contiguous()?;
