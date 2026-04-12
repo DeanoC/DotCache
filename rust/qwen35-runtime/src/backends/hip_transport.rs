@@ -739,6 +739,10 @@ impl HipHostBuffer {
         self.map_float("sigmoid", |x| 1.0 / (1.0 + (-x).exp()))
     }
 
+    fn sqrt(&self) -> Result<Self> {
+        self.map_float("sqrt", f64::sqrt)
+    }
+
     fn reduce_keepdim(&self, dim: usize, sum: bool) -> Result<Self> {
         if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
             candle_core::bail!("reduction unsupported for dtype {:?}", self.dtype);
@@ -1606,6 +1610,19 @@ impl HipDeviceBuffer {
         Ok(Self::from_tensor(tensor.recip()?))
     }
 
+    pub(crate) fn sqrt(&self) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.sqrt()?));
+        }
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = sqrt_hip_host_buffer(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from sqrt host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(tensor.sqrt()?))
+    }
+
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
         if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
             return Ok(Self::from_host_computed_buffer_like_either(
@@ -1637,24 +1654,7 @@ impl HipDeviceBuffer {
         let last_dim = self.dims().len().saturating_sub(1);
         let sq = self.broadcast_mul(self)?;
         let sum = sq.sum_keepdim(last_dim)?;
-        let shifted = {
-            let sum_tensor = HipTensor::from_device_buffer(sum.clone()).0.materialize()?;
-            if let Some(out) = add_scalar_hip_host_buffer(&sum_tensor, eps)? {
-                out
-            } else {
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor((sum_tensor + eps)?))
-            }
-        };
-        let denom = {
-            let shifted_tensor = shifted.0.materialize()?;
-            if let Some(out) = sqrt_hip_host_buffer(&shifted_tensor)? {
-                out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
-                    candle_core::Error::Msg("expected direct device buffer from l2norm sqrt".into())
-                })?
-            } else {
-                HipDeviceBuffer::from_tensor(shifted_tensor.sqrt()?)
-            }
-        };
+        let denom = sum.add_scalar(eps)?.sqrt()?;
         self.broadcast_div(&denom)
     }
 
@@ -1683,24 +1683,7 @@ impl HipDeviceBuffer {
         let sq = self.broadcast_mul(self)?;
         let sum = sq.sum_keepdim(last_dim)?;
         let mean_sq = sum.mul_scalar(1.0 / inner as f64)?;
-        let shifted = {
-            let mean_sq_tensor = HipTensor::from_device_buffer(mean_sq.clone()).0.materialize()?;
-            if let Some(out) = add_scalar_hip_host_buffer(&mean_sq_tensor, eps)? {
-                out
-            } else {
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor((mean_sq_tensor + eps)?))
-            }
-        };
-        let denom = {
-            let shifted_tensor = shifted.0.materialize()?;
-            if let Some(out) = sqrt_hip_host_buffer(&shifted_tensor)? {
-                out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
-                    candle_core::Error::Msg("expected direct device buffer from rms_norm sqrt".into())
-                })?
-            } else {
-                HipDeviceBuffer::from_tensor(shifted_tensor.sqrt()?)
-            }
-        };
+        let denom = mean_sq.add_scalar(eps)?.sqrt()?;
         let normed = self.broadcast_div(&denom)?;
         let weight = if weight.dtype() == self.dtype() {
             weight.clone()
@@ -3400,6 +3383,13 @@ impl HipStorage {
         ))))
     }
 
+    pub(crate) fn sqrt(&self) -> Result<Self> {
+        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
+            return Ok(Self::from_device_buffer(buffer.sqrt()?));
+        }
+        Ok(Self::from_tensor(self.materialize()?.sqrt()?))
+    }
+
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
         if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.l2norm(eps)?));
@@ -3604,6 +3594,10 @@ impl HipTensor {
     #[cfg(test)]
     pub(crate) fn recip(&self) -> Result<Self> {
         Ok(Self(self.0.recip()?))
+    }
+
+    pub(crate) fn sqrt(&self) -> Result<Self> {
+        Ok(Self(self.0.sqrt()?))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -10710,6 +10704,25 @@ mod tests {
         assert!((vals[0] - 0.5).abs() < 1e-6);
         assert!((vals[1] + 0.25).abs() < 1e-6);
         assert!((vals[2] - 2.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_sqrt_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 4.0, 9.0],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.sqrt()?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 1.0).abs() < 1e-6);
+        assert!((vals[1] - 2.0).abs() < 1e-6);
+        assert!((vals[2] - 3.0).abs() < 1e-6);
         Ok(())
     }
 
