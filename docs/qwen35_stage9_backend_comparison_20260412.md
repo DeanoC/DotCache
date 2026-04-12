@@ -7,6 +7,10 @@ This note records the current backend-dependent Stage 9 picture after:
 
 The goal is to keep one stable read of what currently wins on each backend.
 
+Canonical generated matrix artifact:
+
+- [benchmarks/results/qwen35_stage9_backend_matrix_20260412/qwen35_stage9_backend_matrix.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_stage9_backend_matrix_20260412/qwen35_stage9_backend_matrix.md)
+
 ## Main conclusion
 
 The core algorithmic thesis now appears to transfer across backends:
