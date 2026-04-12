@@ -108,6 +108,31 @@ Portable-corpus bias winners at the current checkpoints:
 
 This is the main backend-dependent result.
 
+## Compact matrix
+
+Portable-corpus `bias` comparison at the current checked-in checkpoints:
+
+| Corpus | MPS real mixed | CUDA real mixed | CUDA non-`M0` Stage 9 | CUDA conservative certified |
+| --- | ---: | ---: | ---: | ---: |
+| large | `1407.44` | `611.34` | `468.69` | `652.91` |
+| broad | `1627.72` | `750.07` | `632.12` | `792.60` |
+| external | `843.77` | `376.70` | `192.54` | `380.85` |
+
+Across this matrix:
+
+- exact-match stays `1.0` for the checked-in MPS real-mixed and CUDA real-mixed runs
+- CUDA non-`M0` Stage 9 is the current serving winner on all three portable corpora
+- CUDA conservative certified remains a useful safe lane, but not the latency winner
+
+## Larger-model note
+
+One useful machine-specific limitation is worth recording:
+
+- on this Apple MPS host, `Qwen/Qwen3.5-4B` is loadable and can execute the Stage 9 real-mixed path
+- but it causes enough paging that it is not a practical benchmark lane on this machine
+
+So for backend comparison, the meaningful current cross-device reference remains the `0.8B` portable corpus set.
+
 ## Interpretation
 
 ### What looks stable already

@@ -73,6 +73,21 @@ On these portable corpora:
 
 The refreshed portable MPS numbers are also useful because they confirm that the newer real-mixed runtime optimizations materially improved the public cross-machine reference set, so older portable MPS bundles should be treated as stale comparison anchors rather than the final MPS read.
 
+### Practical MPS machine limit
+
+One useful negative result is now clear on this machine:
+
+- `Qwen/Qwen3.5-4B` can load and run the Stage 9 real-mixed path on MPS
+- but it causes heavy paging and is not a practical benchmark lane on this host
+
+First portable-external `4B` feasibility run on this box:
+
+- real mixed `bias`: `22607.39 ms/step`
+- real mixed `hand`: `38160.86 ms/step`
+- exact-match: `1.0`
+
+That is useful as a rough feasibility check only. It should not be treated as a serious serving benchmark for this machine, and follow-on `4B` diagnostics with extra timing were unstable enough that they are not good research signals either.
+
 ## Spec status
 
 For the core AAE spec, the repo now appears close enough to call the core thesis demonstrated on MPS.
