@@ -5017,6 +5017,128 @@ fn mapped_linear_stateful_conv_hip_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+#[allow(clippy::too_many_arguments)]
+fn mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
+    mixed_qkv: &HipMappedHostBuffer,
+    prev_state: &HipMappedHostBuffer,
+    weights: &Tensor,
+    a: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let ordinal = match mixed_qkv.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_state.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && a.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && dt_bias.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && a_log_exp.buffer.device.same_device(&mixed_qkv.buffer.device)
+        && weights.device().same_device(&mixed_qkv.buffer.device))
+    {
+        return Ok(None);
+    }
+    let weights = weights.contiguous()?;
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let Storage::Hip(weights_storage) = &*weights_storage else {
+        return Ok(None);
+    };
+    if !weights_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle_core::hip::qwen35_dtype_code(mixed_qkv.buffer.dtype) else {
+        return Ok(None);
+    };
+    if mixed_qkv.buffer.dtype != prev_state.buffer.dtype
+        || mixed_qkv.buffer.dtype != a.buffer.dtype
+        || mixed_qkv.buffer.dtype != dt_bias.buffer.dtype
+        || mixed_qkv.buffer.dtype != a_log_exp.buffer.dtype
+        || mixed_qkv.buffer.dtype != weights.dtype()
+    {
+        return Ok(None);
+    }
+    let [batch_size, conv_dim, seq_len] = *mixed_qkv.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let [state_batch, state_conv_dim, state_len] = *prev_state.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let [a_batch, a_seq_len, num_heads] = *a.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || a_batch != batch_size
+        || a_seq_len != seq_len
+        || HipNativeBuffer::elem_count(&dt_bias.buffer.shape) != num_heads
+        || HipNativeBuffer::elem_count(&a_log_exp.buffer.shape) != num_heads
+    {
+        return Ok(None);
+    }
+    let flat_width = seq_len * (conv_dim + num_heads) + conv_dim * state_len;
+    let shape = vec![batch_size, flat_width];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, mixed_qkv.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            mixed_qkv.raw_device_ptr(),
+            prev_state.raw_device_ptr(),
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a.raw_device_ptr(),
+            dt_bias.raw_device_ptr(),
+            a_log_exp.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "dotcache-hip-linear-stateful-conv-value-decay-with-state-mapped-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: mixed_qkv.buffer.dtype,
+            device: mixed_qkv.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+#[allow(clippy::too_many_arguments)]
+fn mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
+    mixed_qkv: &HipMappedHostBuffer,
+    prev_state: &HipMappedHostBuffer,
+    weights: &Tensor,
+    a: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
+    Ok(None)
+}
+
 fn embedding_lookup_hip_host_buffer(
     embeddings: &Tensor,
     indexes: &Tensor,
@@ -9491,6 +9613,44 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state(
     a_log_exp: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
+    let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
+    let prev_state_hip = HipTensor::from_scaffold_tensor(prev_state.clone());
+    let a_hip = HipTensor::from_scaffold_tensor(a.clone());
+    let dt_bias_hip = HipTensor::from_scaffold_tensor(dt_bias.clone());
+    let a_log_exp_hip = HipTensor::from_scaffold_tensor(a_log_exp.clone());
+    if let (Some(mixed_qkv), Some(prev_state), Some(a), Some(dt_bias), Some(a_log_exp)) = (
+        mixed_qkv_hip.0 .0.direct_materialized_device_buffer(),
+        prev_state_hip.0 .0.direct_materialized_device_buffer(),
+        a_hip.0 .0.direct_materialized_device_buffer(),
+        dt_bias_hip.0 .0.direct_materialized_device_buffer(),
+        a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(mixed_qkv_mapped),
+            HipDeviceStorage::MappedHostBuffer(prev_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(a_mapped),
+            HipDeviceStorage::MappedHostBuffer(dt_bias_mapped),
+            HipDeviceStorage::MappedHostBuffer(a_log_exp_mapped),
+        ) = (
+            &mixed_qkv.storage,
+            &prev_state.storage,
+            &a.storage,
+            &dt_bias.storage,
+            &a_log_exp.storage,
+        ) {
+            if let Some(out) = mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
+                mixed_qkv_mapped,
+                prev_state_mapped,
+                weights,
+                a_mapped,
+                dt_bias_mapped,
+                a_log_exp_mapped,
+                kernel_size,
+            )? {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = linear_stateful_conv_value_decay_with_state_hip_host_buffer(
         mixed_qkv,
         prev_state,
