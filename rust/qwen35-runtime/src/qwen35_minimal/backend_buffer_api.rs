@@ -402,16 +402,40 @@ struct HipBackendBufferApi;
 
 impl Qwen35BackendBufferApi for GenericBackendBufferApi {
     fn tensor_to_buffer(&self, xs: Tensor) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(xs)
+        if xs.device().is_cuda() {
+            backends::cuda::tensor_to_buffer(xs)
+        } else if xs.device().is_metal() {
+            backends::metal::tensor_to_buffer(xs)
+        } else {
+            backends::cpu::tensor_to_buffer(xs)
+        }
     }
     fn zeros_state(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(Tensor::zeros(dims.to_vec(), dtype, device)?)
+        if device.is_cuda() {
+            backends::cuda::zeros_state(device, dtype, dims)
+        } else if device.is_metal() {
+            backends::metal::zeros_state(device, dtype, dims)
+        } else {
+            backends::cpu::zeros_state(device, dtype, dims)
+        }
     }
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
-        Tensor::zeros(dims.to_vec(), dtype, device)
+        if device.is_cuda() {
+            backends::cuda::zeros_tensor(device, dtype, dims)
+        } else if device.is_metal() {
+            backends::metal::zeros_tensor(device, dtype, dims)
+        } else {
+            backends::cpu::zeros_tensor(device, dtype, dims)
+        }
     }
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(xs.reshape(dims.to_vec())?)
+        if xs.device().is_cuda() {
+            backends::cuda::reshape_tensor_to_buffer(xs, dims)
+        } else if xs.device().is_metal() {
+            backends::metal::reshape_tensor_to_buffer(xs, dims)
+        } else {
+            backends::cpu::reshape_tensor_to_buffer(xs, dims)
+        }
     }
     fn narrow_tensor_to_buffer(
         &self,
@@ -420,7 +444,13 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         start: usize,
         len: usize,
     ) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(xs.narrow(dim, start, len)?)
+        if xs.device().is_cuda() {
+            backends::cuda::narrow_tensor_to_buffer(xs, dim, start, len)
+        } else if xs.device().is_metal() {
+            backends::metal::narrow_tensor_to_buffer(xs, dim, start, len)
+        } else {
+            backends::cpu::narrow_tensor_to_buffer(xs, dim, start, len)
+        }
     }
     fn prepare_depthwise_conv_input(
         &self,
