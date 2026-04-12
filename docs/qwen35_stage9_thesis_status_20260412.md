@@ -172,6 +172,25 @@ So the next confidence question is:
 
 That is now more of a runtime-policy question than a kernel question.
 
+First focused portable-external study:
+
+- benchmark artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_external/qwen35_persistent_exact_key_frontier.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_frontier_20260412_repo_promptfiles_external/qwen35_persistent_exact_key_frontier.md)
+- baseline:
+  - exact-key fallback is entirely concentrated in layer `15`
+  - `8` exact-key blocks per case
+  - baseline bias `841.94 ms/step`
+- per-layer threshold sweep on layer `15`:
+  - `0.22` removes exact-key fallback, preserves exact-match, but regresses badly to `1092.89 ms/step`
+  - `0.24` also removes exact-key fallback, preserves exact-match, and is near-neutral at `847.62 ms/step`
+
+So the current read is:
+
+- the exact-key fallback frontier is narrow and localizable
+- it is not a simple "remove fallback and go faster" story
+- some boundary fallback looks genuinely performance-positive
+- the next useful work there is likely a cost-aware mixed policy, not a globally looser gate
+
 ### 5. Hard-case explanation
 
 The system should still have a clean story for the remaining hard prompts and layers:
