@@ -40,24 +40,24 @@
       "backend": "cuda",
       "backend_name": "torch_cuda",
       "bias_beats_hand_tuned_latency_rate": 0.1,
-      "bias_ms_per_step": 399.7380309505388,
+      "bias_ms_per_step": 374.0565278334543,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "large",
       "device": "cuda",
-      "hand_ms_per_step": 398.2909489655867,
-      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+      "hand_ms_per_step": 373.0398422572762,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
       "policy": "real_mixed"
     },
     {
       "backend": "cuda",
       "backend_name": "torch_cuda",
-      "bias_beats_hand_tuned_latency_rate": 0.2,
-      "bias_ms_per_step": 468.693902855739,
+      "bias_beats_hand_tuned_latency_rate": 0.3,
+      "bias_ms_per_step": 388.78248806577176,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "large",
       "device": "cuda",
-      "hand_ms_per_step": 467.892158892937,
-      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+      "hand_ms_per_step": 388.2735997904092,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
       "policy": "non_m0"
     },
     {
@@ -111,25 +111,25 @@
     {
       "backend": "cuda",
       "backend_name": "torch_cuda",
-      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
-      "bias_ms_per_step": 460.6997005951901,
+      "bias_beats_hand_tuned_latency_rate": 0.16666666666666666,
+      "bias_ms_per_step": 443.3031187315161,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "broad",
       "device": "cuda",
-      "hand_ms_per_step": 461.38755810291815,
-      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+      "hand_ms_per_step": 441.83445163071156,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
       "policy": "real_mixed"
     },
     {
       "backend": "cuda",
       "backend_name": "torch_cuda",
-      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
-      "bias_ms_per_step": 632.1238311938941,
+      "bias_beats_hand_tuned_latency_rate": 0.16666666666666666,
+      "bias_ms_per_step": 465.39615160630393,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "broad",
       "device": "cuda",
-      "hand_ms_per_step": 632.5052129104733,
-      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+      "hand_ms_per_step": 464.88330226081115,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
       "policy": "non_m0"
     },
     {
@@ -184,24 +184,24 @@
       "backend": "cuda",
       "backend_name": "torch_cuda",
       "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
-      "bias_ms_per_step": 252.4243239313364,
+      "bias_ms_per_step": 240.84005147839585,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "external",
       "device": "cuda",
-      "hand_ms_per_step": 254.46161138825119,
-      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+      "hand_ms_per_step": 243.39422723278403,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v17_clean/qwen35_persistent_real_mixed_probe.json",
       "policy": "real_mixed"
     },
     {
       "backend": "cuda",
       "backend_name": "torch_cuda",
       "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
-      "bias_ms_per_step": 192.53842695616186,
+      "bias_ms_per_step": 244.02281160776815,
       "bias_vs_hand_exact_match_rate": 1.0,
       "corpus": "external",
       "device": "cuda",
-      "hand_ms_per_step": 193.6260542521874,
-      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+      "hand_ms_per_step": 244.26848394796252,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0_currenttree/qwen35_persistent_serving_policy_compare.json",
       "policy": "non_m0"
     },
     {
@@ -227,7 +227,7 @@
     {
       "backend": "cuda",
       "corpus": "large",
-      "winner_bias_ms_per_step": 399.7380309505388,
+      "winner_bias_ms_per_step": 374.0565278334543,
       "winner_policy": "real_mixed"
     },
     {
@@ -239,7 +239,7 @@
     {
       "backend": "cuda",
       "corpus": "broad",
-      "winner_bias_ms_per_step": 460.6997005951901,
+      "winner_bias_ms_per_step": 443.3031187315161,
       "winner_policy": "real_mixed"
     },
     {
@@ -251,8 +251,8 @@
     {
       "backend": "cuda",
       "corpus": "external",
-      "winner_bias_ms_per_step": 192.53842695616186,
-      "winner_policy": "non_m0"
+      "winner_bias_ms_per_step": 240.84005147839585,
+      "winner_policy": "real_mixed"
     }
   ]
 }

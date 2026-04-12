@@ -28,13 +28,13 @@ _DEFAULT_BENCHMARK_PATHS: tuple[tuple[str, str, str, str], ...] = (
         "large",
         "cuda",
         "real_mixed",
-        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
     ),
     (
         "large",
         "cuda",
         "non_m0",
-        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
     ),
     (
         "large",
@@ -64,13 +64,13 @@ _DEFAULT_BENCHMARK_PATHS: tuple[tuple[str, str, str, str], ...] = (
         "broad",
         "cuda",
         "real_mixed",
-        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
     ),
     (
         "broad",
         "cuda",
         "non_m0",
-        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
     ),
     (
         "broad",
@@ -100,13 +100,13 @@ _DEFAULT_BENCHMARK_PATHS: tuple[tuple[str, str, str, str], ...] = (
         "external",
         "cuda",
         "real_mixed",
-        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.json",
+        "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v17_clean/qwen35_persistent_real_mixed_probe.json",
     ),
     (
         "external",
         "cuda",
         "non_m0",
-        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0/qwen35_persistent_serving_policy_compare.json",
+        "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0_currenttree/qwen35_persistent_serving_policy_compare.json",
     ),
     (
         "external",

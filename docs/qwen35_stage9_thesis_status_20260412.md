@@ -138,16 +138,15 @@ These still matter, but they are no longer required to support the current thesi
 
 This has improved materially.
 
-CUDA now supports most of the same serving-shape claim on the portable corpus:
+CUDA now supports the same high-level serving-shape claim on the portable corpus:
 
 - conservative certified helps
-- real mixed Stage 9 `bias` now beats the older non-`M0` Stage 9 baseline on `large` and `broad`
-- `external` remains the main holdout
+- real mixed Stage 9 `bias` now beats the same-tree non-`M0` Stage 9 baseline on `large`, `broad`, and `external`
 
-So the remaining CUDA confidence question is no longer “does real mixed ever win?” It is:
+So the remaining CUDA confidence question is no longer “does real mixed ever win?” or even “can `external` be flipped?” It is:
 
-- can the remaining `external` gap be closed
-- and does the same updated ordering hold on future corpora and reruns
+- how much headroom remains after the latest general-path cleanup
+- and whether the same updated ordering holds on future corpora and reruns
 
 ### 2. Portable-corpus robustness
 
