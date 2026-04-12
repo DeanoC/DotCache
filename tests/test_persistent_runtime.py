@@ -17,6 +17,9 @@ from dotcache.backends.metal import (
 )
 from dotcache.config import DotCacheConfig
 from dotcache.backends.metal.persistent_runtime import (
+    _StreamingResidualUpperTracker,
+    _build_block_token_index_arrays,
+    _build_block_token_index_tensors,
     _residual_value_upper_for_blocks,
     _resolve_streaming_proxy_scores,
     _resolve_streaming_value_upper_scores,
@@ -110,6 +113,26 @@ def test_persistent_full_attention_state_appends_and_decodes_exactly() -> None:
         atol=1e-6,
         rtol=1e-6,
     )
+
+
+def test_block_token_index_tensors_match_numpy_builder() -> None:
+    token_starts = np.asarray([0, 16, 32], dtype=np.int64)
+    token_counts = np.asarray([16, 8, 3], dtype=np.int64)
+    local_starts = np.asarray([0, 16, 24], dtype=np.int64)
+
+    expected_global, expected_local = _build_block_token_index_arrays(
+        token_starts=token_starts,
+        token_counts=token_counts,
+        local_starts=local_starts,
+    )
+    actual_global, actual_local = _build_block_token_index_tensors(
+        token_starts=torch.as_tensor(token_starts, dtype=torch.int64),
+        token_counts=torch.as_tensor(token_counts, dtype=torch.int64),
+        local_starts=torch.as_tensor(local_starts, dtype=torch.int64),
+    )
+
+    assert np.array_equal(actual_global.cpu().numpy(), expected_global)
+    assert np.array_equal(actual_local.cpu().numpy(), expected_local)
 
 
 def test_residual_value_upper_uses_signed_component_box_bound() -> None:
@@ -706,6 +729,64 @@ def test_persistent_full_attention_stream_decode_matches_exact_full_output() -> 
     assert streamed["final_checkpoint"]["delta_upper"] == pytest.approx(0.0, abs=1e-8)
 
 
+def test_persistent_full_attention_stream_decode_block_attention_masses_match_token_weights() -> None:
+    config = PersistentServingConfig(
+        block_size=2,
+        enable_priority=True,
+        full_attention_sink_block_count=1,
+        full_attention_recent_block_count=1,
+        full_attention_exploration_blocks_per_region=1,
+        full_attention_optional_top_k=1,
+        full_attention_check_interval=1,
+    )
+    prefill_tensors = {
+        117: (
+            torch.tensor([[[[2.0, 0.0], [1.0, 0.0], [0.0, 1.5], [0.0, 0.5]]]], dtype=torch.float32),
+            torch.tensor([[[[1.0, 0.0], [2.0, 0.0], [0.0, 3.0], [0.0, 1.0]]]], dtype=torch.float32),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    streamed_with_weights = state.stream_decode_layer(
+        117,
+        query,
+        query_scale=1.0,
+        check_interval=1,
+        stop_on_certificate=False,
+    )
+    streamed_no_weights = state.stream_decode_layer(
+        117,
+        query,
+        query_scale=1.0,
+        check_interval=1,
+        stop_on_certificate=False,
+        return_attn_weights=False,
+    )
+
+    assert streamed_no_weights["attn_weights"] is None
+    expected_block_masses = torch.zeros_like(streamed_no_weights["block_attention_masses"])
+    collapsed = streamed_with_weights["attn_weights"].to(dtype=torch.float32).mean(dim=(0, 2))
+    offset = 0
+    for block_id, token_count in zip(
+        streamed_with_weights["processed_block_ids"],
+        streamed_with_weights["processed_block_token_counts"],
+        strict=True,
+    ):
+        expected_block_masses[:, int(block_id)] = collapsed[:, offset : offset + int(token_count)].sum(dim=-1)
+        offset += int(token_count)
+    assert torch.allclose(
+        streamed_no_weights["block_attention_masses"],
+        expected_block_masses,
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+
 def test_persistent_full_attention_stream_decode_can_find_certified_stop() -> None:
     config = PersistentServingConfig(
         block_size=1,
@@ -802,6 +883,52 @@ def test_persistent_full_attention_stream_decode_mixed_direct_m0_can_find_certif
     )
     assert executed_mode_counts["M0"] == 1
     assert torch.allclose(streamed["output"], selected_output, atol=1e-5, rtol=1e-5)
+
+
+def test_persistent_full_attention_stream_decode_summary_only_certificate_mode() -> None:
+    config = PersistentServingConfig(
+        block_size=1,
+        enable_priority=True,
+        enable_early_exit=True,
+        full_attention_sink_block_count=0,
+        full_attention_recent_block_count=0,
+        full_attention_exploration_blocks_per_region=0,
+        full_attention_optional_top_k=1,
+        full_attention_check_interval=1,
+        full_attention_mass_eps=0.05,
+        full_attention_value_eps=0.05,
+        full_attention_min_processed_blocks=1,
+    )
+    prefill_tensors = {
+        28: (
+            torch.tensor([[[[5.0, 0.0], [0.01, 0.0]]]], dtype=torch.float32),
+            torch.tensor([[[[1.0, 0.0], [1.0, 0.0]]]], dtype=torch.float32),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=config,
+    )
+    query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    streamed = state.stream_decode_layer(
+        28,
+        query,
+        query_scale=1.0,
+        check_interval=1,
+        stop_on_certificate=True,
+        return_attn_weights=False,
+        return_checkpoint_records=False,
+        return_checkpoint_per_head=False,
+        return_certificate_summary_only=True,
+    )
+    assert streamed["checkpoint_records"] == []
+    assert streamed["first_certified_stop"] is not None
+    assert streamed["final_checkpoint"] is not None
+    assert streamed["first_certified_stop"]["processed_block_count"] == 1
+    assert streamed["final_checkpoint"]["processed_block_count"] == 1
+    assert state.summary()["persistent_full_attention_last_checkpoint_count_by_layer"]["28"] == 0
 
 
 def test_persistent_full_attention_stream_decode_requires_mandatory_coverage() -> None:
@@ -937,6 +1064,35 @@ def test_persistent_full_attention_stream_decode_checkpoint_bounds_match_explici
             rel=1e-6,
             abs=1e-6,
         )
+
+
+def test_streaming_residual_upper_tracker_batch_bounds_match_scalar() -> None:
+    config = PersistentServingConfig(block_size=1)
+    prefill_tensors = {
+        29: (
+            torch.tensor([[[[3.0, 0.0], [1.0, 0.0], [0.0, 2.0]]]], dtype=torch.float32),
+            torch.tensor([[[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]]], dtype=torch.float32),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        config=config,
+    )
+    upper_bounds = torch.tensor([2.0, 1.0, 0.5], dtype=torch.float32)
+    tracker = _StreamingResidualUpperTracker.from_state(
+        state=state.layers[29],
+        q_head_to_kv_head=np.asarray([0, 0], dtype=np.int32),
+        upper_bounds=upper_bounds,
+        num_heads=2,
+    )
+    tracker.mark_processed_blocks([0], m_values=[1.25, 0.75])
+    batch_mass, batch_value = tracker.bounds_for_all_q_heads()
+    for q_head_idx in range(2):
+        scalar_mass, scalar_value = tracker.bounds_for_q_head(q_head_idx)
+        assert batch_mass[q_head_idx] == pytest.approx(scalar_mass, rel=1e-6, abs=1e-6)
+        assert batch_value[q_head_idx] == pytest.approx(scalar_value, rel=1e-6, abs=1e-6)
 
 
 def test_persistent_full_attention_stream_decode_residual_proxy_reorders_non_mandatory_blocks() -> None:
@@ -1196,6 +1352,62 @@ def test_persistent_full_attention_residual_value_upper_scores_rank_by_boxed_val
         upper_bounds=score_result["upper_bounds"],
     )
     assert float(value_upper_scores[1].item()) > float(value_upper_scores[0].item())
+
+
+def test_persistent_full_attention_caches_streaming_value_upper_log_scores() -> None:
+    prefill_tensors = {
+        23: (
+            torch.tensor(
+                [[[[1.0, 0.0], [1.0, 0.0], [0.5, 0.0], [0.5, 0.0]]]],
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                [[[[1.0, 0.0], [0.0, 2.0], [3.0, 4.0], [0.0, 1.0]]]],
+                dtype=torch.float32,
+            ),
+        )
+    }
+    state = PersistentFullAttentionState.from_prefill_tensors(
+        prefill_tensors=prefill_tensors,
+        device=torch.device("cpu"),
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        config=PersistentServingConfig(block_size=2),
+    )
+    score_result = state.score_blocks(23, torch.tensor([[1.0, 0.0]], dtype=torch.float32), query_scale=1.0)
+    layer = state.layers[23]
+    cached_log_scores = layer.block_streaming_value_upper_log_cache.clone()
+    resolved_scores = _resolve_streaming_value_upper_scores(
+        state=layer,
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        upper_bounds=score_result["upper_bounds"],
+    )
+    assert torch.allclose(
+        resolved_scores - score_result["upper_bounds"].to(dtype=torch.float32),
+        cached_log_scores,
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+    state.append_step(
+        23,
+        torch.tensor([[[0.25, 0.0]]], dtype=torch.float32),
+        torch.tensor([[[6.0, 8.0]]], dtype=torch.float32),
+        token_index=4,
+    )
+    layer = state.layers[23]
+    score_result = state.score_blocks(23, torch.tensor([[1.0, 0.0]], dtype=torch.float32), query_scale=1.0)
+    refreshed_scores = _resolve_streaming_value_upper_scores(
+        state=layer,
+        q_head_to_kv_head=np.asarray([0], dtype=np.int32),
+        upper_bounds=score_result["upper_bounds"],
+    )
+    assert int(layer.block_streaming_value_upper_log_cache.shape[0]) == 3
+    assert torch.allclose(
+        refreshed_scores - score_result["upper_bounds"].to(dtype=torch.float32),
+        layer.block_streaming_value_upper_log_cache,
+        atol=1e-6,
+        rtol=1e-6,
+    )
 
 
 def test_persistent_full_attention_stream_decode_streaming_refine_top_k_tightens_stop() -> None:

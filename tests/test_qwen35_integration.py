@@ -2126,6 +2126,8 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] == 0
     assert result["persistent_linear_direct_compute_count_by_layer"]["0"] == 0
     assert len(result["persistent_generated_ids"]) == 2
+    trace = result["decode_backend_trace"]
+    assert float(trace["prepare_ms_total"]) + float(trace["score_ms_total"]) + float(trace["mix_ms_total"]) > 0.0
     assert adapter.persistent_hybrid_runtime_state is not None
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result

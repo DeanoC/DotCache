@@ -159,10 +159,22 @@ class PersistentFullAttentionLayerState:
     mixed_key_packed_payload_cache: Any | None
     mixed_key_packed_scales_cache: Any | None
     mixed_key_packed_bias_cache: Any | None
+    mixed_key_packed_payload_cuda_cache: Any | None
+    mixed_key_packed_scales_cuda_cache: Any | None
+    mixed_key_packed_bias_cuda_cache: Any | None
+    mixed_key_packed_payload_block_cuda_cache: Any | None
+    mixed_key_packed_scales_block_cuda_cache: Any | None
+    mixed_key_packed_bias_block_cuda_cache: Any | None
     mixed_value_fused_scaled_cache: Any | None
     mixed_value_bias_cache: Any | None
+    value_block_cuda_cache: Any | None
     block_token_starts: Any
     block_token_counts: Any
+    block_token_starts_cuda: Any | None
+    block_token_counts_cuda: Any | None
+    block_local_starts_cuda: Any | None
+    block_token_valid_mask_cuda: Any | None
+    block_k_mode_m0_cuda: Any | None
     block_k_center: Any
     block_k_radius: Any
     block_k_subcenters: Any
@@ -176,6 +188,7 @@ class PersistentFullAttentionLayerState:
     block_v_norm_max: Any
     block_v_pos_sum: Any
     block_v_neg_sum: Any
+    block_streaming_value_upper_log_cache: Any | None
     block_prev_attention_ema: Any
     block_region_ids: Any
     block_k_mode: Any

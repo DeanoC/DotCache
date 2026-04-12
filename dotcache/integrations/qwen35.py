@@ -68,6 +68,92 @@ Qwen35DeltaNetStateCacheStage = Literal["readout_only_m0", "post_update_m0"]
 Qwen35DeltaNetStateCacheMode = Literal["M0", "M3"]
 Qwen35DeltaNetStateCacheScope = Literal["recurrent_only", "conv_only", "conv_plus_recurrent"]
 Qwen35DeltaNetStateCacheReadoutPolicy = Literal["890m_context_banded_v1"]
+
+
+_PERSISTENT_TRACE_FIELDS = (
+    "decode_ms_total",
+    "score_ms_total",
+    "selection_ms_total",
+    "optional_selection_ms_total",
+    "diverse_selection_ms_total",
+    "compression_selection_ms_total",
+    "policy_bias_ms_total",
+    "mixed_execution_direct_m0_assembly_ms_total",
+    "mixed_execution_direct_m0_query_prep_ms_total",
+    "mixed_execution_direct_m0_gather_ms_total",
+    "mixed_execution_direct_m0_score_ms_total",
+    "mixed_execution_exact_m3_score_ms_total",
+    "mixed_execution_aux_exact_m3_score_ms_total",
+    "mixed_execution_final_mix_ms_total",
+    "mixed_execution_final_mix_softmax_ms_total",
+)
+
+
+def _snapshot_persistent_trace_telemetry(
+    runtime_state: PersistentHybridRuntimeState,
+    *,
+    layer_id: int,
+) -> dict[str, float]:
+    layer_telemetry = runtime_state.full_attention.telemetry.require_layer(int(layer_id))
+    return {
+        field_name: float(getattr(layer_telemetry, field_name, 0.0))
+        for field_name in _PERSISTENT_TRACE_FIELDS
+    }
+
+
+def _record_persistent_trace_delta(
+    trace: ExecutionTrace | None,
+    *,
+    before: dict[str, float] | None,
+    after: dict[str, float] | None,
+) -> None:
+    if trace is None or before is None or after is None:
+        return
+
+    def delta(field_name: str) -> float:
+        return max(float(after.get(field_name, 0.0)) - float(before.get(field_name, 0.0)), 0.0)
+
+    prepare_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "selection_ms_total",
+            "optional_selection_ms_total",
+            "diverse_selection_ms_total",
+            "compression_selection_ms_total",
+            "policy_bias_ms_total",
+        )
+    )
+    chunk_assembly_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "mixed_execution_direct_m0_assembly_ms_total",
+            "mixed_execution_direct_m0_query_prep_ms_total",
+            "mixed_execution_direct_m0_gather_ms_total",
+        )
+    )
+    score_ms = sum(
+        delta(field_name)
+        for field_name in (
+            "score_ms_total",
+            "mixed_execution_direct_m0_score_ms_total",
+            "mixed_execution_exact_m3_score_ms_total",
+            "mixed_execution_aux_exact_m3_score_ms_total",
+        )
+    )
+    total_decode_ms = delta("decode_ms_total")
+    mix_ms = max(total_decode_ms - prepare_ms - chunk_assembly_ms - score_ms, 0.0)
+    softmax_ms = delta("mixed_execution_final_mix_softmax_ms_total")
+
+    if prepare_ms > 0.0:
+        trace.record_timing("prepare", prepare_ms)
+    if chunk_assembly_ms > 0.0:
+        trace.record_timing("chunk_assembly", chunk_assembly_ms)
+    if score_ms > 0.0:
+        trace.record_timing("score", score_ms)
+    if mix_ms > 0.0:
+        trace.record_timing("mix", mix_ms)
+    if softmax_ms > 0.0:
+        trace.record_timing("softmax", softmax_ms)
 Qwen35DeltaNetStateCacheRecurrentModePolicy = Literal["890m_m3_outlier_pair_midband_v1"]
 Qwen35DeltaNetStateCacheRecurrentGroupSizePolicy = Literal["890m_long_horizon_group_escape_v1"]
 Qwen35DeltaNetStateCacheReadoutModePolicy = Literal["890m_m3_outlier_pair_midband_v1"]
@@ -3140,6 +3226,12 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         fallback_rung = 0
         compression_rerank = False
         dense_fallback = False
+        decode_trace = ExecutionTrace(capture_timings=self.adapter.profile_backend) if self.adapter.profile_backend else None
+        persistent_trace_before = (
+            _snapshot_persistent_trace_telemetry(runtime_state, layer_id=self.layer_idx)
+            if decode_trace is not None
+            else None
+        )
         mixed_streaming_eligible = (
             bool(final_config.enable_full_attention_mixed_mode_execution)
             and not bool(final_config.full_attention_mixed_mode_execution_allow_value_m0)
@@ -3150,6 +3242,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
         )
 
         if use_streaming_early_exit:
+            use_cuda_stream_block_masses = str(hidden_states.device.type) == "cuda"
             streaming_result, decode_ms = _timed_call(
                 lambda: runtime_state.stream_full_attention_layer(
                     self.layer_idx,
@@ -3159,6 +3252,10 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                     check_interval=int(final_config.full_attention_check_interval),
                     stop_on_certificate=True,
                     policy_choice=policy_choice,
+                    return_attn_weights=not bool(use_cuda_stream_block_masses),
+                    return_checkpoint_records=not bool(use_cuda_stream_block_masses),
+                    return_checkpoint_per_head=not bool(use_cuda_stream_block_masses),
+                    return_certificate_summary_only=bool(use_cuda_stream_block_masses),
                 ),
                 device=hidden_states.device,
             )
@@ -3171,6 +3268,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             full_token_count = int(runtime_state.full_attention.layers[self.layer_idx].key_cache.shape[1])
             selected_context = streaming_result["output"]
             _attn_weights = streaming_result["attn_weights"]
+            _block_attention_masses = streaming_result.get("block_attention_masses")
             final_certificate = (
                 streaming_result.get("first_certified_stop")
                 or streaming_result.get("final_checkpoint")
@@ -3303,6 +3401,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
                 ),
                 device=hidden_states.device,
             )
+            _block_attention_masses = None
 
         runtime_state.record_full_attention_selection_outcome(
             self.layer_idx,
@@ -3316,6 +3415,7 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             selected_block_ids=selected_block_ids,
             selected_block_token_counts=selected_block_token_counts,
             attn_weights=_attn_weights,
+            block_attention_masses=_block_attention_masses,
         )
         context_states = selected_context.reshape(*input_shape, -1).contiguous()
         runtime_state.full_attention.telemetry.full_attention_step_ms_total += float(decode_ms)
@@ -3336,6 +3436,13 @@ class DotCacheQwen35AttentionSubset(nn.Module):
             self.layer_idx,
             float(decode_ms),
         )
+        if decode_trace is not None:
+            _record_persistent_trace_delta(
+                decode_trace,
+                before=persistent_trace_before,
+                after=_snapshot_persistent_trace_telemetry(runtime_state, layer_id=self.layer_idx),
+            )
+            self.adapter.decode_backend_trace.merge(decode_trace)
         gated_context = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device) * torch.sigmoid(gate)
         projected_output, output_projection_ms = _timed_call(
             lambda: self.base_attention.o_proj(gated_context),
