@@ -4094,6 +4094,9 @@ fn rms_norm_hip(
         }
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
+            if let Some(out) = rms_norm_hip_host_buffer(&xs, weight, eps, add_unit_offset)? {
+                return Ok(out);
+            }
             return Ok(from_kernel_tensor(hip_rms_norm(
                 &xs,
                 weight,
@@ -10783,6 +10786,11 @@ pub(crate) fn rms_norm_gated(
         if hidden_states.device().is_hip() {
             let hidden_states = hidden_states.materialize_tensor()?;
             let gate = gate.materialize_tensor()?;
+            if let Some(out) =
+                rms_norm_gated_hip_host_buffer(&hidden_states, &gate, weight, eps)?
+            {
+                return Ok(out);
+            }
             return Ok(from_kernel_tensor(hip_rms_norm_gated(
                 &hidden_states,
                 &gate,
@@ -10845,6 +10853,9 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         if gate.device().is_hip() {
             let gate = gate.materialize_tensor()?;
             let up = up.materialize_tensor()?;
+            if let Some(out) = swiglu_mul_hip_host_buffer(&gate, &up)? {
+                return Ok(out);
+            }
             return Ok(from_kernel_tensor(hip_swiglu_mul(
                 &gate,
                 &up,
@@ -10911,6 +10922,9 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
         }
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
+            if let Some(out) = cumsum_last_dim_hip_host_buffer(&xs)? {
+                return Ok(out);
+            }
             return Ok(from_device_tensor(hip_cumsum_last_dim(&xs)?));
         }
         return Ok(HipTensor::from_device_buffer(xs.cumsum_last_dim()?));
@@ -10975,6 +10989,9 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
             let a = a.materialize_tensor()?;
             let dt_bias = dt_bias.materialize_tensor()?;
             let a_log_exp = a_log_exp.materialize_tensor()?;
+            if let Some(out) = value_decay_hip_host_buffer(&a, &dt_bias, &a_log_exp)? {
+                return Ok(out);
+            }
             return Ok(from_device_tensor(hip_value_decay(
                 &a,
                 &dt_bias,
