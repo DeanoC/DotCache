@@ -12,7 +12,6 @@ use crate::qwen35_minimal_impl::model::{
 use half::{bf16, f16};
 use std::sync::Arc;
 use candle_core::shape::Dim;
-use candle_core::IndexOp;
 
 pub(crate) use candle_core::{DType, Device, Result, Shape, Tensor};
 
@@ -33,6 +32,11 @@ pub(crate) enum HipNativeExpr {
         dim: usize,
         start: usize,
         len: usize,
+    },
+    Select {
+        source: Arc<HipNativeBuffer>,
+        dim: usize,
+        index: usize,
     },
     Concat {
         sources: Vec<Arc<HipNativeBuffer>>,
@@ -625,10 +629,6 @@ impl HipDeviceBuffer {
         self.select(1, chunk_idx)
     }
 
-    pub(crate) fn state_scan_next_chunk(&self, next_chunk_idx: usize) -> Result<Self> {
-        self.select(1, next_chunk_idx)?.contiguous()
-    }
-
     pub(crate) fn unpack_chunk_fused(
         &self,
         chunk_size: usize,
@@ -687,6 +687,7 @@ impl HipNativeBuffer {
             HipNativeExpr::HostBytes { .. } => true,
             HipNativeExpr::PadWithZeros { source, .. }
             | HipNativeExpr::Narrow { source, .. }
+            | HipNativeExpr::Select { source, .. }
             | HipNativeExpr::Reshape { source, .. }
             | HipNativeExpr::Expand { source, .. }
             | HipNativeExpr::Transpose { source, .. }
@@ -802,6 +803,42 @@ impl HipNativeBuffer {
         let mut out = vec![0u8; Self::byte_len(&self.shape, self.dtype)];
         for outer_idx in 0..outer {
             let src_off = ((outer_idx * src_shape[dim] + start) * inner) * elem_bytes;
+            let dst_off = outer_idx * chunk_bytes;
+            out[dst_off..dst_off + chunk_bytes]
+                .copy_from_slice(&bytes[src_off..src_off + chunk_bytes]);
+        }
+        Ok(Some(out.into()))
+    }
+
+    fn host_bytes_select(
+        &self,
+        source: &Arc<HipNativeBuffer>,
+        dim: usize,
+        index: usize,
+    ) -> Result<Option<Arc<[u8]>>> {
+        let bytes = match source.try_materialize_host_bytes()? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let src_shape = source.shape();
+        if dim >= src_shape.len() {
+            candle_core::bail!("invalid select dim {} for shape {:?}", dim, src_shape)
+        }
+        if index >= src_shape[dim] {
+            candle_core::bail!(
+                "invalid select index={} for dim {} size {}",
+                index,
+                dim,
+                src_shape[dim]
+            )
+        }
+        let elem_bytes = self.dtype.size_in_bytes();
+        let inner = Self::elem_count(&src_shape[dim + 1..]);
+        let outer = Self::elem_count(&src_shape[..dim]);
+        let chunk_bytes = inner.saturating_mul(elem_bytes);
+        let mut out = vec![0u8; Self::byte_len(&self.shape, self.dtype)];
+        for outer_idx in 0..outer {
+            let src_off = ((outer_idx * src_shape[dim] + index) * inner) * elem_bytes;
             let dst_off = outer_idx * chunk_bytes;
             out[dst_off..dst_off + chunk_bytes]
                 .copy_from_slice(&bytes[src_off..src_off + chunk_bytes]);
@@ -1121,6 +1158,9 @@ impl HipNativeBuffer {
                 start,
                 len,
             } => self.host_bytes_narrow(source, *dim, *start, *len),
+            HipNativeExpr::Select { source, dim, index } => {
+                self.host_bytes_select(source, *dim, *index)
+            }
             HipNativeExpr::PadWithZeros {
                 source,
                 dim,
@@ -1261,6 +1301,21 @@ impl HipNativeBuffer {
                 dim,
                 start,
                 len,
+            },
+            shape,
+            dtype: source.dtype,
+            device: source.device.clone(),
+        }
+    }
+
+    pub(crate) fn select(source: Arc<HipNativeBuffer>, dim: usize, index: usize) -> Self {
+        let mut shape = source.shape.clone();
+        shape.remove(dim);
+        Self {
+            expr: HipNativeExpr::Select {
+                source: source.clone(),
+                dim,
+                index,
             },
             shape,
             dtype: source.dtype,
@@ -1517,6 +1572,9 @@ impl HipNativeBuffer {
                 start,
                 len,
             } => source.materialize()?.narrow(*dim, *start, *len),
+            HipNativeExpr::Select { source, dim, index } => {
+                source.materialize()?.narrow(*dim, *index, 1)?.squeeze(*dim)
+            }
             HipNativeExpr::Concat { sources, dim } => {
                 let tensors = sources
                     .iter()
@@ -1715,6 +1773,18 @@ impl HipStorage {
             dim_index,
             start,
             len,
+        )))
+    }
+
+    pub(crate) fn select(&self, dim: impl candle_core::shape::Dim, index: usize) -> Result<Self> {
+        let dim_index = dim.to_index(&Shape::from(self.shape()), "hip-native-select")?;
+        if let Some(buffer) = self.0.direct_device_buffer() {
+            return Ok(Self::from_device_buffer(buffer.select(dim_index, index)?));
+        }
+        Ok(Self::from_native_buffer(HipNativeBuffer::select(
+            Arc::new(self.0.clone()),
+            dim_index,
+            index,
         )))
     }
 
@@ -1967,6 +2037,10 @@ impl HipTensor {
         len: usize,
     ) -> Result<Self> {
         Ok(Self(self.0.narrow(dim, start, len)?))
+    }
+
+    pub(crate) fn select(&self, dim: impl candle_core::shape::Dim, index: usize) -> Result<Self> {
+        Ok(Self(self.0.select(dim, index)?))
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
@@ -2477,24 +2551,17 @@ pub(crate) fn unpack_scan_fused_output_and_state(
 }
 
 pub(crate) fn state_scan_chunk(state_scan: &StateBuffer, chunk_idx: usize) -> Result<StateBuffer> {
-    let state_scan_hip = HipTensor::from_state_buffer(state_scan);
-    if let Some(state_scan) = state_scan_hip.0 .0.direct_device_buffer() {
-        return HipTensor::from_device_buffer(state_scan.state_scan_chunk(chunk_idx)?)
-            .into_state_buffer();
-    }
-    HipTensor::from_scaffold_tensor(state_scan.tensor().i((.., chunk_idx, .., ..))?).into_state_buffer()
+    HipTensor::from_state_buffer(state_scan)
+        .select(1, chunk_idx)?
+        .into_state_buffer()
 }
 
 pub(crate) fn state_scan_next_chunk(
     state_scan: &StateBuffer,
     next_chunk_idx: usize,
 ) -> Result<StateBuffer> {
-    let state_scan_hip = HipTensor::from_state_buffer(state_scan);
-    if let Some(state_scan) = state_scan_hip.0 .0.direct_device_buffer() {
-        return HipTensor::from_device_buffer(state_scan.state_scan_next_chunk(next_chunk_idx)?)
-            .into_state_buffer();
-    }
-    HipTensor::from_scaffold_tensor(state_scan.tensor().i((.., next_chunk_idx, .., ..))?)
+    HipTensor::from_state_buffer(state_scan)
+        .select(1, next_chunk_idx)?
         .contiguous()?
         .into_state_buffer()
 }
