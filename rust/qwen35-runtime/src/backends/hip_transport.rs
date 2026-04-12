@@ -1887,6 +1887,10 @@ fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
     HipTensor::from_device_buffer(HipDeviceBuffer { tensor })
 }
 
+fn from_device_tensor(tensor: Tensor) -> HipTensor {
+    HipTensor::from_device_buffer(HipDeviceBuffer { tensor })
+}
+
 pub(crate) fn to_state_buffer(tensor: Tensor) -> Result<StateBuffer> {
     HipTensor::from_scaffold_tensor(tensor).into_state_buffer()
 }
@@ -3600,6 +3604,24 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_rope_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 1, 1, 4),
+            &device,
+        )?);
+        let cos = Tensor::from_vec(vec![1f32, 1.0], (1, 2), &device)?;
+        let sin = Tensor::from_vec(vec![0f32, 0.0], (1, 2), &device)?;
+
+        let out = rope_hip(&xs, &cos, &sin)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_causal_mask_stays_device_backed() -> Result<()> {
         let out = causal_mask(&Device::Cpu, DType::F32, 1, 3, 2)?;
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
@@ -4019,9 +4041,13 @@ pub(crate) fn causal_mask(
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
     if device.is_hip() {
-        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer {
-            tensor: hip_causal_mask(device, dtype, batch_size, tgt_len, seqlen_offset)?,
-        }));
+        return Ok(from_device_tensor(hip_causal_mask(
+            device,
+            dtype,
+            batch_size,
+            tgt_len,
+            seqlen_offset,
+        )?));
     }
     if let Some(host) = causal_mask_host(device, dtype, batch_size, tgt_len, seqlen_offset)? {
         if let Some(buffer) = host.try_host_buffer()? {
@@ -4042,9 +4068,7 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_device_buffer() {
         if xs.tensor.device().is_hip() {
-            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer {
-                tensor: hip_cumsum_last_dim(&xs.tensor)?,
-            }));
+            return Ok(from_device_tensor(hip_cumsum_last_dim(&xs.tensor)?));
         }
         if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
             if let Some(buffer) = host.try_host_buffer()? {
@@ -4082,13 +4106,15 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         a_log_exp_hip.0 .0.direct_device_buffer(),
     ) {
         if a.tensor.device().is_hip() {
-            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer {
-                tensor: hip_value_decay(&a.tensor, &dt_bias.tensor, &a_log_exp.tensor)?,
-            }));
+            return Ok(from_device_tensor(hip_value_decay(
+                &a.tensor,
+                &dt_bias.tensor,
+                &a_log_exp.tensor,
+            )?));
         }
         let softplus = ((a.tensor.broadcast_add(&dt_bias.tensor)?.exp()? + 1.0)?).log()?;
         let out = softplus.broadcast_mul(&a_log_exp.tensor)?.neg()?;
-        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer { tensor: out }));
+        return Ok(from_device_tensor(out));
     }
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
         return Ok(host);
@@ -4136,12 +4162,43 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
         )
     }
 
-    let cos = HipTensor::from_scaffold_tensor(cos.narrow(0, 0, seq_len)?)
-        .reshape((seq_len, n_embd / 2, 1))?;
-    let sin = HipTensor::from_scaffold_tensor(sin.narrow(0, 0, seq_len)?)
-        .reshape((seq_len, n_embd / 2, 1))?;
-    let cos = cos.expand((b_sz, 1, seq_len, n_embd / 2, 1))?;
-    let sin = sin.expand((b_sz, 1, seq_len, n_embd / 2, 1))?;
+    let cos = HipTensor::from_scaffold_tensor(cos.clone());
+    let sin = HipTensor::from_scaffold_tensor(sin.clone());
+    if let (Some(xs), Some(cos), Some(sin)) = (
+        xs.0 .0.direct_device_buffer(),
+        cos.0 .0.direct_device_buffer(),
+        sin.0 .0.direct_device_buffer(),
+    ) {
+        let cos = cos
+            .narrow(0, 0, seq_len)?
+            .reshape(vec![seq_len, n_embd / 2, 1])?
+            .expand(vec![b_sz, 1, seq_len, n_embd / 2, 1])?;
+        let sin = sin
+            .narrow(0, 0, seq_len)?
+            .reshape(vec![seq_len, n_embd / 2, 1])?
+            .expand(vec![b_sz, 1, seq_len, n_embd / 2, 1])?;
+        let x = xs
+            .contiguous()?
+            .reshape(vec![b_sz, n_head, seq_len, n_embd / 2, 2])?;
+        let last_dim = x.tensor.dims().len() - 1;
+        let x0 = x.narrow(last_dim, 0, 1)?;
+        let x1 = x.narrow(last_dim, 1, 1)?;
+        let y0 = x0.broadcast_mul(&cos)?.broadcast_sub(&x1.broadcast_mul(&sin)?)?;
+        let y1 = x0.broadcast_mul(&sin)?.broadcast_add(&x1.broadcast_mul(&cos)?)?;
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::cat(&[&y0, &y1], y0.tensor.dims().len() - 1)?
+                .reshape(vec![b_sz, n_head, seq_len, n_embd])?,
+        ));
+    }
+
+    let cos = cos
+        .narrow(0, 0, seq_len)?
+        .reshape((seq_len, n_embd / 2, 1))?
+        .expand((b_sz, 1, seq_len, n_embd / 2, 1))?;
+    let sin = sin
+        .narrow(0, 0, seq_len)?
+        .reshape((seq_len, n_embd / 2, 1))?
+        .expand((b_sz, 1, seq_len, n_embd / 2, 1))?;
     let x = xs.contiguous()?.reshape((b_sz, n_head, seq_len, n_embd / 2, 2))?;
     let x0 = x.narrow(candle_core::D::Minus1, 0, 1)?;
     let x1 = x.narrow(candle_core::D::Minus1, 1, 1)?;
