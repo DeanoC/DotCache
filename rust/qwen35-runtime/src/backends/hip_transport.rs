@@ -4455,6 +4455,134 @@ fn prepare_linear_attention_inputs_host_buffers(
     ))
 }
 
+fn dense_full_attention_fallback_host_buffers(
+    query_states: &HipHostBuffer,
+    key_states: &HipHostBuffer,
+    value_states: &HipHostBuffer,
+    attention_mask: Option<&HipHostBuffer>,
+    scale: f64,
+) -> Result<HipHostBuffer> {
+    if query_states.dtype != key_states.dtype || query_states.dtype != value_states.dtype {
+        candle_core::bail!(
+            "dense fallback dtype mismatch: {:?}, {:?}, {:?}",
+            query_states.dtype,
+            key_states.dtype,
+            value_states.dtype
+        );
+    }
+    if !HipNativeBuffer::supports_host_float_ops(query_states.dtype) {
+        candle_core::bail!("dense fallback unsupported for dtype {:?}", query_states.dtype);
+    }
+    if query_states.shape.len() != 4 || key_states.shape.len() != 4 || value_states.shape.len() != 4 {
+        candle_core::bail!(
+            "dense fallback expects rank-4 tensors, got {:?}, {:?}, {:?}",
+            query_states.shape,
+            key_states.shape,
+            value_states.shape
+        );
+    }
+    let (b, h, q_len, d) = (
+        query_states.shape[0],
+        query_states.shape[1],
+        query_states.shape[2],
+        query_states.shape[3],
+    );
+    let kv_len = key_states.shape[2];
+    let value_d = value_states.shape[3];
+    if key_states.shape[0] != b
+        || key_states.shape[1] != h
+        || key_states.shape[3] != d
+        || value_states.shape[0] != b
+        || value_states.shape[1] != h
+        || value_states.shape[2] != kv_len
+    {
+        candle_core::bail!(
+            "dense fallback shape mismatch: query={:?} key={:?} value={:?}",
+            query_states.shape,
+            key_states.shape,
+            value_states.shape
+        );
+    }
+    if let Some(mask) = attention_mask {
+        let _ = HipNativeBuffer::broadcast_shape(
+            &[b, h, q_len, kv_len],
+            mask.shape.as_slice(),
+            "dense full attention mask",
+        )?;
+    }
+    let out_shape = vec![b, h, q_len, value_d];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&out_shape, query_states.dtype)];
+    let mut logits = vec![0.0f64; kv_len];
+    for batch in 0..b {
+        for head in 0..h {
+            for q in 0..q_len {
+                let mut max_logit = f64::NEG_INFINITY;
+                for (k, slot) in logits.iter_mut().enumerate().take(kv_len) {
+                    let mut dot = 0.0f64;
+                    for dim in 0..d {
+                        let q_idx = (((batch * h + head) * q_len + q) * d) + dim;
+                        let k_idx = (((batch * h + head) * kv_len + k) * d) + dim;
+                        let qv = HipNativeBuffer::read_host_float(
+                            query_states.bytes.as_ref(),
+                            query_states.dtype,
+                            q_idx,
+                        )?;
+                        let kv = HipNativeBuffer::read_host_float(
+                            key_states.bytes.as_ref(),
+                            key_states.dtype,
+                            k_idx,
+                        )?;
+                        dot += qv * kv;
+                    }
+                    let mut logit = dot * scale;
+                    if let Some(mask) = attention_mask {
+                        let attn_idx = (((batch * h + head) * q_len + q) * kv_len) + k;
+                        let mask_idx = HipNativeBuffer::broadcast_elem_index(
+                            attn_idx,
+                            &[b, h, q_len, kv_len],
+                            mask.shape.as_slice(),
+                        );
+                        logit += HipNativeBuffer::read_host_float(
+                            mask.bytes.as_ref(),
+                            mask.dtype,
+                            mask_idx,
+                        )?;
+                    }
+                    *slot = logit;
+                    if logit > max_logit {
+                        max_logit = logit;
+                    }
+                }
+                let mut denom = 0.0f64;
+                for slot in logits.iter_mut().take(kv_len) {
+                    *slot = (*slot - max_logit).exp();
+                    denom += *slot;
+                }
+                for value_idx in 0..value_d {
+                    let mut acc = 0.0f64;
+                    for (k, weight) in logits.iter().enumerate().take(kv_len) {
+                        let v_idx = (((batch * h + head) * kv_len + k) * value_d) + value_idx;
+                        let vv = HipNativeBuffer::read_host_float(
+                            value_states.bytes.as_ref(),
+                            value_states.dtype,
+                            v_idx,
+                        )?;
+                        acc += (*weight / denom) * vv;
+                    }
+                    let out_idx = (((batch * h + head) * q_len + q) * value_d) + value_idx;
+                    HipNativeBuffer::write_host_float(&mut out, query_states.dtype, out_idx, acc)?;
+                }
+            }
+        }
+    }
+    Ok(HipHostBuffer {
+        bytes: out.into(),
+        shape: out_shape,
+        dtype: query_states.dtype,
+        device: query_states.device.clone(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_linear_attention_inputs_tensors_hip(
     mixed_qkv: &HipTensor,
@@ -4964,6 +5092,27 @@ fn dense_full_attention_fallback_tensors_hip(
     attention_mask: Option<&HipTensor>,
     scale: f64,
 ) -> Result<HipTensor> {
+    if let (Some(query_host), Some(key_host), Some(value_host)) = (
+        query_states_hip.try_host_buffer()?,
+        key_states_hip.try_host_buffer()?,
+        value_states_hip.try_host_buffer()?,
+    ) {
+        let mask_host = attention_mask
+            .map(|mask| mask.try_host_buffer())
+            .transpose()?
+            .flatten();
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::from_materialized_host_buffer(
+                dense_full_attention_fallback_host_buffers(
+                    &query_host,
+                    &key_host,
+                    &value_host,
+                    mask_host.as_ref(),
+                    scale,
+                )?,
+            ),
+        ));
+    }
     if let (Some(query_states_f), Some(key_states_f), Some(value_states_f), mask_device) = (
         query_states_hip.0 .0.direct_materialized_device_buffer(),
         key_states_hip.0 .0.direct_materialized_device_buffer(),
@@ -5795,6 +5944,43 @@ mod tests {
         )?;
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![7.0, 8.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_dense_full_attention_fallback_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let query_states = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 0.0],
+            (1, 1, 1, 2),
+            &device,
+        )?));
+        let key_states = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 0.0],
+            (1, 1, 1, 2),
+            &device,
+        )?));
+        let value_states = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![7f32, 8.0],
+            (1, 1, 1, 2),
+            &device,
+        )?));
+
+        let out = dense_full_attention_fallback_tensors_hip(
+            &query_states,
+            &key_states,
+            &value_states,
+            None,
+            1.0,
+        )?;
+
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         assert_eq!(values_f32(out)?, vec![7.0, 8.0]);
         Ok(())
     }
