@@ -331,6 +331,22 @@ impl HipHostBuffer {
     fn sum_keepdim(&self, dim: usize) -> Result<Self> {
         self.reduce_keepdim(dim, true)
     }
+
+    fn mul_scalar(&self, value: f64) -> Result<Self> {
+        HipNativeBuffer::mul_scalar(Arc::new(self.to_native_host_buffer()), value)
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for scalar-mul host buffer".into())
+            })
+    }
+
+    fn l2norm(&self, eps: f64) -> Result<Self> {
+        HipNativeBuffer::l2norm(Arc::new(self.to_native_host_buffer()), eps)
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for l2norm host buffer".into())
+            })
+    }
 }
 
 impl HipDeviceBuffer {
@@ -656,6 +672,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.mul_scalar(value)?));
+        }
         Ok(Self::from_tensor((self.materialize_tensor()? * value)?))
     }
 
@@ -673,6 +692,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.l2norm(eps)?));
+        }
         let tensor = self.materialize_tensor()?;
         let norm = (tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
         Ok(Self::from_tensor(tensor.broadcast_div(&norm)?))
@@ -4209,6 +4231,34 @@ mod tests {
         let vals = host_buffer_values_f32(&host)?;
         assert!((vals[0] - 0.5).abs() < 1e-5);
         assert!((vals[1] - 0.7310586).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_mul_scalar_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[1.5, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.mul_scalar(2.0)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_l2norm_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.l2norm(0.0)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        assert!((vals[0] - 0.6).abs() < 1e-5);
+        assert!((vals[1] - 0.8).abs() < 1e-5);
         Ok(())
     }
 
