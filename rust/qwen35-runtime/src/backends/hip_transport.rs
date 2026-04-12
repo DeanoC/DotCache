@@ -3997,6 +3997,158 @@ fn prepare_full_attention_output_host_buffer(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn prepare_full_attention_inputs_host_buffers(
+    q_and_gate: &HipHostBuffer,
+    k_proj: &HipHostBuffer,
+    v_proj: &HipHostBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(HipHostBuffer, HipHostBuffer, HipHostBuffer, HipHostBuffer)> {
+    if !HipNativeBuffer::supports_host_float_ops(q_and_gate.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(k_proj.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(v_proj.dtype)
+    {
+        candle_core::bail!(
+            "full attention host path unsupported for dtypes {:?}, {:?}, {:?}",
+            q_and_gate.dtype,
+            k_proj.dtype,
+            v_proj.dtype
+        );
+    }
+    let q_width = num_heads * head_dim;
+    let kv_width = num_kv_heads * head_dim;
+    if q_and_gate.shape != [b_sz, q_len, q_width * 2] {
+        candle_core::bail!(
+            "q_and_gate shape mismatch: expected {:?}, got {:?}",
+            vec![b_sz, q_len, q_width * 2],
+            q_and_gate.shape
+        );
+    }
+    if k_proj.shape != [b_sz, q_len, kv_width] || v_proj.shape != [b_sz, q_len, kv_width] {
+        candle_core::bail!(
+            "k/v proj shape mismatch: expected {:?}, got {:?} and {:?}",
+            vec![b_sz, q_len, kv_width],
+            k_proj.shape,
+            v_proj.shape
+        );
+    }
+    let outer = b_sz.saturating_mul(q_len);
+    let mut query_bytes =
+        vec![0u8; HipNativeBuffer::byte_len(&[b_sz, q_len, num_heads, head_dim], q_and_gate.dtype)];
+    let mut gate_bytes = vec![0u8; HipNativeBuffer::byte_len(&[b_sz, q_len, q_width], q_and_gate.dtype)];
+    let mut key_bytes =
+        vec![0u8; HipNativeBuffer::byte_len(&[b_sz, q_len, num_kv_heads, head_dim], k_proj.dtype)];
+    let mut value_bytes =
+        vec![0u8; HipNativeBuffer::byte_len(&[b_sz, num_kv_heads, q_len, head_dim], v_proj.dtype)];
+    for outer_idx in 0..outer.max(1) {
+        let qg_base = outer_idx * q_width * 2;
+        let kv_base = outer_idx * kv_width;
+        let b = outer_idx / q_len.max(1);
+        let q = outer_idx % q_len.max(1);
+        for idx in 0..q_width {
+            let query_val =
+                HipNativeBuffer::read_host_float(q_and_gate.bytes.as_ref(), q_and_gate.dtype, qg_base + idx)?;
+            HipNativeBuffer::write_host_float(
+                &mut query_bytes,
+                q_and_gate.dtype,
+                outer_idx * q_width + idx,
+                query_val,
+            )?;
+            let gate_val = HipNativeBuffer::read_host_float(
+                q_and_gate.bytes.as_ref(),
+                q_and_gate.dtype,
+                qg_base + q_width + idx,
+            )?;
+            HipNativeBuffer::write_host_float(
+                &mut gate_bytes,
+                q_and_gate.dtype,
+                outer_idx * q_width + idx,
+                gate_val,
+            )?;
+        }
+        for idx in 0..kv_width {
+            let key_val = HipNativeBuffer::read_host_float(k_proj.bytes.as_ref(), k_proj.dtype, kv_base + idx)?;
+            HipNativeBuffer::write_host_float(&mut key_bytes, k_proj.dtype, outer_idx * kv_width + idx, key_val)?;
+            let head = idx / head_dim;
+            let d = idx % head_dim;
+            let value_val =
+                HipNativeBuffer::read_host_float(v_proj.bytes.as_ref(), v_proj.dtype, kv_base + idx)?;
+            let value_dst = (((b * num_kv_heads + head) * q_len + q) * head_dim) + d;
+            HipNativeBuffer::write_host_float(&mut value_bytes, v_proj.dtype, value_dst, value_val)?;
+        }
+    }
+    let query_pre = HipHostBuffer {
+        bytes: query_bytes.into(),
+        shape: vec![b_sz, q_len, num_heads, head_dim],
+        dtype: q_and_gate.dtype,
+        device: q_and_gate.device.clone(),
+    };
+    let key_pre = HipHostBuffer {
+        bytes: key_bytes.into(),
+        shape: vec![b_sz, q_len, num_kv_heads, head_dim],
+        dtype: k_proj.dtype,
+        device: k_proj.device.clone(),
+    };
+    let query_norm = query_pre.rms_norm(q_norm_weight, q_norm_eps, true)?;
+    let key_norm = key_pre.rms_norm(k_norm_weight, k_norm_eps, true)?;
+    let mut query_out =
+        vec![0u8; HipNativeBuffer::byte_len(&[b_sz, num_heads, q_len, head_dim], query_norm.dtype)];
+    let mut key_out =
+        vec![0u8; HipNativeBuffer::byte_len(&[b_sz, num_kv_heads, q_len, head_dim], key_norm.dtype)];
+    for idx in 0..HipNativeBuffer::elem_count(&query_norm.shape) {
+        let d = idx % head_dim;
+        let h = (idx / head_dim) % num_heads;
+        let q = (idx / (head_dim * num_heads)) % q_len.max(1);
+        let b = idx / (head_dim * num_heads * q_len.max(1));
+        let dst = (((b * num_heads + h) * q_len + q) * head_dim) + d;
+        let value = HipNativeBuffer::read_host_float(query_norm.bytes.as_ref(), query_norm.dtype, idx)?;
+        HipNativeBuffer::write_host_float(&mut query_out, query_norm.dtype, dst, value)?;
+    }
+    for idx in 0..HipNativeBuffer::elem_count(&key_norm.shape) {
+        let d = idx % head_dim;
+        let h = (idx / head_dim) % num_kv_heads;
+        let q = (idx / (head_dim * num_kv_heads)) % q_len.max(1);
+        let b = idx / (head_dim * num_kv_heads * q_len.max(1));
+        let dst = (((b * num_kv_heads + h) * q_len + q) * head_dim) + d;
+        let value = HipNativeBuffer::read_host_float(key_norm.bytes.as_ref(), key_norm.dtype, idx)?;
+        HipNativeBuffer::write_host_float(&mut key_out, key_norm.dtype, dst, value)?;
+    }
+    Ok((
+        HipHostBuffer {
+            bytes: query_out.into(),
+            shape: vec![b_sz, num_heads, q_len, head_dim],
+            dtype: query_norm.dtype,
+            device: q_and_gate.device.clone(),
+        },
+        HipHostBuffer {
+            bytes: gate_bytes.into(),
+            shape: vec![b_sz, q_len, q_width],
+            dtype: q_and_gate.dtype,
+            device: q_and_gate.device.clone(),
+        },
+        HipHostBuffer {
+            bytes: key_out.into(),
+            shape: vec![b_sz, num_kv_heads, q_len, head_dim],
+            dtype: key_norm.dtype,
+            device: k_proj.device.clone(),
+        },
+        HipHostBuffer {
+            bytes: value_bytes.into(),
+            shape: vec![b_sz, num_kv_heads, q_len, head_dim],
+            dtype: v_proj.dtype,
+            device: v_proj.device.clone(),
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_full_attention_inputs_tensors_hip(
     q_and_gate: &HipTensor,
     k_proj: &HipTensor,
@@ -4016,6 +4168,34 @@ fn prepare_full_attention_inputs_tensors_hip(
         k_proj.0 .0.direct_materialized_device_buffer(),
         v_proj.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (
+            HipDeviceStorage::HostBuffer(q_and_gate_host),
+            HipDeviceStorage::HostBuffer(k_proj_host),
+            HipDeviceStorage::HostBuffer(v_proj_host),
+        ) = (&q_and_gate.storage, &k_proj.storage, &v_proj.storage)
+        {
+            let (query_states, gate, key_states, value_states) =
+                prepare_full_attention_inputs_host_buffers(
+                    q_and_gate_host,
+                    k_proj_host,
+                    v_proj_host,
+                    b_sz,
+                    q_len,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    q_norm_weight,
+                    q_norm_eps,
+                    k_norm_weight,
+                    k_norm_eps,
+                )?;
+            return Ok((
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(query_states)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(gate)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(key_states)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(value_states)),
+            ));
+        }
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
         let last_dim = q_and_gate.dims().len() - 1;
         let query_states = rms_norm_hip(
@@ -5767,6 +5947,47 @@ mod tests {
         assert_eq!(gate.0.shape(), vec![1, 1, 2]);
         assert_eq!(key_states.0.shape(), vec![1, 1, 1, 2]);
         assert_eq!(value_states.0.shape(), vec![1, 1, 1, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_prepare_full_attention_inputs_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let q_and_gate = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 1, 4), &device)?,
+        ));
+        let k_proj = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![5f32, 6.0], (1, 1, 2), &device)?,
+        ));
+        let v_proj = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![7f32, 8.0], (1, 1, 2), &device)?,
+        ));
+        let q_norm_weight = Tensor::ones((2,), DType::F32, &device)?;
+        let k_norm_weight = Tensor::ones((2,), DType::F32, &device)?;
+
+        let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_tensors_hip(
+            &q_and_gate,
+            &k_proj,
+            &v_proj,
+            1,
+            1,
+            1,
+            1,
+            2,
+            &q_norm_weight,
+            1e-6,
+            &k_norm_weight,
+            1e-6,
+        )?;
+
+        for tensor in [&query_states, &gate, &key_states, &value_states] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
+        assert_eq!(values_f32(gate)?, vec![3.0, 4.0]);
+        assert_eq!(values_f32(value_states)?, vec![7.0, 8.0]);
         Ok(())
     }
 
