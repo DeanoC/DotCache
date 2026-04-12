@@ -4387,6 +4387,55 @@ fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_cumsum_last_dim_hip_host_buffer(xs: &HipMappedHostBuffer) -> Result<Option<HipTensor>> {
+    let ordinal = match xs.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(xs.buffer.dtype) else {
+        return Ok(None);
+    };
+    let shape = xs.buffer.shape.clone();
+    let cols = *shape.last().ok_or_else(|| {
+        candle_core::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+    })?;
+    let rows = HipNativeBuffer::elem_count(&shape) / cols;
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, xs.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
+            dtype_code,
+            ordinal,
+            rows,
+            cols,
+            xs.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-cumsum-last-dim-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: xs.buffer.dtype,
+            device: xs.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_cumsum_last_dim_hip_host_buffer(
+    xs: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = xs;
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_l2norm_hip_host_buffer(xs: &HipMappedHostBuffer, eps: f64) -> Result<Option<HipTensor>> {
     let ordinal = match xs.buffer.device.location() {
         DeviceLocation::Hip { gpu_id } => gpu_id,
@@ -8865,6 +8914,11 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
+            if let Some(out) = mapped_cumsum_last_dim_hip_host_buffer(mapped)? {
+                return Ok(out);
+            }
+        }
         if xs.storage.as_host_buffer().is_some() {
             return Ok(HipTensor::from_device_buffer(xs.cumsum_last_dim()?));
         }
