@@ -3070,9 +3070,9 @@ fn prepare_full_attention_inputs_hip(
     let k_proj = HipTensor::from_state_buffer(k_proj);
     let v_proj = HipTensor::from_state_buffer(v_proj);
     if let (Some(q_and_gate), Some(k_proj), Some(v_proj)) = (
-        q_and_gate.0 .0.direct_device_buffer(),
-        k_proj.0 .0.direct_device_buffer(),
-        v_proj.0 .0.direct_device_buffer(),
+        q_and_gate.0 .0.direct_materialized_device_buffer(),
+        k_proj.0 .0.direct_materialized_device_buffer(),
+        v_proj.0 .0.direct_materialized_device_buffer(),
     ) {
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
         let last_dim = q_and_gate.dims().len() - 1;
@@ -3188,9 +3188,9 @@ fn prepare_linear_attention_inputs_hip(
     let beta_raw = HipTensor::from_state_buffer(beta_raw);
     let g = HipTensor::from_scaffold_tensor(g.clone());
     if let (Some(mixed_qkv), Some(beta_raw), Some(g)) = (
-        mixed_qkv.0 .0.direct_device_buffer(),
-        beta_raw.0 .0.direct_device_buffer(),
-        g.0 .0.direct_device_buffer(),
+        mixed_qkv.0 .0.direct_materialized_device_buffer(),
+        beta_raw.0 .0.direct_materialized_device_buffer(),
+        g.0 .0.direct_materialized_device_buffer(),
     ) {
         let last_dim = mixed_qkv.dims().len() - 1;
         let query = mixed_qkv
@@ -3338,8 +3338,8 @@ pub(crate) fn prepare_full_attention_output(
     let attn_output_hip = HipTensor::from_scaffold_tensor(attn_output.clone());
     let gate_hip = HipTensor::from_state_buffer(gate);
     if let (Some(attn_output), Some(gate)) = (
-        attn_output_hip.0 .0.direct_device_buffer(),
-        gate_hip.0 .0.direct_device_buffer(),
+        attn_output_hip.0 .0.direct_materialized_device_buffer(),
+        gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
         return HipTensor::from_device_buffer(
             attn_output
@@ -3369,8 +3369,8 @@ pub(crate) fn prepare_full_attention_output_buffer(
     let attn_output_hip = HipTensor::from_state_buffer(attn_output);
     let gate_hip = HipTensor::from_state_buffer(gate);
     if let (Some(attn_output), Some(gate)) = (
-        attn_output_hip.0 .0.direct_device_buffer(),
-        gate_hip.0 .0.direct_device_buffer(),
+        attn_output_hip.0 .0.direct_materialized_device_buffer(),
+        gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
         return HipTensor::from_device_buffer(
             attn_output
@@ -3464,9 +3464,9 @@ fn prepare_full_attention_kernel_inputs_hip(
     let key_states = HipTensor::from_scaffold_tensor(key_states.clone());
     let value_states = HipTensor::from_scaffold_tensor(value_states.clone());
     if let (Some(query_device), Some(key_device), Some(value_device)) = (
-        query_states.0 .0.direct_device_buffer(),
-        key_states.0 .0.direct_device_buffer(),
-        value_states.0 .0.direct_device_buffer(),
+        query_states.0 .0.direct_materialized_device_buffer(),
+        key_states.0 .0.direct_materialized_device_buffer(),
+        value_states.0 .0.direct_materialized_device_buffer(),
     ) {
         return Ok((
             HipTensor::from_device_buffer(query_device.contiguous()?),
@@ -3508,9 +3508,9 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         Some(key_device),
         Some(value_device),
     ) = (
-        query_states.0 .0.direct_device_buffer(),
-        key_states.0 .0.direct_device_buffer(),
-        value_states.0 .0.direct_device_buffer(),
+        query_states.0 .0.direct_materialized_device_buffer(),
+        key_states.0 .0.direct_materialized_device_buffer(),
+        value_states.0 .0.direct_materialized_device_buffer(),
     ) {
         (
             HipTensor::from_device_buffer(query_device.contiguous()?),
@@ -3545,9 +3545,9 @@ fn materialize_full_attention_dense_inputs_hip(
     let key_states = HipTensor::from_scaffold_tensor(key_states.clone());
     let value_states = HipTensor::from_scaffold_tensor(value_states.clone());
     if let (Some(query_states), Some(key_states), Some(value_states)) = (
-        query_states.0 .0.direct_device_buffer(),
-        key_states.0 .0.direct_device_buffer(),
-        value_states.0 .0.direct_device_buffer(),
+        query_states.0 .0.direct_materialized_device_buffer(),
+        key_states.0 .0.direct_materialized_device_buffer(),
+        value_states.0 .0.direct_materialized_device_buffer(),
     ) {
         return Ok((
             HipTensor::from_device_buffer(query_states.to_dtype(DType::F32)?),
@@ -3605,12 +3605,12 @@ fn dense_full_attention_fallback_hip(
         None => None,
     };
     if let (Some(query_states_f), Some(key_states_f), Some(value_states_f), mask_device) = (
-        query_states_hip.0 .0.direct_device_buffer(),
-        key_states_hip.0 .0.direct_device_buffer(),
-        value_states_hip.0 .0.direct_device_buffer(),
+        query_states_hip.0 .0.direct_materialized_device_buffer(),
+        key_states_hip.0 .0.direct_materialized_device_buffer(),
+        value_states_hip.0 .0.direct_materialized_device_buffer(),
         mask_hip
             .as_ref()
-            .and_then(|mask| mask.0 .0.direct_device_buffer()),
+            .and_then(|mask| mask.0 .0.direct_materialized_device_buffer()),
     ) {
         let key_states_t = key_states_f.transpose(2, 3)?.contiguous()?;
         let mut attn_weights = query_states_f.matmul(&key_states_t)?.mul_scalar(scale)?;
