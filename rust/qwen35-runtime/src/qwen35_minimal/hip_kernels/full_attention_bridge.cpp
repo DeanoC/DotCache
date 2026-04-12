@@ -1003,6 +1003,31 @@ int recip_device(
 }
 
 template <typename T>
+int sigmoid_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_sigmoid_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 133;
+    if (hipDeviceSynchronize() != hipSuccess) return 134;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -2675,6 +2700,36 @@ extern "C" int dotcache_qwen35_hip_recip(
             out);
     default:
         return 131;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_sigmoid(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return sigmoid_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 1:
+        return sigmoid_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 2:
+        return sigmoid_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    default:
+        return 133;
     }
 }
 

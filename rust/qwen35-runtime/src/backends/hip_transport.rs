@@ -14,7 +14,7 @@ use crate::qwen35_minimal_impl::model::{
     hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
-    hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
+    hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_prefill_conv_pack_host_buffer, linear_stateful_conv_hip,
@@ -1353,9 +1353,13 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.sigmoid()?));
         }
-        Ok(Self::from_tensor(
-            (self.materialize_tensor()?.neg()?.exp()? + 1.0)?.recip()?,
-        ))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = sigmoid_hip_host_buffer(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from sigmoid host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor((tensor.neg()?.exp()? + 1.0)?.recip()?))
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
@@ -4453,6 +4457,20 @@ fn exp_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
 
 fn recip_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_recip_host_buffer(xs)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn sigmoid_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_sigmoid_host_buffer(xs)? else {
         return Ok(None);
     };
     Ok(Some(HipTensor::from_device_buffer(
@@ -10325,6 +10343,25 @@ mod tests {
         assert!((vals[0] - 0.5).abs() < 1e-6);
         assert!((vals[1] + 0.25).abs() < 1e-6);
         assert!((vals[2] - 2.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_sigmoid_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![0f32, 1.0, -1.0],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.sigmoid()?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 0.5).abs() < 1e-6);
+        assert!((vals[1] - 0.7310586).abs() < 1e-5);
+        assert!((vals[2] - 0.26894143).abs() < 1e-5);
         Ok(())
     }
 
