@@ -1865,6 +1865,72 @@ pub(crate) fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_swiglu_mul_host_buffer(
+    gate: &Tensor,
+    up: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let gate = gate.contiguous()?;
+    let up = up.contiguous()?;
+    let ordinal = match gate.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !up.device().same_device(gate.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(gate.dtype()) else {
+        return Ok(None);
+    };
+    if gate.dtype() != up.dtype() {
+        return Ok(None);
+    }
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (up_storage, up_layout) = up.storage_and_layout();
+    let (Storage::Hip(gate_storage), Storage::Hip(up_storage)) = (&*gate_storage, &*up_storage) else {
+        return Ok(None);
+    };
+    if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    if gate_layout.shape() != up_layout.shape() {
+        return Ok(None);
+    }
+    let shape = gate_layout.shape().dims().to_vec();
+    let elem_count = gate_layout.shape().elem_count();
+    let mut out =
+        vec![0u8; elem_count.saturating_mul(gate.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+            dtype_code,
+            ordinal,
+            elem_count,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            up_storage.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-swiglu-mul-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_swiglu_mul_host_buffer(
+    gate: &Tensor,
+    up: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (gate, up);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipEmbeddingLookup {
     vocab_size: usize,

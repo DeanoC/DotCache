@@ -6,7 +6,7 @@ use crate::qwen35_minimal_impl::model::{
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_immutable_embedding_lookup,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
-    hip_rms_norm_host_buffer, hip_swiglu_mul, hip_value_decay,
+    hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     immutable_output_projection, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_stateful_conv_hip, linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
@@ -4320,6 +4320,20 @@ fn rms_norm_gated_hip_host_buffer(
     )))
 }
 
+fn swiglu_mul_hip_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_swiglu_mul_host_buffer(gate, up)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: gate.dtype(),
+            device: gate.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7814,6 +7828,9 @@ pub(crate) fn rms_norm_gated_buffer(
 }
 
 pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
+    if let Some(host) = swiglu_mul_hip_host_buffer(gate, up)? {
+        return Ok(host);
+    }
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     let up_hip = HipTensor::from_scaffold_tensor(up.clone());
     if let (Some(gate), Some(up)) = (
