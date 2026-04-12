@@ -119,15 +119,18 @@ These still matter, but they are no longer required to support the current thesi
 
 ### 1. Cross-device reproduction
 
-This is the biggest remaining confidence gap.
+This has improved materially.
 
-We want CUDA to tell us whether the same shape holds:
+CUDA now supports most of the same serving-shape claim on the portable corpus:
 
 - conservative certified helps
-- non-`M0` Stage 9 helps more
-- real mixed Stage 9 `bias` is the serving winner
+- real mixed Stage 9 `bias` now beats the older non-`M0` Stage 9 baseline on `large` and `broad`
+- `external` remains the main holdout
 
-If CUDA reproduces that ordering, the thesis becomes much stronger.
+So the remaining CUDA confidence question is no longer “does real mixed ever win?” It is:
+
+- can the remaining `external` gap be closed
+- and does the same updated ordering hold on future corpora and reruns
 
 ### 2. Portable-corpus robustness
 
@@ -301,21 +304,18 @@ The remaining work is mainly about confidence, portability, and understanding th
 
 ## CUDA read so far
 
-Initial CUDA reproduction on the portable repo-local corpora confirms the core algorithmic story, but not the same winner ordering as MPS.
+Updated CUDA reproduction on the portable repo-local corpora now confirms more of the systems story too.
 
-Current CUDA portable real-mixed results reported against the same portable manifests:
+Current CUDA portable real-mixed `bias` results:
 
 - large:
-  - hand `617.78 ms/step`
-  - bias `611.34 ms/step`
+  - bias `399.74 ms/step`
   - exact-match `1.0`
 - broad:
-  - hand `752.07 ms/step`
-  - bias `750.07 ms/step`
+  - bias `460.70 ms/step`
   - exact-match `1.0`
 - external:
-  - hand `378.04 ms/step`
-  - bias `376.70 ms/step`
+  - bias `252.42 ms/step`
   - exact-match `1.0`
 
 Portable CUDA comparison baselines reported on the same corpora:
@@ -332,18 +332,20 @@ Portable CUDA comparison baselines reported on the same corpora:
 The important conclusion is:
 
 - CUDA reproduces correctness and viability
-- but CUDA does not currently reproduce the MPS winner ordering
-- on the current portable corpus, non-`M0` Stage 9 is the serving winner on CUDA
+- and now partially reproduces the MPS winner ordering
+- real mixed now wins on `large` and `broad`
+- `external` remains the current holdout where non-`M0` Stage 9 still wins
 
 The reported reason is also useful:
 
 - this is not explained by accidental `M3` fallback
 - the real mixed CUDA path is executing `M0` only
-- the current loss is the remaining `direct_m0` gather/score/final-mix cost on CUDA
+- the remaining CUDA hotspot is now concentrated in `external`, especially `final_mix`
 
 So the current thesis should now be stated precisely:
 
 - the algorithmic thesis is supported across MPS and CUDA
-- the best Stage 9 execution policy is still backend-dependent today
+- the best Stage 9 execution policy is still somewhat backend-dependent today
+- but the gap is now much narrower and more localized than before
 
 That is a strong research result, not a failure. It means the method transfers, while the best runtime realization still depends on backend-specific systems work.

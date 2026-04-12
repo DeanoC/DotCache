@@ -18,9 +18,10 @@ The core algorithmic thesis now appears to transfer across backends:
 But the best serving policy is currently backend-dependent:
 
 - on MPS, real mixed Stage 9 is the serving winner
-- on CUDA, non-`M0` Stage 9 is currently the serving winner on the portable corpus
+- on CUDA, real mixed Stage 9 now wins on `large` and `broad`
+- `external` still prefers the older non-`M0` Stage 9 path
 
-That is a useful result, not a contradiction. It means the method transfers, while the best systems realization still differs by backend.
+That is still a useful result, not a contradiction. It means the method transfers, and the remaining backend-dependent gap is now much narrower and more localized.
 
 ## Current MPS portable reference
 
@@ -46,29 +47,26 @@ Across these refreshed MPS portable runs:
 
 ## Current CUDA portable reference
 
-Real-mixed CUDA bundles:
+Current CUDA real-mixed bundles:
 
 - large:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large/qwen35_persistent_real_mixed_probe.md)
-  - hand `617.78 ms/step`
-  - bias `611.34 ms/step`
+  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md)
+  - bias `399.74 ms/step`
   - exact-match `1.0`
 - broad:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad/qwen35_persistent_real_mixed_probe.md)
-  - hand `752.07 ms/step`
-  - bias `750.07 ms/step`
+  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md)
+  - bias `460.70 ms/step`
   - exact-match `1.0`
 - external:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external/qwen35_persistent_real_mixed_probe.md)
-  - hand `378.04 ms/step`
-  - bias `376.70 ms/step`
+  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v6/qwen35_persistent_real_mixed_probe.md)
+  - bias `252.42 ms/step`
   - exact-match `1.0`
 
 Important CUDA observation:
 
-- the real-mixed CUDA path is not losing because it silently fell back to an exact path
-- it is executing `M0` only on these portable runs
-- so the current CUDA loss is the remaining cost of the mixed `direct_m0` score/mix path itself
+- the updated real-mixed CUDA path is no longer just a research lane on every corpus
+- it now beats the older non-`M0` baseline on `large` and `broad`
+- `external` remains the main mixed-path holdout
 
 ## CUDA baselines on the same portable corpus
 
@@ -102,8 +100,8 @@ Portable-corpus bias winners at the current checkpoints:
 
 | Corpus | MPS winner | CUDA winner |
 | --- | --- | --- |
-| large | real mixed `1407.44` | non-`M0` Stage 9 `468.69` |
-| broad | real mixed `1627.72` | non-`M0` Stage 9 `632.12` |
+| large | real mixed `1407.44` | real mixed `399.74` |
+| broad | real mixed `1627.72` | real mixed `460.70` |
 | external | real mixed `843.77` | non-`M0` Stage 9 `192.54` |
 
 This is the main backend-dependent result.
@@ -114,14 +112,15 @@ Portable-corpus `bias` comparison at the current checked-in checkpoints:
 
 | Corpus | MPS real mixed | CUDA real mixed | CUDA non-`M0` Stage 9 | CUDA conservative certified |
 | --- | ---: | ---: | ---: | ---: |
-| large | `1407.44` | `611.34` | `468.69` | `652.91` |
-| broad | `1627.72` | `750.07` | `632.12` | `792.60` |
-| external | `843.77` | `376.70` | `192.54` | `380.85` |
+| large | `1407.44` | `399.74` | `468.69` | `652.91` |
+| broad | `1627.72` | `460.70` | `632.12` | `792.60` |
+| external | `843.77` | `252.42` | `192.54` | `380.85` |
 
 Across this matrix:
 
 - exact-match stays `1.0` for the checked-in MPS real-mixed and CUDA real-mixed runs
-- CUDA non-`M0` Stage 9 is the current serving winner on all three portable corpora
+- CUDA real mixed is now the current serving winner on `large` and `broad`
+- CUDA non-`M0` Stage 9 still wins on `external`
 - CUDA conservative certified remains a useful safe lane, but not the latency winner
 
 ## Larger-model note
@@ -145,9 +144,9 @@ So for backend comparison, the meaningful current cross-device reference remains
 
 ### What is not stable yet
 
-- the preferred Stage 9 execution policy is not yet backend-invariant
-- the current `direct_m0` realization is MPS-friendly enough to win there
-- the same path is still too expensive on CUDA relative to the non-`M0` Stage 9 baseline
+- the preferred Stage 9 execution policy is not yet fully backend-invariant
+- the current `direct_m0` realization now looks strong enough on CUDA for `large` and `broad`
+- the remaining divergence is concentrated in the `external` corpus and its `final_mix` cost
 
 ### Practical current policy
 
@@ -156,21 +155,22 @@ If we had to choose today:
 - MPS:
   - prefer real mixed Stage 9 `bias`
 - CUDA:
-  - prefer non-`M0` Stage 9 `bias`
-  - keep real mixed `direct_m0` as the optimization/research lane
+  - prefer real mixed Stage 9 `bias` for `large` and `broad`
+  - keep non-`M0` Stage 9 `bias` as the better current external-corpus lane
+  - keep the CUDA mixed path focused on reducing `final_mix`
 
 ## Immediate next work
 
-The current CUDA optimization target should not be phrased as "make mixed work at all." It already works.
+The current CUDA optimization target should not be phrased as "make mixed work at all." It already works and already wins on two of the three portable corpora.
 
 The real CUDA question is:
 
-- can a more CUDA-native packed score/mix path beat the current non-`M0` Stage 9 baseline
+- can the remaining `external` `final_mix` cost be reduced enough for real mixed to beat the current non-`M0` Stage 9 baseline there too
 
 That makes the next split very clean:
 
 - CUDA:
-  - optimize the packed score/mix realization
+  - optimize the remaining mixed `final_mix` realization on `external`
 - local/MPS:
   - keep documenting the backend comparison honestly
   - keep the portable MPS reference bundles current
