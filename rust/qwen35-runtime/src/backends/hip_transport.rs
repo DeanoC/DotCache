@@ -124,20 +124,19 @@ pub(crate) struct HipHostBuffer {
 }
 
 impl HipHostBuffer {
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> &[u8] {
         self.bytes.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn shape(&self) -> &[usize] {
         &self.shape
     }
 
+    #[cfg(test)]
     pub(crate) fn dtype(&self) -> DType {
         self.dtype
-    }
-
-    pub(crate) fn device(&self) -> &Device {
-        &self.device
     }
 
     pub(crate) fn upload_to_device_buffer(self) -> Result<HipDeviceBuffer> {
@@ -153,10 +152,6 @@ impl HipHostBuffer {
 
     pub(crate) fn upload_to_tensor(self) -> Result<Tensor> {
         self.upload_to_device_buffer().map(HipDeviceBuffer::into_tensor)
-    }
-
-    pub(crate) fn upload_to_state_buffer(self) -> Result<StateBuffer> {
-        HipTensor::from_device_buffer(self.upload_to_device_buffer()?).into_state_buffer()
     }
 }
 
@@ -538,10 +533,6 @@ impl HipDeviceBuffer {
 
     pub(crate) fn into_tensor(self) -> Tensor {
         self.tensor
-    }
-
-    pub(crate) fn into_state_buffer(self) -> Result<StateBuffer> {
-        StateBuffer::from_tensor(self.tensor)
     }
 }
 
@@ -1651,12 +1642,6 @@ impl HipStorage {
         )?))
     }
 
-    pub(crate) fn recip(&self) -> Result<Self> {
-        Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
-            self.0.clone(),
-        ))))
-    }
-
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
         Ok(Self::from_native_buffer(HipNativeBuffer::l2norm(
             Arc::new(self.0.clone()),
@@ -1721,6 +1706,7 @@ impl HipStorage {
 pub(crate) struct HipTensor(pub(crate) HipStorage);
 
 impl HipTensor {
+    #[cfg(test)]
     pub(crate) fn from_host_buffer(buffer: HipHostBuffer) -> Self {
         Self(HipStorage::from_native_buffer(HipNativeBuffer {
             expr: HipNativeExpr::HostBytes { bytes: buffer.bytes },
@@ -1833,8 +1819,11 @@ impl HipTensor {
         Ok(Self(self.0.broadcast_div(&rhs.0)?))
     }
 
+    #[cfg(test)]
     pub(crate) fn recip(&self) -> Result<Self> {
-        Ok(Self(self.0.recip()?))
+        Ok(Self(HipStorage::from_native_buffer(HipNativeBuffer::recip(
+            Arc::new(self.0.0.clone()),
+        ))))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
