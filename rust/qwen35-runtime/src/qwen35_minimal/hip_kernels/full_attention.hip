@@ -1781,6 +1781,82 @@ __global__ void dotcache_qwen35_cast_kernel(
     out[idx] = dotcache_qwen35_from_float<Out>(dotcache_qwen35_to_float(xs[idx]));
 }
 
+__device__ __forceinline__ float dotcache_qwen35_unary_op_apply(
+    int op,
+    float x,
+    float scalar
+) {
+    switch (op) {
+    case 0:
+        return expf(x);
+    case 1:
+        return 1.0f / x;
+    case 2:
+        return dotcache_qwen35_sigmoid_fast(x);
+    case 3:
+        return logf(x);
+    case 4:
+        return sqrtf(x);
+    case 5:
+        return x * scalar;
+    case 6:
+        return x + scalar;
+    default:
+        return x;
+    }
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_unary_view_kernel(
+    int op,
+    int rank,
+    size_t total_elems,
+    float scalar,
+    const T* xs,
+    const int* in_strides,
+    const int* out_dims,
+    T* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total_elems) {
+        return;
+    }
+    size_t remaining = idx;
+    size_t in_offset = 0;
+    for (int dim = rank - 1; dim >= 0; --dim) {
+        const int out_dim = out_dims[dim];
+        const int coord = static_cast<int>(remaining % static_cast<size_t>(out_dim));
+        remaining /= static_cast<size_t>(out_dim);
+        in_offset += static_cast<size_t>(coord) * static_cast<size_t>(in_strides[dim]);
+    }
+    const float x = dotcache_qwen35_to_float(xs[in_offset]);
+    out[idx] = dotcache_qwen35_from_float<T>(dotcache_qwen35_unary_op_apply(op, x, scalar));
+}
+
+template <typename In, typename Out>
+__global__ void dotcache_qwen35_cast_view_kernel(
+    int rank,
+    size_t total_elems,
+    const In* xs,
+    const int* in_strides,
+    const int* out_dims,
+    Out* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total_elems) {
+        return;
+    }
+    size_t remaining = idx;
+    size_t in_offset = 0;
+    for (int dim = rank - 1; dim >= 0; --dim) {
+        const int out_dim = out_dims[dim];
+        const int coord = static_cast<int>(remaining % static_cast<size_t>(out_dim));
+        remaining /= static_cast<size_t>(out_dim);
+        in_offset += static_cast<size_t>(coord) * static_cast<size_t>(in_strides[dim]);
+    }
+    out[idx] = dotcache_qwen35_from_float<Out>(dotcache_qwen35_to_float(xs[in_offset]));
+}
+
 template <typename T>
 __global__ void dotcache_qwen35_binary_broadcast_kernel(
     int op,

@@ -1078,6 +1078,136 @@ int cast_device(
 }
 
 template <typename T>
+int unary_view_device(
+    int op,
+    int device_ordinal,
+    int rank,
+    size_t total_elems,
+    float scalar,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* in_strides_dev = nullptr;
+    int* out_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(rank) * sizeof(int);
+    if (rank > 0) {
+        if (hipMalloc(&in_strides_dev, bytes) != hipSuccess) return 158;
+        if (hipMalloc(&out_dims_dev, bytes) != hipSuccess) {
+            hipFree(in_strides_dev);
+            return 158;
+        }
+        if (hipMemcpy(in_strides_dev, in_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(out_dims_dev, out_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+            return 158;
+        }
+    }
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((total_elems + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_unary_view_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        op,
+        rank,
+        total_elems,
+        scalar,
+        static_cast<const T*>(xs),
+        in_strides_dev,
+        out_dims_dev,
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 159;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 160;
+    }
+    if (rank > 0) {
+        hipFree(in_strides_dev);
+        hipFree(out_dims_dev);
+    }
+    return 0;
+}
+
+template <typename In, typename Out>
+int cast_view_device(
+    int device_ordinal,
+    int rank,
+    size_t total_elems,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* in_strides_dev = nullptr;
+    int* out_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(rank) * sizeof(int);
+    if (rank > 0) {
+        if (hipMalloc(&in_strides_dev, bytes) != hipSuccess) return 161;
+        if (hipMalloc(&out_dims_dev, bytes) != hipSuccess) {
+            hipFree(in_strides_dev);
+            return 161;
+        }
+        if (hipMemcpy(in_strides_dev, in_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(out_dims_dev, out_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+            return 161;
+        }
+    }
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((total_elems + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_cast_view_kernel<In, Out>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        rank,
+        total_elems,
+        static_cast<const In*>(xs),
+        in_strides_dev,
+        out_dims_dev,
+        static_cast<Out*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 162;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 163;
+    }
+    if (rank > 0) {
+        hipFree(in_strides_dev);
+        hipFree(out_dims_dev);
+    }
+    return 0;
+}
+
+template <typename T>
 int binary_broadcast_device(
     int op,
     int device_ordinal,
@@ -3078,6 +3208,81 @@ extern "C" int dotcache_qwen35_hip_log(
             out);
     default:
         return 157;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_unary_view(
+    int op,
+    int dtype,
+    size_t device_ordinal,
+    int rank,
+    size_t total_elems,
+    float scalar,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return unary_view_device<half>(
+            op, static_cast<int>(device_ordinal), rank, total_elems, scalar, xs, in_strides, out_dims, out);
+    case 1:
+        return unary_view_device<float>(
+            op, static_cast<int>(device_ordinal), rank, total_elems, scalar, xs, in_strides, out_dims, out);
+    case 2:
+        return unary_view_device<hip_bfloat16>(
+            op, static_cast<int>(device_ordinal), rank, total_elems, scalar, xs, in_strides, out_dims, out);
+    default:
+        return 164;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_cast_view(
+    int input_dtype,
+    int output_dtype,
+    size_t device_ordinal,
+    int rank,
+    size_t total_elems,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out) {
+    switch (input_dtype) {
+    case 0:
+        switch (output_dtype) {
+        case 0:
+            return cast_view_device<half, half>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 1:
+            return cast_view_device<half, float>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 2:
+            return cast_view_device<half, hip_bfloat16>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        default:
+            return 165;
+        }
+    case 1:
+        switch (output_dtype) {
+        case 0:
+            return cast_view_device<float, half>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 1:
+            return cast_view_device<float, float>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 2:
+            return cast_view_device<float, hip_bfloat16>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        default:
+            return 165;
+        }
+    case 2:
+        switch (output_dtype) {
+        case 0:
+            return cast_view_device<hip_bfloat16, half>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 1:
+            return cast_view_device<hip_bfloat16, float>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        case 2:
+            return cast_view_device<hip_bfloat16, hip_bfloat16>(static_cast<int>(device_ordinal), rank, total_elems, xs, in_strides, out_dims, out);
+        default:
+            return 165;
+        }
+    default:
+        return 166;
     }
 }
 

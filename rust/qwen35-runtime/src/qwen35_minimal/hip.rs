@@ -540,6 +540,31 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_unary_view(
+            op: c_int,
+            dtype: c_int,
+            device_ordinal: usize,
+            rank: c_int,
+            total_elems: usize,
+            scalar: f32,
+            xs: *const c_void,
+            in_strides: *const c_int,
+            out_dims: *const c_int,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_cast_view(
+            input_dtype: c_int,
+            output_dtype: c_int,
+            device_ordinal: usize,
+            rank: c_int,
+            total_elems: usize,
+            xs: *const c_void,
+            in_strides: *const c_int,
+            out_dims: *const c_int,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_cast(
             input_dtype: c_int,
             output_dtype: c_int,
