@@ -113,6 +113,19 @@ pub(crate) struct HipNativeBuffer {
 #[derive(Debug, Clone)]
 pub(crate) struct HipDeviceBuffer {
     tensor: Tensor,
+    shape: Vec<usize>,
+    dtype: DType,
+    device: Device,
+    view_ops: Vec<HipDeviceViewOp>,
+}
+
+#[derive(Debug, Clone)]
+enum HipDeviceViewOp {
+    Narrow { dim: usize, start: usize, len: usize },
+    Reshape { shape: Vec<usize> },
+    Expand { shape: Vec<usize> },
+    Transpose { dim1: usize, dim2: usize },
+    Contiguous,
 }
 
 #[derive(Debug, Clone)]
@@ -140,14 +153,12 @@ impl HipHostBuffer {
     }
 
     pub(crate) fn upload_to_device_buffer(self) -> Result<HipDeviceBuffer> {
-        Ok(HipDeviceBuffer {
-            tensor: Tensor::from_raw_buffer(
-                self.bytes.as_ref(),
-                self.dtype,
-                &self.shape,
-                &self.device,
-            )?,
-        })
+        Ok(HipDeviceBuffer::from_tensor(Tensor::from_raw_buffer(
+            self.bytes.as_ref(),
+            self.dtype,
+            &self.shape,
+            &self.device,
+        )?))
     }
 
     pub(crate) fn upload_to_tensor(self) -> Result<Tensor> {
@@ -156,12 +167,27 @@ impl HipHostBuffer {
 }
 
 impl HipDeviceBuffer {
+    #[cfg(test)]
+    fn has_pending_views(&self) -> bool {
+        !self.view_ops.is_empty()
+    }
+
+    pub(crate) fn from_tensor(tensor: Tensor) -> Self {
+        Self {
+            shape: tensor.dims().to_vec(),
+            dtype: tensor.dtype(),
+            device: tensor.device().clone(),
+            tensor,
+            view_ops: Vec::new(),
+        }
+    }
+
     pub(crate) fn tensor(&self) -> &Tensor {
         &self.tensor
     }
 
     pub(crate) fn dims(&self) -> &[usize] {
-        self.tensor.dims()
+        &self.shape
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -169,21 +195,64 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn dtype(&self) -> DType {
-        self.tensor.dtype()
+        self.dtype
     }
 
     pub(crate) fn device(&self) -> &Device {
-        self.tensor.device()
+        &self.device
     }
 
     pub(crate) fn is_contiguous(&self) -> bool {
-        self.tensor.is_contiguous()
+        self.view_ops.is_empty() && self.tensor.is_contiguous()
+    }
+
+    fn with_view_op(&self, op: HipDeviceViewOp, shape: Vec<usize>) -> Self {
+        let mut view_ops = self.view_ops.clone();
+        view_ops.push(op);
+        Self {
+            tensor: self.tensor.clone(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+            view_ops,
+        }
+    }
+
+    fn can_expand_shape(source: &[usize], target: &[usize]) -> bool {
+        if target.len() < source.len() {
+            return false;
+        }
+        let leading = target.len() - source.len();
+        for (src, dst) in source.iter().zip(target[leading..].iter()) {
+            if *src != 1 && src != dst {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
+        let mut tensor = self.tensor.clone();
+        for op in &self.view_ops {
+            tensor = match op {
+                HipDeviceViewOp::Narrow { dim, start, len } => tensor.narrow(*dim, *start, *len)?,
+                HipDeviceViewOp::Reshape { shape } => tensor.reshape(shape.clone())?,
+                HipDeviceViewOp::Expand { shape } => tensor.expand(shape.clone())?,
+                HipDeviceViewOp::Transpose { dim1, dim2 } => tensor.transpose(*dim1, *dim2)?,
+                HipDeviceViewOp::Contiguous => {
+                    if tensor.is_contiguous() {
+                        tensor
+                    } else {
+                        tensor.contiguous()?
+                    }
+                }
+            };
+        }
+        Ok(tensor)
     }
 
     pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<Self> {
-        Ok(Self {
-            tensor: Tensor::zeros(dims.as_slice(), dtype, device)?,
-        })
+        Ok(Self::from_tensor(Tensor::zeros(dims.as_slice(), dtype, device)?))
     }
 
     pub(crate) fn narrow(&self, dim: usize, start: usize, len: usize) -> Result<Self> {
@@ -194,131 +263,138 @@ impl HipDeviceBuffer {
         if start == 0 && len == dims[dim] {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().narrow(dim, start, len)?,
-        })
+        let mut shape = dims.to_vec();
+        shape[dim] = len;
+        Ok(self.with_view_op(HipDeviceViewOp::Narrow { dim, start, len }, shape))
     }
 
     pub(crate) fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().pad_with_zeros(dim, left, right)?,
-        })
+        if left == 0 && right == 0 {
+            return Ok(self.clone());
+        }
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?.pad_with_zeros(dim, left, right)?,
+        ))
     }
 
     pub(crate) fn cat(buffers: &[&HipDeviceBuffer], dim: usize) -> Result<Self> {
-        let tensors = buffers.iter().map(|b| b.tensor()).collect::<Vec<_>>();
-        Ok(Self {
-            tensor: Tensor::cat(&tensors, dim)?,
-        })
+        if buffers.is_empty() {
+            candle_core::bail!("cannot concatenate an empty buffer list");
+        }
+        if buffers.len() == 1 {
+            return Ok(buffers[0].clone());
+        }
+        let tensors = buffers
+            .iter()
+            .map(|b| b.materialize_tensor())
+            .collect::<Result<Vec<_>>>()?;
+        let tensors = tensors.iter().collect::<Vec<_>>();
+        Ok(Self::from_tensor(Tensor::cat(&tensors, dim)?))
     }
 
     pub(crate) fn reshape(&self, shape: Vec<usize>) -> Result<Self> {
         if self.dims() == shape.as_slice() {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().reshape(shape)?,
-        })
+        if HipNativeBuffer::elem_count(self.dims()) != HipNativeBuffer::elem_count(&shape) {
+            candle_core::bail!("reshape changes element count: {:?} -> {:?}", self.dims(), shape);
+        }
+        Ok(self.with_view_op(HipDeviceViewOp::Reshape { shape: shape.clone() }, shape))
     }
 
     pub(crate) fn expand(&self, shape: Vec<usize>) -> Result<Self> {
         if self.dims() == shape.as_slice() {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().expand(shape)?,
-        })
+        if !Self::can_expand_shape(self.dims(), &shape) {
+            candle_core::bail!("cannot expand {:?} to {:?}", self.dims(), shape);
+        }
+        Ok(self.with_view_op(HipDeviceViewOp::Expand { shape: shape.clone() }, shape))
     }
 
     pub(crate) fn transpose(&self, dim1: usize, dim2: usize) -> Result<Self> {
         if dim1 == dim2 {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().transpose(dim1, dim2)?,
-        })
+        let mut shape = self.dims().to_vec();
+        if dim1 >= shape.len() || dim2 >= shape.len() {
+            candle_core::bail!("transpose dims out of range for {:?}", shape);
+        }
+        shape.swap(dim1, dim2);
+        Ok(self.with_view_op(HipDeviceViewOp::Transpose { dim1, dim2 }, shape))
     }
 
     pub(crate) fn to_dtype(&self, dtype: DType) -> Result<Self> {
         if self.dtype() == dtype {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().to_dtype(dtype)?,
-        })
+        Ok(Self::from_tensor(self.materialize_tensor()?.to_dtype(dtype)?))
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().exp()?,
-        })
+        Ok(Self::from_tensor(self.materialize_tensor()?.exp()?))
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
-        Ok(Self {
-            tensor: (self.tensor().neg()?.exp()? + 1.0)?.recip()?,
-        })
+        Ok(Self::from_tensor(
+            (self.materialize_tensor()?.neg()?.exp()? + 1.0)?.recip()?,
+        ))
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().broadcast_add(rhs.tensor())?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?
+                .broadcast_add(&rhs.materialize_tensor()?)?,
+        ))
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().broadcast_sub(rhs.tensor())?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?
+                .broadcast_sub(&rhs.materialize_tensor()?)?,
+        ))
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().broadcast_div(rhs.tensor())?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?
+                .broadcast_div(&rhs.materialize_tensor()?)?,
+        ))
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().broadcast_mul(rhs.tensor())?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?
+                .broadcast_mul(&rhs.materialize_tensor()?)?,
+        ))
     }
 
     pub(crate) fn max_keepdim(&self, dim: usize) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().max_keepdim(dim)?,
-        })
+        Ok(Self::from_tensor(self.materialize_tensor()?.max_keepdim(dim)?))
     }
 
     pub(crate) fn sum_keepdim(&self, dim: usize) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().sum_keepdim(dim)?,
-        })
+        Ok(Self::from_tensor(self.materialize_tensor()?.sum_keepdim(dim)?))
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
-        Ok(Self {
-            tensor: (self.tensor() * value)?,
-        })
+        Ok(Self::from_tensor((self.materialize_tensor()? * value)?))
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().recip()?,
-        })
+        Ok(Self::from_tensor(self.materialize_tensor()?.recip()?))
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().matmul(rhs.tensor())?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?.matmul(&rhs.materialize_tensor()?)?,
+        ))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
-        let norm = (self.tensor().sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
-        Ok(Self {
-            tensor: self.tensor().broadcast_div(&norm)?,
-        })
+        let tensor = self.materialize_tensor()?;
+        let norm = (tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
+        Ok(Self::from_tensor(tensor.broadcast_div(&norm)?))
     }
 
     pub(crate) fn rms_norm(
@@ -330,9 +406,10 @@ impl HipDeviceBuffer {
         let inner = *self.dims().last().ok_or_else(|| {
             candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
         })?;
-        let mean_sq = (&self.tensor().sqr()?.sum_keepdim(candle_core::D::Minus1)?
+        let tensor = self.materialize_tensor()?;
+        let mean_sq = (&tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)?
             * (1.0 / inner as f64))?;
-        let normed = self.tensor().broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
+        let normed = tensor.broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
         let weight = if weight.dtype() == self.dtype() {
             weight.clone()
         } else {
@@ -343,9 +420,7 @@ impl HipDeviceBuffer {
         } else {
             weight
         };
-        Ok(Self {
-            tensor: normed.broadcast_mul(&weight)?,
-        })
+        Ok(Self::from_tensor(normed.broadcast_mul(&weight)?))
     }
 
     pub(crate) fn rms_norm_gated(
@@ -355,28 +430,24 @@ impl HipDeviceBuffer {
         eps: f64,
     ) -> Result<Self> {
         let normed = self.rms_norm(weight, eps, false)?;
-        let sig = (gate.tensor().neg()?.exp()? + 1.0)?.recip()?;
-        let silu = gate.tensor().broadcast_mul(&sig)?;
-        Ok(Self {
-            tensor: normed.tensor().broadcast_mul(&silu)?,
-        })
+        let gate = gate.materialize_tensor()?;
+        let sig = (gate.neg()?.exp()? + 1.0)?.recip()?;
+        let silu = gate.broadcast_mul(&sig)?;
+        Ok(Self::from_tensor(normed.materialize_tensor()?.broadcast_mul(&silu)?))
     }
 
     pub(crate) fn swiglu_mul(&self, up: &Self) -> Result<Self> {
-        let sig = (self.tensor().neg()?.exp()? + 1.0)?.recip()?;
-        let silu = self.tensor().broadcast_mul(&sig)?;
-        Ok(Self {
-            tensor: silu.broadcast_mul(up.tensor())?,
-        })
+        let tensor = self.materialize_tensor()?;
+        let sig = (tensor.neg()?.exp()? + 1.0)?.recip()?;
+        let silu = tensor.broadcast_mul(&sig)?;
+        Ok(Self::from_tensor(silu.broadcast_mul(&up.materialize_tensor()?)?))
     }
 
     pub(crate) fn contiguous(&self) -> Result<Self> {
         if self.is_contiguous() {
             return Ok(self.clone());
         }
-        Ok(Self {
-            tensor: self.tensor().contiguous()?,
-        })
+        Ok(self.with_view_op(HipDeviceViewOp::Contiguous, self.shape.clone()))
     }
 
     pub(crate) fn prepare_depthwise_conv_input(
@@ -530,19 +601,21 @@ impl HipDeviceBuffer {
             .narrow(1, total_sequence_length, k_head_dim)?
             .reshape(vec![batch_size * num_heads, k_head_dim, v_head_dim])?
             .contiguous()?;
-        Ok((Self { tensor: output }, recurrent_state))
+        Ok((Self::from_tensor(output), recurrent_state))
     }
 
     pub(crate) fn state_scan_chunk(&self, chunk_idx: usize) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().i((.., chunk_idx, .., ..))?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?.i((.., chunk_idx, .., ..))?,
+        ))
     }
 
     pub(crate) fn state_scan_next_chunk(&self, next_chunk_idx: usize) -> Result<Self> {
-        Ok(Self {
-            tensor: self.tensor().i((.., next_chunk_idx, .., ..))?.contiguous()?,
-        })
+        Ok(Self::from_tensor(
+            self.materialize_tensor()?
+                .i((.., next_chunk_idx, .., ..))?
+                .contiguous()?,
+        ))
     }
 
     pub(crate) fn unpack_chunk_fused(
@@ -580,7 +653,12 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn into_tensor(self) -> Tensor {
-        self.tensor
+        if self.view_ops.is_empty() {
+            self.tensor
+        } else {
+            self.materialize_tensor()
+                .expect("valid HipDeviceBuffer views should materialize")
+        }
     }
 }
 
@@ -1023,7 +1101,7 @@ impl HipNativeBuffer {
         match &self.expr {
             HipNativeExpr::HostBytes { bytes } => Ok(Some(bytes.clone())),
             HipNativeExpr::DeviceBuffer(buffer) => {
-                Self::tensor_to_host_float_bytes(buffer.tensor(), self.dtype)
+                Self::tensor_to_host_float_bytes(&buffer.materialize_tensor()?, self.dtype)
             }
             HipNativeExpr::Reshape { source, .. } => self.host_bytes_reshape(source),
             HipNativeExpr::Narrow {
@@ -1108,7 +1186,7 @@ impl HipNativeBuffer {
     }
 
     pub(crate) fn imported_tensor(tensor: Tensor) -> Self {
-        Self::device_buffer(HipDeviceBuffer { tensor })
+        Self::device_buffer(HipDeviceBuffer::from_tensor(tensor))
     }
 
     pub(crate) fn device_buffer(buffer: HipDeviceBuffer) -> Self {
@@ -1412,7 +1490,7 @@ impl HipNativeBuffer {
             return buffer.upload_to_tensor();
         }
         match &self.expr {
-            HipNativeExpr::DeviceBuffer(buffer) => Ok(buffer.tensor.clone()),
+            HipNativeExpr::DeviceBuffer(buffer) => buffer.materialize_tensor(),
             HipNativeExpr::HostBytes { bytes } => {
                 Tensor::from_raw_buffer(bytes.as_ref(), self.dtype, &self.shape, &self.device)
             }
@@ -1981,11 +2059,11 @@ impl HipTensor {
 }
 
 fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
-    HipTensor::from_device_buffer(HipDeviceBuffer { tensor })
+    HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
 fn from_device_tensor(tensor: Tensor) -> HipTensor {
-    HipTensor::from_device_buffer(HipDeviceBuffer { tensor })
+    HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
 pub(crate) fn to_state_buffer(tensor: Tensor) -> Result<StateBuffer> {
@@ -2547,8 +2625,9 @@ fn rms_norm_hip(
 ) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_device_buffer() {
         if xs.device().is_hip() {
+            let xs = xs.materialize_tensor()?;
             return Ok(from_kernel_tensor(hip_rms_norm(
-                xs.tensor(),
+                &xs,
                 weight,
                 eps,
                 add_unit_offset,
@@ -3501,6 +3580,62 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_view_ops_stay_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (2, 2), &device)?;
+        let tensor = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
+            .reshape((1, 2, 2))?
+            .transpose(0, 1)?
+            .narrow(1, 0, 1)?;
+
+        let buffer = tensor
+            .0
+            .0
+            .direct_device_buffer()
+            .expect("device-backed view expected");
+        assert!(buffer.has_pending_views());
+        assert_eq!(buffer.dims(), &[2, 1, 2]);
+        assert_eq!(values_f32(tensor)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_cat_materializes_logical_views_correctly() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+        let rhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![5f32, 6.0, 7.0, 8.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+        let out = HipTensor::cat(&[&lhs, &rhs], 1)?;
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pad_materializes_logical_views_correctly() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?
+        .pad_with_zeros(1, 1, 0)?;
+        assert!(matches!(tensor.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(tensor)?, vec![0.0, 1.0, 3.0, 0.0, 2.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_pack_delta_state_scan_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let weighted_key_scan = Tensor::from_vec(vec![1f32, 2.0], (1, 1, 1, 2), &device)?;
@@ -4108,9 +4243,11 @@ pub(crate) fn rms_norm_gated(
         gate_hip.0 .0.direct_device_buffer(),
     ) {
         if hidden_states.device().is_hip() {
+            let hidden_states = hidden_states.materialize_tensor()?;
+            let gate = gate.materialize_tensor()?;
             return Ok(from_kernel_tensor(hip_rms_norm_gated(
-                hidden_states.tensor(),
-                gate.tensor(),
+                &hidden_states,
+                &gate,
                 weight,
                 eps,
             )?));
@@ -4153,9 +4290,11 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         up_hip.0 .0.direct_device_buffer(),
     ) {
         if gate.device().is_hip() {
+            let gate = gate.materialize_tensor()?;
+            let up = up.materialize_tensor()?;
             return Ok(from_kernel_tensor(hip_swiglu_mul(
-                gate.tensor(),
-                up.tensor(),
+                &gate,
+                &up,
             )?));
         }
         return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
@@ -4205,7 +4344,8 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_device_buffer() {
         if xs.device().is_hip() {
-            return Ok(from_device_tensor(hip_cumsum_last_dim(xs.tensor())?));
+            let xs = xs.materialize_tensor()?;
+            return Ok(from_device_tensor(hip_cumsum_last_dim(&xs)?));
         }
         if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
             if let Some(buffer) = host.try_host_buffer()? {
@@ -4243,14 +4383,20 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         a_log_exp_hip.0 .0.direct_device_buffer(),
     ) {
         if a.device().is_hip() {
+            let a = a.materialize_tensor()?;
+            let dt_bias = dt_bias.materialize_tensor()?;
+            let a_log_exp = a_log_exp.materialize_tensor()?;
             return Ok(from_device_tensor(hip_value_decay(
-                a.tensor(),
-                dt_bias.tensor(),
-                a_log_exp.tensor(),
+                &a,
+                &dt_bias,
+                &a_log_exp,
             )?));
         }
-        let softplus = ((a.tensor().broadcast_add(dt_bias.tensor())?.exp()? + 1.0)?).log()?;
-        let out = softplus.broadcast_mul(a_log_exp.tensor())?.neg()?;
+        let a = a.materialize_tensor()?;
+        let dt_bias = dt_bias.materialize_tensor()?;
+        let a_log_exp = a_log_exp.materialize_tensor()?;
+        let softplus = ((a.broadcast_add(&dt_bias)?.exp()? + 1.0)?).log()?;
+        let out = softplus.broadcast_mul(&a_log_exp)?.neg()?;
         return Ok(from_device_tensor(out));
     }
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
