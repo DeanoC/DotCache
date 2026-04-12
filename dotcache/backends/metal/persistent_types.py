@@ -98,6 +98,8 @@ class PersistentLayerTelemetry:
     mixed_execution_prepare_ms_total: float = 0.0
     mixed_execution_cache_refresh_ms_total: float = 0.0
     mixed_execution_direct_m0_assembly_ms_total: float = 0.0
+    mixed_execution_direct_m0_query_prep_ms_total: float = 0.0
+    mixed_execution_direct_m0_gather_ms_total: float = 0.0
     mixed_execution_direct_m0_score_ms_total: float = 0.0
     mixed_execution_exact_m3_score_ms_total: float = 0.0
     mixed_execution_final_mix_ms_total: float = 0.0

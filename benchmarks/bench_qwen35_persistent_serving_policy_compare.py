@@ -304,6 +304,10 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_policy_bias_ms_per_case": 0.0,
             "hand_tuned_direct_m0_assembly_ms_per_case": 0.0,
             "bias_direct_m0_assembly_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_query_prep_ms_per_case": 0.0,
+            "bias_direct_m0_query_prep_ms_per_case": 0.0,
+            "hand_tuned_direct_m0_gather_ms_per_case": 0.0,
+            "bias_direct_m0_gather_ms_per_case": 0.0,
             "hand_tuned_direct_m0_score_ms_per_case": 0.0,
             "bias_direct_m0_score_ms_per_case": 0.0,
             "hand_tuned_executed_m0_blocks_per_case": 0.0,
@@ -385,6 +389,18 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_direct_m0_assembly_ms_per_case": float(
             sum(float(record["bias_direct_m0_assembly_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_direct_m0_query_prep_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_query_prep_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_query_prep_ms_per_case": float(
+            sum(float(record["bias_direct_m0_query_prep_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_direct_m0_gather_ms_per_case": float(
+            sum(float(record["hand_tuned_direct_m0_gather_ms_total"]) for record in records) / case_count
+        ),
+        "bias_direct_m0_gather_ms_per_case": float(
+            sum(float(record["bias_direct_m0_gather_ms_total"]) for record in records) / case_count
+        ),
         "hand_tuned_direct_m0_score_ms_per_case": float(
             sum(float(record["hand_tuned_direct_m0_score_ms_total"]) for record in records) / case_count
         ),
@@ -456,6 +472,14 @@ def _render_markdown(*, records: list[dict[str, Any]], summary: dict[str, Any], 
         f"- hand-tuned direct-M0 assembly ms/case: {float(summary['hand_tuned_direct_m0_assembly_ms_per_case']):.4f}"
     )
     lines.append(f"- bias direct-M0 assembly ms/case: {float(summary['bias_direct_m0_assembly_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned direct-M0 query-prep ms/case: {float(summary['hand_tuned_direct_m0_query_prep_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias direct-M0 query-prep ms/case: {float(summary['bias_direct_m0_query_prep_ms_per_case']):.4f}")
+    lines.append(
+        f"- hand-tuned direct-M0 gather ms/case: {float(summary['hand_tuned_direct_m0_gather_ms_per_case']):.4f}"
+    )
+    lines.append(f"- bias direct-M0 gather ms/case: {float(summary['bias_direct_m0_gather_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned direct-M0 score ms/case: {float(summary['hand_tuned_direct_m0_score_ms_per_case']):.4f}")
     lines.append(f"- bias direct-M0 score ms/case: {float(summary['bias_direct_m0_score_ms_per_case']):.4f}")
     lines.append(f"- hand-tuned executed M0 blocks/case: {float(summary['hand_tuned_executed_m0_blocks_per_case']):.2f}")
@@ -856,6 +880,42 @@ def main() -> None:
                     float(value)
                     for value in bias_result.get(
                         "persistent_full_attention_mixed_execution_direct_m0_assembly_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_direct_m0_query_prep_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_query_prep_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_direct_m0_gather_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_direct_m0_gather_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer",
                         {},
                     ).values()
                 )

@@ -3270,6 +3270,8 @@ def _decode_selected_blocks_direct_m0_torch(
     )
     timing = {
         "direct_m0_assembly_ms": 0.0,
+        "direct_m0_query_prep_ms": 0.0,
+        "direct_m0_gather_ms": 0.0,
         "direct_m0_score_ms": 0.0,
         "exact_m3_score_ms": 0.0,
         "final_mix_ms": 0.0,
@@ -3294,7 +3296,6 @@ def _decode_selected_blocks_direct_m0_torch(
         head_index_tensor = torch.as_tensor(head_ids, dtype=torch.int64, device=query_tensor.device)
         q_slice = query_tensor[head_index_tensor]
         _synchronize_torch_device(q_slice)
-        assembly_start = time.perf_counter()
         logits = torch.empty((int(q_slice.shape[0]), total_tokens), dtype=torch.float32, device=query_tensor.device)
         key_modes = np.asarray(state.block_k_mode[resolved_block_ids_np, int(kv_head)], dtype=object)
         key_comp_errors = (
@@ -3344,11 +3345,9 @@ def _decode_selected_blocks_direct_m0_torch(
             executed_m0_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m0_block_mask].tolist())
         if m0_global_indices_np.size > 0:
             _synchronize_torch_device(q_slice)
-            timing["direct_m0_assembly_ms"] += (time.perf_counter() - assembly_start) * 1000.0
             assert direct_group_size is not None
             assert direct_padded_head_dim is not None
-            _synchronize_torch_device(q_slice)
-            direct_m0_score_start = time.perf_counter()
+            query_prep_start = time.perf_counter()
             if score_dtype == query_tensor.dtype:
                 q_slice_score = q_slice
             else:
@@ -3358,6 +3357,10 @@ def _decode_selected_blocks_direct_m0_torch(
                 padded_head_dim=direct_padded_head_dim,
                 group_size=direct_group_size,
             )
+            _synchronize_torch_device(query_padded)
+            query_prep_elapsed_ms = (time.perf_counter() - query_prep_start) * 1000.0
+            timing["direct_m0_query_prep_ms"] += float(query_prep_elapsed_ms)
+            gather_start = time.perf_counter()
             m0_global_indices = torch.as_tensor(
                 m0_global_indices_np,
                 dtype=torch.int64,
@@ -3423,12 +3426,22 @@ def _decode_selected_blocks_direct_m0_torch(
                     group_size=int(getattr(dotcache_config, "group_size", 0)),
                 )
             if m0_logits is None:
+                _synchronize_torch_device(fused_concat)
+                gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                direct_m0_score_start = time.perf_counter()
                 m0_logits = score_m0_logits_fused_torch(
                     fused_concat,
                     query_padded,
                     bias_concat.transpose(0, 1).unsqueeze(0),
                     query_group_sums,
                 )
+            else:
+                gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
+                timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
+                timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
+                direct_m0_score_start = time.perf_counter()
             if int(getattr(m0_logits, "ndim", 0)) == 3 and int(m0_logits.shape[0]) == 1:
                 m0_logits = m0_logits.squeeze(0)
             _synchronize_torch_device(q_slice)
@@ -4332,6 +4345,12 @@ class PersistentFullAttentionState:
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
         layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(timing.get("direct_m0_assembly_ms", 0.0))
+        layer_telemetry.mixed_execution_direct_m0_query_prep_ms_total += float(
+            timing.get("direct_m0_query_prep_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_gather_ms_total += float(
+            timing.get("direct_m0_gather_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(timing.get("direct_m0_score_ms", 0.0))
         layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(timing.get("exact_m3_score_ms", 0.0))
         layer_telemetry.mixed_execution_final_mix_ms_total += float(timing.get("final_mix_ms", 0.0))
@@ -4559,6 +4578,8 @@ class PersistentFullAttentionState:
         executed_mode_counts_total = {"M0": 0, "M3": 0}
         mixed_timing_totals = {
             "direct_m0_assembly_ms": 0.0,
+            "direct_m0_query_prep_ms": 0.0,
+            "direct_m0_gather_ms": 0.0,
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
@@ -4861,6 +4882,12 @@ class PersistentFullAttentionState:
         layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(
             mixed_timing_totals.get("direct_m0_assembly_ms", 0.0)
         )
+        layer_telemetry.mixed_execution_direct_m0_query_prep_ms_total += float(
+            mixed_timing_totals.get("direct_m0_query_prep_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_direct_m0_gather_ms_total += float(
+            mixed_timing_totals.get("direct_m0_gather_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(
             mixed_timing_totals.get("direct_m0_score_ms", 0.0)
         )
@@ -5019,6 +5046,16 @@ class PersistentFullAttentionState:
             },
             "persistent_full_attention_mixed_execution_direct_m0_assembly_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_assembly_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_direct_m0_query_prep_ms_total_by_layer": {
+                str(layer_id): float(
+                    self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_query_prep_ms_total
+                )
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_direct_m0_gather_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_direct_m0_gather_ms_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_mixed_execution_direct_m0_score_ms_total_by_layer": {

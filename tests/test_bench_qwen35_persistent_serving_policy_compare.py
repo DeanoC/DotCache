@@ -70,6 +70,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_policy_bias_ms_total": 1.5,
                 "hand_tuned_direct_m0_assembly_ms_total": 10.0,
                 "bias_direct_m0_assembly_ms_total": 20.0,
+                "hand_tuned_direct_m0_query_prep_ms_total": 1.0,
+                "bias_direct_m0_query_prep_ms_total": 2.0,
+                "hand_tuned_direct_m0_gather_ms_total": 3.0,
+                "bias_direct_m0_gather_ms_total": 4.0,
                 "hand_tuned_direct_m0_score_ms_total": 30.0,
                 "bias_direct_m0_score_ms_total": 40.0,
                 "hand_tuned_executed_m0_block_count_total": 11,
@@ -104,6 +108,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_policy_bias_ms_total": 2.5,
                 "hand_tuned_direct_m0_assembly_ms_total": 12.0,
                 "bias_direct_m0_assembly_ms_total": 22.0,
+                "hand_tuned_direct_m0_query_prep_ms_total": 5.0,
+                "bias_direct_m0_query_prep_ms_total": 6.0,
+                "hand_tuned_direct_m0_gather_ms_total": 7.0,
+                "bias_direct_m0_gather_ms_total": 8.0,
                 "hand_tuned_direct_m0_score_ms_total": 32.0,
                 "bias_direct_m0_score_ms_total": 42.0,
                 "hand_tuned_executed_m0_block_count_total": 13,
@@ -142,6 +150,10 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     assert summary["bias_policy_bias_ms_per_case"] == 2.0
     assert summary["hand_tuned_direct_m0_assembly_ms_per_case"] == 11.0
     assert summary["bias_direct_m0_assembly_ms_per_case"] == 21.0
+    assert summary["hand_tuned_direct_m0_query_prep_ms_per_case"] == 3.0
+    assert summary["bias_direct_m0_query_prep_ms_per_case"] == 4.0
+    assert summary["hand_tuned_direct_m0_gather_ms_per_case"] == 5.0
+    assert summary["bias_direct_m0_gather_ms_per_case"] == 6.0
     assert summary["hand_tuned_direct_m0_score_ms_per_case"] == 31.0
     assert summary["bias_direct_m0_score_ms_per_case"] == 41.0
     assert summary["hand_tuned_executed_m0_blocks_per_case"] == 12.0
