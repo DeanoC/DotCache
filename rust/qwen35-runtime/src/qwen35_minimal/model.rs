@@ -6851,6 +6851,147 @@ pub(crate) fn delta_chunk_single_prefill(
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkSinglePrefill)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_chunk_single_prefill_host_buffer(
+    initial_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let initial_state = initial_state.contiguous()?;
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    let beta = beta.contiguous()?;
+    let g = g.contiguous()?;
+    let ordinal = match initial_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(query.device().same_device(initial_state.device())
+        && key.device().same_device(initial_state.device())
+        && value.device().same_device(initial_state.device())
+        && beta.device().same_device(initial_state.device())
+        && g.device().same_device(initial_state.device()))
+    {
+        return Ok(None);
+    }
+    let (initial_storage, initial_layout) = initial_state.storage_and_layout();
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (beta_storage, beta_layout) = beta.storage_and_layout();
+    let (g_storage, g_layout) = g.storage_and_layout();
+    let (
+        Storage::Hip(_initial_storage),
+        Storage::Hip(query_storage),
+        Storage::Hip(key_storage),
+        Storage::Hip(value_storage),
+        Storage::Hip(beta_storage),
+        Storage::Hip(g_storage),
+    ) = (
+        &*initial_storage,
+        &*query_storage,
+        &*key_storage,
+        &*value_storage,
+        &*beta_storage,
+        &*g_storage,
+    )
+    else {
+        return Ok(None);
+    };
+    if !(initial_layout.is_contiguous()
+        && query_layout.is_contiguous()
+        && key_layout.is_contiguous()
+        && value_layout.is_contiguous()
+        && beta_layout.is_contiguous()
+        && g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (initial_bh, initial_k_head_dim, initial_v_head_dim) = initial_layout.shape().dims3()?;
+    let (batch_heads, chunk_size, k_head_dim) = query_layout.shape().dims3()?;
+    let (key_bh, key_chunk, key_k) = key_layout.shape().dims3()?;
+    let (value_bh, value_chunk, v_head_dim) = value_layout.shape().dims3()?;
+    let (beta_bh, beta_chunk) = beta_layout.shape().dims2()?;
+    let (g_bh, g_chunk) = g_layout.shape().dims2()?;
+    if initial_bh != batch_heads
+        || initial_k_head_dim != k_head_dim
+        || initial_v_head_dim != v_head_dim
+        || key_bh != batch_heads
+        || value_bh != batch_heads
+        || beta_bh != batch_heads
+        || g_bh != batch_heads
+        || key_chunk != chunk_size
+        || value_chunk != chunk_size
+        || beta_chunk != chunk_size
+        || g_chunk != chunk_size
+        || key_k != k_head_dim
+        || initial_state.dtype() != query.dtype()
+        || initial_state.dtype() != key.dtype()
+        || initial_state.dtype() != value.dtype()
+        || initial_state.dtype() != beta.dtype()
+        || initial_state.dtype() != g.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(initial_state.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(initial_state.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_chunk_single_prefill(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            beta_storage.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+            g_storage.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "delta-chunk-single-prefill-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_chunk_single_prefill_host_buffer(
+    initial_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (initial_state, query, key, value, beta, g);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaChunkStepRaw;
 

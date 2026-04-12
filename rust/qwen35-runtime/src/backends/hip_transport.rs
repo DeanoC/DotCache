@@ -2,10 +2,10 @@ use crate::qwen35_minimal_impl::model::{
     delta_attn_solve_from_inputs, delta_attn_solve_from_inputs_host_buffer, delta_attn_solve_scan,
     delta_attn_solve_scan_host_buffer, delta_base_attn_scan, delta_base_attn_scan_host_buffer,
     delta_chunk_fused, delta_chunk_scan_raw, delta_chunk_scan_raw_host_buffer,
-    delta_chunk_single_prefill, delta_full_scan, delta_full_scan_host_buffer, delta_full_scan_pack,
-    delta_full_scan_pack_host_buffer, delta_full_scan_packed, delta_full_scan_packed_host_buffer,
-    delta_local_attn_scan, delta_local_attn_scan_host_buffer, delta_recurrent_prefill,
-    delta_recurrent_prefill_host_buffer,
+    delta_chunk_single_prefill, delta_chunk_single_prefill_host_buffer, delta_full_scan,
+    delta_full_scan_host_buffer, delta_full_scan_pack, delta_full_scan_pack_host_buffer,
+    delta_full_scan_packed, delta_full_scan_packed_host_buffer, delta_local_attn_scan,
+    delta_local_attn_scan_host_buffer, delta_recurrent_prefill, delta_recurrent_prefill_host_buffer,
     delta_state_scan, delta_state_update, full_attention_decode_megakernel,
     full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
@@ -4754,6 +4754,29 @@ fn delta_chunk_scan_raw_hip_host_buffer(
     )))
 }
 
+fn delta_chunk_single_prefill_hip_host_buffer(
+    initial_state: &Tensor,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    beta: &Tensor,
+    g: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) =
+        delta_chunk_single_prefill_host_buffer(initial_state, query, key, value, beta, g)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: initial_state.dtype(),
+            device: initial_state.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -8866,6 +8889,16 @@ pub(crate) fn delta_chunk_single_prefill_buffer(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(host) = delta_chunk_single_prefill_hip_host_buffer(
+        initial_state.tensor(),
+        query,
+        key,
+        value,
+        beta,
+        g,
+    )? {
+        return host.into_state_buffer();
+    }
     from_kernel_tensor(delta_chunk_single_prefill(
         initial_state.tensor(),
         query,
