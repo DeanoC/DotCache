@@ -3737,7 +3737,7 @@ impl candle::CustomOp7 for CudaLinearDecodeFromHiddenGated {
         let cfg = LaunchConfig {
             grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
             block_dim: (block, 1, 1),
-            shared_mem_bytes: (4 * 256 * std::mem::size_of::<f32>()) as u32,
+            shared_mem_bytes: ((4 * 256 + self.hidden_size) * std::mem::size_of::<f32>()) as u32,
         };
 
         let state = initial_state.as_cuda_slice::<f32>()?;
