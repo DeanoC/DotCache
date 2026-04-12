@@ -44,20 +44,34 @@ So the current real mixed Stage 9 path is:
 These are the current public, cross-machine reference points for CUDA comparison:
 
 - large:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps/qwen35_persistent_real_mixed_probe.md)
-  - bias `1432.34 ms/step`
+  - refreshed:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps_refreshed/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps_refreshed/qwen35_persistent_real_mixed_probe.md)
+    - bias `1407.44 ms/step`
+  - older checked-in reference:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps/qwen35_persistent_real_mixed_probe.md)
+    - bias `1432.34 ms/step`
 - broad:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps/qwen35_persistent_real_mixed_probe.md)
-  - bias `1679.00 ms/step`
+  - refreshed:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps_refreshed/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps_refreshed/qwen35_persistent_real_mixed_probe.md)
+    - bias `1627.72 ms/step`
+  - older checked-in reference:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps/qwen35_persistent_real_mixed_probe.md)
+    - bias `1679.00 ms/step`
 - external:
-  - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps/qwen35_persistent_real_mixed_probe.md)
-  - bias `918.66 ms/step`
+  - refreshed:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps_refreshed/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps_refreshed/qwen35_persistent_real_mixed_probe.md)
+    - bias `843.77 ms/step`
+  - older checked-in reference:
+    - [benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps/qwen35_persistent_real_mixed_probe.md)
+    - bias `918.66 ms/step`
 
 On these portable corpora:
 
 - `bias` beats `hand` on every checked-in case
 - bias/hand exact-match stays `1.0`
 - the current runtime is genuinely executing heavy key-side `M0`, not only falling back to all-`M3`
+
+The refreshed portable MPS numbers are also useful because they confirm that the newer real-mixed runtime optimizations materially improved the public cross-machine reference set, so older portable MPS bundles should be treated as stale comparison anchors rather than the final MPS read.
 
 ## Spec status
 
@@ -162,3 +176,52 @@ The current state is good enough to say:
 - the best real mixed `bias` path is now the measured serving winner on the main MPS benchmarks
 
 The remaining work is mainly about confidence, portability, and understanding the residual hard frontier, not about proving basic viability anymore.
+
+## CUDA read so far
+
+Initial CUDA reproduction on the portable repo-local corpora confirms the core algorithmic story, but not the same winner ordering as MPS.
+
+Current CUDA portable real-mixed results reported against the same portable manifests:
+
+- large:
+  - hand `617.78 ms/step`
+  - bias `611.34 ms/step`
+  - exact-match `1.0`
+- broad:
+  - hand `752.07 ms/step`
+  - bias `750.07 ms/step`
+  - exact-match `1.0`
+- external:
+  - hand `378.04 ms/step`
+  - bias `376.70 ms/step`
+  - exact-match `1.0`
+
+Portable CUDA comparison baselines reported on the same corpora:
+
+- non-`M0` Stage 9 bias:
+  - large `468.69`
+  - broad `632.12`
+  - external `192.54`
+- conservative certified bias:
+  - large `652.91`
+  - broad `792.60`
+  - external `380.85`
+
+The important conclusion is:
+
+- CUDA reproduces correctness and viability
+- but CUDA does not currently reproduce the MPS winner ordering
+- on the current portable corpus, non-`M0` Stage 9 is the serving winner on CUDA
+
+The reported reason is also useful:
+
+- this is not explained by accidental `M3` fallback
+- the real mixed CUDA path is executing `M0` only
+- the current loss is the remaining `direct_m0` gather/score/final-mix cost on CUDA
+
+So the current thesis should now be stated precisely:
+
+- the algorithmic thesis is supported across MPS and CUDA
+- the best Stage 9 execution policy is still backend-dependent today
+
+That is a strong research result, not a failure. It means the method transfers, while the best runtime realization still depends on backend-specific systems work.
