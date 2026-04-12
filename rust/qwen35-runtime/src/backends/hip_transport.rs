@@ -247,6 +247,15 @@ impl HipHostBuffer {
         StateBuffer::from_tensor(self.upload_to_device_buffer()?.into_tensor())
     }
 
+    fn zeros(shape: Vec<usize>, dtype: DType, device: &Device) -> Result<Self> {
+        Ok(Self {
+            bytes: vec![0u8; HipNativeBuffer::byte_len(&shape, dtype)].into(),
+            shape,
+            dtype,
+            device: device.clone(),
+        })
+    }
+
     fn map_float(&self, op_name: &'static str, f: impl Fn(f64) -> f64) -> Result<Self> {
         if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
             candle_core::bail!("{op_name} unsupported for dtype {:?}", self.dtype);
@@ -1483,6 +1492,37 @@ impl HipDeviceBuffer {
         mixed_qkv: &HipDeviceBuffer,
         kernel_size: usize,
     ) -> Result<(Self, Option<Self>)> {
+        if let Some(mixed_qkv_host) = mixed_qkv.try_host_buffer()? {
+            let preserve_pending = prev_state.is_some_and(HipDeviceBuffer::preserves_pending_upload)
+                || mixed_qkv.preserves_pending_upload();
+            let wrap = |buffer| {
+                if preserve_pending {
+                    Self::from_pending_host_upload(buffer)
+                } else {
+                    Self::from_materialized_host_buffer(buffer)
+                }
+            };
+            let prepared_host = match prev_state {
+                Some(conv_state) => {
+                    let conv_state_host = conv_state
+                        .try_host_buffer()?
+                        .ok_or_else(|| candle_core::Error::msg("missing host buffer for conv state"))?;
+                    HipHostBuffer::cat(&[&conv_state_host, &mixed_qkv_host], 2)?
+                }
+                None => mixed_qkv_host.pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?,
+            };
+            let state_len = kernel_size.saturating_sub(1);
+            let next_state = if state_len == 0 {
+                None
+            } else {
+                Some(wrap(prepared_host.narrow_copy(
+                    2,
+                    prepared_host.shape[2] - state_len,
+                    state_len,
+                )?))
+            };
+            return Ok((wrap(prepared_host), next_state));
+        }
         let mixed_qkv = match prev_state {
             Some(conv_state) => Self::cat(&[conv_state, mixed_qkv], 2)?,
             None => mixed_qkv.pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?,
@@ -1506,6 +1546,50 @@ impl HipDeviceBuffer {
         mixed_qkv: &HipDeviceBuffer,
         kernel_size: usize,
     ) -> Result<Option<Self>> {
+        if let Some(mixed_qkv_host) = mixed_qkv.try_host_buffer()? {
+            let state_len = kernel_size.saturating_sub(1);
+            if state_len == 0 {
+                return Ok(None);
+            }
+            let preserve_pending = prev_state.is_some_and(HipDeviceBuffer::preserves_pending_upload)
+                || mixed_qkv.preserves_pending_upload();
+            let wrap = |buffer| {
+                if preserve_pending {
+                    Self::from_pending_host_upload(buffer)
+                } else {
+                    Self::from_materialized_host_buffer(buffer)
+                }
+            };
+            let seq_len = mixed_qkv_host.shape[2];
+            let state_host = if seq_len >= state_len {
+                mixed_qkv_host.narrow_copy(2, seq_len - state_len, state_len)?
+            } else {
+                match prev_state {
+                    Some(prev_state) => {
+                        let prev_state_host = prev_state
+                            .try_host_buffer()?
+                            .ok_or_else(|| candle_core::Error::msg("missing host buffer for conv state"))?;
+                        let keep = state_len - seq_len;
+                        let prev_tail =
+                            prev_state_host.narrow_copy(2, prev_state_host.shape[2] - keep, keep)?;
+                        HipHostBuffer::cat(&[&prev_tail, &mixed_qkv_host], 2)?
+                    }
+                    None => {
+                        let zeros = HipHostBuffer::zeros(
+                            vec![
+                                mixed_qkv_host.shape[0],
+                                mixed_qkv_host.shape[1],
+                                state_len - seq_len,
+                            ],
+                            mixed_qkv_host.dtype,
+                            &mixed_qkv_host.device,
+                        )?;
+                        HipHostBuffer::cat(&[&zeros, &mixed_qkv_host], 2)?
+                    }
+                }
+            };
+            return Ok(Some(wrap(state_host)));
+        }
         let state_len = kernel_size.saturating_sub(1);
         if state_len == 0 {
             return Ok(None);
@@ -6114,6 +6198,71 @@ mod tests {
 
         assert!(matches!(packed.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(packed)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_prepare_depthwise_conv_input_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let prev_state = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![7f32, 8.0],
+            (1, 1, 2),
+            &device,
+        )?))
+        .into_state_buffer()?;
+        let mixed_qkv = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![9f32],
+            (1, 1, 1),
+            &device,
+        )?));
+
+        let (prepared, next_state) =
+            prepare_depthwise_conv_input_hip(Some(&prev_state), &mixed_qkv.into_tensor(), 3)?;
+
+        let prepared_buffer = prepared
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(prepared_buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        let next_state = next_state.expect("next state");
+        let next_state_buffer = next_state
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(next_state_buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(prepared)?, vec![7.0, 8.0, 9.0]);
+        assert_eq!(values_f32(next_state)?, vec![8.0, 9.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_update_depthwise_conv_state_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let prev_state = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![7f32, 8.0],
+            (1, 1, 2),
+            &device,
+        )?))
+        .into_state_buffer()?;
+        let mixed_qkv = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![9f32],
+            (1, 1, 1),
+            &device,
+        )?));
+
+        let state =
+            update_depthwise_conv_state_hip(Some(&prev_state), &mixed_qkv.into_tensor(), 3)?
+                .expect("state");
+
+        let buffer = state
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(state)?, vec![8.0, 9.0]);
         Ok(())
     }
 
