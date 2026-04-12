@@ -3727,6 +3727,34 @@ pub(crate) fn wrap_kv_cache(
     ))
 }
 
+fn prepare_full_attention_output_hip(
+    attn_output_hip: &HipTensor,
+    gate_hip: &HipTensor,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<HipTensor> {
+    if let (Some(attn_output), Some(gate)) = (
+        attn_output_hip.0 .0.direct_materialized_device_buffer(),
+        gate_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        return Ok(HipTensor::from_device_buffer(
+            attn_output
+                .transpose(1, 2)?
+                .reshape(vec![b_sz, q_len, attention_size])?
+                .to_dtype(hidden_dtype)?
+                .broadcast_mul(&gate.sigmoid()?)?,
+        ));
+    }
+    let attn_output = attn_output_hip
+        .transpose(1, 2)?
+        .reshape((b_sz, q_len, attention_size))?
+        .to_dtype(hidden_dtype)?;
+    let gate = gate_hip.sigmoid()?;
+    attn_output.broadcast_mul(&gate)
+}
+
 pub(crate) fn prepare_full_attention_output(
     attn_output: &Tensor,
     gate: &StateBuffer,
@@ -3737,25 +3765,15 @@ pub(crate) fn prepare_full_attention_output(
 ) -> Result<StateBuffer> {
     let attn_output_hip = HipTensor::from_scaffold_tensor(attn_output.clone());
     let gate_hip = HipTensor::from_state_buffer(gate);
-    if let (Some(attn_output), Some(gate)) = (
-        attn_output_hip.0 .0.direct_materialized_device_buffer(),
-        gate_hip.0 .0.direct_materialized_device_buffer(),
-    ) {
-        return HipTensor::from_device_buffer(
-            attn_output
-                .transpose(1, 2)?
-                .reshape(vec![b_sz, q_len, attention_size])?
-                .to_dtype(hidden_dtype)?
-                .broadcast_mul(&gate.sigmoid()?)?,
-        )
-        .into_state_buffer();
-    }
-    let attn_output = attn_output_hip
-        .transpose(1, 2)?
-        .reshape((b_sz, q_len, attention_size))?
-        .to_dtype(hidden_dtype)?;
-    let gate = gate_hip.sigmoid()?;
-    attn_output.broadcast_mul(&gate)?.into_state_buffer()
+    prepare_full_attention_output_hip(
+        &attn_output_hip,
+        &gate_hip,
+        b_sz,
+        q_len,
+        attention_size,
+        hidden_dtype,
+    )?
+    .into_state_buffer()
 }
 
 pub(crate) fn prepare_full_attention_output_buffer(
@@ -3768,25 +3786,15 @@ pub(crate) fn prepare_full_attention_output_buffer(
 ) -> Result<StateBuffer> {
     let attn_output_hip = HipTensor::from_state_buffer(attn_output);
     let gate_hip = HipTensor::from_state_buffer(gate);
-    if let (Some(attn_output), Some(gate)) = (
-        attn_output_hip.0 .0.direct_materialized_device_buffer(),
-        gate_hip.0 .0.direct_materialized_device_buffer(),
-    ) {
-        return HipTensor::from_device_buffer(
-            attn_output
-                .transpose(1, 2)?
-                .reshape(vec![b_sz, q_len, attention_size])?
-                .to_dtype(hidden_dtype)?
-                .broadcast_mul(&gate.sigmoid()?)?,
-        )
-        .into_state_buffer();
-    }
-    let attn_output = attn_output_hip
-        .transpose(1, 2)?
-        .reshape((b_sz, q_len, attention_size))?
-        .to_dtype(hidden_dtype)?;
-    let gate = gate_hip.sigmoid()?;
-    attn_output.broadcast_mul(&gate)?.into_state_buffer()
+    prepare_full_attention_output_hip(
+        &attn_output_hip,
+        &gate_hip,
+        b_sz,
+        q_len,
+        attention_size,
+        hidden_dtype,
+    )?
+    .into_state_buffer()
 }
 
 fn append_full_attention_kv_hip(
@@ -4766,6 +4774,29 @@ mod tests {
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(out)?, vec![1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_prepare_full_attention_output_stays_pending() -> Result<()> {
+        let attn_output = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1, 2], &[2.0, 4.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let gate = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 2], &[0.0, 0.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+
+        let out = prepare_full_attention_output_hip(&attn_output, &gate, 1, 1, 2, DType::F32)?;
+
+        assert!(out.try_host_buffer()?.is_some());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0]);
         Ok(())
     }
 
