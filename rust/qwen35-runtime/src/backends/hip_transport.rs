@@ -298,6 +298,138 @@ impl HipHostBuffer {
         })
     }
 
+    fn narrow_copy(&self, dim: usize, start: usize, len: usize) -> Result<Self> {
+        if dim >= self.shape.len() {
+            candle_core::bail!("narrow dim {dim} out of range for host buffer shape {:?}", self.shape);
+        }
+        if start.saturating_add(len) > self.shape[dim] {
+            candle_core::bail!(
+                "narrow range [{start}, {}) out of bounds for dim size {}",
+                start + len,
+                self.shape[dim]
+            );
+        }
+        if start == 0 && len == self.shape[dim] {
+            return Ok(self.clone());
+        }
+        let mut shape = self.shape.clone();
+        shape[dim] = len;
+        let (outer, inner) = self.outer_inner_counts(dim)?;
+        let elem_size = self.elem_size();
+        let src_chunk = self.shape[dim].saturating_mul(inner).saturating_mul(elem_size);
+        let dst_chunk = len.saturating_mul(inner).saturating_mul(elem_size);
+        let skip_bytes = start.saturating_mul(inner).saturating_mul(elem_size);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        let src = self.bytes.as_ref();
+        for outer_idx in 0..outer {
+            let src_offset = outer_idx.saturating_mul(src_chunk).saturating_add(skip_bytes);
+            let dst_offset = outer_idx.saturating_mul(dst_chunk);
+            out[dst_offset..dst_offset + dst_chunk]
+                .copy_from_slice(&src[src_offset..src_offset + dst_chunk]);
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
+    fn reshape_copy(&self, shape: Vec<usize>) -> Result<Self> {
+        if HipNativeBuffer::elem_count(&self.shape) != HipNativeBuffer::elem_count(&shape) {
+            candle_core::bail!("reshape changes element count: {:?} -> {:?}", self.shape, shape);
+        }
+        Ok(Self {
+            bytes: self.bytes.clone(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
+    fn transpose_copy(&self, dim1: usize, dim2: usize) -> Result<Self> {
+        if dim1 >= self.shape.len() || dim2 >= self.shape.len() {
+            candle_core::bail!("transpose dims out of range for host buffer shape {:?}", self.shape);
+        }
+        if dim1 == dim2 {
+            return Ok(self.clone());
+        }
+        let mut shape = self.shape.clone();
+        shape.swap(dim1, dim2);
+        let elem_count = HipNativeBuffer::elem_count(&shape);
+        let elem_size = self.elem_size();
+        let src_strides = {
+            let mut strides = vec![1usize; self.shape.len()];
+            for i in (0..self.shape.len().saturating_sub(1)).rev() {
+                strides[i] = strides[i + 1].saturating_mul(self.shape[i + 1]);
+            }
+            strides
+        };
+        let dst_strides = {
+            let mut strides = vec![1usize; shape.len()];
+            for i in (0..shape.len().saturating_sub(1)).rev() {
+                strides[i] = strides[i + 1].saturating_mul(shape[i + 1]);
+            }
+            strides
+        };
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        for dst_idx in 0..elem_count {
+            let mut rem = dst_idx;
+            let mut coords = vec![0usize; shape.len()];
+            for axis in 0..shape.len() {
+                let stride = dst_strides[axis];
+                coords[axis] = if stride == 0 { 0 } else { rem / stride };
+                rem %= stride.max(1);
+            }
+            coords.swap(dim1, dim2);
+            let src_idx = coords
+                .iter()
+                .zip(src_strides.iter())
+                .fold(0usize, |acc, (coord, stride)| acc.saturating_add(coord.saturating_mul(*stride)));
+            let src_byte = src_idx.saturating_mul(elem_size);
+            let dst_byte = dst_idx.saturating_mul(elem_size);
+            out[dst_byte..dst_byte + elem_size]
+                .copy_from_slice(&self.bytes.as_ref()[src_byte..src_byte + elem_size]);
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
+    fn select_copy(&self, dim: usize, index: usize) -> Result<Self> {
+        if dim >= self.shape.len() {
+            candle_core::bail!("select dim {dim} out of range for host buffer shape {:?}", self.shape);
+        }
+        if index >= self.shape[dim] {
+            candle_core::bail!(
+                "select index {index} out of range for dim size {}",
+                self.shape[dim]
+            );
+        }
+        let mut shape = self.shape.clone();
+        shape.remove(dim);
+        let elem_size = self.elem_size();
+        let inner = HipNativeBuffer::elem_count(&self.shape[dim + 1..]);
+        let outer = HipNativeBuffer::elem_count(&self.shape[..dim]);
+        let chunk_bytes = inner.saturating_mul(elem_size);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let src_off = ((outer_idx * self.shape[dim] + index) * inner) * elem_size;
+            let dst_off = outer_idx * chunk_bytes;
+            out[dst_off..dst_off + chunk_bytes]
+                .copy_from_slice(&self.bytes.as_ref()[src_off..src_off + chunk_bytes]);
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
     fn cat(buffers: &[&HipHostBuffer], dim: usize) -> Result<Self> {
         let Some(first) = buffers.first() else {
             candle_core::bail!("cannot concatenate an empty host buffer list");
@@ -1442,6 +1574,18 @@ impl HipDeviceBuffer {
         head_k_dim: usize,
         head_v_dim: usize,
     ) -> Result<(Self, Self)> {
+        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+            let core_attn_out = fused
+                .narrow_copy(1, 0, value_dim)?
+                .reshape_copy(vec![batch_size, seq_len, value_dim])?;
+            let recurrent_state = fused
+                .narrow_copy(1, value_dim, num_v_heads * head_k_dim * head_v_dim)?
+                .reshape_copy(vec![batch_size, num_v_heads, head_k_dim, head_v_dim])?;
+            return Ok((
+                Self::from_materialized_host_buffer(core_attn_out),
+                Self::from_materialized_host_buffer(recurrent_state),
+            ));
+        }
         let core_attn_out = self
             .narrow(1, 0, value_dim)?
             .reshape(vec![batch_size, seq_len, value_dim])?;
@@ -1460,6 +1604,22 @@ impl HipDeviceBuffer {
         num_v_heads: usize,
         state_len: usize,
     ) -> Result<(Self, Self, Self)> {
+        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+            let out_width = conv_dim + num_v_heads;
+            let packed = fused
+                .narrow_copy(1, 0, seq_len * out_width)?
+                .reshape_copy(vec![batch_size, seq_len, out_width])?;
+            let mixed_qkv = packed.narrow_copy(2, 0, conv_dim)?;
+            let g = packed.narrow_copy(2, conv_dim, num_v_heads)?;
+            let conv_state = fused
+                .narrow_copy(1, seq_len * out_width, conv_dim * state_len)?
+                .reshape_copy(vec![batch_size, conv_dim, state_len])?;
+            return Ok((
+                Self::from_materialized_host_buffer(mixed_qkv),
+                Self::from_materialized_host_buffer(g),
+                Self::from_materialized_host_buffer(conv_state),
+            ));
+        }
         let out_width = conv_dim + num_v_heads;
         let packed = self
             .narrow(1, 0, seq_len * out_width)?
@@ -1484,6 +1644,22 @@ impl HipDeviceBuffer {
         k_head_dim: usize,
         output_dtype: DType,
     ) -> Result<(Self, Self)> {
+        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+            let output_scan = fused
+                .narrow_copy(1, 0, total_sequence_length)?
+                .reshape_copy(vec![batch_size, num_heads, total_sequence_length, v_head_dim])?;
+            let output = output_scan
+                .narrow_copy(2, 0, output_sequence_length)?
+                .transpose_copy(1, 2)?
+                .cast(output_dtype)?;
+            let recurrent_state = fused
+                .narrow_copy(1, total_sequence_length, k_head_dim)?
+                .reshape_copy(vec![batch_size * num_heads, k_head_dim, v_head_dim])?;
+            return Ok((
+                Self::from_materialized_host_buffer(output),
+                Self::from_materialized_host_buffer(recurrent_state),
+            ));
+        }
         let output_scan = self
             .narrow(1, 0, total_sequence_length)?
             .reshape(vec![batch_size, num_heads, total_sequence_length, v_head_dim])?;
@@ -1505,6 +1681,13 @@ impl HipDeviceBuffer {
         chunk_size: usize,
         k_head_dim: usize,
     ) -> Result<(Self, Self, Self)> {
+        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+            return Ok((
+                Self::from_materialized_host_buffer(fused.narrow_copy(1, 0, chunk_size)?),
+                Self::from_materialized_host_buffer(fused.narrow_copy(1, chunk_size, chunk_size)?),
+                Self::from_materialized_host_buffer(fused.narrow_copy(1, 2 * chunk_size, k_head_dim)?),
+            ));
+        }
         Ok((
             self.narrow(1, 0, chunk_size)?,
             self.narrow(1, chunk_size, chunk_size)?,
@@ -3212,6 +3395,14 @@ pub(crate) fn update_depthwise_conv_state(
 fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor> {
     let lhs = HipTensor::from_state_buffer(lhs);
     let rhs = HipTensor::from_state_buffer(rhs);
+    if let (Some(lhs_host), Some(rhs_host)) = (lhs.try_host_buffer()?, rhs.try_host_buffer()?) {
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
+                &[&lhs_host, &rhs_host],
+                lhs.rank() - 1,
+            )?),
+        ));
+    }
     if let (Some(lhs), Some(rhs)) = (
         lhs.0 .0.direct_materialized_device_buffer(),
         rhs.0 .0.direct_materialized_device_buffer(),
@@ -3236,6 +3427,18 @@ fn pack_delta_state_scan_hip(
     let weighted_key_scan = HipTensor::from_scaffold_tensor(weighted_key_scan.clone());
     let k_cumdecay_scan = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
     let state_decay_feature = HipTensor::from_scaffold_tensor(state_decay_feature.clone());
+    if let (Some(weighted_key_scan), Some(k_cumdecay_scan), Some(state_decay_feature)) = (
+        weighted_key_scan.try_host_buffer()?,
+        k_cumdecay_scan.try_host_buffer()?,
+        state_decay_feature.try_host_buffer()?,
+    ) {
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
+                &[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature],
+                3,
+            )?),
+        ));
+    }
     if let (Some(weighted_key_scan), Some(k_cumdecay_scan), Some(state_decay_feature)) = (
         weighted_key_scan.0 .0.direct_materialized_device_buffer(),
         k_cumdecay_scan.0 .0.direct_materialized_device_buffer(),
@@ -3270,6 +3473,19 @@ fn pack_delta_chunk_fused_hip(
     let k_cumdecay = HipTensor::from_scaffold_tensor(k_cumdecay.clone());
     let q_state = HipTensor::from_scaffold_tensor(q_state.clone());
     let state_decay = HipTensor::from_scaffold_tensor(state_decay.clone());
+    if let (Some(weighted_key), Some(k_cumdecay), Some(q_state), Some(state_decay)) = (
+        weighted_key.try_host_buffer()?,
+        k_cumdecay.try_host_buffer()?,
+        q_state.try_host_buffer()?,
+        state_decay.try_host_buffer()?,
+    ) {
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
+                &[&weighted_key, &k_cumdecay, &q_state, &state_decay],
+                2,
+            )?),
+        ));
+    }
     if let (Some(weighted_key), Some(k_cumdecay), Some(q_state), Some(state_decay)) = (
         weighted_key.0 .0.direct_materialized_device_buffer(),
         k_cumdecay.0 .0.direct_materialized_device_buffer(),
@@ -3477,16 +3693,28 @@ pub(crate) fn unpack_scan_fused_output_and_state(
 }
 
 pub(crate) fn state_scan_chunk(state_scan: &StateBuffer, chunk_idx: usize) -> Result<StateBuffer> {
-    HipTensor::from_state_buffer(state_scan)
-        .select(1, chunk_idx)?
-        .into_state_buffer()
+    let state_scan = HipTensor::from_state_buffer(state_scan);
+    if let Some(host) = state_scan.try_host_buffer()? {
+        return HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+            host.select_copy(1, chunk_idx)?,
+        ))
+        .into_state_buffer();
+    }
+    state_scan.select(1, chunk_idx)?.into_state_buffer()
 }
 
 pub(crate) fn state_scan_next_chunk(
     state_scan: &StateBuffer,
     next_chunk_idx: usize,
 ) -> Result<StateBuffer> {
-    HipTensor::from_state_buffer(state_scan)
+    let state_scan = HipTensor::from_state_buffer(state_scan);
+    if let Some(host) = state_scan.try_host_buffer()? {
+        return HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+            host.select_copy(1, next_chunk_idx)?,
+        ))
+        .into_state_buffer();
+    }
+    state_scan
         .select(1, next_chunk_idx)?
         .contiguous()?
         .into_state_buffer()
@@ -5890,6 +6118,35 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_host_storage_pack_delta_state_scan_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let weighted_key_scan = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32, 2.0], (1, 1, 1, 2), &device)?,
+        ));
+        let k_cumdecay_scan = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![3f32], (1, 1, 1, 1), &device)?,
+        ));
+        let state_decay_feature = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![4f32], (1, 1, 1, 1), &device)?,
+        ));
+
+        let packed = pack_delta_state_scan_hip(
+            &weighted_key_scan.into_tensor(),
+            &k_cumdecay_scan.into_tensor(),
+            &state_decay_feature.into_tensor(),
+        )?;
+
+        let buffer = packed
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(packed)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_unpack_linear_decode_output_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let fused = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 4), &device)?;
@@ -5900,6 +6157,30 @@ mod tests {
 
         assert!(matches!(core_attn_out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert!(matches!(recurrent_state.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(core_attn_out)?, vec![1.0, 2.0]);
+        assert_eq!(values_f32(recurrent_state)?, vec![3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_unpack_linear_decode_output_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let fused = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 4),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let (core_attn_out, recurrent_state) =
+            unpack_linear_decode_output_hip(&fused, 1, 1, 2, 1, 1, 2)?;
+
+        for tensor in [&core_attn_out, &recurrent_state] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
         assert_eq!(values_f32(core_attn_out)?, vec![1.0, 2.0]);
         assert_eq!(values_f32(recurrent_state)?, vec![3.0, 4.0]);
         Ok(())
@@ -6390,6 +6671,166 @@ mod tests {
             .expect("materialized device leaf");
         assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         assert_eq!(host_buffer_values_f32(&mixed.try_host_buffer()?.expect("host"))?, vec![7.0, 10.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_unpack_linear_prefill_output_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let fused = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            (1, 7),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let (mixed_qkv, g, conv_state) =
+            unpack_linear_prefill_output_hip(&fused, 1, 1, 2, 1, 2)?;
+
+        for tensor in [&mixed_qkv, &g, &conv_state] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
+        assert_eq!(values_f32(mixed_qkv)?, vec![1.0, 2.0]);
+        assert_eq!(values_f32(g)?, vec![3.0]);
+        assert_eq!(values_f32(conv_state)?, vec![4.0, 5.0, 6.0, 7.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_unpack_scan_fused_output_and_state_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let fused = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 2, 2),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let (output, recurrent_state) = unpack_scan_fused_output_and_state_hip(
+            &fused,
+            1,
+            1,
+            1,
+            1,
+            2,
+            1,
+            DType::F32,
+        )?;
+
+        for tensor in [&output, &recurrent_state] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
+        assert_eq!(values_f32(output)?, vec![1.0, 2.0]);
+        assert_eq!(values_f32(recurrent_state)?, vec![3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_unpack_chunk_fused_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let fused = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0, 5.0],
+            (1, 5),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let (attn, local, q_state) = unpack_chunk_fused_hip(&fused, 2, 1)?;
+
+        for tensor in [&attn, &local, &q_state] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
+        assert_eq!(values_f32(attn)?, vec![1.0, 2.0]);
+        assert_eq!(values_f32(local)?, vec![3.0, 4.0]);
+        assert_eq!(values_f32(q_state)?, vec![5.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_pack_delta_chunk_fused_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let weighted_key = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32, 2.0], (1, 1, 2), &device)?,
+        ));
+        let k_cumdecay = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![3f32], (1, 1, 1), &device)?,
+        ));
+        let q_state = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![4f32], (1, 1, 1), &device)?,
+        ));
+        let state_decay = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![5f32], (1, 1, 1), &device)?,
+        ));
+
+        let packed = pack_delta_chunk_fused_hip(
+            &weighted_key.into_tensor(),
+            &k_cumdecay.into_tensor(),
+            &q_state.into_tensor(),
+            &state_decay.into_tensor(),
+        )?;
+
+        let buffer = packed
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(packed)?, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_state_scan_chunk_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let state_scan = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 2, 2),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let chunk = state_scan_chunk(&state_scan, 1)?;
+        let chunk = HipTensor::from_state_buffer(&chunk);
+
+        let buffer = chunk
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(chunk)?, vec![3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_state_scan_next_chunk_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let state_scan = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 2, 2),
+            &device,
+        )?))
+        .into_state_buffer()?;
+
+        let chunk = state_scan_next_chunk(&state_scan, 1)?;
+        let chunk = HipTensor::from_state_buffer(&chunk);
+
+        let buffer = chunk
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(chunk)?, vec![3.0, 4.0]);
         Ok(())
     }
 
