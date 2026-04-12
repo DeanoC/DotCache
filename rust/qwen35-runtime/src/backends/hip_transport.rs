@@ -291,6 +291,46 @@ impl HipHostBuffer {
     fn broadcast_mul(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
         Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_mul, "broadcast mul")
     }
+
+    fn recip(&self) -> Result<Self> {
+        HipNativeBuffer::recip(Arc::new(self.to_native_host_buffer()))
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for recip host buffer".into())
+            })
+    }
+
+    fn sigmoid(&self) -> Result<Self> {
+        HipNativeBuffer::recip(Arc::new(HipNativeBuffer::add_scalar(
+            Arc::new(HipNativeBuffer::exp(Arc::new(HipNativeBuffer::neg(Arc::new(
+                self.to_native_host_buffer(),
+            ))))),
+            1.0,
+        )))
+        .materialize_host_buffer()?
+        .ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for sigmoid host buffer".into())
+        })
+    }
+
+    fn reduce_keepdim(&self, dim: usize, sum: bool) -> Result<Self> {
+        let buffer = if sum {
+            HipNativeBuffer::sum_keepdim(Arc::new(self.to_native_host_buffer()), dim)
+        } else {
+            HipNativeBuffer::max_keepdim(Arc::new(self.to_native_host_buffer()), dim)
+        };
+        buffer.materialize_host_buffer()?.ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for reduced host buffer".into())
+        })
+    }
+
+    fn max_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_keepdim(dim, false)
+    }
+
+    fn sum_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_keepdim(dim, true)
+    }
 }
 
 impl HipDeviceBuffer {
@@ -545,6 +585,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.sigmoid()?));
+        }
         Ok(Self::from_tensor(
             (self.materialize_tensor()?.neg()?.exp()? + 1.0)?.recip()?,
         ))
@@ -599,10 +642,16 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn max_keepdim(&self, dim: usize) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.max_keepdim(dim)?));
+        }
         Ok(Self::from_tensor(self.materialize_tensor()?.max_keepdim(dim)?))
     }
 
     pub(crate) fn sum_keepdim(&self, dim: usize) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.sum_keepdim(dim)?));
+        }
         Ok(Self::from_tensor(self.materialize_tensor()?.sum_keepdim(dim)?))
     }
 
@@ -611,6 +660,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.recip()?));
+        }
         Ok(Self::from_tensor(self.materialize_tensor()?.recip()?))
     }
 
@@ -4101,6 +4153,62 @@ mod tests {
         assert!(!out.is_materialized());
         let host = out.try_host_buffer()?.expect("pending upload host bytes");
         assert_eq!(host_buffer_values_f32(&host)?, vec![4.0, 6.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_recip_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[2.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.recip()?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![0.5, 0.25]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_sum_keepdim_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.sum_keepdim(1)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[2, 1]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![3.0, 7.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_max_keepdim_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.max_keepdim(1)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[2, 1]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![2.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_sigmoid_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[0.0, 1.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.sigmoid()?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        assert!((vals[0] - 0.5).abs() < 1e-5);
+        assert!((vals[1] - 0.7310586).abs() < 1e-5);
         Ok(())
     }
 
