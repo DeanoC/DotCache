@@ -933,7 +933,7 @@ impl candle::CustomOp2 for HipRmsNorm {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
@@ -965,7 +965,11 @@ impl candle::CustomOp2 for HipRmsNorm {
 
         let device = xs.device().clone();
         let out_shape = xs_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, xs.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(xs.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_rms_norm(
                 hip::dtype_code(xs.dtype())?,
@@ -976,13 +980,20 @@ impl candle::CustomOp2 for HipRmsNorm {
                 if self.add_unit_offset { 1 } else { 0 },
                 xs.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
                 weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(xs.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1020,7 +1031,7 @@ impl candle::CustomOp3 for HipRmsNormGated {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(hidden_layout.is_contiguous()
@@ -1062,7 +1073,11 @@ impl candle::CustomOp3 for HipRmsNormGated {
 
         let device = hidden.device().clone();
         let out_shape = hidden_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, hidden.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(hidden.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
                 hip::dtype_code(hidden.dtype())?,
@@ -1073,13 +1088,20 @@ impl candle::CustomOp3 for HipRmsNormGated {
                 hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
                 gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
                 weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(hidden.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1330,7 +1352,7 @@ impl candle::CustomOp2 for HipSwigluMul {
         up: &candle::HipStorage,
         up_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
@@ -1355,7 +1377,10 @@ impl candle::CustomOp2 for HipSwigluMul {
         let storage_dtype = gate.dtype();
         let elem_count = gate_layout.shape().elem_count();
         let out_shape = gate_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_swiglu_mul(
                 hip::dtype_code(storage_dtype)?,
@@ -1363,13 +1388,20 @@ impl candle::CustomOp2 for HipSwigluMul {
                 elem_count,
                 gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
                 up.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1406,7 +1438,7 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         indexes: &candle::HipStorage,
         indexes_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
@@ -1433,7 +1465,11 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         let out_shape = candle::Shape::from(out_dims);
         let device = embeddings.device().clone();
         let token_count = indexes_layout.shape().elem_count();
-        let output = unsafe { device.alloc_uninit(&out_shape, embeddings.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(embeddings.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_embedding_lookup(
                 hip::dtype_code(embeddings.dtype())?,
@@ -1445,13 +1481,20 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
                 embeddings.raw_device_ptr_with_offset(embeddings_layout.start_offset())?
                     as *const c_void,
                 indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(embeddings.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1492,7 +1535,7 @@ impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
         indexes: &candle::HipStorage,
         indexes_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !indexes_layout.is_contiguous() {
@@ -1504,7 +1547,12 @@ impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
         let mut out_dims = indexes_layout.shape().dims().to_vec();
         out_dims.push(self.embedding.meta.hidden_size);
         let out_shape = candle::Shape::from(out_dims);
-        let output = unsafe { device.alloc_uninit(&out_shape, self.embedding.meta.dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output =
+            vec![0u8; elem_count.saturating_mul(self.embedding.meta.dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_embedding_lookup(
                 hip::dtype_code(self.embedding.meta.dtype)?,
@@ -1515,13 +1563,20 @@ impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
                 self.embedding.meta.hidden_size,
                 device_ptr as *const c_void,
                 indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(self.embedding.meta.dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1556,7 +1611,7 @@ impl candle::CustomOp1 for HipImmutableOutputProjection {
         hidden: &candle::HipStorage,
         hidden_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !hidden_layout.is_contiguous() {
@@ -1577,7 +1632,12 @@ impl candle::CustomOp1 for HipImmutableOutputProjection {
         let mut out_dims = dims.to_vec();
         *out_dims.last_mut().expect("validated non-empty dims") = self.embedding.meta.vocab_size;
         let out_shape = candle::Shape::from(out_dims);
-        let output = unsafe { device.alloc_uninit(&out_shape, self.embedding.meta.dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output =
+            vec![0u8; elem_count.saturating_mul(self.embedding.meta.dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
                 hip::dtype_code(self.embedding.meta.dtype)?,
@@ -1587,13 +1647,20 @@ impl candle::CustomOp1 for HipImmutableOutputProjection {
                 self.embedding.meta.vocab_size,
                 hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
                 weight_ptr,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(self.embedding.meta.dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1637,13 +1704,17 @@ impl candle::CustomOp1 for HipCausalMask {
         storage: &candle::HipStorage,
         _layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         let device = storage.device().clone();
         let kv_len = self.tgt_len + self.seqlen_offset;
         let out_shape = candle::Shape::from((self.batch_size, 1usize, self.tgt_len, kv_len));
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_causal_mask(
                 hip::dtype_code(storage.dtype())?,
@@ -1651,13 +1722,20 @@ impl candle::CustomOp1 for HipCausalMask {
                 self.batch_size,
                 self.tgt_len,
                 self.seqlen_offset,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1695,7 +1773,7 @@ impl candle::CustomOp1 for HipCumsumLastDim {
         storage: &candle::HipStorage,
         layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !layout.is_contiguous() {
@@ -1717,7 +1795,11 @@ impl candle::CustomOp1 for HipCumsumLastDim {
 
         let device = storage.device().clone();
         let out_shape = layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
                 hip::dtype_code(storage.dtype())?,
@@ -1725,13 +1807,20 @@ impl candle::CustomOp1 for HipCumsumLastDim {
                 self.rows,
                 self.cols,
                 storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1771,7 +1860,7 @@ impl candle::CustomOp1 for HipL2Norm {
         storage: &candle::HipStorage,
         layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !layout.is_contiguous() {
@@ -1793,7 +1882,11 @@ impl candle::CustomOp1 for HipL2Norm {
 
         let device = storage.device().clone();
         let out_shape = layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_l2norm(
                 hip::dtype_code(storage.dtype())?,
@@ -1802,13 +1895,20 @@ impl candle::CustomOp1 for HipL2Norm {
                 self.n_cols,
                 self.eps,
                 storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1863,7 +1963,7 @@ impl candle::CustomOp3 for HipValueDecay {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(a_layout.is_contiguous()
@@ -1900,7 +2000,11 @@ impl candle::CustomOp3 for HipValueDecay {
 
         let device = a.device().clone();
         let out_shape = a_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, a.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(a.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_value_decay(
                 hip::dtype_code(a.dtype())?,
@@ -1911,13 +2015,20 @@ impl candle::CustomOp3 for HipValueDecay {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(a.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
