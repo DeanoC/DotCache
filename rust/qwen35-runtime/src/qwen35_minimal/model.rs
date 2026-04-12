@@ -6314,6 +6314,97 @@ pub(crate) fn delta_chunk_fused(
     prev_state.apply_op3_no_bwd(packed_chunk, value, &DeltaChunkFused)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_chunk_fused_host_buffer(
+    prev_state: &Tensor,
+    packed_chunk: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let prev_state = prev_state.contiguous()?;
+    let packed_chunk = packed_chunk.contiguous()?;
+    let value = value.contiguous()?;
+    let ordinal = match prev_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(packed_chunk.device().same_device(prev_state.device())
+        && value.device().same_device(prev_state.device()))
+    {
+        return Ok(None);
+    }
+    let (prev_storage, prev_layout) = prev_state.storage_and_layout();
+    let (packed_storage, packed_layout) = packed_chunk.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(prev_storage), Storage::Hip(packed_storage), Storage::Hip(value_storage)) =
+        (&*prev_storage, &*packed_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(prev_layout.is_contiguous() && packed_layout.is_contiguous() && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = prev_layout.shape().dims3()?;
+    let (packed_bh, chunk_size, packed_width) = packed_layout.shape().dims3()?;
+    let (value_bh, value_chunk_size, value_v_head_dim) = value_layout.shape().dims3()?;
+    if packed_bh != batch_heads
+        || value_bh != batch_heads
+        || value_chunk_size != chunk_size
+        || value_v_head_dim != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+        || prev_state.dtype() != packed_chunk.dtype()
+        || prev_state.dtype() != value.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(prev_state.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, 2 * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(prev_state.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            prev_storage.raw_device_ptr_with_offset(prev_layout.start_offset())? as *const c_void,
+            packed_storage.raw_device_ptr_with_offset(packed_layout.start_offset())?
+                as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-chunk-fused-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_chunk_fused_host_buffer(
+    prev_state: &Tensor,
+    packed_chunk: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (prev_state, packed_chunk, value);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaRecurrentPrefill;
 
