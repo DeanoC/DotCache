@@ -540,11 +540,48 @@ impl HipHostBuffer {
     }
 
     fn rms_norm(&self, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Self> {
-        rms_norm_host(&HipTensor::from_host_buffer(self.clone()), weight, eps, add_unit_offset)?
-            .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for rms-norm host buffer".into())
-            })
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("rms_norm unsupported for dtype {:?}", self.dtype);
+        }
+        let Some(weight_bytes) = HipNativeBuffer::tensor_to_host_float_bytes(weight, DType::F32)? else {
+            candle_core::bail!("rms_norm weight unsupported for host materialization");
+        };
+        let shape = self.shape.as_slice();
+        let Some(&inner) = shape.last() else {
+            candle_core::bail!("rms_norm requires non-empty shape");
+        };
+        if weight.dim(0)? != inner {
+            candle_core::bail!(
+                "rms_norm weight dim mismatch: expected {inner}, got {}",
+                weight.dim(0)?
+            );
+        }
+        let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let mut sum_sq = 0.0f64;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                sum_sq += value * value;
+            }
+            let denom = ((sum_sq / inner as f64) + eps).sqrt();
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                let mut w = HipNativeBuffer::read_host_float(&weight_bytes, DType::F32, inner_idx)?;
+                if add_unit_offset {
+                    w += 1.0;
+                }
+                HipNativeBuffer::write_host_float(&mut out, self.dtype, idx, (value / denom) * w)?;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
     }
 
     fn rms_norm_gated(
@@ -553,38 +590,145 @@ impl HipHostBuffer {
         weight: &Tensor,
         eps: f64,
     ) -> Result<Self> {
-        rms_norm_gated_host(
-            &HipTensor::from_host_buffer(self.clone()),
-            &HipTensor::from_host_buffer(gate.clone()),
-            weight,
-            eps,
-        )?
-        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
-        .ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for gated rms-norm host buffer".into())
+        if self.shape != gate.shape || self.dtype != gate.dtype {
+            candle_core::bail!(
+                "gated rms_norm shape/dtype mismatch: {:?}/{:?} vs {:?}/{:?}",
+                self.shape,
+                self.dtype,
+                gate.shape,
+                gate.dtype
+            );
+        }
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("gated rms_norm unsupported for dtype {:?}", self.dtype);
+        }
+        let Some(weight_bytes) = HipNativeBuffer::tensor_to_host_float_bytes(weight, DType::F32)? else {
+            candle_core::bail!("gated rms_norm weight unsupported for host materialization");
+        };
+        let shape = self.shape.as_slice();
+        let Some(&inner) = shape.last() else {
+            candle_core::bail!("gated rms_norm requires non-empty shape");
+        };
+        if weight.dim(0)? != inner {
+            candle_core::bail!(
+                "gated rms_norm weight dim mismatch: expected {inner}, got {}",
+                weight.dim(0)?
+            );
+        }
+        let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let mut sum_sq = 0.0f64;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                sum_sq += value * value;
+            }
+            let denom = ((sum_sq / inner as f64) + eps).sqrt();
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let x = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                let g = HipNativeBuffer::read_host_float(gate.bytes.as_ref(), gate.dtype, idx)?;
+                let w = HipNativeBuffer::read_host_float(&weight_bytes, DType::F32, inner_idx)?;
+                let silu = g / (1.0 + (-g).exp());
+                HipNativeBuffer::write_host_float(
+                    &mut out,
+                    self.dtype,
+                    idx,
+                    ((x / denom) * w) * silu,
+                )?;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
         })
     }
 
     fn swiglu_mul(&self, up: &HipHostBuffer) -> Result<Self> {
-        swiglu_mul_host(
-            &HipTensor::from_host_buffer(self.clone()),
-            &HipTensor::from_host_buffer(up.clone()),
-        )?
-        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
-        .ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for swiglu host buffer".into())
+        if self.shape != up.shape || self.dtype != up.dtype {
+            candle_core::bail!(
+                "swiglu_mul shape/dtype mismatch: {:?}/{:?} vs {:?}/{:?}",
+                self.shape,
+                self.dtype,
+                up.shape,
+                up.dtype
+            );
+        }
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("swiglu_mul unsupported for dtype {:?}", self.dtype);
+        }
+        let elem_count = HipNativeBuffer::elem_count(&self.shape);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&self.shape, self.dtype)];
+        for idx in 0..elem_count {
+            let gate_x = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+            let up_x = HipNativeBuffer::read_host_float(up.bytes.as_ref(), up.dtype, idx)?;
+            let silu = gate_x / (1.0 + (-gate_x).exp());
+            HipNativeBuffer::write_host_float(&mut out, self.dtype, idx, silu * up_x)?;
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
         })
     }
 
     fn value_decay(&self, dt_bias: &HipHostBuffer, a_log_exp: &HipHostBuffer) -> Result<Self> {
-        value_decay_host(
-            &HipTensor::from_host_buffer(self.clone()),
-            &HipTensor::from_host_buffer(dt_bias.clone()),
-            &HipTensor::from_host_buffer(a_log_exp.clone()),
-        )?
-        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
-        .ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for value-decay host buffer".into())
+        if self.dtype != dt_bias.dtype || self.dtype != a_log_exp.dtype {
+            candle_core::bail!(
+                "value_decay dtype mismatch: {:?} vs {:?} vs {:?}",
+                self.dtype,
+                dt_bias.dtype,
+                a_log_exp.dtype
+            );
+        }
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("value_decay unsupported for dtype {:?}", self.dtype);
+        }
+        let add_shape =
+            HipNativeBuffer::broadcast_shape(self.shape.as_slice(), dt_bias.shape.as_slice(), "host-value-decay-add")?;
+        let out_shape =
+            HipNativeBuffer::broadcast_shape(&add_shape, a_log_exp.shape.as_slice(), "host-value-decay-mul")?;
+        let elem_count = HipNativeBuffer::elem_count(&out_shape);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&out_shape, self.dtype)];
+        for out_idx in 0..elem_count {
+            let a_idx =
+                HipNativeBuffer::broadcast_elem_index(out_idx, &out_shape, self.shape.as_slice());
+            let dt_bias_idx =
+                HipNativeBuffer::broadcast_elem_index(out_idx, &out_shape, dt_bias.shape.as_slice());
+            let a_log_exp_idx =
+                HipNativeBuffer::broadcast_elem_index(out_idx, &out_shape, a_log_exp.shape.as_slice());
+            let a_val = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, a_idx)?;
+            let dt_bias_val =
+                HipNativeBuffer::read_host_float(dt_bias.bytes.as_ref(), dt_bias.dtype, dt_bias_idx)?;
+            let a_log_exp_val = HipNativeBuffer::read_host_float(
+                a_log_exp.bytes.as_ref(),
+                a_log_exp.dtype,
+                a_log_exp_idx,
+            )?;
+            let x = a_val + dt_bias_val;
+            let softplus = if x > 20.0 {
+                x
+            } else if x < -20.0 {
+                x.exp()
+            } else {
+                (1.0 + x.exp()).ln()
+            };
+            HipNativeBuffer::write_host_float(
+                &mut out,
+                self.dtype,
+                out_idx,
+                -(softplus * a_log_exp_val),
+            )?;
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: out_shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
         })
     }
 
