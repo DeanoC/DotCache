@@ -4330,7 +4330,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -4364,7 +4364,11 @@ impl candle::CustomOp3 for DeltaStateScan {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, num_chunks + 1, k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_state_scan(
                 dtype_code,
@@ -4379,13 +4383,20 @@ impl candle::CustomOp3 for DeltaStateScan {
                 packed_scan.raw_device_ptr_with_offset(packed_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -4594,7 +4605,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -4626,7 +4637,11 @@ impl candle::CustomOp3 for DeltaChunkFused {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, 2 * chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
                 dtype_code,
@@ -4639,13 +4654,20 @@ impl candle::CustomOp3 for DeltaChunkFused {
                 packed_chunk.raw_device_ptr_with_offset(packed_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7358,7 +7380,7 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -7398,7 +7420,11 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
         let device = query_scan.device().clone();
         let storage_dtype = query_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_local_attn_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -7410,13 +7436,20 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
                 query_scan.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
                 key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7454,7 +7487,7 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(k_beta_layout.is_contiguous()
@@ -7494,7 +7527,11 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
         let device = k_beta_scan.device().clone();
         let storage_dtype = k_beta_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_base_attn_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -7506,13 +7543,20 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
                 k_beta_scan.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
                 key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7542,7 +7586,7 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
         base_attn_scan: &candle::HipStorage,
         base_attn_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !base_attn_layout.is_contiguous() {
@@ -7560,7 +7604,11 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
         let device = base_attn_scan.device().clone();
         let storage_dtype = base_attn_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_attn_solve_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -7570,13 +7618,20 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
                 chunk_size,
                 base_attn_scan.raw_device_ptr_with_offset(base_attn_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7614,7 +7669,7 @@ impl candle::CustomOp3 for DeltaAttnSolveFromInputs {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !k_beta_layout.is_contiguous() || !key_layout.is_contiguous() || !exp_g_layout.is_contiguous() {
@@ -7651,7 +7706,11 @@ impl candle::CustomOp3 for DeltaAttnSolveFromInputs {
         let device = k_beta_scan.device().clone();
         let storage_dtype = k_beta_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_attn_solve_from_inputs(
                 hip::dtype_code(storage_dtype)?,
@@ -7663,13 +7722,20 @@ impl candle::CustomOp3 for DeltaAttnSolveFromInputs {
                 k_beta_scan.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
                 key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
