@@ -1308,6 +1308,81 @@ impl candle::CustomOp2 for HipRmsNorm {
     }
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_rms_norm_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let xs = xs.contiguous()?;
+    let weight = weight.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weight.device().same_device(xs.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    if xs.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (xs_storage, xs_layout) = xs.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (Storage::Hip(xs_storage), Storage::Hip(weight_storage)) = (&*xs_storage, &*weight_storage) else {
+        return Ok(None);
+    };
+    if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let shape = xs_layout.shape().dims().to_vec();
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = xs_layout.shape().elem_count() / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let mut out = vec![0u8; shape.iter().product::<usize>().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            if add_unit_offset { 1 } else { 0 },
+            xs_storage.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_rms_norm_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (xs, weight, eps, add_unit_offset);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipRmsNormGated {
     n_rows: usize,

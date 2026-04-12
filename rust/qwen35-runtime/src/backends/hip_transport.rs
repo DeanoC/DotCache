@@ -5,7 +5,8 @@ use crate::qwen35_minimal_impl::model::{
     delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_immutable_embedding_lookup,
-    hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_swiglu_mul, hip_value_decay,
+    hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_host_buffer,
+    hip_swiglu_mul, hip_value_decay,
     immutable_output_projection, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_stateful_conv_hip, linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
@@ -4281,6 +4282,25 @@ fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
     )))
 }
 
+fn rms_norm_hip_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_rms_norm_host_buffer(xs, weight, eps, add_unit_offset)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7692,6 +7712,9 @@ pub(crate) fn rms_norm(
     eps: f64,
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
+    if let Some(host) = rms_norm_hip_host_buffer(xs, weight, eps, add_unit_offset)? {
+        return Ok(host);
+    }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if xs_hip.0 .0.direct_materialized_device_buffer().is_some() {
         return rms_norm_hip(&xs_hip, weight, eps, add_unit_offset);
