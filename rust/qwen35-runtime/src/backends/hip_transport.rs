@@ -404,6 +404,73 @@ impl HipNativeBuffer {
         Ok(Some(out.into()))
     }
 
+    fn host_bytes_matmul(lhs: &Arc<HipNativeBuffer>, rhs: &Arc<HipNativeBuffer>) -> Result<Option<Self>> {
+        if lhs.dtype() != rhs.dtype() || !Self::supports_host_float_ops(lhs.dtype()) {
+            return Ok(None);
+        }
+        let lhs_bytes = match lhs.try_materialize_host_bytes()? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let rhs_bytes = match rhs.try_materialize_host_bytes()? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let lhs_shape = lhs.shape();
+        let rhs_shape = rhs.shape();
+        if lhs_shape.len() < 2 || rhs_shape.len() < 2 {
+            return Ok(None);
+        }
+
+        let m = lhs_shape[lhs_shape.len() - 2];
+        let k = lhs_shape[lhs_shape.len() - 1];
+        let rhs_k = rhs_shape[rhs_shape.len() - 2];
+        let n = rhs_shape[rhs_shape.len() - 1];
+        if k != rhs_k {
+            candle_core::bail!(
+                "incompatible matmul shapes {:?} and {:?}",
+                lhs_shape,
+                rhs_shape
+            )
+        }
+
+        let lhs_batch = &lhs_shape[..lhs_shape.len() - 2];
+        let rhs_batch = &rhs_shape[..rhs_shape.len() - 2];
+        let batch_shape =
+            Self::broadcast_shape(lhs_batch, rhs_batch, "hip-native-host-matmul")?;
+        let mut out_shape = batch_shape.clone();
+        out_shape.push(m);
+        out_shape.push(n);
+        let out_elems = Self::elem_count(&out_shape);
+        let mut out = vec![0u8; out_elems.saturating_mul(lhs.dtype().size_in_bytes())];
+
+        let batch_count = Self::elem_count(&batch_shape);
+        for batch_idx in 0..batch_count.max(1) {
+            let lhs_batch_idx = Self::broadcast_elem_index(batch_idx, &batch_shape, lhs_batch);
+            let rhs_batch_idx = Self::broadcast_elem_index(batch_idx, &batch_shape, rhs_batch);
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0f64;
+                    for kk in 0..k {
+                        let lhs_idx = ((lhs_batch_idx * m + i) * k) + kk;
+                        let rhs_idx = ((rhs_batch_idx * k + kk) * n) + j;
+                        acc += Self::read_host_float(&lhs_bytes, lhs.dtype(), lhs_idx)?
+                            * Self::read_host_float(&rhs_bytes, rhs.dtype(), rhs_idx)?;
+                    }
+                    let out_idx = ((batch_idx * m + i) * n) + j;
+                    Self::write_host_float(&mut out, lhs.dtype(), out_idx, acc)?;
+                }
+            }
+        }
+
+        Ok(Some(Self {
+            expr: HipNativeExpr::HostBytes { bytes: out.into() },
+            shape: out_shape,
+            dtype: lhs.dtype(),
+            device: lhs.device().clone(),
+        }))
+    }
+
     fn try_materialize_host_bytes(&self) -> Result<Option<Arc<[u8]>>> {
         match &self.expr {
             HipNativeExpr::HostBytes { bytes } => Ok(Some(bytes.clone())),
@@ -912,6 +979,11 @@ impl HipStorage {
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
+        if let Some(native) =
+            HipNativeBuffer::host_bytes_matmul(&Arc::new(self.0.clone()), &Arc::new(rhs.0.clone()))?
+        {
+            return Ok(Self::from_native_buffer(native));
+        }
         let lhs = self.materialize()?;
         let rhs = rhs.materialize()?;
         Ok(Self::from_tensor(lhs.matmul(&rhs)?))
@@ -2057,6 +2129,16 @@ mod tests {
         let tensor = lhs.broadcast_add(&rhs)?;
         assert_eq!(tensor.0.shape(), vec![2, 2]);
         assert_eq!(values_f32(tensor)?, vec![11.0, 22.0, 13.0, 24.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn host_bytes_matmul_stays_host_backed() -> Result<()> {
+        let lhs = host_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs = host_f32_tensor(&[3, 2], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let tensor = lhs.matmul(&rhs)?;
+        assert_eq!(tensor.0.shape(), vec![2, 2]);
+        assert_eq!(values_f32(tensor)?, vec![58.0, 64.0, 139.0, 154.0]);
         Ok(())
     }
 
