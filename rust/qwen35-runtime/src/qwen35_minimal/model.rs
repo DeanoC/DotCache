@@ -3850,7 +3850,11 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         let storage_dtype = mixed_qkv.dtype();
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, storage_dtype)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
                 dtype_code,
@@ -3863,13 +3867,20 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
                 mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(storage_dtype, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
@@ -4059,11 +4070,16 @@ impl candle::CustomOp3 for LinearStatefulConv {
         }
 
         let device = mixed_qkv.device().clone();
+        let storage_dtype = mixed_qkv.dtype();
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
-                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                candle::hip::qwen35_dtype_code(storage_dtype)?,
                 device.ordinal(),
                 self.batch_size,
                 self.conv_dim,
@@ -4075,13 +4091,20 @@ impl candle::CustomOp3 for LinearStatefulConv {
                 prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(storage_dtype, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
@@ -4336,15 +4359,20 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
         }
 
         let device = mixed_qkv.device().clone();
+        let storage_dtype = mixed_qkv.dtype();
         let output_shape = candle::Shape::from((
             self.batch_size,
             self.seq_len,
             self.conv_dim + self.num_heads,
         ));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay(
-                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                candle::hip::qwen35_dtype_code(storage_dtype)?,
                 device.ordinal(),
                 self.batch_size,
                 self.conv_dim,
@@ -4361,13 +4389,20 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(storage_dtype, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
@@ -4487,13 +4522,18 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
         }
 
         let device = mixed_qkv.device().clone();
+        let storage_dtype = mixed_qkv.dtype();
         let flat_width =
             self.seq_len * (self.conv_dim + self.num_heads) + self.conv_dim * self.state_len;
         let output_shape = candle::Shape::from((self.batch_size, flat_width));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
-                candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+                candle::hip::qwen35_dtype_code(storage_dtype)?,
                 device.ordinal(),
                 self.batch_size,
                 self.conv_dim,
@@ -4510,13 +4550,20 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(storage_dtype, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
@@ -4830,7 +4877,11 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         let device = mixed_qkv.device().clone();
         let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
         let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
-        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(DType::F32.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -4852,13 +4903,20 @@ impl candle::CustomOp6 for LinearDecodePrepare {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(DType::F32, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
@@ -4908,7 +4966,11 @@ impl candle::CustomOp2 for LinearDecodeApply {
             self.batch_size,
             value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
         ));
-        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(DType::F32.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
                 device.ordinal(),
@@ -4919,13 +4981,20 @@ impl candle::CustomOp2 for LinearDecodeApply {
                 packed.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
                 initial_state.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                hip_output_bytes_to_cpu_storage(DType::F32, output)?,
+                device,
+            ),
+            output_shape,
+        ))
     }
 }
 
