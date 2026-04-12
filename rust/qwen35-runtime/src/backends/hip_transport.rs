@@ -126,11 +126,24 @@ pub(crate) struct HipDeviceBuffer {
 #[derive(Debug, Clone)]
 enum HipDeviceStorage {
     CandleTensor(Tensor),
+    HostBuffer(HipHostBuffer),
     PendingHostUpload(HipHostBuffer),
 }
 
 impl HipDeviceStorage {
     fn from_tensor(tensor: Tensor) -> Self {
+        if !tensor.device().is_hip() {
+            if let Some(bytes) =
+                HipNativeBuffer::tensor_to_host_float_bytes(&tensor, tensor.dtype()).ok().flatten()
+            {
+                return Self::HostBuffer(HipHostBuffer {
+                    bytes,
+                    shape: tensor.dims().to_vec(),
+                    dtype: tensor.dtype(),
+                    device: tensor.device().clone(),
+                });
+            }
+        }
         Self::CandleTensor(tensor)
     }
 
@@ -138,9 +151,14 @@ impl HipDeviceStorage {
         Self::PendingHostUpload(buffer)
     }
 
+    fn from_host_buffer(buffer: HipHostBuffer) -> Self {
+        Self::HostBuffer(buffer)
+    }
+
     fn is_contiguous(&self) -> bool {
         match self {
             Self::CandleTensor(tensor) => tensor.is_contiguous(),
+            Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => true,
         }
     }
@@ -148,6 +166,7 @@ impl HipDeviceStorage {
     fn is_materialized(&self) -> bool {
         match self {
             Self::CandleTensor(_) => true,
+            Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => false,
         }
     }
@@ -155,6 +174,7 @@ impl HipDeviceStorage {
     fn materialize_tensor(&self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor.clone()),
+            Self::HostBuffer(buffer) => buffer.clone().upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.clone().upload_to_tensor(),
         }
     }
@@ -162,6 +182,7 @@ impl HipDeviceStorage {
     fn into_tensor(self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor),
+            Self::HostBuffer(buffer) => buffer.upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
     }
@@ -432,6 +453,40 @@ impl HipDeviceBuffer {
         }
     }
 
+    fn from_materialized_host_buffer(buffer: HipHostBuffer) -> Self {
+        Self {
+            shape: buffer.shape.clone(),
+            dtype: buffer.dtype,
+            device: buffer.device.clone(),
+            storage: HipDeviceStorage::from_host_buffer(buffer),
+            view_ops: Vec::new(),
+        }
+    }
+
+    fn preserves_pending_upload(&self) -> bool {
+        matches!(self.storage, HipDeviceStorage::PendingHostUpload(_))
+    }
+
+    fn from_host_computed_buffer_like(&self, buffer: HipHostBuffer) -> Self {
+        if self.preserves_pending_upload() {
+            Self::from_pending_host_upload(buffer)
+        } else {
+            Self::from_materialized_host_buffer(buffer)
+        }
+    }
+
+    fn from_host_computed_buffer_like_either(
+        lhs: &Self,
+        rhs: &Self,
+        buffer: HipHostBuffer,
+    ) -> Self {
+        if lhs.preserves_pending_upload() || rhs.preserves_pending_upload() {
+            Self::from_pending_host_upload(buffer)
+        } else {
+            Self::from_materialized_host_buffer(buffer)
+        }
+    }
+
     pub(crate) fn from_tensor(tensor: Tensor) -> Self {
         Self {
             shape: tensor.dims().to_vec(),
@@ -467,8 +522,9 @@ impl HipDeviceBuffer {
     }
 
     fn try_host_buffer(&self) -> Result<Option<HipHostBuffer>> {
-        let HipDeviceStorage::PendingHostUpload(buffer) = &self.storage else {
-            return Ok(None);
+        let buffer = match &self.storage {
+            HipDeviceStorage::HostBuffer(buffer) | HipDeviceStorage::PendingHostUpload(buffer) => buffer,
+            HipDeviceStorage::CandleTensor(_) => return Ok(None),
         };
         let mut native = HipNativeBuffer {
             expr: HipNativeExpr::HostBytes {
@@ -584,7 +640,8 @@ impl HipDeviceBuffer {
             return Ok(self.clone());
         }
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
                 buffer.pad_with_zeros(dim, left, right)?,
             ));
         }
@@ -606,10 +663,12 @@ impl HipDeviceBuffer {
             .collect::<Result<Vec<_>>>()?;
         if host_buffers.iter().all(|buffer| buffer.is_some()) {
             let refs = host_buffers.iter().flatten().collect::<Vec<_>>();
-            return Ok(Self::from_pending_host_upload(HipHostBuffer::cat(
-                refs.as_slice(),
-                dim,
-            )?));
+            let pending = buffers.iter().any(|buffer| buffer.preserves_pending_upload());
+            return Ok(if pending {
+                Self::from_pending_host_upload(HipHostBuffer::cat(refs.as_slice(), dim)?)
+            } else {
+                Self::from_materialized_host_buffer(HipHostBuffer::cat(refs.as_slice(), dim)?)
+            });
         }
         let tensors = buffers
             .iter()
@@ -656,21 +715,21 @@ impl HipDeviceBuffer {
             return Ok(self.clone());
         }
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.cast(dtype)?));
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.cast(dtype)?));
         }
         Ok(Self::from_tensor(self.materialize_tensor()?.to_dtype(dtype)?))
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.exp()?));
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.exp()?));
         }
         Ok(Self::from_tensor(self.materialize_tensor()?.exp()?))
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.sigmoid()?));
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.sigmoid()?));
         }
         Ok(Self::from_tensor(
             (self.materialize_tensor()?.neg()?.exp()? + 1.0)?.recip()?,
@@ -678,9 +737,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_add(
-                &lhs, &rhs,
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_add(
+                &lhs_buffer, &rhs_buffer,
             )?));
         }
         Ok(Self::from_tensor(
@@ -690,9 +749,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_sub(
-                &lhs, &rhs,
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_sub(
+                &lhs_buffer, &rhs_buffer,
             )?));
         }
         Ok(Self::from_tensor(
@@ -702,9 +761,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_div(
-                &lhs, &rhs,
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_div(
+                &lhs_buffer, &rhs_buffer,
             )?));
         }
         Ok(Self::from_tensor(
@@ -714,9 +773,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_mul(
-                &lhs, &rhs,
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_mul(
+                &lhs_buffer, &rhs_buffer,
             )?));
         }
         Ok(Self::from_tensor(
@@ -727,35 +786,48 @@ impl HipDeviceBuffer {
 
     pub(crate) fn max_keepdim(&self, dim: usize) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.max_keepdim(dim)?));
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
+                buffer.max_keepdim(dim)?,
+            ));
         }
         Ok(Self::from_tensor(self.materialize_tensor()?.max_keepdim(dim)?))
     }
 
     pub(crate) fn sum_keepdim(&self, dim: usize) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.sum_keepdim(dim)?));
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
+                buffer.sum_keepdim(dim)?,
+            ));
         }
         Ok(Self::from_tensor(self.materialize_tensor()?.sum_keepdim(dim)?))
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.mul_scalar(value)?));
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
+                buffer.mul_scalar(value)?,
+            ));
         }
         Ok(Self::from_tensor((self.materialize_tensor()? * value)?))
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.recip()?));
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.recip()?));
         }
         Ok(Self::from_tensor(self.materialize_tensor()?.recip()?))
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
-        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(lhs.matmul(&rhs)?));
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(
+                self,
+                rhs,
+                lhs_buffer.matmul(&rhs_buffer)?,
+            ));
         }
         Ok(Self::from_tensor(
             self.materialize_tensor()?.matmul(&rhs.materialize_tensor()?)?,
@@ -764,7 +836,7 @@ impl HipDeviceBuffer {
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.l2norm(eps)?));
+            return Ok(Self::from_host_computed_buffer_like(self, buffer.l2norm(eps)?));
         }
         let tensor = self.materialize_tensor()?;
         let norm = (tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
@@ -778,7 +850,8 @@ impl HipDeviceBuffer {
         add_unit_offset: bool,
     ) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
                 buffer.rms_norm(weight, eps, add_unit_offset)?,
             ));
         }
@@ -808,9 +881,11 @@ impl HipDeviceBuffer {
         weight: &Tensor,
         eps: f64,
     ) -> Result<Self> {
-        if let (Some(hidden), Some(gate)) = (self.try_host_buffer()?, gate.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(
-                hidden.rms_norm_gated(&gate, weight, eps)?,
+        if let (Some(hidden_buffer), Some(gate_buffer)) = (self.try_host_buffer()?, gate.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(
+                self,
+                gate,
+                hidden_buffer.rms_norm_gated(&gate_buffer, weight, eps)?,
             ));
         }
         let normed = self.rms_norm(weight, eps, false)?;
@@ -821,13 +896,15 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn value_decay(&self, dt_bias: &Self, a_log_exp: &Self) -> Result<Self> {
-        if let (Some(a), Some(dt_bias), Some(a_log_exp)) = (
+        if let (Some(a_buffer), Some(dt_bias_buffer), Some(a_log_exp_buffer)) = (
             self.try_host_buffer()?,
             dt_bias.try_host_buffer()?,
             a_log_exp.try_host_buffer()?,
         ) {
-            return Ok(Self::from_pending_host_upload(
-                a.value_decay(&dt_bias, &a_log_exp)?,
+            return Ok(Self::from_host_computed_buffer_like_either(
+                self,
+                a_log_exp,
+                a_buffer.value_decay(&dt_bias_buffer, &a_log_exp_buffer)?,
             ));
         }
         let a = self.materialize_tensor()?;
@@ -840,7 +917,10 @@ impl HipDeviceBuffer {
 
     pub(crate) fn cumsum_last_dim(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
-            return Ok(Self::from_pending_host_upload(buffer.cumsum_last_dim()?));
+            return Ok(Self::from_host_computed_buffer_like(
+                self,
+                buffer.cumsum_last_dim()?,
+            ));
         }
         let tensor = self.materialize_tensor()?;
         let shape = tensor.dims().to_vec();
@@ -863,8 +943,12 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn swiglu_mul(&self, up: &Self) -> Result<Self> {
-        if let (Some(gate), Some(up)) = (self.try_host_buffer()?, up.try_host_buffer()?) {
-            return Ok(Self::from_pending_host_upload(gate.swiglu_mul(&up)?));
+        if let (Some(gate_buffer), Some(up_buffer)) = (self.try_host_buffer()?, up.try_host_buffer()?) {
+            return Ok(Self::from_host_computed_buffer_like_either(
+                self,
+                up,
+                gate_buffer.swiglu_mul(&up_buffer)?,
+            ));
         }
         let tensor = self.materialize_tensor()?;
         let sig = (tensor.neg()?.exp()? + 1.0)?.recip()?;
@@ -4626,6 +4710,61 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_cpu_tensor_uses_host_storage() -> Result<()> {
+        let device = Device::Cpu;
+        let buffer = HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        let host = buffer.try_host_buffer()?.expect("host-backed storage");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_exp_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let buffer = HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![0f32, 1.0],
+            (2,),
+            &device,
+        )?);
+
+        let out = buffer.exp()?;
+
+        assert!(matches!(out.storage, HipDeviceStorage::HostBuffer(_)));
+        let host = out.try_host_buffer()?.expect("host-backed storage");
+        let values = host_buffer_values_f32(&host)?;
+        assert!((values[0] - 1.0).abs() < 1e-5);
+        assert!((values[1] - std::f32::consts::E).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_matmul_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+        let rhs = HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![5f32, 6.0, 7.0, 8.0],
+            (2, 2),
+            &device,
+        )?);
+
+        let out = lhs.matmul(&rhs)?;
+
+        assert!(matches!(out.storage, HipDeviceStorage::HostBuffer(_)));
+        let host = out.try_host_buffer()?.expect("host-backed storage");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![19.0, 22.0, 43.0, 50.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_view_ops_stay_lazy() -> Result<()> {
         let device = Device::Cpu;
         let tensor = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (2, 2), &device)?;
@@ -4915,6 +5054,29 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_host_storage_prepare_full_attention_output_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let attn_output = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![2f32, 4.0], (1, 1, 1, 2), &device)?,
+        ));
+        let gate = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![0f32, 0.0], (1, 1, 2), &device)?,
+        ));
+
+        let out = prepare_full_attention_output_hip(&attn_output, &gate, 1, 1, 2, DType::F32)?;
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        let host = out.try_host_buffer()?.expect("host-backed output");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_prepare_full_attention_inputs_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let q_and_gate =
@@ -5196,6 +5358,44 @@ mod tests {
         assert!(value.try_host_buffer()?.is_some());
         assert!(beta.try_host_buffer()?.is_some());
         assert!(g.try_host_buffer()?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_prepare_linear_attention_inputs_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let mixed_qkv = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0, 5.0, 6.0], (1, 1, 6), &device)?,
+        ));
+        let beta_raw = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![0f32], (1, 1, 1), &device)?,
+        ));
+        let g = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32], (1, 1, 1), &device)?,
+        ));
+
+        let (query, key, value, beta, g) = prepare_linear_attention_inputs_tensors_hip(
+            &mixed_qkv,
+            &beta_raw,
+            &g,
+            1,
+            1,
+            2,
+            2,
+            1,
+            1,
+            2,
+            2,
+            DType::F32,
+            false,
+        )?;
+
+        for tensor in [&query, &key, &value, &beta, &g] {
+            assert!(tensor.try_host_buffer()?.is_some());
+            if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
+                assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+            }
+        }
         Ok(())
     }
 
