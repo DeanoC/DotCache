@@ -2651,7 +2651,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
@@ -2689,7 +2689,11 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         let storage_dtype = mixed_qkv.dtype();
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, storage_dtype)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
                 dtype_code,
@@ -2702,13 +2706,20 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
                 mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
@@ -2767,7 +2778,7 @@ impl candle::CustomOp3 for LinearStatefulConv {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -2812,7 +2823,11 @@ impl candle::CustomOp3 for LinearStatefulConv {
 
         let device = mixed_qkv.device().clone();
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -2827,13 +2842,20 @@ impl candle::CustomOp3 for LinearStatefulConv {
                 prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
