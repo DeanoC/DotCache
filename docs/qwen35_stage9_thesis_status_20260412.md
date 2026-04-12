@@ -4,7 +4,7 @@ This note is the short status checkpoint for the current Qwen3.5 AAE/DotCache li
 
 ## Core claim
 
-The core thesis now looks supported on Apple MPS:
+The core thesis now looks supported on Apple MPS and on the current CUDA portable-corpus lane:
 
 - certified streaming in the real serving loop works
 - safe fallback behavior remains intact on the tested prompts
