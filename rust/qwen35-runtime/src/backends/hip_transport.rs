@@ -382,33 +382,57 @@ impl HipHostBuffer {
     fn broadcast_binary(
         lhs: &HipHostBuffer,
         rhs: &HipHostBuffer,
-        f: fn(Arc<HipNativeBuffer>, Arc<HipNativeBuffer>) -> Result<HipNativeBuffer>,
+        f: impl Fn(f64, f64) -> f64,
         op_name: &'static str,
     ) -> Result<Self> {
-        f(
-            Arc::new(lhs.to_native_host_buffer()),
-            Arc::new(rhs.to_native_host_buffer()),
-        )?
-        .materialize_host_buffer()?
-        .ok_or_else(|| {
-            candle_core::Error::Msg(format!("expected host materialization for {op_name} host buffer"))
+        if !HipNativeBuffer::supports_host_float_ops(lhs.dtype)
+            || !HipNativeBuffer::supports_host_float_ops(rhs.dtype)
+        {
+            candle_core::bail!("{op_name} unsupported for dtypes {:?} and {:?}", lhs.dtype, rhs.dtype);
+        }
+        if lhs.dtype != rhs.dtype {
+            candle_core::bail!(
+                "{op_name} dtype mismatch: {:?} vs {:?}",
+                lhs.dtype,
+                rhs.dtype
+            );
+        }
+        let shape = HipNativeBuffer::broadcast_shape(
+            lhs.shape.as_slice(),
+            rhs.shape.as_slice(),
+            op_name,
+        )?;
+        let elem_count = HipNativeBuffer::elem_count(&shape);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, lhs.dtype)];
+        for out_idx in 0..elem_count {
+            let lhs_idx = HipNativeBuffer::broadcast_elem_index(out_idx, &shape, lhs.shape.as_slice());
+            let rhs_idx = HipNativeBuffer::broadcast_elem_index(out_idx, &shape, rhs.shape.as_slice());
+            let lhs_val = HipNativeBuffer::read_host_float(lhs.bytes.as_ref(), lhs.dtype, lhs_idx)?;
+            let rhs_val = HipNativeBuffer::read_host_float(rhs.bytes.as_ref(), rhs.dtype, rhs_idx)?;
+            HipNativeBuffer::write_host_float(&mut out, lhs.dtype, out_idx, f(lhs_val, rhs_val))?;
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: lhs.dtype,
+            device: lhs.device.clone(),
         })
     }
 
     fn broadcast_add(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
-        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_add, "broadcast add")
+        Self::broadcast_binary(lhs, rhs, |a, b| a + b, "broadcast add")
     }
 
     fn broadcast_sub(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
-        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_sub, "broadcast sub")
+        Self::broadcast_binary(lhs, rhs, |a, b| a - b, "broadcast sub")
     }
 
     fn broadcast_div(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
-        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_div, "broadcast div")
+        Self::broadcast_binary(lhs, rhs, |a, b| a / b, "broadcast div")
     }
 
     fn broadcast_mul(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
-        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_mul, "broadcast mul")
+        Self::broadcast_binary(lhs, rhs, |a, b| a * b, "broadcast mul")
     }
 
     fn recip(&self) -> Result<Self> {
@@ -420,13 +444,50 @@ impl HipHostBuffer {
     }
 
     fn reduce_keepdim(&self, dim: usize, sum: bool) -> Result<Self> {
-        let buffer = if sum {
-            HipNativeBuffer::sum_keepdim(Arc::new(self.to_native_host_buffer()), dim)
-        } else {
-            HipNativeBuffer::max_keepdim(Arc::new(self.to_native_host_buffer()), dim)
-        };
-        buffer.materialize_host_buffer()?.ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for reduced host buffer".into())
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("reduction unsupported for dtype {:?}", self.dtype);
+        }
+        if dim >= self.shape.len() {
+            candle_core::bail!("reduction dim {dim} out of range for host buffer shape {:?}", self.shape);
+        }
+        let mut shape = self.shape.clone();
+        let reduce = shape[dim];
+        shape[dim] = 1;
+        let inner = HipNativeBuffer::elem_count(&self.shape[dim + 1..]);
+        let outer = HipNativeBuffer::elem_count(&self.shape[..dim]);
+        let out_elems = HipNativeBuffer::elem_count(&shape);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            for inner_idx in 0..inner.max(1) {
+                let out_idx = outer_idx * inner.max(1) + inner_idx;
+                debug_assert!(out_idx < out_elems);
+                let mut acc = if sum {
+                    0.0
+                } else {
+                    HipNativeBuffer::read_host_float(
+                        self.bytes.as_ref(),
+                        self.dtype,
+                        (outer_idx * reduce) * inner.max(1) + inner_idx,
+                    )?
+                };
+                let start_r = if sum { 0 } else { 1 };
+                for r in start_r..reduce {
+                    let src_idx = ((outer_idx * reduce + r) * inner.max(1)) + inner_idx;
+                    let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, src_idx)?;
+                    if sum {
+                        acc += value;
+                    } else if value > acc {
+                        acc = value;
+                    }
+                }
+                HipNativeBuffer::write_host_float(&mut out, self.dtype, out_idx, acc)?;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
         })
     }
 
