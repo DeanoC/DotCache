@@ -3736,7 +3736,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -3775,10 +3775,17 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         let storage_dtype = query.dtype();
         let out_shape =
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
-        let output = unsafe { device.alloc_uninit(&out_shape, DType::F32)? };
+        let elem_count = out_shape.elem_count();
         let query_ptr = query.raw_device_ptr_with_offset(query_layout.start_offset())?;
         let key_ptr = key.raw_device_ptr_with_offset(key_layout.start_offset())?;
         let value_ptr = value.raw_device_ptr_with_offset(value_layout.start_offset())?;
+        let mut output = vec![0.0f32; elem_count];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(
+            device.ordinal(),
+            host_ptr,
+            output.len() * std::mem::size_of::<f32>(),
+        )?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -3795,13 +3802,18 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
                 query_ptr as *const c_void,
                 key_ptr as *const c_void,
                 value_ptr as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        let storage = candle::HipStorage::wrap_cpu_storage(
+            f32::to_cpu_storage_owned(output),
+            device,
+        );
+        Ok((storage, out_shape))
     }
 }
 
