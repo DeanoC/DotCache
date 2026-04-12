@@ -2217,13 +2217,11 @@ fn prepare_depthwise_conv_input_hip(
         Some(conv_state) => Some(HipTensor::from_state_buffer_as(conv_state, mixed_qkv.0.dtype())?),
         None => None,
     };
-    if let Some(mixed_device) = mixed_qkv.0 .0.direct_device_buffer() {
+    if let Some(mixed_device) = mixed_qkv.0 .0.direct_materialized_device_buffer() {
         let prev_device = prev_state
             .as_ref()
-            .and_then(|state| state.0 .0.direct_device_buffer());
-        if !mixed_device.has_pending_views()
-            && prev_device.map_or(true, |state| !state.has_pending_views())
-        {
+            .and_then(|state| state.0 .0.direct_materialized_device_buffer());
+        if prev_device.is_some() || prev_state.is_none() {
             let (prepared, next_state) = HipDeviceBuffer::prepare_depthwise_conv_input(
                 prev_device,
                 mixed_device,
@@ -2277,13 +2275,11 @@ fn update_depthwise_conv_state_hip(
         Some(prev_state) => Some(HipTensor::from_state_buffer_as(prev_state, mixed_qkv.0.dtype())?),
         None => None,
     };
-    if let Some(mixed_device) = mixed_qkv.0 .0.direct_device_buffer() {
+    if let Some(mixed_device) = mixed_qkv.0 .0.direct_materialized_device_buffer() {
         let prev_device = prev_state
             .as_ref()
-            .and_then(|state| state.0 .0.direct_device_buffer());
-        if !mixed_device.has_pending_views()
-            && prev_device.map_or(true, |state| !state.has_pending_views())
-        {
+            .and_then(|state| state.0 .0.direct_materialized_device_buffer());
+        if prev_device.is_some() || prev_state.is_none() {
             return HipDeviceBuffer::update_depthwise_conv_state(
                 prev_device,
                 mixed_device,
@@ -2335,12 +2331,13 @@ pub(crate) fn update_depthwise_conv_state(
 fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor> {
     let lhs = HipTensor::from_state_buffer(lhs);
     let rhs = HipTensor::from_state_buffer(rhs);
-    if let (Some(lhs), Some(rhs)) = (lhs.0 .0.direct_device_buffer(), rhs.0 .0.direct_device_buffer()) {
-        if !lhs.has_pending_views() && !rhs.has_pending_views() {
-            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::concat_last_dim(
-                lhs, rhs,
-            )?));
-        }
+    if let (Some(lhs), Some(rhs)) = (
+        lhs.0 .0.direct_materialized_device_buffer(),
+        rhs.0 .0.direct_materialized_device_buffer(),
+    ) {
+        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::concat_last_dim(
+            lhs, rhs,
+        )?));
     }
     HipTensor::cat(&[&lhs, &rhs], lhs.rank() - 1)?
         .contiguous()
@@ -2359,20 +2356,15 @@ fn pack_delta_state_scan_hip(
     let k_cumdecay_scan = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
     let state_decay_feature = HipTensor::from_scaffold_tensor(state_decay_feature.clone());
     if let (Some(weighted_key_scan), Some(k_cumdecay_scan), Some(state_decay_feature)) = (
-        weighted_key_scan.0 .0.direct_device_buffer(),
-        k_cumdecay_scan.0 .0.direct_device_buffer(),
-        state_decay_feature.0 .0.direct_device_buffer(),
+        weighted_key_scan.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay_scan.0 .0.direct_materialized_device_buffer(),
+        state_decay_feature.0 .0.direct_materialized_device_buffer(),
     ) {
-        if !weighted_key_scan.has_pending_views()
-            && !k_cumdecay_scan.has_pending_views()
-            && !state_decay_feature.has_pending_views()
-        {
-            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_state_scan(
-                weighted_key_scan,
-                k_cumdecay_scan,
-                state_decay_feature,
-            )?));
-        }
+        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_state_scan(
+            weighted_key_scan,
+            k_cumdecay_scan,
+            state_decay_feature,
+        )?));
     }
     HipTensor::cat(&[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature], 3)?
         .contiguous()
@@ -2398,23 +2390,17 @@ fn pack_delta_chunk_fused_hip(
     let q_state = HipTensor::from_scaffold_tensor(q_state.clone());
     let state_decay = HipTensor::from_scaffold_tensor(state_decay.clone());
     if let (Some(weighted_key), Some(k_cumdecay), Some(q_state), Some(state_decay)) = (
-        weighted_key.0 .0.direct_device_buffer(),
-        k_cumdecay.0 .0.direct_device_buffer(),
-        q_state.0 .0.direct_device_buffer(),
-        state_decay.0 .0.direct_device_buffer(),
+        weighted_key.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay.0 .0.direct_materialized_device_buffer(),
+        q_state.0 .0.direct_materialized_device_buffer(),
+        state_decay.0 .0.direct_materialized_device_buffer(),
     ) {
-        if !weighted_key.has_pending_views()
-            && !k_cumdecay.has_pending_views()
-            && !q_state.has_pending_views()
-            && !state_decay.has_pending_views()
-        {
-            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_chunk_fused(
-                weighted_key,
-                k_cumdecay,
-                q_state,
-                state_decay,
-            )?));
-        }
+        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_chunk_fused(
+            weighted_key,
+            k_cumdecay,
+            q_state,
+            state_decay,
+        )?));
     }
     HipTensor::cat(&[&weighted_key, &k_cumdecay, &q_state, &state_decay], 2)?
         .contiguous()
@@ -3402,27 +3388,21 @@ fn append_full_attention_kv_hip(
             let prev_k = HipTensor::from_state_buffer_as(prev_k, key_states.0.dtype())?;
             let prev_v = HipTensor::from_state_buffer_as(prev_v, value_states.0.dtype())?;
             if let (Some(prev_k_device), Some(prev_v_device), Some(key_device), Some(value_device)) = (
-                prev_k.0 .0.direct_device_buffer(),
-                prev_v.0 .0.direct_device_buffer(),
-                key_states.0 .0.direct_device_buffer(),
-                value_states.0 .0.direct_device_buffer(),
+                prev_k.0 .0.direct_materialized_device_buffer(),
+                prev_v.0 .0.direct_materialized_device_buffer(),
+                key_states.0 .0.direct_materialized_device_buffer(),
+                value_states.0 .0.direct_materialized_device_buffer(),
             ) {
-                if !prev_k_device.has_pending_views()
-                    && !prev_v_device.has_pending_views()
-                    && !key_device.has_pending_views()
-                    && !value_device.has_pending_views()
-                {
-                    return Ok((
-                        HipTensor::from_device_buffer(HipDeviceBuffer::cat(
-                            &[prev_k_device, key_device],
-                            2,
-                        )?),
-                        HipTensor::from_device_buffer(HipDeviceBuffer::cat(
-                            &[prev_v_device, value_device],
-                            2,
-                        )?),
-                    ));
-                }
+                return Ok((
+                    HipTensor::from_device_buffer(HipDeviceBuffer::cat(
+                        &[prev_k_device, key_device],
+                        2,
+                    )?),
+                    HipTensor::from_device_buffer(HipDeviceBuffer::cat(
+                        &[prev_v_device, value_device],
+                        2,
+                    )?),
+                ));
             }
             Ok((
                 HipTensor::cat(&[&prev_k, &key_states], 2)?,
@@ -5286,10 +5266,10 @@ pub(crate) fn delta_chunk_recurrent_read(
     let q_state_chunk = HipTensor::from_scaffold_tensor(q_state_chunk.clone());
     let value_chunk = HipTensor::from_scaffold_tensor(value_chunk.clone());
     if let (Some(prev_state), Some(k_cumdecay_chunk), Some(q_state_chunk), Some(value_chunk)) = (
-        prev_state.0 .0.direct_device_buffer(),
-        k_cumdecay_chunk.0 .0.direct_device_buffer(),
-        q_state_chunk.0 .0.direct_device_buffer(),
-        value_chunk.0 .0.direct_device_buffer(),
+        prev_state.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay_chunk.0 .0.direct_materialized_device_buffer(),
+        q_state_chunk.0 .0.direct_materialized_device_buffer(),
+        value_chunk.0 .0.direct_materialized_device_buffer(),
     ) {
         let v_prime = k_cumdecay_chunk.matmul(prev_state)?;
         let v_new = value_chunk.broadcast_sub(&v_prime)?;
@@ -5314,9 +5294,9 @@ pub(crate) fn mix_chunk_attention(
     let attn_inter = HipTensor::from_state_buffer(attn_inter);
     let value_chunk = HipTensor::from_state_buffer(value_chunk);
     if let (Some(attn), Some(attn_inter), Some(value_chunk)) = (
-        attn.0 .0.direct_device_buffer(),
-        attn_inter.0 .0.direct_device_buffer(),
-        value_chunk.0 .0.direct_device_buffer(),
+        attn.0 .0.direct_materialized_device_buffer(),
+        attn_inter.0 .0.direct_materialized_device_buffer(),
+        value_chunk.0 .0.direct_materialized_device_buffer(),
     ) {
         let attn_value = attn.matmul(value_chunk)?;
         let mixed = attn_inter.broadcast_add(&attn_value)?;
