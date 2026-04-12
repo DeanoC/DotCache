@@ -2660,6 +2660,89 @@ pub(crate) fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) 
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_value_decay_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let a = a.contiguous()?;
+    let target_dtype = a.dtype();
+    let dt_bias = dt_bias.contiguous()?;
+    let dt_bias = if dt_bias.dtype() == target_dtype {
+        dt_bias
+    } else {
+        dt_bias.to_dtype(target_dtype)?
+    };
+    let a_log_exp = a_log_exp.contiguous()?;
+    let a_log_exp = if a_log_exp.dtype() == target_dtype {
+        a_log_exp
+    } else {
+        a_log_exp.to_dtype(target_dtype)?
+    };
+    let ordinal = match a.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(dt_bias.device().same_device(a.device()) && a_log_exp.device().same_device(a.device())) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(target_dtype) else {
+        return Ok(None);
+    };
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (Storage::Hip(a_storage), Storage::Hip(dt_bias_storage), Storage::Hip(a_log_exp_storage)) =
+        (&*a_storage, &*dt_bias_storage, &*a_log_exp_storage)
+    else {
+        return Ok(None);
+    };
+    if !(a_layout.is_contiguous() && dt_bias_layout.is_contiguous() && a_log_exp_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let total_elems = a_layout.shape().elem_count();
+    let num_heads = dt_bias_layout.shape().elem_count();
+    if a_log_exp_layout.shape().elem_count() != num_heads {
+        return Ok(None);
+    }
+    let shape = a_layout.shape().dims().to_vec();
+    let mut out = vec![0u8; total_elems.saturating_mul(target_dtype.size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_value_decay(
+            dtype_code,
+            ordinal,
+            total_elems,
+            num_heads,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-value-decay-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_value_decay_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (a, dt_bias, a_log_exp);
+    Ok(None)
+}
+
 fn linear_attention_compute_dtype(device: &Device, input_dtype: DType) -> DType {
     match (device.location(), input_dtype) {
         (DeviceLocation::Metal { .. }, DType::F16 | DType::BF16) => input_dtype,
