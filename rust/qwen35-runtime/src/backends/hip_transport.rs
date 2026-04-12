@@ -1283,6 +1283,96 @@ impl HipDeviceBuffer {
         Ok(Some(buffer))
     }
 
+    fn simple_contiguous_candle_view(
+        &self,
+    ) -> Result<Option<(usize, DType, Vec<usize>, *const c_void)>> {
+        use candle_core::Storage;
+
+        let HipDeviceStorage::CandleTensor(tensor) = &self.storage else {
+            return Ok(None);
+        };
+        let ordinal = match tensor.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => return Ok(None),
+        };
+        let (storage, layout) = tensor.storage_and_layout();
+        let Storage::Hip(storage) = &*storage else {
+            return Ok(None);
+        };
+        if !layout.is_contiguous() {
+            return Ok(None);
+        }
+        let mut offset = layout.start_offset();
+        let mut shape = layout.shape().dims().to_vec();
+        for op in &self.view_ops {
+            match op {
+                HipDeviceViewOp::Narrow { dim, start, len } => {
+                    let inner = HipNativeBuffer::elem_count(&shape[dim + 1..]).max(1);
+                    offset = offset.saturating_add(start.saturating_mul(inner));
+                    shape[*dim] = *len;
+                }
+                HipDeviceViewOp::Select { dim, index } => {
+                    let inner = HipNativeBuffer::elem_count(&shape[dim + 1..]).max(1);
+                    offset = offset.saturating_add(index.saturating_mul(inner));
+                    shape.remove(*dim);
+                }
+                HipDeviceViewOp::Reshape { shape: new_shape } => {
+                    if HipNativeBuffer::elem_count(&shape) != HipNativeBuffer::elem_count(new_shape) {
+                        return Ok(None);
+                    }
+                    shape = new_shape.clone();
+                }
+                HipDeviceViewOp::Contiguous => {}
+                HipDeviceViewOp::Transpose { .. } | HipDeviceViewOp::Expand { .. } => {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some((
+            ordinal,
+            self.dtype,
+            shape,
+            storage.raw_device_ptr_with_offset(offset)? as *const c_void,
+        )))
+    }
+
+    fn from_raw_hip_host_output(
+        bytes: Vec<u8>,
+        shape: Vec<usize>,
+        dtype: DType,
+        device: &Device,
+    ) -> Self {
+        Self::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype,
+            device: device.clone(),
+        })
+    }
+
+    fn unary_simple_contiguous_view_host_output(
+        &self,
+        output_dtype: DType,
+        launch: impl FnOnce(usize, DType, usize, *const c_void, *mut c_void) -> Result<()>,
+    ) -> Result<Option<Self>> {
+        let Some((ordinal, input_dtype, shape, input_ptr)) = self.simple_contiguous_candle_view()? else {
+            return Ok(None);
+        };
+        let total_elems = HipNativeBuffer::elem_count(&shape);
+        let mut out = vec![0u8; total_elems.saturating_mul(output_dtype.size_in_bytes())];
+        let host_ptr = out.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+        let launch_result = launch(ordinal, input_dtype, total_elems, input_ptr, device_ptr as *mut c_void);
+        hip::unregister_host_mapping(host_ptr);
+        launch_result?;
+        Ok(Some(Self::from_raw_hip_host_output(
+            out,
+            shape,
+            output_dtype,
+            &self.device,
+        )))
+    }
+
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
         if let Some(buffer) = self.materialize_host_buffer_with_views()? {
             return buffer.upload_to_tensor();
@@ -1421,6 +1511,29 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.cast(dtype)?));
         }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            dtype,
+            |ordinal, input_dtype, total_elems, input_ptr, output_ptr| {
+                let input_dtype_code = hip::dtype_code(input_dtype)?;
+                let output_dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_cast(
+                        input_dtype_code,
+                        output_dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-cast-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = cast_hip_host_buffer(&tensor, dtype)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -1433,6 +1546,27 @@ impl HipDeviceBuffer {
     pub(crate) fn exp(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.exp()?));
+        }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_exp(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-exp-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = exp_hip_host_buffer(&tensor)? {
@@ -1447,6 +1581,27 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.log()?));
         }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_log(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-log-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = log_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -1459,6 +1614,27 @@ impl HipDeviceBuffer {
     pub(crate) fn sigmoid(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.sigmoid()?));
+        }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_sigmoid(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-sigmoid-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = sigmoid_hip_host_buffer(&tensor)? {
@@ -1572,6 +1748,28 @@ impl HipDeviceBuffer {
                 buffer.mul_scalar(value)?,
             ));
         }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_mul_scalar(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        value as f32,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-mul-scalar-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = mul_scalar_hip_host_buffer(&tensor, value)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -1601,6 +1799,27 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.recip()?));
         }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_recip(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-recip-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = recip_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -1613,6 +1832,27 @@ impl HipDeviceBuffer {
     pub(crate) fn sqrt(&self) -> Result<Self> {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.sqrt()?));
+        }
+        if let Some(out) = self.unary_simple_contiguous_view_host_output(
+            self.dtype,
+            |ordinal, dtype, total_elems, input_ptr, output_ptr| {
+                let dtype_code = hip::dtype_code(dtype)?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_sqrt(
+                        dtype_code,
+                        ordinal,
+                        total_elems,
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+                if status != 0 {
+                    return Err(hip::hip_error("hip-sqrt-simple-view", status));
+                }
+                Ok(())
+            },
+        )? {
+            return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = sqrt_hip_host_buffer(&tensor)? {
@@ -3069,9 +3309,19 @@ impl HipNativeBuffer {
                 source.materialize()?.transpose(*dim1, *dim2)
             }
             HipNativeExpr::Cast { source, dtype } => {
-                source.materialize()?.to_dtype(*dtype)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.to_dtype(*dtype)?.into_tensor())
+                } else {
+                    source.materialize()?.to_dtype(*dtype)
+                }
             }
-            HipNativeExpr::Exp { source } => source.materialize()?.exp(),
+            HipNativeExpr::Exp { source } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.exp()?.into_tensor())
+                } else {
+                    source.materialize()?.exp()
+                }
+            }
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 lhs.materialize()?.broadcast_add(&rhs.materialize()?)
             }
@@ -3091,9 +3341,27 @@ impl HipNativeBuffer {
                 source.materialize()?.sum_keepdim(*dim)
             }
             HipNativeExpr::Neg { source } => source.materialize()?.neg(),
-            HipNativeExpr::AddScalar { source, value } => Ok((source.materialize()? + *value)?),
-            HipNativeExpr::MulScalar { source, value } => Ok((source.materialize()? * *value)?),
-            HipNativeExpr::Recip { source } => source.materialize()?.recip(),
+            HipNativeExpr::AddScalar { source, value } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.add_scalar(*value)?.into_tensor())
+                } else {
+                    Ok((source.materialize()? + *value)?)
+                }
+            }
+            HipNativeExpr::MulScalar { source, value } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.mul_scalar(*value)?.into_tensor())
+                } else {
+                    Ok((source.materialize()? * *value)?)
+                }
+            }
+            HipNativeExpr::Recip { source } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.recip()?.into_tensor())
+                } else {
+                    source.materialize()?.recip()
+                }
+            }
             HipNativeExpr::L2Norm { source, eps } => {
                 let source = source.materialize()?;
                 let norm = source.sqr()?.sum_keepdim(candle_core::D::Minus1)?;
