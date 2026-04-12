@@ -4030,6 +4030,11 @@ fn rms_norm_hip(
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
+        if xs.storage.as_host_buffer().is_some() {
+            return Ok(HipTensor::from_device_buffer(
+                xs.rms_norm(weight, eps, add_unit_offset)?,
+            ));
+        }
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
             return Ok(from_kernel_tensor(hip_rms_norm(
@@ -8380,6 +8385,12 @@ pub(crate) fn rms_norm_gated(
         hidden_states_hip.0 .0.direct_materialized_device_buffer(),
         gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if hidden_states.storage.as_host_buffer().is_some() && gate.storage.as_host_buffer().is_some()
+        {
+            return Ok(HipTensor::from_device_buffer(
+                hidden_states.rms_norm_gated(gate, weight, eps)?,
+            ));
+        }
         if hidden_states.device().is_hip() {
             let hidden_states = hidden_states.materialize_tensor()?;
             let gate = gate.materialize_tensor()?;
@@ -8430,6 +8441,9 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         gate_hip.0 .0.direct_materialized_device_buffer(),
         up_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if gate.storage.as_host_buffer().is_some() && up.storage.as_host_buffer().is_some() {
+            return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
+        }
         if gate.device().is_hip() {
             let gate = gate.materialize_tensor()?;
             let up = up.materialize_tensor()?;
@@ -8489,6 +8503,9 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_materialized_device_buffer() {
+        if xs.storage.as_host_buffer().is_some() {
+            return Ok(HipTensor::from_device_buffer(xs.cumsum_last_dim()?));
+        }
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
             return Ok(from_device_tensor(hip_cumsum_last_dim(&xs)?));
@@ -8529,6 +8546,14 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         dt_bias_hip.0 .0.direct_materialized_device_buffer(),
         a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if a.storage.as_host_buffer().is_some()
+            && dt_bias.storage.as_host_buffer().is_some()
+            && a_log_exp.storage.as_host_buffer().is_some()
+        {
+            return Ok(HipTensor::from_device_buffer(
+                a.value_decay(dt_bias, a_log_exp)?,
+            ));
+        }
         if a.device().is_hip() {
             let a = a.materialize_tensor()?;
             let dt_bias = dt_bias.materialize_tensor()?;
