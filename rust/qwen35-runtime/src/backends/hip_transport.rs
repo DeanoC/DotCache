@@ -258,6 +258,24 @@ impl HipHostBuffer {
         }
     }
 
+    fn map_float(&self, op_name: &'static str, f: impl Fn(f64) -> f64) -> Result<Self> {
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("{op_name} unsupported for dtype {:?}", self.dtype);
+        }
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&self.shape, self.dtype)];
+        let elem_count = HipNativeBuffer::elem_count(&self.shape);
+        for idx in 0..elem_count {
+            let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+            HipNativeBuffer::write_host_float(&mut out, self.dtype, idx, f(value))?;
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
     fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
         if dim >= self.shape.len() {
             candle_core::bail!("pad dim {dim} out of range for host buffer shape {:?}", self.shape);
@@ -358,11 +376,7 @@ impl HipHostBuffer {
     }
 
     fn exp(&self) -> Result<Self> {
-        HipNativeBuffer::exp(Arc::new(self.to_native_host_buffer()))
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for exp host buffer".into())
-            })
+        self.map_float("exp", f64::exp)
     }
 
     fn broadcast_binary(
@@ -398,24 +412,11 @@ impl HipHostBuffer {
     }
 
     fn recip(&self) -> Result<Self> {
-        HipNativeBuffer::recip(Arc::new(self.to_native_host_buffer()))
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for recip host buffer".into())
-            })
+        self.map_float("recip", |x| x.recip())
     }
 
     fn sigmoid(&self) -> Result<Self> {
-        HipNativeBuffer::recip(Arc::new(HipNativeBuffer::add_scalar(
-            Arc::new(HipNativeBuffer::exp(Arc::new(HipNativeBuffer::neg(Arc::new(
-                self.to_native_host_buffer(),
-            ))))),
-            1.0,
-        )))
-        .materialize_host_buffer()?
-        .ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for sigmoid host buffer".into())
-        })
+        self.map_float("sigmoid", |x| 1.0 / (1.0 + (-x).exp()))
     }
 
     fn reduce_keepdim(&self, dim: usize, sum: bool) -> Result<Self> {
@@ -438,11 +439,7 @@ impl HipHostBuffer {
     }
 
     fn mul_scalar(&self, value: f64) -> Result<Self> {
-        HipNativeBuffer::mul_scalar(Arc::new(self.to_native_host_buffer()), value)
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for scalar-mul host buffer".into())
-            })
+        self.map_float("mul_scalar", |x| x * value)
     }
 
     fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -503,11 +500,29 @@ impl HipHostBuffer {
     }
 
     fn cumsum_last_dim(&self) -> Result<Self> {
-        cumsum_last_dim_host(&HipTensor::from_host_buffer(self.clone()))?
-            .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for cumsum host buffer".into())
-            })
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("cumsum_last_dim unsupported for dtype {:?}", self.dtype);
+        }
+        let shape = self.shape.as_slice();
+        let Some(&inner) = shape.last() else {
+            candle_core::bail!("cumsum_last_dim requires non-empty shape");
+        };
+        let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let mut running = 0.0f64;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                running += HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                HipNativeBuffer::write_host_float(&mut out, self.dtype, idx, running)?;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
     }
 
     fn matmul(&self, rhs: &HipHostBuffer) -> Result<Self> {
