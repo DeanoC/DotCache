@@ -426,11 +426,25 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_executed_m3_blocks_per_case": float(
             sum(float(record["bias_executed_m3_block_count_total"]) for record in records) / case_count
         ),
+        "hand_tuned_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record.get("hand_tuned_executed_exact_key_m3_block_count_total", 0.0)) for record in records)
+            / case_count
+        ),
+        "bias_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record.get("bias_executed_exact_key_m3_block_count_total", 0.0)) for record in records)
+            / case_count
+        ),
         "hand_tuned_exact_m3_score_ms_per_case": float(
             sum(float(record["hand_tuned_exact_m3_score_ms_total"]) for record in records) / case_count
         ),
         "bias_exact_m3_score_ms_per_case": float(
             sum(float(record["bias_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record.get("hand_tuned_aux_exact_m3_score_ms_total", 0.0)) for record in records) / case_count
+        ),
+        "bias_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record.get("bias_aux_exact_m3_score_ms_total", 0.0)) for record in records) / case_count
         ),
         "hand_tuned_final_mix_ms_per_case": float(
             sum(float(record["hand_tuned_final_mix_ms_total"]) for record in records) / case_count
@@ -981,6 +995,24 @@ def main() -> None:
                     ).values()
                 )
             ),
+            "hand_tuned_executed_exact_key_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_executed_exact_key_m3_block_count_total": int(
+                sum(
+                    int(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
             "hand_tuned_exact_m3_score_ms_total": float(
                 sum(
                     float(value)
@@ -995,6 +1027,24 @@ def main() -> None:
                     float(value)
                     for value in bias_result.get(
                         "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "hand_tuned_aux_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in hand_result.get(
+                        "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
+                        {},
+                    ).values()
+                )
+            ),
+            "bias_aux_exact_m3_score_ms_total": float(
+                sum(
+                    float(value)
+                    for value in bias_result.get(
+                        "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
                         {},
                     ).values()
                 )

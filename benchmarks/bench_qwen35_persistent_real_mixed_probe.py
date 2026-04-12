@@ -98,6 +98,8 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_direct_m0_score_ms_per_case": 0.0,
             "hand_tuned_exact_m3_score_ms_per_case": 0.0,
             "bias_exact_m3_score_ms_per_case": 0.0,
+            "hand_tuned_aux_exact_m3_score_ms_per_case": 0.0,
+            "bias_aux_exact_m3_score_ms_per_case": 0.0,
             "hand_tuned_final_mix_ms_per_case": 0.0,
             "bias_final_mix_ms_per_case": 0.0,
             "hand_tuned_final_mix_logits_ms_per_case": 0.0,
@@ -110,6 +112,8 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_executed_m0_blocks_per_case": 0.0,
             "hand_tuned_executed_m3_blocks_per_case": 0.0,
             "bias_executed_m3_blocks_per_case": 0.0,
+            "hand_tuned_executed_exact_key_m3_blocks_per_case": 0.0,
+            "bias_executed_exact_key_m3_blocks_per_case": 0.0,
         }
     case_count = len(records)
     return {
@@ -152,6 +156,12 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_exact_m3_score_ms_per_case": float(
             sum(float(record["bias_exact_m3_score_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record["hand_tuned_aux_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
+        "bias_aux_exact_m3_score_ms_per_case": float(
+            sum(float(record["bias_aux_exact_m3_score_ms_total"]) for record in records) / case_count
+        ),
         "hand_tuned_final_mix_ms_per_case": float(
             sum(float(record["hand_tuned_final_mix_ms_total"]) for record in records) / case_count
         ),
@@ -188,6 +198,12 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_executed_m3_blocks_per_case": float(
             sum(float(record["bias_executed_m3_block_count_total"]) for record in records) / case_count
         ),
+        "hand_tuned_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record["hand_tuned_executed_exact_key_m3_block_count_total"]) for record in records) / case_count
+        ),
+        "bias_executed_exact_key_m3_blocks_per_case": float(
+            sum(float(record["bias_executed_exact_key_m3_block_count_total"]) for record in records) / case_count
+        ),
     }
 
 
@@ -209,8 +225,10 @@ def _render_markdown(*, payload: dict[str, Any]) -> str:
         f"- bias direct-M0 gather ms/case: {float(summary['bias_direct_m0_gather_ms_per_case']):.4f}",
         f"- hand-tuned direct-M0 score ms/case: {float(summary['hand_tuned_direct_m0_score_ms_per_case']):.4f}",
         f"- bias direct-M0 score ms/case: {float(summary['bias_direct_m0_score_ms_per_case']):.4f}",
-        f"- hand-tuned exact-M3 score ms/case: {float(summary['hand_tuned_exact_m3_score_ms_per_case']):.4f}",
-        f"- bias exact-M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}",
+        f"- hand-tuned exact-key M3 score ms/case: {float(summary['hand_tuned_exact_m3_score_ms_per_case']):.4f}",
+        f"- bias exact-key M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}",
+        f"- hand-tuned aux exact-M3 score ms/case: {float(summary['hand_tuned_aux_exact_m3_score_ms_per_case']):.4f}",
+        f"- bias aux exact-M3 score ms/case: {float(summary['bias_aux_exact_m3_score_ms_per_case']):.4f}",
         f"- hand-tuned final-mix ms/case: {float(summary['hand_tuned_final_mix_ms_per_case']):.4f}",
         f"- bias final-mix ms/case: {float(summary['bias_final_mix_ms_per_case']):.4f}",
         f"- hand-tuned final-mix logits ms/case: {float(summary['hand_tuned_final_mix_logits_ms_per_case']):.4f}",
@@ -221,6 +239,10 @@ def _render_markdown(*, payload: dict[str, Any]) -> str:
         f"- bias final-mix value ms/case: {float(summary['bias_final_mix_value_ms_per_case']):.4f}",
         f"- hand-tuned executed M0 blocks/case: {float(summary['hand_tuned_executed_m0_blocks_per_case']):.2f}",
         f"- bias executed M0 blocks/case: {float(summary['bias_executed_m0_blocks_per_case']):.2f}",
+        f"- hand-tuned all-M3 blocks/case: {float(summary['hand_tuned_executed_m3_blocks_per_case']):.2f}",
+        f"- bias all-M3 blocks/case: {float(summary['bias_executed_m3_blocks_per_case']):.2f}",
+        f"- hand-tuned exact-key M3 blocks/case: {float(summary['hand_tuned_executed_exact_key_m3_blocks_per_case']):.2f}",
+        f"- bias exact-key M3 blocks/case: {float(summary['bias_executed_exact_key_m3_blocks_per_case']):.2f}",
         "",
     ]
     return "\n".join(lines)
@@ -332,6 +354,14 @@ def main() -> None:
                     bias_result,
                     "persistent_full_attention_mixed_execution_exact_m3_score_ms_total_by_layer",
                 ),
+                "hand_tuned_aux_exact_m3_score_ms_total": _metric_sum(
+                    hand_result,
+                    "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
+                ),
+                "bias_aux_exact_m3_score_ms_total": _metric_sum(
+                    bias_result,
+                    "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer",
+                ),
                 "hand_tuned_final_mix_ms_total": _metric_sum(
                     hand_result,
                     "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer",
@@ -379,6 +409,14 @@ def main() -> None:
                 "bias_executed_m3_block_count_total": _metric_sum_int(
                     bias_result,
                     "persistent_full_attention_executed_m3_block_count_total_by_layer",
+                ),
+                "hand_tuned_executed_exact_key_m3_block_count_total": _metric_sum_int(
+                    hand_result,
+                    "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
+                ),
+                "bias_executed_exact_key_m3_block_count_total": _metric_sum_int(
+                    bias_result,
+                    "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer",
                 ),
             }
         )

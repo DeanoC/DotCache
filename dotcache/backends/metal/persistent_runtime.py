@@ -3288,12 +3288,14 @@ def _decode_selected_blocks_direct_m0_torch(
         "direct_m0_gather_ms": 0.0,
         "direct_m0_score_ms": 0.0,
         "exact_m3_score_ms": 0.0,
+        "aux_exact_m3_score_ms": 0.0,
         "final_mix_ms": 0.0,
         "final_mix_logits_ms": 0.0,
         "final_mix_softmax_ms": 0.0,
         "final_mix_value_ms": 0.0,
     }
     executed_m0_blocks: set[int] = set()
+    exact_key_m3_blocks: set[int] = set()
     per_head_logits: list[Any] = [
         torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
         for _ in range(int(query_tensor.shape[0]))
@@ -3510,6 +3512,15 @@ def _decode_selected_blocks_direct_m0_torch(
             m3_logits = score_exact_logits_flat_torch(m3_keys, q_slice_score)
             _synchronize_torch_device(q_slice)
             timing["exact_m3_score_ms"] += (time.perf_counter() - exact_m3_score_start) * 1000.0
+            if token_block_ids is not None:
+                exact_block_indices = (
+                    token_block_ids.index_select(0, m3_local_indices)
+                    .unique()
+                    .detach()
+                    .to(device="cpu", dtype=torch.int64)
+                    .tolist()
+                )
+                exact_key_m3_blocks.update(int(resolved_block_ids[int(local_block_idx)]) for local_block_idx in exact_block_indices)
             logits.index_copy_(1, m3_local_indices, m3_logits)
         _synchronize_torch_device(q_slice)
         final_mix_start = time.perf_counter()
@@ -3559,6 +3570,7 @@ def _decode_selected_blocks_direct_m0_torch(
     executed_mode_counts = {
         "M0": int(len(executed_m0_blocks)),
         "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
+        "EXACT_KEY_M3": int(len(exact_key_m3_blocks)),
     }
     if bool(return_stream_stats):
         _synchronize_torch_device(block_max_logits)
@@ -4365,11 +4377,13 @@ class PersistentFullAttentionState:
             config=config_override or self.config,
             dotcache_config=self.dotcache_config,
         )
+        executed_mode_counts["EXACT_KEY_M3"] = int(executed_mode_counts.get("M3", 0))
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.mixed_execution_prepare_ms_total += float(elapsed_ms)
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(executed_mode_counts.get("EXACT_KEY_M3", 0))
         return gathered_keys, gathered_values, token_counts, executed_mode_counts
 
     def decode_selected_blocks(
@@ -4390,6 +4404,7 @@ class PersistentFullAttentionState:
             "direct_m0_gather_ms": 0.0,
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
+            "aux_exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
             "final_mix_logits_ms": 0.0,
             "final_mix_softmax_ms": 0.0,
@@ -4416,6 +4431,7 @@ class PersistentFullAttentionState:
                 config=resolved_config,
                 dotcache_config=self.dotcache_config,
             )
+            executed_mode_counts["EXACT_KEY_M3"] = int(executed_mode_counts.get("M3", 0))
             output, attn_weights = _decode_selected_block_tensors_exact_torch(
                 query=query,
                 key_cache=gathered_keys,
@@ -4435,6 +4451,9 @@ class PersistentFullAttentionState:
         )
         layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(timing.get("direct_m0_score_ms", 0.0))
         layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(timing.get("exact_m3_score_ms", 0.0))
+        layer_telemetry.mixed_execution_aux_exact_m3_score_ms_total += float(
+            timing.get("aux_exact_m3_score_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_final_mix_ms_total += float(timing.get("final_mix_ms", 0.0))
         layer_telemetry.mixed_execution_final_mix_logits_ms_total += float(timing.get("final_mix_logits_ms", 0.0))
         layer_telemetry.mixed_execution_final_mix_softmax_ms_total += float(
@@ -4443,6 +4462,7 @@ class PersistentFullAttentionState:
         layer_telemetry.mixed_execution_final_mix_value_ms_total += float(timing.get("final_mix_value_ms", 0.0))
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(executed_mode_counts.get("EXACT_KEY_M3", 0))
         return output, attn_weights, token_counts, executed_mode_counts
 
     def full_layer_tensors(self, layer_id: int):
@@ -4662,13 +4682,14 @@ class PersistentFullAttentionState:
                 upper_bounds=upper_bounds,
                 num_heads=num_heads,
             )
-        executed_mode_counts_total = {"M0": 0, "M3": 0}
+        executed_mode_counts_total = {"M0": 0, "M3": 0, "EXACT_KEY_M3": 0}
         mixed_timing_totals = {
             "direct_m0_assembly_ms": 0.0,
             "direct_m0_query_prep_ms": 0.0,
             "direct_m0_gather_ms": 0.0,
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
+            "aux_exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
             "final_mix_logits_ms": 0.0,
             "final_mix_softmax_ms": 0.0,
@@ -4710,6 +4731,9 @@ class PersistentFullAttentionState:
                 tranche_stream_stats = tranche_result["stream_stats"]
                 executed_mode_counts_total["M0"] += int(tranche_result["executed_mode_counts"].get("M0", 0))
                 executed_mode_counts_total["M3"] += int(tranche_result["executed_mode_counts"].get("M3", 0))
+                executed_mode_counts_total["EXACT_KEY_M3"] += int(
+                    tranche_result["executed_mode_counts"].get("EXACT_KEY_M3", 0)
+                )
                 for timing_key in mixed_timing_totals:
                     mixed_timing_totals[timing_key] += float(tranche_result["timing"].get(timing_key, 0.0))
                 tranche_block_max_logits = np.asarray(
@@ -4731,6 +4755,9 @@ class PersistentFullAttentionState:
                     )
                     executed_mode_counts_total["M0"] += int(_executed_mode_counts.get("M0", 0))
                     executed_mode_counts_total["M3"] += int(_executed_mode_counts.get("M3", 0))
+                    executed_mode_counts_total["EXACT_KEY_M3"] += int(
+                        _executed_mode_counts.get("EXACT_KEY_M3", 0)
+                    )
                 else:
                     gathered_keys, gathered_values, tranche_token_counts = _gather_selected_block_tensors(
                         state=state,
@@ -4969,6 +4996,9 @@ class PersistentFullAttentionState:
         layer_telemetry = self.telemetry.require_layer(int(layer_id))
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts_total.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts_total.get("M3", 0))
+        layer_telemetry.executed_exact_key_m3_block_count_total += int(
+            executed_mode_counts_total.get("EXACT_KEY_M3", 0)
+        )
         layer_telemetry.mixed_execution_direct_m0_assembly_ms_total += float(
             mixed_timing_totals.get("direct_m0_assembly_ms", 0.0)
         )
@@ -4983,6 +5013,9 @@ class PersistentFullAttentionState:
         )
         layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(
             mixed_timing_totals.get("exact_m3_score_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_aux_exact_m3_score_ms_total += float(
+            mixed_timing_totals.get("aux_exact_m3_score_ms", 0.0)
         )
         layer_telemetry.mixed_execution_final_mix_ms_total += float(
             mixed_timing_totals.get("final_mix_ms", 0.0)
@@ -5169,6 +5202,10 @@ class PersistentFullAttentionState:
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_exact_m3_score_ms_total)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_mixed_execution_aux_exact_m3_score_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_aux_exact_m3_score_ms_total)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_ms_total)
                 for layer_id in sorted(self.layers)
@@ -5205,6 +5242,10 @@ class PersistentFullAttentionState:
             },
             "persistent_full_attention_executed_m3_block_count_total_by_layer": {
                 str(layer_id): int(self.telemetry.require_layer(layer_id).executed_m3_block_count_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_executed_exact_key_m3_block_count_total_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).executed_exact_key_m3_block_count_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_last_fallback_rung_by_layer": {

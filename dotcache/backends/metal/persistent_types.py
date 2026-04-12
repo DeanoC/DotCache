@@ -103,6 +103,7 @@ class PersistentLayerTelemetry:
     mixed_execution_direct_m0_gather_ms_total: float = 0.0
     mixed_execution_direct_m0_score_ms_total: float = 0.0
     mixed_execution_exact_m3_score_ms_total: float = 0.0
+    mixed_execution_aux_exact_m3_score_ms_total: float = 0.0
     mixed_execution_final_mix_ms_total: float = 0.0
     mixed_execution_final_mix_logits_ms_total: float = 0.0
     mixed_execution_final_mix_softmax_ms_total: float = 0.0
@@ -111,6 +112,7 @@ class PersistentLayerTelemetry:
     selected_m3_metadata_block_count_total: int = 0
     executed_m0_block_count_total: int = 0
     executed_m3_block_count_total: int = 0
+    executed_exact_key_m3_block_count_total: int = 0
     fallback_process_more_count: int = 0
     fallback_widen_count: int = 0
     fallback_disable_compression_count: int = 0
