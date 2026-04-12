@@ -2001,6 +2001,55 @@ pub(crate) fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, 
     })
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_causal_mask_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let ordinal = match device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(dtype) else {
+        return Ok(None);
+    };
+    let kv_len = tgt_len + seqlen_offset;
+    let shape = vec![batch_size, 1, tgt_len, kv_len];
+    let mut out = vec![0u8; shape.iter().product::<usize>().saturating_mul(dtype.size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const std::ffi::c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_causal_mask(
+            dtype_code,
+            ordinal,
+            batch_size,
+            tgt_len,
+            seqlen_offset,
+            device_ptr as *mut std::ffi::c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-causal-mask-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_causal_mask_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (device, dtype, batch_size, tgt_len, seqlen_offset);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipCumsumLastDim {
     rows: usize,

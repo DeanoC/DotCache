@@ -3,8 +3,9 @@ use crate::qwen35_minimal_impl::model::{
     delta_chunk_scan_raw, delta_chunk_single_prefill, delta_full_scan, delta_full_scan_pack,
     delta_full_scan_packed, delta_local_attn_scan, delta_recurrent_prefill, delta_state_scan,
     delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
-    hip_causal_mask, hip_cumsum_last_dim, hip_embedding_lookup, hip_immutable_embedding_lookup,
-    hip_rms_norm, hip_rms_norm_gated, hip_swiglu_mul, hip_value_decay,
+    hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim, hip_embedding_lookup,
+    hip_immutable_embedding_lookup, hip_rms_norm, hip_rms_norm_gated, hip_swiglu_mul,
+    hip_value_decay,
     immutable_output_projection, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_stateful_conv_hip, linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
@@ -4230,6 +4231,28 @@ fn causal_mask_host(
     }))))
 }
 
+fn causal_mask_hip_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) =
+        hip_causal_mask_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype,
+            device: device.clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7751,6 +7774,11 @@ pub(crate) fn causal_mask(
     tgt_len: usize,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(host) =
+        causal_mask_hip_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    {
+        return Ok(host);
+    }
     if device.is_hip() {
         return Ok(from_device_tensor(hip_causal_mask(
             device,
