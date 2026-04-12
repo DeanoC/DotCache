@@ -3,7 +3,7 @@ mod backend_buffer_api;
 pub(crate) mod backend_ops;
 #[cfg(any(feature = "hf", test))]
 mod builder;
-mod hip;
+pub(crate) mod hip;
 pub(crate) mod model;
 mod ops;
 mod prepared;

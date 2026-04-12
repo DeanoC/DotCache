@@ -22,7 +22,9 @@ use crate::qwen35_minimal_impl::model::{
     linear_stateful_conv_value_decay_with_state_host_buffer,
     ImmutableEmbedding, StateBuffer,
 };
+use crate::qwen35_minimal_impl::hip;
 use half::{bf16, f16};
+use std::ffi::c_void;
 use std::sync::Arc;
 use candle_core::shape::Dim;
 
@@ -139,6 +141,7 @@ pub(crate) struct HipDeviceBuffer {
 #[derive(Debug, Clone)]
 enum HipDeviceStorage {
     CandleTensor(Tensor),
+    MappedHostBuffer(HipMappedHostBuffer),
     HostBuffer(HipHostBuffer),
     PendingHostUpload(HipHostBuffer),
 }
@@ -165,20 +168,34 @@ impl HipDeviceStorage {
     }
 
     fn from_host_buffer(buffer: HipHostBuffer) -> Self {
-        Self::HostBuffer(buffer)
+        if let Some(mapped) = HipMappedHostBuffer::new(buffer.clone()).ok() {
+            Self::MappedHostBuffer(mapped)
+        } else {
+            Self::HostBuffer(buffer)
+        }
     }
 
     fn is_contiguous(&self) -> bool {
         match self {
             Self::CandleTensor(tensor) => tensor.is_contiguous(),
+            Self::MappedHostBuffer(_) => true,
             Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => true,
+        }
+    }
+
+    fn as_host_buffer(&self) -> Option<&HipHostBuffer> {
+        match self {
+            Self::MappedHostBuffer(buffer) => Some(&buffer.buffer),
+            Self::HostBuffer(buffer) | Self::PendingHostUpload(buffer) => Some(buffer),
+            Self::CandleTensor(_) => None,
         }
     }
 
     fn is_materialized(&self) -> bool {
         match self {
             Self::CandleTensor(_) => true,
+            Self::MappedHostBuffer(_) => true,
             Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => false,
         }
@@ -187,6 +204,7 @@ impl HipDeviceStorage {
     fn materialize_tensor(&self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor.clone()),
+            Self::MappedHostBuffer(buffer) => buffer.clone().into_host_buffer().upload_to_tensor(),
             Self::HostBuffer(buffer) => buffer.clone().upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.clone().upload_to_tensor(),
         }
@@ -195,9 +213,67 @@ impl HipDeviceStorage {
     fn into_tensor(self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor),
+            Self::MappedHostBuffer(buffer) => buffer.into_host_buffer().upload_to_tensor(),
             Self::HostBuffer(buffer) => buffer.upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct RegisteredHipHostMapping {
+    host_ptr: usize,
+    device_ptr: usize,
+}
+
+impl RegisteredHipHostMapping {
+    fn device_ptr(&self) -> *const c_void {
+        self.device_ptr as *const c_void
+    }
+}
+
+impl Drop for RegisteredHipHostMapping {
+    fn drop(&mut self) {
+        hip::unregister_host_mapping(self.host_ptr as *const c_void);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HipMappedHostBuffer {
+    buffer: HipHostBuffer,
+    mapping: Arc<RegisteredHipHostMapping>,
+}
+
+impl HipMappedHostBuffer {
+    fn new(buffer: HipHostBuffer) -> Result<Self> {
+        if !buffer.device.is_hip() {
+            candle_core::bail!("mapped HIP host buffer requires a HIP device");
+        }
+        let host_ptr = buffer.bytes.as_ptr() as *const c_void;
+        if host_ptr.is_null() || buffer.bytes.is_empty() {
+            candle_core::bail!("mapped HIP host buffer requires non-empty host bytes");
+        }
+        let device_ptr = hip::register_host_mapping_for_device(
+            buffer.device.as_hip_device()?.ordinal(),
+            host_ptr,
+            buffer.bytes.len(),
+        )?;
+        Ok(Self {
+            buffer,
+            mapping: Arc::new(RegisteredHipHostMapping {
+                host_ptr: host_ptr as usize,
+                device_ptr: device_ptr as usize,
+            }),
+        })
+    }
+
+    fn into_host_buffer(self) -> HipHostBuffer {
+        self.buffer
+    }
+
+    #[allow(dead_code)]
+    fn raw_device_ptr(&self) -> *const c_void {
+        self.mapping.device_ptr()
     }
 }
 
@@ -1060,6 +1136,7 @@ impl HipDeviceBuffer {
 
     fn try_host_buffer(&self) -> Result<Option<HipHostBuffer>> {
         let buffer = match &self.storage {
+            HipDeviceStorage::MappedHostBuffer(buffer) => &buffer.buffer,
             HipDeviceStorage::HostBuffer(buffer) | HipDeviceStorage::PendingHostUpload(buffer) => buffer,
             HipDeviceStorage::CandleTensor(_) => return Ok(None),
         };
@@ -1671,7 +1748,7 @@ impl HipDeviceBuffer {
         head_k_dim: usize,
         head_v_dim: usize,
     ) -> Result<(Self, Self)> {
-        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+        if let Some(fused) = self.storage.as_host_buffer() {
             let core_attn_out = fused
                 .narrow_copy(1, 0, value_dim)?
                 .reshape_copy(vec![batch_size, seq_len, value_dim])?;
@@ -1701,7 +1778,7 @@ impl HipDeviceBuffer {
         num_v_heads: usize,
         state_len: usize,
     ) -> Result<(Self, Self, Self)> {
-        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+        if let Some(fused) = self.storage.as_host_buffer() {
             let out_width = conv_dim + num_v_heads;
             let packed = fused
                 .narrow_copy(1, 0, seq_len * out_width)?
@@ -1741,7 +1818,7 @@ impl HipDeviceBuffer {
         k_head_dim: usize,
         output_dtype: DType,
     ) -> Result<(Self, Self)> {
-        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+        if let Some(fused) = self.storage.as_host_buffer() {
             let output_scan = fused
                 .narrow_copy(1, 0, total_sequence_length)?
                 .reshape_copy(vec![batch_size, num_heads, total_sequence_length, v_head_dim])?;
@@ -1778,7 +1855,7 @@ impl HipDeviceBuffer {
         chunk_size: usize,
         k_head_dim: usize,
     ) -> Result<(Self, Self, Self)> {
-        if let HipDeviceStorage::HostBuffer(fused) = &self.storage {
+        if let Some(fused) = self.storage.as_host_buffer() {
             return Ok((
                 Self::from_materialized_host_buffer(fused.narrow_copy(1, 0, chunk_size)?),
                 Self::from_materialized_host_buffer(fused.narrow_copy(1, chunk_size, chunk_size)?),
@@ -5066,11 +5143,11 @@ fn prepare_full_attention_inputs_tensors_hip(
         k_proj.0 .0.direct_materialized_device_buffer(),
         v_proj.0 .0.direct_materialized_device_buffer(),
     ) {
-        if let (
-            HipDeviceStorage::HostBuffer(q_and_gate_host),
-            HipDeviceStorage::HostBuffer(k_proj_host),
-            HipDeviceStorage::HostBuffer(v_proj_host),
-        ) = (&q_and_gate.storage, &k_proj.storage, &v_proj.storage)
+        if let (Some(q_and_gate_host), Some(k_proj_host), Some(v_proj_host)) = (
+            q_and_gate.storage.as_host_buffer(),
+            k_proj.storage.as_host_buffer(),
+            v_proj.storage.as_host_buffer(),
+        )
         {
             let (query_states, gate, key_states, value_states) =
                 prepare_full_attention_inputs_host_buffers(
@@ -5502,11 +5579,11 @@ fn prepare_linear_attention_inputs_tensors_hip(
         beta_raw.0 .0.direct_materialized_device_buffer(),
         g.0 .0.direct_materialized_device_buffer(),
     ) {
-        if let (
-            HipDeviceStorage::HostBuffer(mixed_qkv_host),
-            HipDeviceStorage::HostBuffer(beta_raw_host),
-            HipDeviceStorage::HostBuffer(g_host),
-        ) = (&mixed_qkv.storage, &beta_raw.storage, &g.storage)
+        if let (Some(mixed_qkv_host), Some(beta_raw_host), Some(g_host)) = (
+            mixed_qkv.storage.as_host_buffer(),
+            beta_raw.storage.as_host_buffer(),
+            g.storage.as_host_buffer(),
+        )
         {
             let (query, key, value, beta, g) = prepare_linear_attention_inputs_host_buffers(
                 mixed_qkv_host,
@@ -5714,8 +5791,10 @@ fn prepare_full_attention_output_hip(
         attn_output_hip.0 .0.direct_materialized_device_buffer(),
         gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
-        if let (HipDeviceStorage::HostBuffer(attn_host), HipDeviceStorage::HostBuffer(gate_host)) =
-            (&attn_output.storage, &gate.storage)
+        if let (Some(attn_host), Some(gate_host)) = (
+            attn_output.storage.as_host_buffer(),
+            gate.storage.as_host_buffer(),
+        )
         {
             return Ok(HipTensor::from_device_buffer(
                 HipDeviceBuffer::from_materialized_host_buffer(
@@ -9178,15 +9257,15 @@ fn delta_chunk_recurrent_read_tensors_hip(
         value_chunk.0 .0.direct_materialized_device_buffer(),
     ) {
         if let (
-            HipDeviceStorage::HostBuffer(prev_state_host),
-            HipDeviceStorage::HostBuffer(k_cumdecay_host),
-            HipDeviceStorage::HostBuffer(q_state_host),
-            HipDeviceStorage::HostBuffer(value_host),
+            Some(prev_state_host),
+            Some(k_cumdecay_host),
+            Some(q_state_host),
+            Some(value_host),
         ) = (
-            &prev_state.storage,
-            &k_cumdecay_chunk.storage,
-            &q_state_chunk.storage,
-            &value_chunk.storage,
+            prev_state.storage.as_host_buffer(),
+            k_cumdecay_chunk.storage.as_host_buffer(),
+            q_state_chunk.storage.as_host_buffer(),
+            value_chunk.storage.as_host_buffer(),
         ) {
             let v_prime = k_cumdecay_host.matmul(prev_state_host)?;
             let v_new = HipHostBuffer::broadcast_sub(value_host, &v_prime)?;
@@ -9236,11 +9315,11 @@ fn mix_chunk_attention_tensors_hip(
         attn_inter.0 .0.direct_materialized_device_buffer(),
         value_chunk.0 .0.direct_materialized_device_buffer(),
     ) {
-        if let (
-            HipDeviceStorage::HostBuffer(attn_host),
-            HipDeviceStorage::HostBuffer(attn_inter_host),
-            HipDeviceStorage::HostBuffer(value_host),
-        ) = (&attn.storage, &attn_inter.storage, &value_chunk.storage)
+        if let (Some(attn_host), Some(attn_inter_host), Some(value_host)) = (
+            attn.storage.as_host_buffer(),
+            attn_inter.storage.as_host_buffer(),
+            value_chunk.storage.as_host_buffer(),
+        )
         {
             let attn_value = attn_host.matmul(value_host)?;
             let mixed = HipHostBuffer::broadcast_add(attn_inter_host, &attn_value)?;
