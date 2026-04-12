@@ -84,6 +84,9 @@ pub(crate) enum HipNativeExpr {
     Exp {
         source: Arc<HipNativeBuffer>,
     },
+    Log {
+        source: Arc<HipNativeBuffer>,
+    },
     BroadcastAdd {
         lhs: Arc<HipNativeBuffer>,
         rhs: Arc<HipNativeBuffer>,
@@ -120,6 +123,9 @@ pub(crate) enum HipNativeExpr {
         value: f64,
     },
     Recip {
+        source: Arc<HipNativeBuffer>,
+    },
+    Sqrt {
         source: Arc<HipNativeBuffer>,
     },
     L2Norm {
@@ -2675,12 +2681,14 @@ impl HipNativeBuffer {
             | HipNativeExpr::Transpose { source, .. }
             | HipNativeExpr::Cast { source, .. }
             | HipNativeExpr::Exp { source }
+            | HipNativeExpr::Log { source }
             | HipNativeExpr::MaxKeepdim { source, .. }
             | HipNativeExpr::SumKeepdim { source, .. }
             | HipNativeExpr::Neg { source }
             | HipNativeExpr::AddScalar { source, .. }
             | HipNativeExpr::MulScalar { source, .. }
             | HipNativeExpr::Recip { source }
+            | HipNativeExpr::Sqrt { source }
             | HipNativeExpr::L2Norm { source, .. } => source.is_host_graph(),
             HipNativeExpr::Concat { sources, .. } => sources.iter().all(|s| s.is_host_graph()),
             HipNativeExpr::BroadcastAdd { lhs, rhs }
@@ -3384,6 +3392,17 @@ impl HipNativeBuffer {
         }
     }
 
+    pub(crate) fn log(source: Arc<HipNativeBuffer>) -> Self {
+        Self {
+            expr: HipNativeExpr::Log {
+                source: source.clone(),
+            },
+            shape: source.shape.clone(),
+            dtype: source.dtype,
+            device: source.device.clone(),
+        }
+    }
+
     fn broadcast_shape(lhs: &[usize], rhs: &[usize], op: &'static str) -> Result<Vec<usize>> {
         Ok(Shape::from(lhs.to_vec())
             .broadcast_shape_binary_op(&Shape::from(rhs.to_vec()), op)?
@@ -3512,6 +3531,17 @@ impl HipNativeBuffer {
         }
     }
 
+    pub(crate) fn sqrt(source: Arc<HipNativeBuffer>) -> Self {
+        Self {
+            expr: HipNativeExpr::Sqrt {
+                source: source.clone(),
+            },
+            shape: source.shape.clone(),
+            dtype: source.dtype,
+            device: source.device.clone(),
+        }
+    }
+
     pub(crate) fn l2norm(source: Arc<HipNativeBuffer>, eps: f64) -> Self {
         Self {
             expr: HipNativeExpr::L2Norm {
@@ -3591,6 +3621,13 @@ impl HipNativeBuffer {
                     source.materialize()?.exp()
                 }
             }
+            HipNativeExpr::Log { source } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.log()?.into_tensor())
+                } else {
+                    source.materialize()?.log()
+                }
+            }
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 lhs.materialize()?.broadcast_add(&rhs.materialize()?)
             }
@@ -3629,6 +3666,13 @@ impl HipNativeBuffer {
                     Ok(buffer.recip()?.into_tensor())
                 } else {
                     source.materialize()?.recip()
+                }
+            }
+            HipNativeExpr::Sqrt { source } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.sqrt()?.into_tensor())
+                } else {
+                    source.materialize()?.sqrt()
                 }
             }
             HipNativeExpr::L2Norm { source, eps } => {
@@ -3860,7 +3904,9 @@ impl HipStorage {
         if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.log()?));
         }
-        Ok(Self::from_tensor(self.materialize()?.log()?))
+        Ok(Self::from_native_buffer(HipNativeBuffer::log(Arc::new(
+            self.0.clone(),
+        ))))
     }
 
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
@@ -3924,7 +3970,9 @@ impl HipStorage {
         if let Some(buffer) = self.0.direct_materialized_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.sqrt()?));
         }
-        Ok(Self::from_tensor(self.materialize()?.sqrt()?))
+        Ok(Self::from_native_buffer(HipNativeBuffer::sqrt(Arc::new(
+            self.0.clone(),
+        ))))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
