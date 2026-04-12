@@ -1698,6 +1698,9 @@ impl HipStorage {
         if self.dtype() == dtype {
             Ok(self.clone())
         } else {
+            if let Some(buffer) = self.0.direct_materialized_device_buffer() {
+                return Ok(Self::from_device_buffer(buffer.to_dtype(dtype)?));
+            }
             Ok(Self::from_native_buffer(HipNativeBuffer::cast(
                 Arc::new(self.0.clone()),
                 dtype,
@@ -2757,7 +2760,7 @@ fn rms_norm_hip(
     eps: f64,
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
-    if let Some(xs) = xs.0 .0.direct_device_buffer() {
+    if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
             return Ok(from_kernel_tensor(hip_rms_norm(
@@ -2778,7 +2781,7 @@ fn rms_norm_hip(
 }
 
 fn l2norm_hip(xs: &HipTensor, eps: f64) -> Result<HipTensor> {
-    if let Some(xs) = xs.0 .0.direct_device_buffer() {
+    if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
         return Ok(HipTensor::from_device_buffer(xs.l2norm(eps)?));
     }
     xs.l2norm(eps)
@@ -4090,12 +4093,10 @@ mod tests {
             1e-6,
         )?;
 
-        assert!(matches!(query_states.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
-        assert!(matches!(gate.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
-        assert!(matches!(key_states.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
-        assert!(matches!(value_states.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(query_states.0.shape(), vec![1, 1, 1, 2]);
+        assert_eq!(gate.0.shape(), vec![1, 1, 2]);
         assert_eq!(key_states.0.shape(), vec![1, 1, 1, 2]);
+        assert_eq!(value_states.0.shape(), vec![1, 1, 1, 2]);
         Ok(())
     }
 
@@ -4256,6 +4257,24 @@ mod tests {
         assert!((vals[1] - 0.26894143).abs() < 1e-5);
         assert!((vals[2] - 0.7310586).abs() < 1e-5);
         assert!((vals[3] - 0.8807971).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_cast_of_view_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?))
+        .transpose(0, 1)?;
+
+        let out = xs.to_dtype(DType::F64)?;
+
+        assert!(!matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(out.0.dtype(), DType::F64);
+        assert_eq!(values_f32(out.to_dtype(DType::F32)?)?, vec![1.0, 3.0, 2.0, 4.0]);
         Ok(())
     }
 
@@ -4591,7 +4610,7 @@ pub(crate) fn rms_norm(
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
-    if xs_hip.0 .0.direct_device_buffer().is_some() {
+    if xs_hip.0 .0.direct_materialized_device_buffer().is_some() {
         return rms_norm_hip(&xs_hip, weight, eps, add_unit_offset);
     }
     if let Some(host) = rms_norm_host(&xs_hip, weight, eps, add_unit_offset)? {
@@ -4623,8 +4642,8 @@ pub(crate) fn rms_norm_gated(
     let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     if let (Some(hidden_states), Some(gate)) = (
-        hidden_states_hip.0 .0.direct_device_buffer(),
-        gate_hip.0 .0.direct_device_buffer(),
+        hidden_states_hip.0 .0.direct_materialized_device_buffer(),
+        gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
         if hidden_states.device().is_hip() {
             let hidden_states = hidden_states.materialize_tensor()?;
@@ -4670,8 +4689,8 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     let up_hip = HipTensor::from_scaffold_tensor(up.clone());
     if let (Some(gate), Some(up)) = (
-        gate_hip.0 .0.direct_device_buffer(),
-        up_hip.0 .0.direct_device_buffer(),
+        gate_hip.0 .0.direct_materialized_device_buffer(),
+        up_hip.0 .0.direct_materialized_device_buffer(),
     ) {
         if gate.device().is_hip() {
             let gate = gate.materialize_tensor()?;
@@ -4726,7 +4745,7 @@ pub(crate) fn causal_mask(
 
 pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
-    if let Some(xs) = xs_hip.0 .0.direct_device_buffer() {
+    if let Some(xs) = xs_hip.0 .0.direct_materialized_device_buffer() {
         if xs.device().is_hip() {
             let xs = xs.materialize_tensor()?;
             return Ok(from_device_tensor(hip_cumsum_last_dim(&xs)?));
@@ -4762,9 +4781,9 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
     let dt_bias_hip = HipTensor::from_scaffold_tensor(dt_bias.clone());
     let a_log_exp_hip = HipTensor::from_scaffold_tensor(a_log_exp.clone());
     if let (Some(a), Some(dt_bias), Some(a_log_exp)) = (
-        a_hip.0 .0.direct_device_buffer(),
-        dt_bias_hip.0 .0.direct_device_buffer(),
-        a_log_exp_hip.0 .0.direct_device_buffer(),
+        a_hip.0 .0.direct_materialized_device_buffer(),
+        dt_bias_hip.0 .0.direct_materialized_device_buffer(),
+        a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
     ) {
         if a.device().is_hip() {
             let a = a.materialize_tensor()?;
@@ -4832,9 +4851,9 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
     let cos = HipTensor::from_scaffold_tensor(cos.clone());
     let sin = HipTensor::from_scaffold_tensor(sin.clone());
     if let (Some(xs), Some(cos), Some(sin)) = (
-        xs.0 .0.direct_device_buffer(),
-        cos.0 .0.direct_device_buffer(),
-        sin.0 .0.direct_device_buffer(),
+        xs.0 .0.direct_materialized_device_buffer(),
+        cos.0 .0.direct_materialized_device_buffer(),
+        sin.0 .0.direct_materialized_device_buffer(),
     ) {
         let cos = cos
             .narrow(0, 0, seq_len)?
