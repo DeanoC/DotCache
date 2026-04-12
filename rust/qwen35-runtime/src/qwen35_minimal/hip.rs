@@ -532,6 +532,14 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_log(
+            dtype: c_int,
+            device_ordinal: usize,
+            total_elems: usize,
+            xs: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_cast(
             input_dtype: c_int,
             output_dtype: c_int,

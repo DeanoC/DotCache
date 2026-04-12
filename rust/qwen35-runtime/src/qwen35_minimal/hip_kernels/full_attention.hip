@@ -1755,6 +1755,19 @@ __global__ void dotcache_qwen35_sigmoid_kernel(
     );
 }
 
+template <typename T>
+__global__ void dotcache_qwen35_log_kernel(
+    int total_elems,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(logf(dotcache_qwen35_to_float(xs[idx])));
+}
+
 template <typename In, typename Out>
 __global__ void dotcache_qwen35_cast_kernel(
     int total_elems,

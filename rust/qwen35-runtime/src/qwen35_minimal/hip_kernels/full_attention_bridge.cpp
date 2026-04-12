@@ -1027,6 +1027,31 @@ int sigmoid_device(
     return 0;
 }
 
+template <typename T>
+int log_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_log_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 155;
+    if (hipDeviceSynchronize() != hipSuccess) return 156;
+    return 0;
+}
+
 template <typename In, typename Out>
 int cast_device(
     int device_ordinal,
@@ -3023,6 +3048,36 @@ extern "C" int dotcache_qwen35_hip_sigmoid(
             out);
     default:
         return 133;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_log(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return log_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 1:
+        return log_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 2:
+        return log_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    default:
+        return 157;
     }
 }
 
