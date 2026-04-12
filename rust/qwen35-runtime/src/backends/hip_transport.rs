@@ -164,6 +164,10 @@ impl HipDeviceBuffer {
         self.tensor.dims()
     }
 
+    pub(crate) fn rank(&self) -> usize {
+        self.dims().len()
+    }
+
     pub(crate) fn dtype(&self) -> DType {
         self.tensor.dtype()
     }
@@ -1770,6 +1774,10 @@ impl HipStorage {
         Ok(self.shape()[dim])
     }
 
+    pub(crate) fn rank(&self) -> usize {
+        self.shape().len()
+    }
+
     pub(crate) fn dims3(&self) -> Result<(usize, usize, usize)> {
         let dims = self.shape();
         match dims.as_slice() {
@@ -1929,6 +1937,10 @@ impl HipTensor {
 
     pub(crate) fn dim(&self, dim: usize) -> Result<usize> {
         self.0.dim(dim)
+    }
+
+    pub(crate) fn rank(&self) -> usize {
+        self.0.rank()
     }
 
     pub(crate) fn dims3(&self) -> Result<(usize, usize, usize)> {
@@ -2119,7 +2131,7 @@ fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor
             lhs, rhs,
         )?));
     }
-    HipTensor::cat(&[&lhs, &rhs], lhs.0.shape().len() - 1)?
+    HipTensor::cat(&[&lhs, &rhs], lhs.rank() - 1)?
         .contiguous()
 }
 
@@ -3324,7 +3336,7 @@ fn softmax_last_dim_hip(xs: &HipTensor) -> Result<HipTensor> {
 }
 
 fn softmax_last_dim_device_hip(xs: &HipDeviceBuffer) -> Result<HipDeviceBuffer> {
-    let last_dim = xs.tensor.dims().len() - 1;
+    let last_dim = xs.rank() - 1;
     let max = xs.max_keepdim(last_dim)?;
     let diff = xs.broadcast_sub(&max)?;
     let num = diff.exp()?;
@@ -4329,7 +4341,7 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
     let x1 = x.narrow(candle_core::D::Minus1, 1, 1)?;
     let y0 = x0.broadcast_mul(&cos)?.broadcast_sub(&x1.broadcast_mul(&sin)?)?;
     let y1 = x0.broadcast_mul(&sin)?.broadcast_add(&x1.broadcast_mul(&cos)?)?;
-    HipTensor::cat(&[&y0, &y1], y0.0.shape().len() - 1)?
+    HipTensor::cat(&[&y0, &y1], y0.rank() - 1)?
         .reshape((b_sz, n_head, seq_len, n_embd))
 }
 
