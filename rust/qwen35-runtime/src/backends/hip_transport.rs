@@ -1011,6 +1011,14 @@ impl HipStorage {
             _ => candle_core::bail!("unexpected rank {}, expected 3", dims.len()),
         }
     }
+
+    pub(crate) fn dims4(&self) -> Result<(usize, usize, usize, usize)> {
+        let dims = self.shape();
+        match dims.as_slice() {
+            [d0, d1, d2, d3] => Ok((*d0, *d1, *d2, *d3)),
+            _ => candle_core::bail!("unexpected rank {}, expected 4", dims.len()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1035,10 +1043,6 @@ impl HipTensor {
 
     pub(crate) fn into_tensor(self) -> Tensor {
         self.0.into_tensor()
-    }
-
-    pub(crate) fn materialize(&self) -> Result<Tensor> {
-        self.0.materialize()
     }
 
     pub(crate) fn contiguous(&self) -> Result<Self> {
@@ -1126,6 +1130,10 @@ impl HipTensor {
         self.0.dims3()
     }
 
+    pub(crate) fn dims4(&self) -> Result<(usize, usize, usize, usize)> {
+        self.0.dims4()
+    }
+
     pub(crate) fn cat(tensors: &[&HipTensor], dim: usize) -> Result<Self> {
         let sources = tensors
             .iter()
@@ -1134,10 +1142,6 @@ impl HipTensor {
         Ok(Self(HipStorage::from_native_buffer(HipNativeBuffer::concat(
             sources, dim,
         ))))
-    }
-
-    pub(crate) fn cat_tensors(tensors: &[&Tensor], dim: usize) -> Result<Self> {
-        Ok(Self(HipStorage::from_tensor(cat(tensors, dim)?)))
     }
 
     pub(crate) fn into_state_buffer(self) -> Result<StateBuffer> {
@@ -1560,25 +1564,37 @@ pub(crate) fn slice_last_token(xs: &StateBuffer) -> Result<StateBuffer> {
     xs.narrow(1, seq_len - 1, 1)?.into_state_buffer()
 }
 
-fn repeat_heads_impl(xs: &Tensor, n_rep: usize) -> Result<HipTensor> {
+fn repeat_heads_hip(xs: &HipTensor, n_rep: usize) -> Result<HipTensor> {
     let (b_sz, seq_len, heads, head_dim) = xs.dims4()?;
     if n_rep == 1 {
-        return Ok(HipTensor::from_scaffold_tensor(xs.clone()));
+        return Ok(xs.clone());
     }
-    Ok(HipTensor::from_scaffold_tensor(xs.clone())
-        .reshape((b_sz, seq_len, heads, 1, head_dim))?
+    xs.reshape((b_sz, seq_len, heads, 1, head_dim))?
         .expand((b_sz, seq_len, heads, n_rep, head_dim))?
-        .reshape((b_sz, seq_len, heads * n_rep, head_dim))?)
+        .reshape((b_sz, seq_len, heads * n_rep, head_dim))
 }
 
-fn repeat_kv_impl(xs: &Tensor, repeats: usize) -> Result<HipTensor> {
+fn repeat_kv_hip(xs: &HipTensor, repeats: usize) -> Result<HipTensor> {
     if repeats <= 1 {
-        return Ok(HipTensor::from_scaffold_tensor(xs.clone()));
+        return Ok(xs.clone());
     }
     let (b_sz, kv_heads, seq_len, head_dim) = xs.dims4()?;
-    let repeated = vec![xs; repeats];
-    Ok(HipTensor::cat_tensors(&repeated, 2)?
-        .reshape((b_sz, kv_heads * repeats, seq_len, head_dim))?)
+    xs.reshape((b_sz, kv_heads, 1, seq_len, head_dim))?
+        .expand((b_sz, kv_heads, repeats, seq_len, head_dim))?
+        .reshape((b_sz, kv_heads * repeats, seq_len, head_dim))
+}
+
+fn rms_norm_hip(
+    xs: &HipTensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<HipTensor> {
+    rms_norm(&xs.clone().into_tensor(), weight, eps, add_unit_offset)
+}
+
+fn l2norm_hip(xs: &HipTensor, eps: f64) -> Result<HipTensor> {
+    l2norm(&xs.clone().into_tensor(), eps)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1602,10 +1618,8 @@ fn prepare_full_attention_inputs_hip(
         num_heads,
         head_dim * 2,
     ))?;
-    let query_states = rms_norm(
-        &q_and_gate
-            .narrow(candle_core::D::Minus1, 0, head_dim)?
-            .into_tensor(),
+    let query_states = rms_norm_hip(
+        &q_and_gate.narrow(candle_core::D::Minus1, 0, head_dim)?,
         q_norm_weight,
         q_norm_eps,
         true,
@@ -1614,10 +1628,8 @@ fn prepare_full_attention_inputs_hip(
     let gate = q_and_gate
         .narrow(candle_core::D::Minus1, head_dim, head_dim)?
         .reshape((b_sz, q_len, num_heads * head_dim))?;
-    let key_states = rms_norm(
-        &HipTensor::from_state_buffer(k_proj)
-            .reshape((b_sz, q_len, num_kv_heads, head_dim))?
-            .into_tensor(),
+    let key_states = rms_norm_hip(
+        &HipTensor::from_state_buffer(k_proj).reshape((b_sz, q_len, num_kv_heads, head_dim))?,
         k_norm_weight,
         k_norm_eps,
         true,
@@ -1696,13 +1708,13 @@ fn prepare_linear_attention_inputs_hip(
         .reshape((batch_size, seq_len, num_v_heads, head_v_dim))?
         .to_dtype(compute_dtype)?;
 
-    let query = l2norm(&query.into_tensor(), 1e-6)?;
-    let key = l2norm(&key.into_tensor(), 1e-6)?;
+    let query = l2norm_hip(&query, 1e-6)?;
+    let key = l2norm_hip(&key, 1e-6)?;
     let head_repeat = num_v_heads / num_k_heads;
     let (query, key) = if repeat_kv_heads && head_repeat > 1 {
         (
-            repeat_heads_impl(&query.into_tensor(), head_repeat)?,
-            repeat_heads_impl(&key.into_tensor(), head_repeat)?,
+            repeat_heads_hip(&query, head_repeat)?,
+            repeat_heads_hip(&key, head_repeat)?,
         )
     } else {
         (query, key)
@@ -1860,10 +1872,10 @@ fn materialize_full_attention_dense_inputs_hip(
     value_states: &Tensor,
     num_kv_groups: usize,
 ) -> Result<(HipTensor, HipTensor, HipTensor)> {
-    let key_states = repeat_kv_impl(key_states, num_kv_groups)?
+    let key_states = repeat_kv_hip(&HipTensor::from_scaffold_tensor(key_states.clone()), num_kv_groups)?
         .contiguous()?
         .to_dtype(DType::F32)?;
-    let value_states = repeat_kv_impl(value_states, num_kv_groups)?
+    let value_states = repeat_kv_hip(&HipTensor::from_scaffold_tensor(value_states.clone()), num_kv_groups)?
         .contiguous()?
         .to_dtype(DType::F32)?;
     Ok((
@@ -1940,10 +1952,6 @@ pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<H
 
 pub(crate) fn zeros_state(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<StateBuffer> {
     zeros(dims, dtype, device)?.into_state_buffer()
-}
-
-pub(crate) fn cat(tensors: &[&Tensor], dim: usize) -> Result<Tensor> {
-    Tensor::cat(tensors, dim)
 }
 
 #[cfg(test)]
