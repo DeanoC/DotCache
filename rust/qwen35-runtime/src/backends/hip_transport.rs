@@ -6,7 +6,7 @@ use crate::qwen35_minimal_impl::model::{
     delta_full_scan_host_buffer, delta_full_scan_pack, delta_full_scan_pack_host_buffer,
     delta_full_scan_packed, delta_full_scan_packed_host_buffer, delta_local_attn_scan,
     delta_local_attn_scan_host_buffer, delta_recurrent_prefill, delta_recurrent_prefill_host_buffer,
-    delta_state_scan, delta_state_update, full_attention_decode_megakernel,
+    delta_state_scan, delta_state_scan_host_buffer, delta_state_update, full_attention_decode_megakernel,
     full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
@@ -4777,6 +4777,25 @@ fn delta_chunk_single_prefill_hip_host_buffer(
     )))
 }
 
+fn delta_state_scan_hip_host_buffer(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = delta_state_scan_host_buffer(initial_state, packed_scan, value)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: initial_state.dtype(),
+            device: initial_state.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -9072,6 +9091,11 @@ pub(crate) fn delta_state_scan_buffer(
     packed_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(host) =
+        delta_state_scan_hip_host_buffer(initial_state.tensor(), packed_scan.tensor(), value)?
+    {
+        return host.into_state_buffer();
+    }
     from_kernel_tensor(delta_state_scan(
         initial_state.tensor(),
         packed_scan.tensor(),
