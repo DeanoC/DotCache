@@ -172,7 +172,6 @@ impl HipHostBuffer {
 }
 
 impl HipDeviceBuffer {
-    #[cfg(test)]
     fn has_pending_views(&self) -> bool {
         !self.view_ops.is_empty()
     }
@@ -1909,6 +1908,14 @@ impl HipStorage {
 
     pub(crate) fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
         if let Some(buffer) = self.0.direct_device_buffer() {
+            if buffer.has_pending_views() {
+                return Ok(Self::from_native_buffer(HipNativeBuffer::pad_with_zeros(
+                    Arc::new(self.0.clone()),
+                    dim,
+                    left,
+                    right,
+                )));
+            }
             return Ok(Self::from_device_buffer(
                 buffer.pad_with_zeros(dim, left, right)?,
             ));
@@ -2112,6 +2119,15 @@ impl HipTensor {
             .map(|t| t.0 .0.direct_device_buffer())
             .collect::<Option<Vec<_>>>();
         if let Some(buffers) = device_buffers {
+            if buffers.iter().any(|b| b.has_pending_views()) {
+                let sources = tensors
+                    .iter()
+                    .map(|t| Ok(Arc::new(t.0 .0.clone())))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(Self(HipStorage::from_native_buffer(HipNativeBuffer::concat(
+                    sources, dim,
+                ))));
+            }
             return Ok(Self(HipStorage::from_device_buffer(HipDeviceBuffer::cat(
                 &buffers, dim,
             )?)));
@@ -3740,8 +3756,27 @@ mod tests {
         )?))
         .transpose(0, 1)?;
         let out = HipTensor::cat(&[&lhs, &rhs], 1)?;
-        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert!(!matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(out)?, vec![1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_cat_of_materialized_buffers_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0],
+            (1, 2),
+            &device,
+        )?));
+        let rhs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![3f32, 4.0],
+            (1, 2),
+            &device,
+        )?));
+        let out = HipTensor::cat(&[&lhs, &rhs], 0)?;
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![1.0, 2.0, 3.0, 4.0]);
         Ok(())
     }
 
@@ -3755,8 +3790,22 @@ mod tests {
         )?))
         .transpose(0, 1)?
         .pad_with_zeros(1, 1, 0)?;
-        assert!(matches!(tensor.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert!(!matches!(tensor.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(tensor)?, vec![0.0, 1.0, 3.0, 0.0, 2.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pad_of_materialized_buffer_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?))
+        .pad_with_zeros(1, 1, 0)?;
+        assert!(matches!(tensor.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(tensor)?, vec![0.0, 1.0, 2.0, 0.0, 3.0, 4.0]);
         Ok(())
     }
 
