@@ -5559,7 +5559,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -5606,7 +5606,11 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         let storage_dtype = prev_state.dtype();
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
                 hip::dtype_code(storage_dtype)?,
@@ -5622,13 +5626,20 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -6783,7 +6794,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -6837,7 +6848,11 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_scan_raw(
                 hip::dtype_code(storage_dtype)?,
@@ -6854,13 +6869,20 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7230,7 +7252,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -7297,7 +7319,11 @@ impl candle::CustomOp7 for DeltaFullScan {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan(
                 dtype_code,
@@ -7320,13 +7346,20 @@ impl candle::CustomOp7 for DeltaFullScan {
                 state_decay_scan.raw_device_ptr_with_offset(state_decay_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7781,7 +7814,7 @@ impl candle::CustomOp4 for DeltaFullScanPack {
         k_cumdecay_scan: &candle::HipStorage,
         k_cumdecay_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -7833,7 +7866,11 @@ impl candle::CustomOp4 for DeltaFullScanPack {
         let storage_dtype = query_scan.dtype();
         let packed_width = 3 * k_head_dim + 1;
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, packed_width]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan_pack(
                 hip::dtype_code(storage_dtype)?,
@@ -7847,13 +7884,20 @@ impl candle::CustomOp4 for DeltaFullScanPack {
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
                 k_cumdecay_scan.raw_device_ptr_with_offset(k_cumdecay_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7900,7 +7944,7 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -7955,7 +7999,11 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
                 hip::dtype_code(storage_dtype)?,
@@ -7972,13 +8020,20 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
                 local_attn_scan.raw_device_ptr_with_offset(local_attn_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
