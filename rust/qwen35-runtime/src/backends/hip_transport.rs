@@ -2457,7 +2457,7 @@ fn rms_norm_hip(
 ) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_device_buffer() {
         if xs.tensor.device().is_hip() {
-            return Ok(HipTensor::from_scaffold_tensor(hip_rms_norm(
+            return Ok(from_kernel_tensor(hip_rms_norm(
                 &xs.tensor,
                 weight,
                 eps,
@@ -3930,7 +3930,7 @@ pub(crate) fn rms_norm(
     if let Some(host) = rms_norm_host(&xs_hip, weight, eps, add_unit_offset)? {
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_rms_norm(
+    Ok(from_kernel_tensor(hip_rms_norm(
         xs,
         weight,
         eps,
@@ -3960,7 +3960,7 @@ pub(crate) fn rms_norm_gated(
         gate_hip.0 .0.direct_device_buffer(),
     ) {
         if hidden_states.tensor.device().is_hip() {
-            return Ok(HipTensor::from_scaffold_tensor(hip_rms_norm_gated(
+            return Ok(from_kernel_tensor(hip_rms_norm_gated(
                 &hidden_states.tensor,
                 &gate.tensor,
                 weight,
@@ -3974,7 +3974,7 @@ pub(crate) fn rms_norm_gated(
     if let Some(host) = rms_norm_gated_host(&hidden_states_hip, &gate_hip, weight, eps)? {
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_rms_norm_gated(
+    Ok(from_kernel_tensor(hip_rms_norm_gated(
         hidden_states,
         gate,
         weight,
@@ -4005,7 +4005,7 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         up_hip.0 .0.direct_device_buffer(),
     ) {
         if gate.tensor.device().is_hip() {
-            return Ok(HipTensor::from_scaffold_tensor(hip_swiglu_mul(
+            return Ok(from_kernel_tensor(hip_swiglu_mul(
                 &gate.tensor,
                 &up.tensor,
             )?));
@@ -4015,7 +4015,7 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
     if let Some(host) = swiglu_mul_host(&gate_hip, &up_hip)? {
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_swiglu_mul(gate, up)?))
+    Ok(from_kernel_tensor(hip_swiglu_mul(gate, up)?))
 }
 
 pub(crate) fn swiglu_mul_buffer(gate: &StateBuffer, up: &StateBuffer) -> Result<StateBuffer> {
@@ -4040,7 +4040,7 @@ pub(crate) fn causal_mask(
         }
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_causal_mask(
+    Ok(from_kernel_tensor(hip_causal_mask(
         device,
         dtype,
         batch_size,
@@ -4067,7 +4067,7 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_cumsum_last_dim(xs)?))
+    Ok(from_kernel_tensor(hip_cumsum_last_dim(xs)?))
 }
 
 pub(crate) fn cumsum_last_dim_buffer(xs: &StateBuffer) -> Result<StateBuffer> {
@@ -4104,7 +4104,7 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
         return Ok(host);
     }
-    Ok(HipTensor::from_scaffold_tensor(hip_value_decay(
+    Ok(from_kernel_tensor(hip_value_decay(
         a, dt_bias, a_log_exp,
     )?))
 }
