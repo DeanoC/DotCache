@@ -1450,7 +1450,7 @@ fn repeat_kv_impl(xs: &Tensor, repeats: usize) -> Result<HipTensor> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_full_attention_inputs(
+fn prepare_full_attention_inputs_hip(
     q_and_gate: &StateBuffer,
     k_proj: &StateBuffer,
     v_proj: &StateBuffer,
@@ -1463,7 +1463,7 @@ pub(crate) fn prepare_full_attention_inputs(
     q_norm_eps: f64,
     k_norm_weight: &Tensor,
     k_norm_eps: f64,
-) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor)> {
     let q_and_gate = HipTensor::from_state_buffer(q_and_gate).reshape((
         b_sz,
         q_len,
@@ -1478,12 +1478,10 @@ pub(crate) fn prepare_full_attention_inputs(
         q_norm_eps,
         true,
     )?
-    .transpose(1, 2)?
-    .into_tensor();
+    .transpose(1, 2)?;
     let gate = q_and_gate
         .narrow(candle_core::D::Minus1, head_dim, head_dim)?
-        .reshape((b_sz, q_len, num_heads * head_dim))?
-        .into_tensor();
+        .reshape((b_sz, q_len, num_heads * head_dim))?;
     let key_states = rms_norm(
         &HipTensor::from_state_buffer(k_proj)
             .reshape((b_sz, q_len, num_kv_heads, head_dim))?
@@ -1492,13 +1490,97 @@ pub(crate) fn prepare_full_attention_inputs(
         k_norm_eps,
         true,
     )?
-    .transpose(1, 2)?
-    .into_tensor();
+    .transpose(1, 2)?;
     let value_states = HipTensor::from_state_buffer(v_proj)
         .reshape((b_sz, q_len, num_kv_heads, head_dim))?
-        .transpose(1, 2)?
-        .into_tensor();
+        .transpose(1, 2)?;
     Ok((query_states, gate, key_states, value_states))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_full_attention_inputs(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_hip(
+        q_and_gate,
+        k_proj,
+        v_proj,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )?;
+    Ok((
+        query_states.into_tensor(),
+        gate.into_tensor(),
+        key_states.into_tensor(),
+        value_states.into_tensor(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_linear_attention_inputs_hip(
+    mixed_qkv: &Tensor,
+    beta_raw: &StateBuffer,
+    g: &Tensor,
+    batch_size: usize,
+    seq_len: usize,
+    key_dim: usize,
+    value_dim: usize,
+    num_k_heads: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    compute_dtype: DType,
+    repeat_kv_heads: bool,
+) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor, HipTensor)> {
+    let mixed_qkv = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
+    let query = mixed_qkv
+        .narrow(candle_core::D::Minus1, 0, key_dim)?
+        .reshape((batch_size, seq_len, num_k_heads, head_k_dim))?
+        .to_dtype(compute_dtype)?;
+    let key = mixed_qkv
+        .narrow(candle_core::D::Minus1, key_dim, key_dim)?
+        .reshape((batch_size, seq_len, num_k_heads, head_k_dim))?
+        .to_dtype(compute_dtype)?;
+    let value = mixed_qkv
+        .narrow(candle_core::D::Minus1, key_dim * 2, value_dim)?
+        .reshape((batch_size, seq_len, num_v_heads, head_v_dim))?
+        .to_dtype(compute_dtype)?;
+
+    let query = l2norm(&query.into_tensor(), 1e-6)?;
+    let key = l2norm(&key.into_tensor(), 1e-6)?;
+    let head_repeat = num_v_heads / num_k_heads;
+    let (query, key) = if repeat_kv_heads && head_repeat > 1 {
+        (
+            repeat_heads_impl(&query.into_tensor(), head_repeat)?,
+            repeat_heads_impl(&key.into_tensor(), head_repeat)?,
+        )
+    } else {
+        (query, key)
+    };
+    let beta = HipTensor::from_state_buffer(beta_raw)
+        .sigmoid()?
+        .to_dtype(compute_dtype)?;
+    let g = HipTensor::from_scaffold_tensor(g.clone())
+        .to_dtype(compute_dtype)?;
+    Ok((query, key, value, beta, g))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1517,39 +1599,28 @@ pub(crate) fn prepare_linear_attention_inputs(
     compute_dtype: DType,
     repeat_kv_heads: bool,
 ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
-    let mixed_qkv = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
-    let query = mixed_qkv
-        .narrow(candle_core::D::Minus1, 0, key_dim)?
-        .reshape((batch_size, seq_len, num_k_heads, head_k_dim))?
-        .to_dtype(compute_dtype)?;
-    let key = mixed_qkv
-        .narrow(candle_core::D::Minus1, key_dim, key_dim)?
-        .reshape((batch_size, seq_len, num_k_heads, head_k_dim))?
-        .to_dtype(compute_dtype)?;
-    let value = mixed_qkv
-        .narrow(candle_core::D::Minus1, key_dim * 2, value_dim)?
-        .reshape((batch_size, seq_len, num_v_heads, head_v_dim))?
-        .to_dtype(compute_dtype)?;
-
-    let query = l2norm(&query.into_tensor(), 1e-6)?.into_tensor();
-    let key = l2norm(&key.into_tensor(), 1e-6)?.into_tensor();
-    let head_repeat = num_v_heads / num_k_heads;
-    let (query, key) = if repeat_kv_heads && head_repeat > 1 {
-        (
-            repeat_heads_impl(&query, head_repeat)?.into_tensor(),
-            repeat_heads_impl(&key, head_repeat)?.into_tensor(),
-        )
-    } else {
-        (query, key)
-    };
-    let beta = HipTensor::from_state_buffer(beta_raw)
-        .sigmoid()?
-        .to_dtype(compute_dtype)?
-        .into_tensor();
-    let g = HipTensor::from_scaffold_tensor(g.clone())
-        .to_dtype(compute_dtype)?
-        .into_tensor();
-    Ok((query, key, value.into_tensor(), beta, g))
+    let (query, key, value, beta, g) = prepare_linear_attention_inputs_hip(
+        mixed_qkv,
+        beta_raw,
+        g,
+        batch_size,
+        seq_len,
+        key_dim,
+        value_dim,
+        num_k_heads,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        compute_dtype,
+        repeat_kv_heads,
+    )?;
+    Ok((
+        query.into_tensor(),
+        key.into_tensor(),
+        value.into_tensor(),
+        beta.into_tensor(),
+        g.into_tensor(),
+    ))
 }
 
 pub(crate) fn wrap_kv_cache(
