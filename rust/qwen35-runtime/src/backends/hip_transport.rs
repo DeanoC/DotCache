@@ -247,17 +247,6 @@ impl HipHostBuffer {
         StateBuffer::from_tensor(self.upload_to_device_buffer()?.into_tensor())
     }
 
-    fn to_native_host_buffer(&self) -> HipNativeBuffer {
-        HipNativeBuffer {
-            expr: HipNativeExpr::HostBytes {
-                bytes: self.bytes.clone(),
-            },
-            shape: self.shape.clone(),
-            dtype: self.dtype,
-            device: self.device.clone(),
-        }
-    }
-
     fn map_float(&self, op_name: &'static str, f: impl Fn(f64) -> f64) -> Result<Self> {
         if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
             candle_core::bail!("{op_name} unsupported for dtype {:?}", self.dtype);
@@ -368,11 +357,26 @@ impl HipHostBuffer {
     }
 
     fn cast(&self, dtype: DType) -> Result<Self> {
-        HipNativeBuffer::cast(Arc::new(self.to_native_host_buffer()), dtype)
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for cast host buffer".into())
-            })
+        if self.dtype == dtype {
+            return Ok(self.clone());
+        }
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype)
+            || !HipNativeBuffer::supports_host_float_ops(dtype)
+        {
+            candle_core::bail!("cast unsupported for dtypes {:?} -> {:?}", self.dtype, dtype);
+        }
+        let elem_count = HipNativeBuffer::elem_count(&self.shape);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&self.shape, dtype)];
+        for idx in 0..elem_count {
+            let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+            HipNativeBuffer::write_host_float(&mut out, dtype, idx, value)?;
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype,
+            device: self.device.clone(),
+        })
     }
 
     fn exp(&self) -> Result<Self> {
@@ -504,11 +508,35 @@ impl HipHostBuffer {
     }
 
     fn l2norm(&self, eps: f64) -> Result<Self> {
-        HipNativeBuffer::l2norm(Arc::new(self.to_native_host_buffer()), eps)
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for l2norm host buffer".into())
-            })
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("l2norm unsupported for dtype {:?}", self.dtype);
+        }
+        let shape = self.shape.as_slice();
+        let Some(&inner) = shape.last() else {
+            candle_core::bail!("l2norm requires non-empty shape");
+        };
+        let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(shape, self.dtype)];
+        for outer_idx in 0..outer.max(1) {
+            let mut sum_sq = 0.0f64;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                sum_sq += value * value;
+            }
+            let denom = (sum_sq + eps).sqrt();
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                let value = HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, idx)?;
+                HipNativeBuffer::write_host_float(&mut out, self.dtype, idx, value / denom)?;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
     }
 
     fn rms_norm(&self, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Self> {
@@ -587,13 +615,64 @@ impl HipHostBuffer {
     }
 
     fn matmul(&self, rhs: &HipHostBuffer) -> Result<Self> {
-        HipNativeBuffer::host_bytes_matmul(
-            &Arc::new(self.to_native_host_buffer()),
-            &Arc::new(rhs.to_native_host_buffer()),
-        )?
-        .and_then(|buffer| buffer.materialize_host_buffer().ok().flatten())
-        .ok_or_else(|| {
-            candle_core::Error::Msg("expected host materialization for matmul host buffer".into())
+        if self.dtype != rhs.dtype {
+            candle_core::bail!("host matmul dtype mismatch: {:?} vs {:?}", self.dtype, rhs.dtype);
+        }
+        if !HipNativeBuffer::supports_host_float_ops(self.dtype) {
+            candle_core::bail!("host matmul unsupported for dtype {:?}", self.dtype);
+        }
+        let lhs_shape = self.shape.as_slice();
+        let rhs_shape = rhs.shape.as_slice();
+        if lhs_shape.is_empty() || rhs_shape.is_empty() {
+            candle_core::bail!("host matmul requires rank >= 1");
+        }
+        let lhs_rank = lhs_shape.len();
+        let rhs_rank = rhs_shape.len();
+        let lhs_k = lhs_shape[lhs_rank - 1];
+        let rhs_k = rhs_shape[rhs_rank.saturating_sub(2)];
+        if lhs_k != rhs_k {
+            candle_core::bail!("host matmul K mismatch: {} vs {}", lhs_k, rhs_k);
+        }
+        let m = if lhs_rank >= 2 { lhs_shape[lhs_rank - 2] } else { 1 };
+        let n = rhs_shape[rhs_rank - 1];
+        let lhs_batch = &lhs_shape[..lhs_rank.saturating_sub(2)];
+        let rhs_batch = &rhs_shape[..rhs_rank.saturating_sub(2)];
+        let batch = HipNativeBuffer::broadcast_shape(lhs_batch, rhs_batch, "host matmul")?;
+        let mut out_shape = batch.clone();
+        if lhs_rank >= 2 {
+            out_shape.push(m);
+        }
+        out_shape.push(n);
+        let batch_elems = HipNativeBuffer::elem_count(&batch).max(1);
+        let lhs_batch_elems = HipNativeBuffer::elem_count(lhs_batch).max(1);
+        let rhs_batch_elems = HipNativeBuffer::elem_count(rhs_batch).max(1);
+        let lhs_matrix = m * lhs_k;
+        let rhs_matrix = lhs_k * n;
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&out_shape, self.dtype)];
+        for batch_idx in 0..batch_elems {
+            let lhs_batch_idx = HipNativeBuffer::broadcast_elem_index(batch_idx, &batch, lhs_batch);
+            let rhs_batch_idx = HipNativeBuffer::broadcast_elem_index(batch_idx, &batch, rhs_batch);
+            debug_assert!(lhs_batch_idx < lhs_batch_elems);
+            debug_assert!(rhs_batch_idx < rhs_batch_elems);
+            for row in 0..m {
+                for col in 0..n {
+                    let mut acc = 0.0f64;
+                    for kk in 0..lhs_k {
+                        let lhs_idx = lhs_batch_idx * lhs_matrix + row * lhs_k + kk;
+                        let rhs_idx = rhs_batch_idx * rhs_matrix + kk * n + col;
+                        acc += HipNativeBuffer::read_host_float(self.bytes.as_ref(), self.dtype, lhs_idx)?
+                            * HipNativeBuffer::read_host_float(rhs.bytes.as_ref(), rhs.dtype, rhs_idx)?;
+                    }
+                    let out_idx = batch_idx * (m * n) + row * n + col;
+                    HipNativeBuffer::write_host_float(&mut out, self.dtype, out_idx, acc)?;
+                }
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape: out_shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
         })
     }
 }
