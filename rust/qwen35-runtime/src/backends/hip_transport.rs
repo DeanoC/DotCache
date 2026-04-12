@@ -14,9 +14,10 @@ use crate::qwen35_minimal_impl::model::{
     hip_broadcast_add_host_buffer, hip_broadcast_div_host_buffer, hip_broadcast_mul_host_buffer,
     hip_broadcast_sub_host_buffer, hip_cast_host_buffer, hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
+    hip_add_scalar_host_buffer,
     hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_max_keepdim_host_buffer,
     hip_mul_scalar_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
-    hip_sum_keepdim_host_buffer,
+    hip_sqrt_host_buffer, hip_sum_keepdim_host_buffer,
     hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
@@ -1524,8 +1525,28 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from l2norm host buffer".into())
             })?);
         }
-        let norm = (tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
-        Ok(Self::from_tensor(tensor.broadcast_div(&norm)?))
+        let last_dim = self.dims().len().saturating_sub(1);
+        let sq = self.broadcast_mul(self)?;
+        let sum = sq.sum_keepdim(last_dim)?;
+        let shifted = {
+            let sum_tensor = HipTensor::from_device_buffer(sum.clone()).0.materialize()?;
+            if let Some(out) = add_scalar_hip_host_buffer(&sum_tensor, eps)? {
+                out
+            } else {
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor((sum_tensor + eps)?))
+            }
+        };
+        let denom = {
+            let shifted_tensor = shifted.0.materialize()?;
+            if let Some(out) = sqrt_hip_host_buffer(&shifted_tensor)? {
+                out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                    candle_core::Error::Msg("expected direct device buffer from l2norm sqrt".into())
+                })?
+            } else {
+                HipDeviceBuffer::from_tensor(shifted_tensor.sqrt()?)
+            }
+        };
+        self.broadcast_div(&denom)
     }
 
     pub(crate) fn rms_norm(
@@ -1549,9 +1570,29 @@ impl HipDeviceBuffer {
         let inner = *self.dims().last().ok_or_else(|| {
             candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
         })?;
-        let mean_sq = (&tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)?
-            * (1.0 / inner as f64))?;
-        let normed = tensor.broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
+        let last_dim = self.dims().len().saturating_sub(1);
+        let sq = self.broadcast_mul(self)?;
+        let sum = sq.sum_keepdim(last_dim)?;
+        let mean_sq = sum.mul_scalar(1.0 / inner as f64)?;
+        let shifted = {
+            let mean_sq_tensor = HipTensor::from_device_buffer(mean_sq.clone()).0.materialize()?;
+            if let Some(out) = add_scalar_hip_host_buffer(&mean_sq_tensor, eps)? {
+                out
+            } else {
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor((mean_sq_tensor + eps)?))
+            }
+        };
+        let denom = {
+            let shifted_tensor = shifted.0.materialize()?;
+            if let Some(out) = sqrt_hip_host_buffer(&shifted_tensor)? {
+                out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                    candle_core::Error::Msg("expected direct device buffer from rms_norm sqrt".into())
+                })?
+            } else {
+                HipDeviceBuffer::from_tensor(shifted_tensor.sqrt()?)
+            }
+        };
+        let normed = self.broadcast_div(&denom)?;
         let weight = if weight.dtype() == self.dtype() {
             weight.clone()
         } else {
@@ -1562,7 +1603,7 @@ impl HipDeviceBuffer {
         } else {
             weight
         };
-        Ok(Self::from_tensor(normed.broadcast_mul(&weight)?))
+        Ok(Self::from_tensor(HipTensor::from_device_buffer(normed).0.materialize()?.broadcast_mul(&weight)?))
     }
 
     pub(crate) fn rms_norm_gated(
@@ -4597,6 +4638,34 @@ fn reduce_keepdim_hip_host_buffer(
     helper: fn(&Tensor, usize) -> Result<Option<(Vec<u8>, Vec<usize>)>>,
 ) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = helper(xs, dim)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn add_scalar_hip_host_buffer(xs: &Tensor, value: f64) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_add_scalar_host_buffer(xs, value)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn sqrt_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_sqrt_host_buffer(xs)? else {
         return Ok(None);
     };
     Ok(Some(HipTensor::from_device_buffer(

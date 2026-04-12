@@ -1269,6 +1269,58 @@ int reduce_keepdim_device(
 }
 
 template <typename T>
+int add_scalar_device(
+    int device_ordinal,
+    int total_elems,
+    float scalar,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_add_scalar_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        scalar,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 149;
+    if (hipDeviceSynchronize() != hipSuccess) return 150;
+    return 0;
+}
+
+template <typename T>
+int sqrt_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_sqrt_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 151;
+    if (hipDeviceSynchronize() != hipSuccess) return 152;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -3210,6 +3262,70 @@ extern "C" int dotcache_qwen35_hip_reduce_keepdim(
             out);
     default:
         return 149;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_add_scalar(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    float scalar,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return add_scalar_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    case 1:
+        return add_scalar_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    case 2:
+        return add_scalar_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    default:
+        return 153;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_sqrt(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return sqrt_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 1:
+        return sqrt_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 2:
+        return sqrt_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    default:
+        return 154;
     }
 }
 

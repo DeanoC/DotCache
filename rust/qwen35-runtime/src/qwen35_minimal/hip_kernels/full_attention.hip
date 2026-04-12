@@ -1816,6 +1816,33 @@ __global__ void dotcache_qwen35_mul_scalar_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_add_scalar_kernel(
+    int total_elems,
+    float scalar,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(dotcache_qwen35_to_float(xs[idx]) + scalar);
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_sqrt_kernel(
+    int total_elems,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(sqrtf(dotcache_qwen35_to_float(xs[idx])));
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_reduce_keepdim_kernel(
     int outer,
     int reduce,
