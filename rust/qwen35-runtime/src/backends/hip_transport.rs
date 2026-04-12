@@ -3390,6 +3390,17 @@ pub(crate) fn append_full_attention_kv(
     Ok((key_states.into_tensor(), value_states.into_tensor()))
 }
 
+pub(crate) fn append_full_attention_kv_buffers(
+    prev_k: Option<&StateBuffer>,
+    prev_v: Option<&StateBuffer>,
+    key_states: &Tensor,
+    value_states: &Tensor,
+) -> Result<(StateBuffer, StateBuffer)> {
+    let (key_states, value_states) =
+        append_full_attention_kv_hip(prev_k, prev_v, key_states, value_states)?;
+    Ok((key_states.into_state_buffer()?, value_states.into_state_buffer()?))
+}
+
 fn prepare_full_attention_kernel_inputs_hip(
     query_states: &Tensor,
     key_states: &Tensor,
@@ -3423,6 +3434,42 @@ pub(crate) fn prepare_full_attention_kernel_inputs(
 ) -> Result<(Tensor, Tensor, Tensor)> {
     let (query_states, key_states, value_states) =
         prepare_full_attention_kernel_inputs_hip(query_states, key_states, value_states)?;
+    Ok((
+        query_states.into_tensor(),
+        key_states.into_tensor(),
+        value_states.into_tensor(),
+    ))
+}
+
+pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
+    query_states: &Tensor,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(Tensor, Tensor, Tensor)> {
+    let query_states = HipTensor::from_scaffold_tensor(query_states.clone());
+    let key_states = HipTensor::from_state_buffer(key_states);
+    let value_states = HipTensor::from_state_buffer(value_states);
+    let (query_states, key_states, value_states) = if let (
+        Some(query_device),
+        Some(key_device),
+        Some(value_device),
+    ) = (
+        query_states.0 .0.direct_device_buffer(),
+        key_states.0 .0.direct_device_buffer(),
+        value_states.0 .0.direct_device_buffer(),
+    ) {
+        (
+            HipTensor::from_device_buffer(query_device.contiguous()?),
+            HipTensor::from_device_buffer(key_device.contiguous()?),
+            HipTensor::from_device_buffer(value_device.contiguous()?),
+        )
+    } else {
+        (
+            query_states.contiguous()?,
+            key_states.contiguous()?,
+            value_states.contiguous()?,
+        )
+    };
     Ok((
         query_states.into_tensor(),
         key_states.into_tensor(),

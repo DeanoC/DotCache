@@ -331,12 +331,33 @@ pub(crate) fn append_full_attention_kv(
     transport::append_full_attention_kv(prev_k, prev_v, key_states, value_states)
 }
 
+pub(crate) fn append_full_attention_kv_buffers(
+    prev_k: Option<&StateBuffer>,
+    prev_v: Option<&StateBuffer>,
+    key_states: &Tensor,
+    value_states: &Tensor,
+) -> Result<(StateBuffer, StateBuffer)> {
+    transport::append_full_attention_kv_buffers(prev_k, prev_v, key_states, value_states)
+}
+
 pub(crate) fn prepare_full_attention_kernel_inputs(
     query_states: &Tensor,
     key_states: &Tensor,
     value_states: &Tensor,
 ) -> Result<(Tensor, Tensor, Tensor)> {
     transport::prepare_full_attention_kernel_inputs(query_states, key_states, value_states)
+}
+
+pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
+    query_states: &Tensor,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(Tensor, Tensor, Tensor)> {
+    transport::prepare_full_attention_kernel_inputs_with_buffer_kv(
+        query_states,
+        key_states,
+        value_states,
+    )
 }
 
 pub(crate) fn materialize_full_attention_dense_inputs(

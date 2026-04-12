@@ -8615,21 +8615,30 @@ impl FullAttention {
 
         let backend = backend_buffer_api::for_device(device);
         let kv_append_start = profile_start(device)?;
-        let (key_states, value_states): (Tensor, Tensor) = if external_full_attention.is_none() {
-            backend.append_full_attention_kv(
+        let appended_kv = if external_full_attention.is_none() {
+            Some(backend.append_full_attention_kv_buffers(
                 self.kv_cache.as_ref().map(|(k, _)| k),
                 self.kv_cache.as_ref().map(|(_, v)| v),
                 &key_states,
                 &value_states,
-            )?
+            )?)
         } else {
-            (key_states, value_states)
+            None
         };
         profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
 
         let input_layout_start = profile_start(device)?;
-        let (query_states, key_states, value_states) =
-            backend.prepare_full_attention_kernel_inputs(&query_states, &key_states, &value_states)?;
+        let (query_states, key_states, value_states) = if let Some((key_states, value_states)) =
+            appended_kv.as_ref()
+        {
+            backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                &query_states,
+                key_states,
+                value_states,
+            )?
+        } else {
+            backend.prepare_full_attention_kernel_inputs(&query_states, &key_states, &value_states)?
+        };
         let scale = 1f64 / f64::sqrt(self.head_dim as f64);
         let input_layout_elapsed = profile_elapsed(input_layout_start, device)?;
         profile.layout_prepare_millis += input_layout_elapsed;
@@ -8801,7 +8810,7 @@ impl FullAttention {
         profile.full_attention_output_reshape_millis +=
             profile_elapsed(output_reshape_start, device)?;
         if external_full_attention.is_none() {
-            self.kv_cache = Some(backend.wrap_kv_cache(key_states, value_states)?);
+            self.kv_cache = appended_kv;
         } else {
             self.kv_cache = None;
         }

@@ -208,11 +208,24 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         key_states: &Tensor,
         value_states: &Tensor,
     ) -> Result<(Tensor, Tensor)>;
+    fn append_full_attention_kv_buffers(
+        &self,
+        prev_k: Option<&StateBuffer>,
+        prev_v: Option<&StateBuffer>,
+        key_states: &Tensor,
+        value_states: &Tensor,
+    ) -> Result<(StateBuffer, StateBuffer)>;
     fn prepare_full_attention_kernel_inputs(
         &self,
         query_states: &Tensor,
         key_states: &Tensor,
         value_states: &Tensor,
+    ) -> Result<(Tensor, Tensor, Tensor)>;
+    fn prepare_full_attention_kernel_inputs_with_buffer_kv(
+        &self,
+        query_states: &Tensor,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)>;
     fn materialize_full_attention_dense_inputs(
         &self,
@@ -898,6 +911,17 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             _ => Ok((key_states.clone(), value_states.clone())),
         }
     }
+    fn append_full_attention_kv_buffers(
+        &self,
+        prev_k: Option<&StateBuffer>,
+        prev_v: Option<&StateBuffer>,
+        key_states: &Tensor,
+        value_states: &Tensor,
+    ) -> Result<(StateBuffer, StateBuffer)> {
+        let (key_states, value_states) =
+            self.append_full_attention_kv(prev_k, prev_v, key_states, value_states)?;
+        Ok((StateBuffer::from_tensor(key_states)?, StateBuffer::from_tensor(value_states)?))
+    }
     fn prepare_full_attention_kernel_inputs(
         &self,
         query_states: &Tensor,
@@ -909,6 +933,18 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             key_states.contiguous()?,
             value_states.contiguous()?,
         ))
+    }
+    fn prepare_full_attention_kernel_inputs_with_buffer_kv(
+        &self,
+        query_states: &Tensor,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        self.prepare_full_attention_kernel_inputs(
+            query_states,
+            key_states.tensor(),
+            value_states.tensor(),
+        )
     }
     fn materialize_full_attention_dense_inputs(
         &self,
@@ -1532,6 +1568,15 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     ) -> Result<(Tensor, Tensor)> {
         backends::hip::append_full_attention_kv(prev_k, prev_v, key_states, value_states)
     }
+    fn append_full_attention_kv_buffers(
+        &self,
+        prev_k: Option<&StateBuffer>,
+        prev_v: Option<&StateBuffer>,
+        key_states: &Tensor,
+        value_states: &Tensor,
+    ) -> Result<(StateBuffer, StateBuffer)> {
+        backends::hip::append_full_attention_kv_buffers(prev_k, prev_v, key_states, value_states)
+    }
     fn prepare_full_attention_kernel_inputs(
         &self,
         query_states: &Tensor,
@@ -1539,6 +1584,18 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         value_states: &Tensor,
     ) -> Result<(Tensor, Tensor, Tensor)> {
         backends::hip::prepare_full_attention_kernel_inputs(query_states, key_states, value_states)
+    }
+    fn prepare_full_attention_kernel_inputs_with_buffer_kv(
+        &self,
+        query_states: &Tensor,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        backends::hip::prepare_full_attention_kernel_inputs_with_buffer_kv(
+            query_states,
+            key_states,
+            value_states,
+        )
     }
     fn materialize_full_attention_dense_inputs(
         &self,
