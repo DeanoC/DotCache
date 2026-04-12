@@ -2,18 +2,30 @@
 
 Branch: `codex/qwen35-certified-streaming`
 
-Portable-manifest CUDA result bundles:
+Portable-manifest CUDA real-mixed result bundles:
 
-- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v6/`
-- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v6/`
-- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v6/`
+- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v18_clean/`
+- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v18_clean/`
+- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v17_clean/`
 
-Current best CUDA real-mixed `bias` results on the repo-local portable corpus:
+Current best clean CUDA real-mixed `bias` results on the repo-local portable corpus:
 
-- `large`: `399.74 ms/step`
-- `broad`: `460.70 ms/step`
-- `external`: `252.42 ms/step`
+- `large`: `374.06 ms/step`
+- `broad`: `443.30 ms/step`
+- `external`: `240.84 ms/step`
 - exact-match rate: `1.0` on all three
+
+Current-tree CUDA Stage 9 non-`M0` comparison bundles:
+
+- `benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0_currenttree_v2/`
+- `benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0_currenttree_v2/`
+- `benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0_currenttree/`
+
+Current-tree CUDA non-`M0` `bias` results:
+
+- `large`: `388.78 ms/step`
+- `broad`: `465.40 ms/step`
+- `external`: `244.02 ms/step`
 
 Canonical config preserved:
 
@@ -39,12 +51,12 @@ What changed on CUDA:
 
 Current policy read:
 
-- CUDA real-mixed `direct_m0` is now the preferred Stage 9 policy for `large` and `broad` on the portable corpus.
-- `external` improved substantially but remains the hardest case.
-- On the older CUDA comparison numbers used during bring-up:
-  - `large` real-mixed now beats the old non-`M0` reference (`468.69`)
-  - `broad` real-mixed now beats the old non-`M0` reference (`632.12`)
-  - `external` still trails the old non-`M0` reference (`192.54`)
+- CUDA real-mixed `direct_m0` now wins against current-tree Stage 9 non-`M0` on all three portable corpora.
+- Same-tree margins:
+  - `large`: `374.06` vs `388.78`
+  - `broad`: `443.30` vs `465.40`
+  - `external`: `240.84` vs `244.02`
+- The older bring-up non-`M0` numbers are no longer the right ship comparison for this branch.
 
 Remaining hotspot:
 
@@ -59,5 +71,5 @@ Remaining hotspot:
 Recommended next step:
 
 - keep the current CUDA larger-path changes
-- target the remaining `final_mix` reduction path on the `external` corpus first
+- target the remaining `final_mix` reduction path on the `external` corpus first if more headroom is needed
 - continue to keep MPS behavior unchanged

@@ -1636,7 +1636,7 @@ class _StreamingResidualUpperTracker:
             m_values=np.asarray([float(m_value)], dtype=np.float64),
         )
 
-    def mark_processed_blocks(self, block_ids: list[int], *, m_values: list[float]) -> None:
+    def mark_processed_blocks(self, block_ids: list[int], *, m_values: Any) -> None:
         resolved_block_ids = [
             int(block_id)
             for block_id in block_ids
@@ -1644,7 +1644,14 @@ class _StreamingResidualUpperTracker:
         ]
         if not resolved_block_ids:
             return
-        m_values_np = np.asarray([float(m_value) for m_value in m_values], dtype=np.float64)
+        torch = _load_torch()
+        if torch.is_tensor(m_values):
+            m_values_np = np.asarray(
+                m_values.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                dtype=np.float64,
+            ).reshape(-1)
+        else:
+            m_values_np = np.asarray(m_values, dtype=np.float64).reshape(-1)
         uninitialized_q_head_ids = np.flatnonzero(~np.asarray(self.initialized_q_heads, dtype=bool))
         if uninitialized_q_head_ids.size > 0:
             self._initialize_q_heads(
@@ -3817,10 +3824,14 @@ def _decode_selected_blocks_direct_m0_torch(
     block_max_logits: Any | None = None
     block_mass_numerators: Any | None = None
     if collect_stream_stats:
-        per_head_logits = [
-            torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
-            for _ in range(int(query_tensor.shape[0]))
-        ]
+        per_head_logits = (
+            [
+                torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
+                for _ in range(int(query_tensor.shape[0]))
+            ]
+            if bool(return_attn_weights)
+            else None
+        )
         tranche_m = torch.full((int(query_tensor.shape[0]),), float("-inf"), dtype=torch.float32, device=query_tensor.device)
         tranche_l = torch.zeros((int(query_tensor.shape[0]),), dtype=torch.float32, device=query_tensor.device)
         tranche_h = torch.zeros(
@@ -3861,7 +3872,6 @@ def _decode_selected_blocks_direct_m0_torch(
             head_index_tensor = torch.nonzero(q_head_to_kv_tensor == int(kv_head), as_tuple=False).flatten()
             if int(head_index_tensor.numel()) == 0:
                 continue
-            head_ids = head_index_tensor.detach().to(device="cpu", dtype=torch.int64).tolist()
         else:
             head_ids_np = np.flatnonzero(q_head_to_kv == int(kv_head))
             if head_ids_np.size == 0:
@@ -3878,8 +3888,8 @@ def _decode_selected_blocks_direct_m0_torch(
             if layer_max_k_comp_error is not None:
                 m0_block_mask_t = m0_block_mask_t & (key_comp_errors_t <= float(layer_max_k_comp_error))
             m3_block_mask_t = torch.logical_not(m0_block_mask_t)
-            m0_block_mask = m0_block_mask_t.detach().to(device="cpu", dtype=torch.bool).numpy()
-            m3_block_mask = m3_block_mask_t.detach().to(device="cpu", dtype=torch.bool).numpy()
+            m0_block_mask = None
+            m3_block_mask = None
         else:
             key_modes = np.asarray(state.block_k_mode[resolved_block_ids_np, int(kv_head)], dtype=object)
             key_comp_errors = (
@@ -3932,6 +3942,7 @@ def _decode_selected_blocks_direct_m0_torch(
             m0_global_indices_np = None
             m3_global_indices_np = None
             m0_block_ids_t = resolved_block_ids_t[m0_block_mask_t]
+            m3_block_ids_t = resolved_block_ids_t[m3_block_mask_t]
         else:
             m0_global_indices_np, m0_local_indices_np = _build_block_token_index_arrays(
                 token_starts=token_starts_np[m0_block_mask],
@@ -3946,8 +3957,18 @@ def _decode_selected_blocks_direct_m0_torch(
             m0_token_count = int(m0_global_indices_np.size)
             m3_token_count = int(m3_global_indices_np.size)
             m0_block_ids_t = None
-        if bool(np.any(m0_block_mask)):
-            executed_m0_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m0_block_mask].tolist())
+            m3_block_ids_t = None
+        if (
+            int(m0_block_ids_t.numel()) > 0
+            if m0_block_ids_t is not None
+            else bool(np.any(m0_block_mask))
+        ):
+            resolved_m0_block_ids = (
+                m0_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                if m0_block_ids_t is not None
+                else resolved_block_ids_np[m0_block_mask].tolist()
+            )
+            executed_m0_blocks.update(int(block_id) for block_id in resolved_m0_block_ids)
         use_cuda_fast_final_mix = _can_use_cuda_direct_m0_fast_final_mix(
             query_tensor=q_slice,
             collect_stream_stats=collect_stream_stats,
@@ -4029,7 +4050,12 @@ def _decode_selected_blocks_direct_m0_torch(
                         )
                         combined_block_max[m0_block_mask_t] = native_block_max[:, : int(m0_block_ids_t.numel())].max(dim=0).values
                         if m3_token_count > 0:
-                            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m3_block_mask].tolist())
+                            resolved_m3_block_ids = (
+                                m3_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                                if m3_block_ids_t is not None
+                                else resolved_block_ids_np[m3_block_mask].tolist()
+                            )
+                            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_m3_block_ids)
                             if use_cuda_selection_cache:
                                 m3_global_indices_native = m3_global_indices.to(
                                     device=(state.mixed_key_score_cache.device if use_fast_score_cache else state.key_cache.device),
@@ -4070,19 +4096,16 @@ def _decode_selected_blocks_direct_m0_torch(
                             combined_l = combined_l * native_rescale + m3_head_l * m3_rescale
                             combined_m = merged_m
                             if token_block_ids is not None:
+                                expanded_m3_block_ids = token_block_ids.index_select(
+                                    0,
+                                    m3_local_indices_native,
+                                ).unsqueeze(0).expand(int(q_slice.shape[0]), -1)
                                 m3_block_mass = torch.zeros_like(combined_block_mass)
-                                for local_head_idx in range(int(q_slice.shape[0])):
-                                    head_block_mass = torch.zeros(
-                                        (int(len(token_counts)),),
-                                        dtype=torch.float32,
-                                        device=query_tensor.device,
-                                    )
-                                    head_block_mass.scatter_add_(
-                                        0,
-                                        token_block_ids.index_select(0, m3_local_indices_native),
-                                        m3_exp_scores[int(local_head_idx)].to(dtype=torch.float32),
-                                    )
-                                    m3_block_mass[int(local_head_idx)] = head_block_mass
+                                m3_block_mass.scatter_add_(
+                                    1,
+                                    expanded_m3_block_ids,
+                                    m3_exp_scores.to(dtype=torch.float32),
+                                )
                                 combined_block_mass = combined_block_mass * native_rescale.unsqueeze(1) + m3_block_mass * m3_rescale.unsqueeze(1)
                                 m3_token_max_logits = m3_logits.max(dim=0).values.to(dtype=torch.float32)
                                 m3_block_max = torch.full(
@@ -4106,18 +4129,26 @@ def _decode_selected_blocks_direct_m0_torch(
                             timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
                             timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
                         output[head_index_tensor] = context
-                        assert per_head_logits is not None
                         assert tranche_m is not None
                         assert tranche_l is not None
                         assert tranche_h is not None
                         assert block_max_logits is not None
                         assert block_mass_numerators is not None
-                        for local_head_idx, q_head_idx in enumerate(head_ids):
-                            per_head_logits[int(q_head_idx)] = torch.empty((0,), dtype=torch.float32, device=query_tensor.device)
-                            tranche_m[int(q_head_idx)] = combined_m[int(local_head_idx)]
-                            tranche_l[int(q_head_idx)] = combined_l[int(local_head_idx)]
-                            tranche_h[int(q_head_idx)] = combined_h[int(local_head_idx)]
-                            block_mass_numerators[int(q_head_idx)] = combined_block_mass[int(local_head_idx)]
+                        if per_head_logits is not None:
+                            for q_head_idx in head_index_tensor.tolist():
+                                per_head_logits[int(q_head_idx)] = torch.empty(
+                                    (0,),
+                                    dtype=torch.float32,
+                                    device=query_tensor.device,
+                                )
+                        tranche_m.index_copy_(0, head_index_tensor, combined_m.to(dtype=torch.float32))
+                        tranche_l.index_copy_(0, head_index_tensor, combined_l.to(dtype=torch.float32))
+                        tranche_h.index_copy_(0, head_index_tensor, combined_h.to(dtype=torch.float32))
+                        block_mass_numerators.index_copy_(
+                            0,
+                            head_index_tensor,
+                            combined_block_mass.to(dtype=torch.float32),
+                        )
                         block_max_logits[:] = torch.maximum(
                             block_max_logits,
                             combined_block_max,
@@ -4491,7 +4522,12 @@ def _decode_selected_blocks_direct_m0_torch(
                 continue
             logits.index_copy_(1, m0_local_indices, m0_logits.to(dtype=torch.float32))
         if m3_token_count > 0:
-            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_block_ids_np[m3_block_mask].tolist())
+            resolved_m3_block_ids = (
+                m3_block_ids_t.detach().to(device="cpu", dtype=torch.int64).tolist()
+                if m3_block_ids_t is not None
+                else resolved_block_ids_np[m3_block_mask].tolist()
+            )
+            exact_key_m3_blocks.update(int(block_id) for block_id in resolved_m3_block_ids)
             if detailed_mixed_timing:
                 _synchronize_torch_device(q_slice)
                 exact_m3_score_start = time.perf_counter()
@@ -4566,7 +4602,11 @@ def _decode_selected_blocks_direct_m0_torch(
             final_mix_softmax_start = time.perf_counter()
         if collect_stream_stats:
             head_m = logits.max(dim=-1).values
-            exp_scores = torch.exp(logits - head_m.unsqueeze(1))
+            if attn_weights is None:
+                logits.sub_(head_m.unsqueeze(1))
+                exp_scores = logits.exp_()
+            else:
+                exp_scores = torch.exp(logits - head_m.unsqueeze(1))
             head_l = exp_scores.sum(dim=-1)
             inv_head_l = head_l.clamp_min(1e-8).reciprocal()
             weights = (
@@ -4597,7 +4637,6 @@ def _decode_selected_blocks_direct_m0_torch(
         if attn_weights is not None:
             attn_weights[0, head_index_tensor, 0, :] = weights
         if collect_stream_stats:
-            assert per_head_logits is not None
             assert tranche_m is not None
             assert tranche_l is not None
             assert tranche_h is not None
@@ -4606,9 +4645,10 @@ def _decode_selected_blocks_direct_m0_torch(
             assert head_h is not None
             assert block_mass_numerators is not None
             if token_block_ids is not None:
-                expanded_block_ids = token_block_ids.unsqueeze(0).expand(int(len(head_ids)), -1)
+                num_kv_q_heads = int(head_index_tensor.numel())
+                expanded_block_ids = token_block_ids.unsqueeze(0).expand(num_kv_q_heads, -1)
                 head_block_mass = torch.zeros(
-                    (int(len(head_ids)), int(len(token_counts))),
+                    (num_kv_q_heads, int(len(token_counts))),
                     dtype=torch.float32,
                     device=query_tensor.device,
                 )
@@ -4617,13 +4657,14 @@ def _decode_selected_blocks_direct_m0_torch(
                     expanded_block_ids,
                     exp_scores.to(dtype=torch.float32),
                 )
-                block_mass_numerators[head_index_tensor] = head_block_mass
-            for local_head_idx, q_head_idx in enumerate(head_ids):
-                if attn_weights is not None:
+                block_mass_numerators.index_copy_(0, head_index_tensor, head_block_mass)
+            if attn_weights is not None:
+                assert per_head_logits is not None
+                for local_head_idx, q_head_idx in enumerate(head_index_tensor.tolist()):
                     per_head_logits[int(q_head_idx)] = logits[int(local_head_idx)].to(dtype=torch.float32)
-                tranche_m[int(q_head_idx)] = head_m[int(local_head_idx)]
-                tranche_l[int(q_head_idx)] = head_l[int(local_head_idx)]
-                tranche_h[int(q_head_idx)] = head_h[int(local_head_idx)]
+            tranche_m.index_copy_(0, head_index_tensor, head_m.to(dtype=torch.float32))
+            tranche_l.index_copy_(0, head_index_tensor, head_l.to(dtype=torch.float32))
+            tranche_h.index_copy_(0, head_index_tensor, head_h.to(dtype=torch.float32))
     executed_mode_counts = {
         "M0": int(len(executed_m0_blocks)),
         "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
@@ -4631,11 +4672,9 @@ def _decode_selected_blocks_direct_m0_torch(
     }
     if collect_stream_stats:
         assert block_max_logits is not None
-        assert per_head_logits is not None
         assert tranche_m is not None
         assert tranche_l is not None
         assert tranche_h is not None
-        _synchronize_torch_device(block_max_logits)
         return {
             "output": output,
             "attn_weights": attn_weights,
@@ -4648,7 +4687,7 @@ def _decode_selected_blocks_direct_m0_torch(
                 "l": tranche_l,
                 "h": tranche_h,
                 "block_mass_numerators": block_mass_numerators,
-                "block_max_logits": block_max_logits.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                "block_max_logits": block_max_logits.detach().to(dtype=torch.float32),
             },
         }
     return output, attn_weights, token_counts, executed_mode_counts, timing
@@ -6256,10 +6295,9 @@ class PersistentFullAttentionState:
                 )
                 for timing_key in mixed_timing_totals:
                     mixed_timing_totals[timing_key] += float(tranche_result["timing"].get(timing_key, 0.0))
-                tranche_block_max_logits = np.asarray(
-                    tranche_stream_stats.get("block_max_logits", np.full((len(tranche_active_block_ids),), float("-inf"))),
-                    dtype=np.float32,
-                )
+                tranche_block_max_logits = tranche_stream_stats.get("block_max_logits")
+                if tranche_block_max_logits is None:
+                    tranche_block_max_logits = np.full((len(tranche_active_block_ids),), float("-inf"), dtype=np.float32)
             else:
                 if (
                     bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
@@ -6313,12 +6351,31 @@ class PersistentFullAttentionState:
             processed_block_ids.extend(int(block_id) for block_id in tranche_active_block_ids)
             processed_block_token_counts.extend(int(token_count) for token_count in tranche_token_counts)
             processed_token_count += int(tranche_token_total)
-            for block_id, block_max in zip(tranche_active_block_ids, tranche_block_max_logits.tolist(), strict=False):
-                if math.isfinite(float(block_max)):
-                    max_bound_excess = max(
-                        max_bound_excess,
-                        float(block_max) - float(upper_bounds[int(block_id)].item()),
+            if torch.is_tensor(tranche_block_max_logits):
+                if tranche_active_block_ids_t is not None:
+                    tranche_block_ids_tensor = tranche_active_block_ids_t.to(device=query_tensor.device, dtype=torch.long)
+                else:
+                    tranche_block_ids_tensor = torch.as_tensor(
+                        tranche_active_block_ids,
+                        dtype=torch.long,
+                        device=query_tensor.device,
                     )
+                tranche_upper_bounds = upper_bounds.index_select(0, tranche_block_ids_tensor).to(dtype=torch.float32)
+                finite_block_mask = torch.isfinite(tranche_block_max_logits)
+                if bool(finite_block_mask.any().item()):
+                    tranche_excess = torch.where(
+                        finite_block_mask,
+                        tranche_block_max_logits.to(dtype=torch.float32) - tranche_upper_bounds,
+                        torch.full_like(tranche_upper_bounds, float("-inf")),
+                    )
+                    max_bound_excess = max(max_bound_excess, float(tranche_excess.max().item()))
+            else:
+                for block_id, block_max in zip(tranche_active_block_ids, tranche_block_max_logits.tolist(), strict=False):
+                    if math.isfinite(float(block_max)):
+                        max_bound_excess = max(
+                            max_bound_excess,
+                            float(block_max) - float(upper_bounds[int(block_id)].item()),
+                        )
             if per_head_processed_logits is not None:
                 for q_head_idx in range(num_heads):
                     logits = tranche_stream_stats["per_head_logits"][q_head_idx]
@@ -6376,10 +6433,9 @@ class PersistentFullAttentionState:
                     )
                     block_mass_accum.index_copy_(1, tranche_block_ids_tensor, updated_block_mass)
             if residual_tracker is not None:
-                final_m_values = [float(m[q_head_idx].item()) for q_head_idx in range(num_heads)]
                 residual_tracker.mark_processed_blocks(
                     tranche_active_block_ids,
-                    m_values=final_m_values,
+                    m_values=m,
                 )
             if streaming_refine_top_k > 0 and unresolved_block_ids:
                 refine_candidates = sorted(
