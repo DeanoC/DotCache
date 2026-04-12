@@ -3535,6 +3535,15 @@ fn causal_mask_host(
     }))))
 }
 
+fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
+    if let Some(buffer) = host.try_host_buffer()? {
+        return Ok(HipTensor::from_device_buffer(
+            HipDeviceBuffer::from_materialized_host_buffer(buffer),
+        ));
+    }
+    Ok(host)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_full_attention_inputs_tensors_hip(
     q_and_gate: &HipTensor,
@@ -5523,6 +5532,12 @@ mod tests {
     fn device_leaf_causal_mask_stays_device_backed() -> Result<()> {
         let out = causal_mask(&Device::Cpu, DType::F32, 1, 3, 2)?;
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         Ok(())
     }
 
@@ -5534,6 +5549,12 @@ mod tests {
         let out = cumsum_last_dim(&xs)?;
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         Ok(())
     }
 
@@ -5837,7 +5858,7 @@ pub(crate) fn rms_norm(
         return rms_norm_hip(&xs_hip, weight, eps, add_unit_offset);
     }
     if let Some(host) = rms_norm_host(&xs_hip, weight, eps, add_unit_offset)? {
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_rms_norm(
         xs,
@@ -5883,7 +5904,7 @@ pub(crate) fn rms_norm_gated(
         ));
     }
     if let Some(host) = rms_norm_gated_host(&hidden_states_hip, &gate_hip, weight, eps)? {
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_rms_norm_gated(
         hidden_states,
@@ -5926,7 +5947,7 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
     }
     if let Some(host) = swiglu_mul_host(&gate_hip, &up_hip)? {
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_swiglu_mul(gate, up)?))
 }
@@ -5952,10 +5973,7 @@ pub(crate) fn causal_mask(
         )?));
     }
     if let Some(host) = causal_mask_host(device, dtype, batch_size, tgt_len, seqlen_offset)? {
-        if let Some(buffer) = host.try_host_buffer()? {
-            return Ok(HipTensor::from_device_buffer(buffer.upload_to_device_buffer()?));
-        }
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_causal_mask(
         device,
@@ -5976,7 +5994,7 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
         return Ok(HipTensor::from_device_buffer(xs.cumsum_last_dim()?));
     }
     if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_cumsum_last_dim(xs)?))
 }
@@ -6016,7 +6034,7 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         return Ok(HipTensor::from_device_buffer(a.value_decay(dt_bias, a_log_exp)?));
     }
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
-        return Ok(host);
+        return materialize_host_result_as_device_leaf(host);
     }
     Ok(from_kernel_tensor(hip_value_decay(
         a, dt_bias, a_log_exp,
