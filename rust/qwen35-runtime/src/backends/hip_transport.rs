@@ -207,6 +207,19 @@ pub(crate) struct HipHostBuffer {
 }
 
 impl HipHostBuffer {
+    fn elem_size(&self) -> usize {
+        self.dtype.size_in_bytes()
+    }
+
+    fn outer_inner_counts(&self, dim: usize) -> Result<(usize, usize)> {
+        if dim >= self.shape.len() {
+            candle_core::bail!("dim {dim} out of range for host buffer shape {:?}", self.shape);
+        }
+        let outer = HipNativeBuffer::elem_count(&self.shape[..dim]);
+        let inner = HipNativeBuffer::elem_count(&self.shape[dim + 1..]);
+        Ok((outer.max(1), inner.max(1)))
+    }
+
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> &[u8] {
         self.bytes.as_ref()
@@ -246,23 +259,94 @@ impl HipHostBuffer {
     }
 
     fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
-        HipNativeBuffer::pad_with_zeros(Arc::new(self.to_native_host_buffer()), dim, left, right)
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for padded host buffer".into())
-            })
+        if dim >= self.shape.len() {
+            candle_core::bail!("pad dim {dim} out of range for host buffer shape {:?}", self.shape);
+        }
+        if left == 0 && right == 0 {
+            return Ok(self.clone());
+        }
+        let mut shape = self.shape.clone();
+        let src_dim = self.shape[dim];
+        shape[dim] = src_dim + left + right;
+        let (outer, inner) = self.outer_inner_counts(dim)?;
+        let elem_size = self.elem_size();
+        let src_chunk = src_dim.saturating_mul(inner).saturating_mul(elem_size);
+        let dst_chunk = shape[dim].saturating_mul(inner).saturating_mul(elem_size);
+        let left_bytes = left.saturating_mul(inner).saturating_mul(elem_size);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        let src = self.bytes.as_ref();
+        for outer_idx in 0..outer {
+            let src_offset = outer_idx.saturating_mul(src_chunk);
+            let dst_offset = outer_idx
+                .saturating_mul(dst_chunk)
+                .saturating_add(left_bytes);
+            out[dst_offset..dst_offset + src_chunk]
+                .copy_from_slice(&src[src_offset..src_offset + src_chunk]);
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
     }
 
     fn cat(buffers: &[&HipHostBuffer], dim: usize) -> Result<Self> {
-        let sources = buffers
-            .iter()
-            .map(|buffer| Arc::new(buffer.to_native_host_buffer()))
-            .collect::<Vec<_>>();
-        HipNativeBuffer::concat(sources, dim)
-            .materialize_host_buffer()?
-            .ok_or_else(|| {
-                candle_core::Error::Msg("expected host materialization for concatenated host buffers".into())
-            })
+        let Some(first) = buffers.first() else {
+            candle_core::bail!("cannot concatenate an empty host buffer list");
+        };
+        if dim >= first.shape.len() {
+            candle_core::bail!("concat dim {dim} out of range for host buffer shape {:?}", first.shape);
+        }
+        let dtype = first.dtype;
+        let device = first.device.clone();
+        let mut shape = first.shape.clone();
+        let (outer, inner) = first.outer_inner_counts(dim)?;
+        let elem_size = first.elem_size();
+        let mut dim_sum = 0usize;
+        for buffer in buffers {
+            if buffer.dtype != dtype {
+                candle_core::bail!("host buffer concat dtype mismatch: {:?} vs {:?}", dtype, buffer.dtype);
+            }
+            if format!("{:?}", buffer.device) != format!("{:?}", device) {
+                candle_core::bail!("host buffer concat device mismatch: {:?} vs {:?}", device, buffer.device);
+            }
+            if buffer.shape.len() != shape.len() {
+                candle_core::bail!("host buffer concat rank mismatch: {:?} vs {:?}", shape, buffer.shape);
+            }
+            for (axis, (&lhs, &rhs)) in shape.iter().zip(buffer.shape.iter()).enumerate() {
+                if axis != dim && lhs != rhs {
+                    candle_core::bail!(
+                        "host buffer concat shape mismatch on dim {axis}: {:?} vs {:?}",
+                        shape,
+                        buffer.shape
+                    );
+                }
+            }
+            dim_sum = dim_sum.saturating_add(buffer.shape[dim]);
+        }
+        shape[dim] = dim_sum;
+        let dst_chunk = shape[dim].saturating_mul(inner).saturating_mul(elem_size);
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, dtype)];
+        for outer_idx in 0..outer {
+            let mut write_offset = outer_idx.saturating_mul(dst_chunk);
+            for buffer in buffers {
+                let src_chunk = buffer.shape[dim]
+                    .saturating_mul(inner)
+                    .saturating_mul(elem_size);
+                let src_offset = outer_idx.saturating_mul(src_chunk);
+                let src = buffer.bytes.as_ref();
+                out[write_offset..write_offset + src_chunk]
+                    .copy_from_slice(&src[src_offset..src_offset + src_chunk]);
+                write_offset += src_chunk;
+            }
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype,
+            device,
+        })
     }
 
     fn cast(&self, dtype: DType) -> Result<Self> {
