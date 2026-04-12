@@ -7252,6 +7252,53 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_host_storage_rope_stays_host_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (1, 1, 1, 4),
+            &device,
+        )?));
+        let cos = Tensor::from_vec(vec![0f32, 1.0], (1, 2), &device)?;
+        let sin = Tensor::from_vec(vec![1f32, 0.0], (1, 2), &device)?;
+
+        let out = rope_hip(&xs, &cos, &sin)?;
+
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![-2.0, 1.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_rope_stays_pending() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1, 4], &[1.0, 2.0, 3.0, 4.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let cos = Tensor::from_vec(vec![0f32, 1.0], (1, 2), &device)?;
+        let sin = Tensor::from_vec(vec![1f32, 0.0], (1, 2), &device)?;
+
+        let out = rope_hip(&xs, &cos, &sin)?;
+
+        let buffer = out
+            .0
+            .0
+            .direct_device_buffer()
+            .expect("device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::PendingHostUpload(_)));
+        assert_eq!(host_buffer_values_f32(&out.try_host_buffer()?.expect("host"))?, vec![-2.0, 1.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_causal_mask_stays_device_backed() -> Result<()> {
         let out = causal_mask(&Device::Cpu, DType::F32, 1, 3, 2)?;
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
@@ -7803,6 +7850,87 @@ fn rope_check_cs(cs: &Tensor, b_sz: usize) -> Result<(usize, usize)> {
     }
 }
 
+fn rope_host_buffer(
+    xs: &HipHostBuffer,
+    cos: &HipHostBuffer,
+    sin: &HipHostBuffer,
+    b_sz: usize,
+    n_head: usize,
+    seq_len: usize,
+    n_embd: usize,
+) -> Result<HipHostBuffer> {
+    if !HipNativeBuffer::supports_host_float_ops(xs.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(cos.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(sin.dtype)
+    {
+        candle_core::bail!(
+            "rope host path unsupported for dtypes {:?}, {:?}, {:?}",
+            xs.dtype,
+            cos.dtype,
+            sin.dtype
+        );
+    }
+    let cos_rank = cos.shape.len();
+    let sin_rank = sin.shape.len();
+    if !matches!(cos_rank, 2 | 3) || !matches!(sin_rank, 2 | 3) {
+        candle_core::bail!(
+            "rope host cos/sin rank mismatch: {:?} {:?}",
+            cos.shape,
+            sin.shape
+        );
+    }
+    let half = n_embd / 2;
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&xs.shape, xs.dtype)];
+    for b in 0..b_sz {
+        for h in 0..n_head {
+            for t in 0..seq_len {
+                for i in 0..half {
+                    let x_idx = (((b * n_head + h) * seq_len + t) * n_embd) + (2 * i);
+                    let x0 =
+                        HipNativeBuffer::read_host_float(xs.bytes.as_ref(), xs.dtype, x_idx)?;
+                    let x1 = HipNativeBuffer::read_host_float(
+                        xs.bytes.as_ref(),
+                        xs.dtype,
+                        x_idx + 1,
+                    )?;
+                    let cos_idx = if cos_rank == 2 {
+                        t * half + i
+                    } else {
+                        ((b * cos.shape[1] + t) * half) + i
+                    };
+                    let sin_idx = if sin_rank == 2 {
+                        t * half + i
+                    } else {
+                        ((b * sin.shape[1] + t) * half) + i
+                    };
+                    let c =
+                        HipNativeBuffer::read_host_float(cos.bytes.as_ref(), cos.dtype, cos_idx)?;
+                    let s =
+                        HipNativeBuffer::read_host_float(sin.bytes.as_ref(), sin.dtype, sin_idx)?;
+                    HipNativeBuffer::write_host_float(
+                        &mut out,
+                        xs.dtype,
+                        x_idx,
+                        x0 * c - x1 * s,
+                    )?;
+                    HipNativeBuffer::write_host_float(
+                        &mut out,
+                        xs.dtype,
+                        x_idx + 1,
+                        x0 * s + x1 * c,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(HipHostBuffer {
+        bytes: out.into(),
+        shape: xs.shape.clone(),
+        dtype: xs.dtype,
+        device: xs.device.clone(),
+    })
+}
+
 fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
     let (b_sz, n_head, seq_len, n_embd) = xs.dims4()?;
     let (cos_seq_len, cos_n_embd) = rope_check_cs(cos, b_sz)?;
@@ -7822,6 +7950,20 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
 
     let cos = HipTensor::from_scaffold_tensor(cos.clone());
     let sin = HipTensor::from_scaffold_tensor(sin.clone());
+    if let Some(xs_buffer) = xs.0 .0.direct_device_buffer() {
+        if let (Some(xs_host), Some(cos_host), Some(sin_host)) = (
+            xs_buffer.try_host_buffer()?,
+            cos.try_host_buffer()?,
+            sin.try_host_buffer()?,
+        ) {
+            let out = rope_host_buffer(&xs_host, &cos_host, &sin_host, b_sz, n_head, seq_len, n_embd)?;
+            return Ok(HipTensor::from_device_buffer(if xs_buffer.preserves_pending_upload() {
+                HipDeviceBuffer::from_pending_host_upload(out)
+            } else {
+                HipDeviceBuffer::from_materialized_host_buffer(out)
+            }));
+        }
+    }
     if let (Some(xs), Some(cos), Some(sin)) = (
         xs.0 .0.direct_materialized_device_buffer(),
         cos.0 .0.direct_materialized_device_buffer(),
