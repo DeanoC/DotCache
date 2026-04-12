@@ -2312,6 +2312,77 @@ pub(crate) fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden
     hidden_states.matmul(&weight)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn immutable_output_projection_host_buffer(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    if !(embedding.device().is_hip() && hidden_states.device().is_hip()) {
+        return Ok(None);
+    }
+    let hidden_states = hidden_states.contiguous()?;
+    let ordinal = match hidden_states.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (hidden_storage, hidden_layout) = hidden_states.storage_and_layout();
+    let Storage::Hip(hidden_storage) = &*hidden_storage else {
+        return Ok(None);
+    };
+    if !hidden_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let dims = hidden_layout.shape().dims();
+    let hidden_size = *dims
+        .last()
+        .ok_or_else(|| candle::Error::Msg("hidden state rank must be >= 1".to_string()))?;
+    if hidden_size != embedding.meta.hidden_size {
+        return Ok(None);
+    }
+    let rows = hidden_layout.shape().elem_count() / hidden_size;
+    let mut shape = dims.to_vec();
+    *shape.last_mut().expect("validated non-empty dims") = embedding.meta.vocab_size;
+    let mut out = vec![
+        0u8;
+        shape.iter().product::<usize>().saturating_mul(embedding.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let weight_ptr = embedding.registered_device_ptr(ordinal)?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
+            hip::dtype_code(embedding.dtype())?,
+            ordinal,
+            rows,
+            embedding.meta.hidden_size,
+            embedding.meta.vocab_size,
+            hidden_storage.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+            weight_ptr,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "hip-immutable-output-projection-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn immutable_output_projection_host_buffer(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (embedding, hidden_states);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipCausalMask {
     batch_size: usize,

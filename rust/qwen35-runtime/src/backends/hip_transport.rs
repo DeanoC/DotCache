@@ -8,8 +8,8 @@ use crate::qwen35_minimal_impl::model::{
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
     hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
-    hip_value_decay_host_buffer,
-    immutable_output_projection, linear_decode_step_hip, linear_prefill_conv_pack,
+    hip_value_decay_host_buffer, immutable_output_projection,
+    immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_stateful_conv_hip, linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
 };
@@ -4389,6 +4389,24 @@ fn immutable_embedding_lookup_hip_host_buffer(
     )))
 }
 
+fn output_projection_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = immutable_output_projection_host_buffer(embedding, hidden_states)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: embedding.dtype(),
+            device: hidden_states.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7787,6 +7805,9 @@ pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &Tensor,
 ) -> Result<HipTensor> {
+    if let Some(host) = output_projection_hip_host_buffer(embedding, hidden_states)? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(immutable_output_projection(
         embedding,
         hidden_states,
