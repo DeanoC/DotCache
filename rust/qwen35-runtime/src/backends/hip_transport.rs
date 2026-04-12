@@ -3670,6 +3670,46 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_generic_matmul_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+        let rhs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![5f32, 6.0, 7.0, 8.0],
+            (2, 2),
+            &device,
+        )?);
+
+        let out = lhs.matmul(&rhs)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![19.0, 22.0, 43.0, 50.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_sigmoid_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![0f32, 1.0, -1.0],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.sigmoid()?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 0.5).abs() < 1e-6);
+        assert!((vals[1] - 0.7310586).abs() < 1e-5);
+        assert!((vals[2] - 0.26894143).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_rope_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
