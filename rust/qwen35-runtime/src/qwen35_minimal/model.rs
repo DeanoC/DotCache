@@ -2952,6 +2952,160 @@ pub(crate) fn hip_cast_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_binary_broadcast_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    op: i32,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    const MAX_RANK: usize = 8;
+
+    let lhs = lhs.contiguous()?;
+    let rhs = rhs.contiguous()?;
+    let ordinal = match lhs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    match rhs.device().location() {
+        DeviceLocation::Hip { gpu_id } if gpu_id == ordinal => {}
+        _ => return Ok(None),
+    }
+    if lhs.dtype() != rhs.dtype() {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(lhs.dtype()) else {
+        return Ok(None);
+    };
+    let lhs_dims = lhs.dims();
+    let rhs_dims = rhs.dims();
+    let rank = lhs_dims.len().max(rhs_dims.len());
+    if rank == 0 || rank > MAX_RANK {
+        return Ok(None);
+    }
+
+    let mut out_dims = [1i32; MAX_RANK];
+    let mut lhs_strides = [0i32; MAX_RANK];
+    let mut rhs_strides = [0i32; MAX_RANK];
+
+    let mut lhs_contig = vec![0usize; lhs_dims.len()];
+    let mut rhs_contig = vec![0usize; rhs_dims.len()];
+    let mut stride = 1usize;
+    for (i, dim) in lhs_dims.iter().enumerate().rev() {
+        lhs_contig[i] = stride;
+        stride = stride.saturating_mul(*dim);
+    }
+    stride = 1usize;
+    for (i, dim) in rhs_dims.iter().enumerate().rev() {
+        rhs_contig[i] = stride;
+        stride = stride.saturating_mul(*dim);
+    }
+
+    let lhs_pad = rank - lhs_dims.len();
+    let rhs_pad = rank - rhs_dims.len();
+    let mut total_elems = 1usize;
+    for dim in 0..rank {
+        let lhs_dim = if dim < lhs_pad { 1 } else { lhs_dims[dim - lhs_pad] };
+        let rhs_dim = if dim < rhs_pad { 1 } else { rhs_dims[dim - rhs_pad] };
+        if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+            return Ok(None);
+        }
+        let out_dim = lhs_dim.max(rhs_dim);
+        out_dims[dim] = i32::try_from(out_dim)
+            .map_err(|_| candle::Error::Msg("broadcast dim overflow".into()))?;
+        total_elems = total_elems.saturating_mul(out_dim);
+        lhs_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(lhs_contig[dim - lhs_pad])
+                .map_err(|_| candle::Error::Msg("lhs stride overflow".into()))?
+        };
+        rhs_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(rhs_contig[dim - rhs_pad])
+                .map_err(|_| candle::Error::Msg("rhs stride overflow".into()))?
+        };
+    }
+
+    let (lhs_storage, lhs_layout) = lhs.storage_and_layout();
+    let (rhs_storage, rhs_layout) = rhs.storage_and_layout();
+    let Storage::Hip(lhs_storage) = &*lhs_storage else {
+        return Ok(None);
+    };
+    let Storage::Hip(rhs_storage) = &*rhs_storage else {
+        return Ok(None);
+    };
+    if !lhs_layout.is_contiguous() || !rhs_layout.is_contiguous() {
+        return Ok(None);
+    }
+
+    let shape: Vec<usize> = out_dims[..rank].iter().map(|&d| d as usize).collect();
+    let mut out = vec![0u8; total_elems.saturating_mul(lhs.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_binary_broadcast(
+            op,
+            dtype_code,
+            ordinal,
+            i32::try_from(rank).map_err(|_| candle::Error::Msg("rank overflow".into()))?,
+            total_elems,
+            lhs_storage.raw_device_ptr_with_offset(lhs_layout.start_offset())? as *const c_void,
+            rhs_storage.raw_device_ptr_with_offset(rhs_layout.start_offset())? as *const c_void,
+            lhs_strides.as_ptr(),
+            rhs_strides.as_ptr(),
+            out_dims.as_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-binary-broadcast-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_binary_broadcast_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    op: i32,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (lhs, rhs, op);
+    Ok(None)
+}
+
+pub(crate) fn hip_broadcast_add_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_binary_broadcast_host_buffer(lhs, rhs, 0)
+}
+
+pub(crate) fn hip_broadcast_sub_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_binary_broadcast_host_buffer(lhs, rhs, 1)
+}
+
+pub(crate) fn hip_broadcast_mul_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_binary_broadcast_host_buffer(lhs, rhs, 2)
+}
+
+pub(crate) fn hip_broadcast_div_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_binary_broadcast_host_buffer(lhs, rhs, 3)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipL2Norm {
     n_rows: usize,

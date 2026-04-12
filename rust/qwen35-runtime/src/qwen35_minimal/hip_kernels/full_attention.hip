@@ -42,6 +42,21 @@ __device__ inline hip_bfloat16 dotcache_qwen35_from_float<hip_bfloat16>(float va
     return hip_bfloat16(value);
 }
 
+__device__ inline float dotcache_qwen35_binary_op_apply(int op, float lhs, float rhs) {
+    switch (op) {
+    case 0:
+        return lhs + rhs;
+    case 1:
+        return lhs - rhs;
+    case 2:
+        return lhs * rhs;
+    case 3:
+        return lhs / rhs;
+    default:
+        return 0.0f;
+    }
+}
+
 template <typename T>
 __device__ inline float dotcache_qwen35_dot_row(
     const T* lhs,
@@ -1729,6 +1744,39 @@ __global__ void dotcache_qwen35_cast_kernel(
         return;
     }
     out[idx] = dotcache_qwen35_from_float<Out>(dotcache_qwen35_to_float(xs[idx]));
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_binary_broadcast_kernel(
+    int op,
+    int rank,
+    size_t total_elems,
+    const T* lhs,
+    const T* rhs,
+    const int* lhs_strides,
+    const int* rhs_strides,
+    const int* out_dims,
+    T* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total_elems) {
+        return;
+    }
+
+    size_t remaining = idx;
+    size_t lhs_offset = 0;
+    size_t rhs_offset = 0;
+    for (int dim = rank - 1; dim >= 0; --dim) {
+        const int out_dim = out_dims[dim];
+        const int coord = static_cast<int>(remaining % static_cast<size_t>(out_dim));
+        remaining /= static_cast<size_t>(out_dim);
+        lhs_offset += static_cast<size_t>(coord) * static_cast<size_t>(lhs_strides[dim]);
+        rhs_offset += static_cast<size_t>(coord) * static_cast<size_t>(rhs_strides[dim]);
+    }
+
+    const float lhs_f = dotcache_qwen35_to_float(lhs[lhs_offset]);
+    const float rhs_f = dotcache_qwen35_to_float(rhs[rhs_offset]);
+    out[idx] = dotcache_qwen35_from_float<T>(dotcache_qwen35_binary_op_apply(op, lhs_f, rhs_f));
 }
 
 template <typename T>

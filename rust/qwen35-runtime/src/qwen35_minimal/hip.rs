@@ -540,5 +540,19 @@ pub mod ffi {
             xs: *const c_void,
             out: *mut c_void,
         ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_binary_broadcast(
+            op: c_int,
+            dtype: c_int,
+            device_ordinal: usize,
+            rank: c_int,
+            total_elems: usize,
+            lhs: *const c_void,
+            rhs: *const c_void,
+            lhs_strides: *const c_int,
+            rhs_strides: *const c_int,
+            out_dims: *const c_int,
+            out: *mut c_void,
+        ) -> c_int;
     }
 }

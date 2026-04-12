@@ -11,7 +11,8 @@ use crate::qwen35_minimal_impl::model::{
     full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
-    hip_cast_host_buffer, hip_exp_host_buffer,
+    hip_broadcast_add_host_buffer, hip_broadcast_div_host_buffer, hip_broadcast_mul_host_buffer,
+    hip_broadcast_sub_host_buffer, hip_cast_host_buffer, hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
     hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
@@ -1374,10 +1375,14 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?
-                .broadcast_add(&rhs.materialize_tensor()?)?,
-        ))
+        let lhs = self.materialize_tensor()?;
+        let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_add_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_add host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(lhs.broadcast_add(&rhs)?))
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
@@ -1386,10 +1391,14 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?
-                .broadcast_sub(&rhs.materialize_tensor()?)?,
-        ))
+        let lhs = self.materialize_tensor()?;
+        let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_sub_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_sub host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(lhs.broadcast_sub(&rhs)?))
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
@@ -1398,10 +1407,14 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?
-                .broadcast_div(&rhs.materialize_tensor()?)?,
-        ))
+        let lhs = self.materialize_tensor()?;
+        let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_div_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_div host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(lhs.broadcast_div(&rhs)?))
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
@@ -1410,10 +1423,14 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?
-                .broadcast_mul(&rhs.materialize_tensor()?)?,
-        ))
+        let lhs = self.materialize_tensor()?;
+        let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_mul_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_mul host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(lhs.broadcast_mul(&rhs)?))
     }
 
     pub(crate) fn max_keepdim(&self, dim: usize) -> Result<Self> {
@@ -4499,6 +4516,24 @@ fn cast_hip_host_buffer(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> 
             shape,
             dtype,
             device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn binary_broadcast_hip_host_buffer(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    helper: fn(&Tensor, &Tensor) -> Result<Option<(Vec<u8>, Vec<usize>)>>,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = helper(lhs, rhs)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: lhs.dtype(),
+            device: lhs.device().clone(),
         }),
     )))
 }
@@ -10363,6 +10398,24 @@ mod tests {
         assert!((vals[0] - 0.5).abs() < 1e-6);
         assert!((vals[1] + 0.25).abs() < 1e-6);
         assert!((vals[2] - 2.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_broadcast_add_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let lhs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+        let rhs =
+            HipTensor::from_scaffold_tensor(Tensor::from_vec(vec![10f32, 20.0], (1, 2), &device)?);
+
+        let out = lhs.broadcast_add(&rhs)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![11.0, 22.0, 13.0, 24.0]);
         Ok(())
     }
 

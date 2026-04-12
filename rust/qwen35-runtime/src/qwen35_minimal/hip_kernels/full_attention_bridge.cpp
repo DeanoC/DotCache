@@ -1053,6 +1053,78 @@ int cast_device(
 }
 
 template <typename T>
+int binary_broadcast_device(
+    int op,
+    int device_ordinal,
+    int rank,
+    size_t total_elems,
+    const void* lhs,
+    const void* rhs,
+    const int* lhs_strides,
+    const int* rhs_strides,
+    const int* out_dims,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* lhs_strides_dev = nullptr;
+    int* rhs_strides_dev = nullptr;
+    int* out_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(rank) * sizeof(int);
+    if (hipMalloc(&lhs_strides_dev, bytes) != hipSuccess) return 137;
+    if (hipMalloc(&rhs_strides_dev, bytes) != hipSuccess) {
+        hipFree(lhs_strides_dev);
+        return 137;
+    }
+    if (hipMalloc(&out_dims_dev, bytes) != hipSuccess) {
+        hipFree(lhs_strides_dev);
+        hipFree(rhs_strides_dev);
+        return 137;
+    }
+    if (hipMemcpy(lhs_strides_dev, lhs_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+        hipMemcpy(rhs_strides_dev, rhs_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+        hipMemcpy(out_dims_dev, out_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+        hipFree(lhs_strides_dev);
+        hipFree(rhs_strides_dev);
+        hipFree(out_dims_dev);
+        return 137;
+    }
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((total_elems + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_binary_broadcast_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        op,
+        rank,
+        total_elems,
+        static_cast<const T*>(lhs),
+        static_cast<const T*>(rhs),
+        lhs_strides_dev,
+        rhs_strides_dev,
+        out_dims_dev,
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        hipFree(lhs_strides_dev);
+        hipFree(rhs_strides_dev);
+        hipFree(out_dims_dev);
+        return 138;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        hipFree(lhs_strides_dev);
+        hipFree(rhs_strides_dev);
+        hipFree(out_dims_dev);
+        return 139;
+    }
+    hipFree(lhs_strides_dev);
+    hipFree(rhs_strides_dev);
+    hipFree(out_dims_dev);
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -2801,6 +2873,60 @@ extern "C" int dotcache_qwen35_hip_cast(
         }
     default:
         return 135;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_binary_broadcast(
+    int op,
+    int dtype,
+    size_t device_ordinal,
+    int rank,
+    size_t total_elems,
+    const void* lhs,
+    const void* rhs,
+    const int* lhs_strides,
+    const int* rhs_strides,
+    const int* out_dims,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return binary_broadcast_device<half>(
+            op,
+            static_cast<int>(device_ordinal),
+            rank,
+            total_elems,
+            lhs,
+            rhs,
+            lhs_strides,
+            rhs_strides,
+            out_dims,
+            out);
+    case 1:
+        return binary_broadcast_device<float>(
+            op,
+            static_cast<int>(device_ordinal),
+            rank,
+            total_elems,
+            lhs,
+            rhs,
+            lhs_strides,
+            rhs_strides,
+            out_dims,
+            out);
+    case 2:
+        return binary_broadcast_device<hip_bfloat16>(
+            op,
+            static_cast<int>(device_ordinal),
+            rank,
+            total_elems,
+            lhs,
+            rhs,
+            lhs_strides,
+            rhs_strides,
+            out_dims,
+            out);
+    default:
+        return 140;
     }
 }
 
