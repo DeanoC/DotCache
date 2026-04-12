@@ -9595,6 +9595,125 @@ pub(crate) fn delta_full_scan_packed(
     initial_state.apply_op4_no_bwd(packed_scan, local_attn_scan, value, &DeltaFullScanPacked)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_full_scan_packed_host_buffer(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let initial_state = initial_state.contiguous()?;
+    let packed_scan = packed_scan.contiguous()?;
+    let local_attn_scan = local_attn_scan.contiguous()?;
+    let value = value.contiguous()?;
+    let ordinal = match initial_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(packed_scan.device().same_device(initial_state.device())
+        && local_attn_scan.device().same_device(initial_state.device())
+        && value.device().same_device(initial_state.device()))
+    {
+        return Ok(None);
+    }
+    let (initial_storage, initial_layout) = initial_state.storage_and_layout();
+    let (packed_storage, packed_layout) = packed_scan.storage_and_layout();
+    let (local_storage, local_layout) = local_attn_scan.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (
+        Storage::Hip(initial_storage),
+        Storage::Hip(packed_storage),
+        Storage::Hip(local_storage),
+        Storage::Hip(value_storage),
+    ) = (
+        &*initial_storage,
+        &*packed_storage,
+        &*local_storage,
+        &*value_storage,
+    )
+    else {
+        return Ok(None);
+    };
+    if !(initial_layout.is_contiguous()
+        && packed_layout.is_contiguous()
+        && local_layout.is_contiguous()
+        && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+    let (packed_bh, num_chunks, chunk_size, packed_width) = packed_layout.shape().dims4()?;
+    let (local_bh, local_chunks, local_chunk_size, local_width) = local_layout.shape().dims4()?;
+    let (value_bh, value_chunks, value_chunk_size, value_v) = value_layout.shape().dims4()?;
+    if packed_bh != batch_heads
+        || local_bh != batch_heads
+        || value_bh != batch_heads
+        || local_chunks != num_chunks
+        || value_chunks != num_chunks
+        || local_chunk_size != chunk_size
+        || value_chunk_size != chunk_size
+        || local_width != chunk_size
+        || value_v != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+        || initial_state.dtype() != packed_scan.dtype()
+        || initial_state.dtype() != local_attn_scan.dtype()
+        || initial_state.dtype() != value.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(initial_state.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(initial_state.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_storage.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                as *const c_void,
+            packed_storage.raw_device_ptr_with_offset(packed_layout.start_offset())?
+                as *const c_void,
+            local_storage.raw_device_ptr_with_offset(local_layout.start_offset())?
+                as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-packed-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_full_scan_packed_host_buffer(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (initial_state, packed_scan, local_attn_scan, value);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeltaNetScanMode {
     Flat3d,
