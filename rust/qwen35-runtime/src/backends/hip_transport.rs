@@ -1894,6 +1894,10 @@ impl HipTensor {
     }
 }
 
+fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
+    HipTensor::from_device_buffer(HipDeviceBuffer { tensor })
+}
+
 pub(crate) fn to_state_buffer(tensor: Tensor) -> Result<StateBuffer> {
     HipTensor::from_scaffold_tensor(tensor).into_state_buffer()
 }
@@ -3877,9 +3881,7 @@ mod tests {
 }
 
 pub(crate) fn embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(hip_embedding_lookup(
-        embeddings, indexes,
-    )?))
+    Ok(from_kernel_tensor(hip_embedding_lookup(embeddings, indexes)?))
 }
 
 pub(crate) fn embedding_lookup_buffer(
@@ -3893,7 +3895,7 @@ pub(crate) fn immutable_embedding_lookup(
     embedding: &ImmutableEmbedding,
     indexes: &Tensor,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(hip_immutable_embedding_lookup(
+    Ok(from_kernel_tensor(hip_immutable_embedding_lookup(
         embedding, indexes,
     )?))
 }
@@ -3902,7 +3904,7 @@ pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &Tensor,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(immutable_output_projection(
+    Ok(from_kernel_tensor(immutable_output_projection(
         embedding,
         hidden_states,
     )?))
@@ -4121,7 +4123,7 @@ pub(crate) fn linear_prefill_conv(
     seq_len: usize,
     kernel_size: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(linear_prefill_conv_pack(
+    Ok(from_kernel_tensor(linear_prefill_conv_pack(
         mixed_qkv,
         weights,
         seq_len,
@@ -4135,7 +4137,7 @@ pub(crate) fn linear_stateful_conv(
     weights: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(linear_stateful_conv_hip(
+    Ok(from_kernel_tensor(linear_stateful_conv_hip(
         mixed_qkv,
         prev_state,
         weights,
@@ -4158,7 +4160,7 @@ pub(crate) fn linear_decode_step(
     kernel_size: usize,
     head_repeat: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(linear_decode_step_hip(
+    Ok(from_kernel_tensor(linear_decode_step_hip(
         mixed_qkv,
         prev_conv_state,
         weights,
@@ -4183,7 +4185,7 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state(
     a_log_exp: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(linear_stateful_conv_value_decay_with_state_hip(
+    Ok(from_kernel_tensor(linear_stateful_conv_value_decay_with_state_hip(
         mixed_qkv,
         prev_state,
         weights,
@@ -4255,7 +4257,7 @@ pub(crate) fn full_attention_prefill(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(full_attention_prefill_megakernel(
+    Ok(from_kernel_tensor(full_attention_prefill_megakernel(
         query,
         key,
         value,
@@ -4292,7 +4294,7 @@ pub(crate) fn full_attention_decode(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
-    Ok(HipTensor::from_scaffold_tensor(full_attention_decode_megakernel(
+    Ok(from_kernel_tensor(full_attention_decode_megakernel(
         query,
         key,
         value,
@@ -4329,7 +4331,7 @@ pub(crate) fn delta_recurrent_prefill_buffer(
     beta_scan: &Tensor,
     g_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_recurrent_prefill(
+    from_kernel_tensor(delta_recurrent_prefill(
         initial_state.tensor(),
         query_scan,
         key_scan,
@@ -4348,7 +4350,7 @@ pub(crate) fn delta_chunk_single_prefill_buffer(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_chunk_single_prefill(
+    from_kernel_tensor(delta_chunk_single_prefill(
         initial_state.tensor(),
         query,
         key,
@@ -4367,7 +4369,7 @@ pub(crate) fn delta_chunk_scan_raw_buffer(
     beta_scan: &Tensor,
     g_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_chunk_scan_raw(
+    from_kernel_tensor(delta_chunk_scan_raw(
         initial_state.tensor(),
         query_scan,
         key_scan,
@@ -4383,7 +4385,7 @@ pub(crate) fn delta_base_attn_scan_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_base_attn_scan(k_beta_scan, key_scan, exp_g_scan)?)
+    from_kernel_tensor(delta_base_attn_scan(k_beta_scan, key_scan, exp_g_scan)?)
         .into_state_buffer()
 }
 
@@ -4392,7 +4394,7 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_attn_solve_from_inputs(
+    from_kernel_tensor(delta_attn_solve_from_inputs(
         k_beta_scan,
         key_scan,
         exp_g_scan,
@@ -4401,7 +4403,7 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
 }
 
 pub(crate) fn delta_attn_solve_scan_buffer(base_attn_scan: &StateBuffer) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_attn_solve_scan(base_attn_scan.tensor())?)
+    from_kernel_tensor(delta_attn_solve_scan(base_attn_scan.tensor())?)
         .into_state_buffer()
 }
 
@@ -4410,7 +4412,7 @@ pub(crate) fn delta_local_attn_scan_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_local_attn_scan(query_scan, key_scan, exp_g_scan)?)
+    from_kernel_tensor(delta_local_attn_scan(query_scan, key_scan, exp_g_scan)?)
         .into_state_buffer()
 }
 
@@ -4420,7 +4422,7 @@ pub(crate) fn delta_full_scan_pack_buffer(
     exp_g_scan: &Tensor,
     k_cumdecay_scan: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_full_scan_pack(
+    from_kernel_tensor(delta_full_scan_pack(
         query_scan,
         key_scan,
         exp_g_scan,
@@ -4435,7 +4437,7 @@ pub(crate) fn delta_full_scan_packed_buffer(
     local_attn_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_full_scan_packed(
+    from_kernel_tensor(delta_full_scan_packed(
         initial_state.tensor(),
         packed_scan.tensor(),
         local_attn_scan.tensor(),
@@ -4454,7 +4456,7 @@ pub(crate) fn delta_full_scan_buffer(
     state_decay_scan: &Tensor,
     value: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_full_scan(
+    from_kernel_tensor(delta_full_scan(
         initial_state.tensor(),
         weighted_key_scan,
         k_cumdecay_scan,
@@ -4471,7 +4473,7 @@ pub(crate) fn delta_state_scan_buffer(
     packed_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_state_scan(
+    from_kernel_tensor(delta_state_scan(
         initial_state.tensor(),
         packed_scan.tensor(),
         value,
@@ -4484,7 +4486,7 @@ pub(crate) fn delta_chunk_fused_buffer(
     packed_chunk: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_chunk_fused(
+    from_kernel_tensor(delta_chunk_fused(
         prev_state.tensor(),
         packed_chunk.tensor(),
         value,
@@ -4550,7 +4552,7 @@ pub(crate) fn delta_state_update_buffer(
     value: &StateBuffer,
     use_kernel: bool,
 ) -> Result<StateBuffer> {
-    HipTensor::from_scaffold_tensor(delta_state_update(
+    from_kernel_tensor(delta_state_update(
         prev_state_scaled,
         weighted_key,
         value.tensor(),
