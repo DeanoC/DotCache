@@ -27,6 +27,7 @@ use half::{bf16, f16};
 use std::ffi::c_void;
 use std::sync::Arc;
 use candle_core::shape::Dim;
+use candle_core::DeviceLocation;
 
 pub(crate) use candle_core::{DType, Device, Result, Shape, Tensor};
 
@@ -4030,6 +4031,11 @@ fn rms_norm_hip(
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
+            if let Some(out) = mapped_rms_norm_hip_host_buffer(mapped, weight, eps, add_unit_offset)? {
+                return Ok(out);
+            }
+        }
         if xs.storage.as_host_buffer().is_some() {
             return Ok(HipTensor::from_device_buffer(
                 xs.rms_norm(weight, eps, add_unit_offset)?,
@@ -4056,6 +4062,11 @@ fn rms_norm_hip(
 
 fn l2norm_hip(xs: &HipTensor, eps: f64) -> Result<HipTensor> {
     if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
+            if let Some(out) = mapped_l2norm_hip_host_buffer(mapped, eps)? {
+                return Ok(out);
+            }
+        }
         return Ok(HipTensor::from_device_buffer(xs.l2norm(eps)?));
     }
     xs.l2norm(eps)
@@ -4375,6 +4386,57 @@ fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_l2norm_hip_host_buffer(xs: &HipMappedHostBuffer, eps: f64) -> Result<Option<HipTensor>> {
+    let ordinal = match xs.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(xs.buffer.dtype) else {
+        return Ok(None);
+    };
+    let shape = xs.buffer.shape.clone();
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, xs.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_l2norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            xs.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-l2norm-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: xs.buffer.dtype,
+            device: xs.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_l2norm_hip_host_buffer(
+    xs: &HipMappedHostBuffer,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    let _ = (xs, eps);
+    Ok(None)
+}
+
 fn rms_norm_hip_host_buffer(
     xs: &Tensor,
     weight: &Tensor,
@@ -4392,6 +4454,84 @@ fn rms_norm_hip_host_buffer(
             device: xs.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_rms_norm_hip_host_buffer(
+    xs: &HipMappedHostBuffer,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let ordinal = match xs.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weight.device().same_device(&xs.buffer.device) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(xs.buffer.dtype) else {
+        return Ok(None);
+    };
+    if xs.buffer.dtype != weight.dtype() {
+        return Ok(None);
+    }
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let Storage::Hip(weight_storage) = &*weight_storage else {
+        return Ok(None);
+    };
+    if !weight_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = xs.buffer.shape.clone();
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, xs.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            if add_unit_offset { 1 } else { 0 },
+            xs.raw_device_ptr(),
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: xs.buffer.dtype,
+            device: xs.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_rms_norm_hip_host_buffer(
+    xs: &HipMappedHostBuffer,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<HipTensor>> {
+    let _ = (xs, weight, eps, add_unit_offset);
+    Ok(None)
 }
 
 fn rms_norm_gated_hip_host_buffer(
@@ -4413,6 +4553,86 @@ fn rms_norm_gated_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_rms_norm_gated_hip_host_buffer(
+    hidden: &HipMappedHostBuffer,
+    gate: &HipMappedHostBuffer,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let ordinal = match hidden.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(gate.buffer.device.same_device(&hidden.buffer.device)
+        && weight.device().same_device(&hidden.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(hidden.buffer.dtype) else {
+        return Ok(None);
+    };
+    if hidden.buffer.dtype != gate.buffer.dtype || hidden.buffer.dtype != weight.dtype() {
+        return Ok(None);
+    }
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let Storage::Hip(weight_storage) = &*weight_storage else {
+        return Ok(None);
+    };
+    if !weight_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = hidden.buffer.shape.clone();
+    let n_cols = *shape.last().ok_or_else(|| {
+        candle_core::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    if gate.buffer.shape != shape || weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, hidden.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            hidden.raw_device_ptr(),
+            gate.raw_device_ptr(),
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-gated-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: hidden.buffer.dtype,
+            device: hidden.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_rms_norm_gated_hip_host_buffer(
+    hidden: &HipMappedHostBuffer,
+    gate: &HipMappedHostBuffer,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    let _ = (hidden, gate, weight, eps);
+    Ok(None)
+}
+
 fn swiglu_mul_hip_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_swiglu_mul_host_buffer(gate, up)? else {
         return Ok(None);
@@ -4425,6 +4645,62 @@ fn swiglu_mul_hip_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<HipTe
             device: gate.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_swiglu_mul_hip_host_buffer(
+    gate: &HipMappedHostBuffer,
+    up: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match gate.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !up.buffer.device.same_device(&gate.buffer.device) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(gate.buffer.dtype) else {
+        return Ok(None);
+    };
+    if gate.buffer.dtype != up.buffer.dtype || gate.buffer.shape != up.buffer.shape {
+        return Ok(None);
+    }
+    let shape = gate.buffer.shape.clone();
+    let elem_count = HipNativeBuffer::elem_count(&shape);
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, gate.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+            dtype_code,
+            ordinal,
+            elem_count,
+            gate.raw_device_ptr(),
+            up.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-swiglu-mul-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: gate.buffer.dtype,
+            device: gate.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_swiglu_mul_hip_host_buffer(
+    gate: &HipMappedHostBuffer,
+    up: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (gate, up);
+    Ok(None)
 }
 
 fn value_decay_hip_host_buffer(
@@ -4443,6 +4719,72 @@ fn value_decay_hip_host_buffer(
             device: a.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_value_decay_hip_host_buffer(
+    a: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match a.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(dt_bias.buffer.device.same_device(&a.buffer.device)
+        && a_log_exp.buffer.device.same_device(&a.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(a.buffer.dtype) else {
+        return Ok(None);
+    };
+    if a.buffer.dtype != dt_bias.buffer.dtype || a.buffer.dtype != a_log_exp.buffer.dtype {
+        return Ok(None);
+    }
+    let total_elems = HipNativeBuffer::elem_count(&a.buffer.shape);
+    let num_heads = HipNativeBuffer::elem_count(&dt_bias.buffer.shape);
+    if HipNativeBuffer::elem_count(&a_log_exp.buffer.shape) != num_heads {
+        return Ok(None);
+    }
+    let shape = a.buffer.shape.clone();
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, a.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_value_decay(
+            dtype_code,
+            ordinal,
+            total_elems,
+            num_heads,
+            a.raw_device_ptr(),
+            dt_bias.raw_device_ptr(),
+            a_log_exp.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-value-decay-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: a.buffer.dtype,
+            device: a.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_value_decay_hip_host_buffer(
+    a: &HipMappedHostBuffer,
+    dt_bias: &HipMappedHostBuffer,
+    a_log_exp: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (a, dt_bias, a_log_exp);
+    Ok(None)
 }
 
 fn embedding_lookup_hip_host_buffer(
@@ -8385,6 +8727,17 @@ pub(crate) fn rms_norm_gated(
         hidden_states_hip.0 .0.direct_materialized_device_buffer(),
         gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(hidden_mapped),
+            HipDeviceStorage::MappedHostBuffer(gate_mapped),
+        ) = (&hidden_states.storage, &gate.storage)
+        {
+            if let Some(out) =
+                mapped_rms_norm_gated_hip_host_buffer(hidden_mapped, gate_mapped, weight, eps)?
+            {
+                return Ok(out);
+            }
+        }
         if hidden_states.storage.as_host_buffer().is_some() && gate.storage.as_host_buffer().is_some()
         {
             return Ok(HipTensor::from_device_buffer(
@@ -8441,6 +8794,15 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
         gate_hip.0 .0.direct_materialized_device_buffer(),
         up_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(gate_mapped),
+            HipDeviceStorage::MappedHostBuffer(up_mapped),
+        ) = (&gate.storage, &up.storage)
+        {
+            if let Some(out) = mapped_swiglu_mul_hip_host_buffer(gate_mapped, up_mapped)? {
+                return Ok(out);
+            }
+        }
         if gate.storage.as_host_buffer().is_some() && up.storage.as_host_buffer().is_some() {
             return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
         }
@@ -8546,6 +8908,20 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
         dt_bias_hip.0 .0.direct_materialized_device_buffer(),
         a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(a_mapped),
+            HipDeviceStorage::MappedHostBuffer(dt_bias_mapped),
+            HipDeviceStorage::MappedHostBuffer(a_log_exp_mapped),
+        ) = (&a.storage, &dt_bias.storage, &a_log_exp.storage)
+        {
+            if let Some(out) = mapped_value_decay_hip_host_buffer(
+                a_mapped,
+                dt_bias_mapped,
+                a_log_exp_mapped,
+            )? {
+                return Ok(out);
+            }
+        }
         if a.storage.as_host_buffer().is_some()
             && dt_bias.storage.as_host_buffer().is_some()
             && a_log_exp.storage.as_host_buffer().is_some()
