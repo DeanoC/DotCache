@@ -44,6 +44,44 @@ def test_resolve_prompt_records_reads_manifest_and_explicit_files(tmp_path) -> N
     assert [record["prompt_length"] for record in records] == [128, 64]
 
 
+def test_resolve_prompt_records_resolves_manifest_relative_paths(tmp_path) -> None:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    prompt = corpus_dir / "relative.md"
+    prompt.write_text("portable", encoding="utf-8")
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+    manifest = manifests_dir / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "case_tag": "relative_case",
+                        "prompt_file_path": "../corpus/relative.md",
+                        "prompt_length": 256,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = _resolve_prompt_records(
+        manifest_path=str(manifest),
+        prompt_files=[],
+        prompt_file_target_length=0,
+    )
+
+    assert records == [
+        {
+            "case_tag": "relative_case",
+            "prompt_file_path": str(prompt.resolve()),
+            "prompt_length": 256,
+        }
+    ]
+
+
 def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     summary = _summarize_records(
         [

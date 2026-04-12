@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "case_tag": "state_cache_roadmap",
+      "prompt_file_path": "../../docs/state_cache_roadmap.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "decode_pseudocode",
+      "prompt_file_path": "../../docs/qwen35_dotcache_decode_pseudocode.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "statecache_showcase",
+      "prompt_file_path": "../../docs/qwen35_statecache_showcase.md",
+      "prompt_length": 1024
+    }
+  ]
+}

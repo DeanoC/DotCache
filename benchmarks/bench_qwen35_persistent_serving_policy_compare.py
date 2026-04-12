@@ -118,15 +118,22 @@ def _resolve_prompt_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if manifest_path:
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest_file = Path(manifest_path).resolve()
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        manifest_dir = manifest_file.parent
         for record in manifest.get("records", []):
             prompt_file_path = record.get("prompt_file_path")
             if not prompt_file_path:
                 continue
+            prompt_path = Path(str(prompt_file_path))
+            if not prompt_path.is_absolute():
+                prompt_path = (manifest_dir / prompt_path).resolve()
+            else:
+                prompt_path = prompt_path.resolve()
             records.append(
                 {
                     "case_tag": str(record.get("case_tag", Path(str(prompt_file_path)).stem)),
-                    "prompt_file_path": str(Path(prompt_file_path).resolve()),
+                    "prompt_file_path": str(prompt_path),
                     "prompt_length": int(record.get("prompt_length", 0)),
                 }
             )
