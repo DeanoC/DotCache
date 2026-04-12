@@ -7410,6 +7410,29 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_host_storage_delta_state_update_stays_host_extractable() -> Result<()> {
+        let device = Device::Cpu;
+        let prev_state_scaled =
+            HipTensor::from_scaffold_tensor(Tensor::from_vec(vec![1f32, 2.0], (1, 1, 2), &device)?);
+        let weighted_key =
+            HipTensor::from_scaffold_tensor(Tensor::from_vec(vec![3f32, 4.0], (1, 1, 2), &device)?);
+        let value = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![5f32, 6.0],
+            (1, 1, 2),
+            &device,
+        )?));
+
+        let out =
+            delta_state_update_tensors_hip(&prev_state_scaled, &weighted_key, &value, false)?;
+
+        assert_eq!(
+            host_buffer_values_f32(&out.try_host_buffer()?.expect("host"))?,
+            vec![16.0, 20.0, 21.0, 26.0]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_host_storage_unpack_linear_prefill_output_stays_host_backed() -> Result<()> {
         let device = Device::Cpu;
         let fused = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(Tensor::from_vec(
@@ -9245,17 +9268,35 @@ pub(crate) fn mix_chunk_attention(
     mix_chunk_attention_tensors_hip(&attn, &attn_inter, &value_chunk)?.into_state_buffer()
 }
 
+fn delta_state_update_tensors_hip(
+    prev_state_scaled: &HipTensor,
+    weighted_key: &HipTensor,
+    value: &HipTensor,
+    use_kernel: bool,
+) -> Result<HipTensor> {
+    if use_kernel {
+        return Ok(from_kernel_tensor(delta_state_update(
+            &prev_state_scaled.clone().into_tensor(),
+            &weighted_key.clone().into_tensor(),
+            &value.clone().into_tensor(),
+            true,
+        )?));
+    }
+    weighted_key
+        .transpose(2, 1)?
+        .matmul(value)?
+        .broadcast_add(prev_state_scaled)
+}
+
 pub(crate) fn delta_state_update_buffer(
     prev_state_scaled: &Tensor,
     weighted_key: &Tensor,
     value: &StateBuffer,
     use_kernel: bool,
 ) -> Result<StateBuffer> {
-    from_kernel_tensor(delta_state_update(
-        prev_state_scaled,
-        weighted_key,
-        value.tensor(),
-        use_kernel,
-    )?)
-    .into_state_buffer()
+    let prev_state_scaled = HipTensor::from_scaffold_tensor(prev_state_scaled.clone());
+    let weighted_key = HipTensor::from_scaffold_tensor(weighted_key.clone());
+    let value = HipTensor::from_state_buffer(value);
+    delta_state_update_tensors_hip(&prev_state_scaled, &weighted_key, &value, use_kernel)?
+        .into_state_buffer()
 }
