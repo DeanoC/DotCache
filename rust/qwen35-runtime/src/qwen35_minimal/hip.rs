@@ -624,6 +624,20 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_reduce_keepdim_view(
+            dtype: c_int,
+            device_ordinal: usize,
+            rank: c_int,
+            reduce_dim: c_int,
+            reduce_len: usize,
+            total_out_elems: usize,
+            sum: c_int,
+            xs: *const c_void,
+            in_strides: *const c_int,
+            out_dims: *const c_int,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_add_scalar(
             dtype: c_int,
             device_ordinal: usize,

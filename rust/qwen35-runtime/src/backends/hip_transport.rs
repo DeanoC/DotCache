@@ -1293,6 +1293,17 @@ impl HipDeviceBuffer {
         strides
     }
 
+    fn is_standard_contiguous_i32(shape: &[usize], strides: &[i32]) -> bool {
+        if shape.len() != strides.len() {
+            return false;
+        }
+        let expected = Self::standard_contiguous_strides(shape);
+        expected
+            .iter()
+            .zip(strides.iter())
+            .all(|(expected, actual)| i32::try_from(*expected).ok() == Some(*actual))
+    }
+
     fn candle_view_launch_spec(
         &self,
     ) -> Result<Option<(usize, DType, Vec<usize>, Vec<i32>, *const c_void)>> {
@@ -1558,6 +1569,150 @@ impl HipDeviceBuffer {
         hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error("hip-binary-view", status));
+        }
+        Ok(Some(Self::from_raw_hip_host_output(
+            out,
+            out_shape,
+            lhs_dtype,
+            &self.device,
+        )))
+    }
+
+    fn reduce_candle_view_host_output(&self, dim: usize, sum: bool) -> Result<Option<Self>> {
+        let Some((ordinal, dtype, shape, in_strides, input_ptr)) = self.candle_view_launch_spec()? else {
+            return Ok(None);
+        };
+        if dim >= shape.len() {
+            return Ok(None);
+        }
+        let mut out_shape = shape.clone();
+        let reduce_len = out_shape[dim];
+        out_shape[dim] = 1;
+        let total_out_elems = HipNativeBuffer::elem_count(&out_shape);
+        let out_dims = out_shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let mut out = vec![0u8; total_out_elems.saturating_mul(dtype.size_in_bytes())];
+        let host_ptr = out.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+        let dtype_code = hip::dtype_code(dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_reduce_keepdim_view(
+                dtype_code,
+                ordinal,
+                i32::try_from(shape.len()).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                i32::try_from(dim).map_err(|_| candle_core::Error::Msg("dim overflow".into()))?,
+                reduce_len,
+                total_out_elems,
+                if sum { 1 } else { 0 },
+                input_ptr,
+                in_strides.as_ptr(),
+                out_dims.as_ptr(),
+                device_ptr as *mut c_void,
+            )
+        };
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error("hip-reduce-keepdim-view", status));
+        }
+        Ok(Some(Self::from_raw_hip_host_output(
+            out,
+            out_shape,
+            dtype,
+            &self.device,
+        )))
+    }
+
+    fn matmul_candle_view_host_output(&self, rhs: &Self) -> Result<Option<Self>> {
+        let Some((lhs_ordinal, lhs_dtype, lhs_shape, lhs_strides, lhs_ptr)) =
+            self.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_ordinal, rhs_dtype, rhs_shape, rhs_strides, rhs_ptr)) =
+            rhs.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        if lhs_ordinal != rhs_ordinal || lhs_dtype != rhs_dtype {
+            return Ok(None);
+        }
+        if !Self::is_standard_contiguous_i32(&lhs_shape, &lhs_strides)
+            || !Self::is_standard_contiguous_i32(&rhs_shape, &rhs_strides)
+        {
+            return Ok(None);
+        }
+        if lhs_shape.is_empty() || rhs_shape.is_empty() {
+            return Ok(None);
+        }
+        let lhs_rank = lhs_shape.len();
+        let rhs_rank = rhs_shape.len();
+        let lhs_k = lhs_shape[lhs_rank - 1];
+        let rhs_k = rhs_shape[rhs_rank.saturating_sub(2)];
+        if lhs_k != rhs_k {
+            return Ok(None);
+        }
+        let m = if lhs_rank >= 2 { lhs_shape[lhs_rank - 2] } else { 1 };
+        let n = rhs_shape[rhs_rank - 1];
+        let lhs_batch = &lhs_shape[..lhs_rank.saturating_sub(2)];
+        let rhs_batch = &rhs_shape[..rhs_rank.saturating_sub(2)];
+        let batch_rank = lhs_batch.len().max(rhs_batch.len());
+        if batch_rank > 8 {
+            return Ok(None);
+        }
+        let lhs_pad = batch_rank.saturating_sub(lhs_batch.len());
+        let rhs_pad = batch_rank.saturating_sub(rhs_batch.len());
+        let mut out_batch_dims = vec![1i32; batch_rank];
+        let mut lhs_batch_dims = vec![1i32; batch_rank];
+        let mut rhs_batch_dims = vec![1i32; batch_rank];
+        let mut batch_elems = 1usize;
+        for dim in 0..batch_rank {
+            let lhs_dim = if dim < lhs_pad { 1 } else { lhs_batch[dim - lhs_pad] };
+            let rhs_dim = if dim < rhs_pad { 1 } else { rhs_batch[dim - rhs_pad] };
+            if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+                return Ok(None);
+            }
+            let out_dim = lhs_dim.max(rhs_dim);
+            out_batch_dims[dim] = i32::try_from(out_dim)
+                .map_err(|_| candle_core::Error::Msg("matmul batch dim overflow".into()))?;
+            lhs_batch_dims[dim] = i32::try_from(lhs_dim)
+                .map_err(|_| candle_core::Error::Msg("matmul lhs batch dim overflow".into()))?;
+            rhs_batch_dims[dim] = i32::try_from(rhs_dim)
+                .map_err(|_| candle_core::Error::Msg("matmul rhs batch dim overflow".into()))?;
+            batch_elems = batch_elems.saturating_mul(out_dim);
+        }
+        let mut out_shape = out_batch_dims.iter().map(|&d| d as usize).collect::<Vec<_>>();
+        if lhs_rank >= 2 {
+            out_shape.push(m);
+        }
+        out_shape.push(n);
+        let total_elems = batch_elems.saturating_mul(m).saturating_mul(n);
+        let mut out = vec![0u8; total_elems.saturating_mul(lhs_dtype.size_in_bytes())];
+        let host_ptr = out.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(lhs_ordinal, host_ptr, out.len())?;
+        let dtype_code = hip::dtype_code(lhs_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_batched_matmul(
+                dtype_code,
+                lhs_ordinal,
+                i32::try_from(batch_rank).map_err(|_| candle_core::Error::Msg("batch rank overflow".into()))?,
+                batch_elems,
+                i32::try_from(m).map_err(|_| candle_core::Error::Msg("m overflow".into()))?,
+                i32::try_from(n).map_err(|_| candle_core::Error::Msg("n overflow".into()))?,
+                i32::try_from(lhs_k).map_err(|_| candle_core::Error::Msg("k overflow".into()))?,
+                lhs_batch_dims.as_ptr(),
+                rhs_batch_dims.as_ptr(),
+                out_batch_dims.as_ptr(),
+                lhs_ptr,
+                rhs_ptr,
+                device_ptr as *mut c_void,
+            )
+        };
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error("hip-batched-matmul-view", status));
         }
         Ok(Some(Self::from_raw_hip_host_output(
             out,
@@ -1848,6 +2003,9 @@ impl HipDeviceBuffer {
                 buffer.max_keepdim(dim)?,
             ));
         }
+        if let Some(out) = self.reduce_candle_view_host_output(dim, false)? {
+            return Ok(out);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_max_keepdim_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -1863,6 +2021,9 @@ impl HipDeviceBuffer {
                 self,
                 buffer.sum_keepdim(dim)?,
             ));
+        }
+        if let Some(out) = self.reduce_candle_view_host_output(dim, true)? {
+            return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_sum_keepdim_host_buffer)? {
@@ -1950,6 +2111,9 @@ impl HipDeviceBuffer {
                 rhs,
                 lhs_buffer.matmul(&rhs_buffer)?,
             ));
+        }
+        if let Some(out) = self.matmul_candle_view_host_output(rhs)? {
+            return Ok(out);
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;

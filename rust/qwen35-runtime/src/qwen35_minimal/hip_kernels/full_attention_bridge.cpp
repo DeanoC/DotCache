@@ -1280,6 +1280,75 @@ int binary_broadcast_device(
 }
 
 template <typename T>
+int reduce_keepdim_view_device(
+    int device_ordinal,
+    int rank,
+    int reduce_dim,
+    size_t reduce_len,
+    size_t total_out_elems,
+    int sum,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* in_strides_dev = nullptr;
+    int* out_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(rank) * sizeof(int);
+    if (rank > 0) {
+        if (hipMalloc(&in_strides_dev, bytes) != hipSuccess) return 167;
+        if (hipMalloc(&out_dims_dev, bytes) != hipSuccess) {
+            hipFree(in_strides_dev);
+            return 167;
+        }
+        if (hipMemcpy(in_strides_dev, in_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(out_dims_dev, out_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+            return 167;
+        }
+    }
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((total_out_elems + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_reduce_keepdim_view_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        rank,
+        reduce_dim,
+        reduce_len,
+        total_out_elems,
+        sum,
+        static_cast<const T*>(xs),
+        in_strides_dev,
+        out_dims_dev,
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 168;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        if (rank > 0) {
+            hipFree(in_strides_dev);
+            hipFree(out_dims_dev);
+        }
+        return 169;
+    }
+    if (rank > 0) {
+        hipFree(in_strides_dev);
+        hipFree(out_dims_dev);
+    }
+    return 0;
+}
+
+template <typename T>
 int batched_matmul_device(
     int device_ordinal,
     int batch_rank,
@@ -3283,6 +3352,33 @@ extern "C" int dotcache_qwen35_hip_cast_view(
         }
     default:
         return 166;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_reduce_keepdim_view(
+    int dtype,
+    size_t device_ordinal,
+    int rank,
+    int reduce_dim,
+    size_t reduce_len,
+    size_t total_out_elems,
+    int sum,
+    const void* xs,
+    const int* in_strides,
+    const int* out_dims,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return reduce_keepdim_view_device<half>(
+            static_cast<int>(device_ordinal), rank, reduce_dim, reduce_len, total_out_elems, sum, xs, in_strides, out_dims, out);
+    case 1:
+        return reduce_keepdim_view_device<float>(
+            static_cast<int>(device_ordinal), rank, reduce_dim, reduce_len, total_out_elems, sum, xs, in_strides, out_dims, out);
+    case 2:
+        return reduce_keepdim_view_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), rank, reduce_dim, reduce_len, total_out_elems, sum, xs, in_strides, out_dims, out);
+    default:
+        return 170;
     }
 }
 

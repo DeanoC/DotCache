@@ -1961,6 +1961,43 @@ __global__ void dotcache_qwen35_reduce_keepdim_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_reduce_keepdim_view_kernel(
+    int rank,
+    int reduce_dim,
+    size_t reduce_len,
+    size_t total_out_elems,
+    int sum,
+    const T* xs,
+    const int* in_strides,
+    const int* out_dims,
+    T* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total_out_elems) {
+        return;
+    }
+    size_t remaining = idx;
+    size_t base_offset = 0;
+    for (int dim = rank - 1; dim >= 0; --dim) {
+        const int out_dim = out_dims[dim];
+        const int coord = static_cast<int>(remaining % static_cast<size_t>(out_dim));
+        remaining /= static_cast<size_t>(out_dim);
+        base_offset += static_cast<size_t>(coord) * static_cast<size_t>(in_strides[dim]);
+    }
+    float acc = dotcache_qwen35_to_float(xs[base_offset]);
+    for (size_t r = 1; r < reduce_len; ++r) {
+        const float value = dotcache_qwen35_to_float(
+            xs[base_offset + r * static_cast<size_t>(in_strides[reduce_dim])]);
+        if (sum) {
+            acc += value;
+        } else {
+            acc = value > acc ? value : acc;
+        }
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(acc);
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_batched_matmul_kernel(
     int batch_rank,
     size_t batch_elems,
