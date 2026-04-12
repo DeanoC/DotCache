@@ -396,6 +396,17 @@ impl HipHostBuffer {
             candle_core::Error::Msg("expected host materialization for value-decay host buffer".into())
         })
     }
+
+    fn matmul(&self, rhs: &HipHostBuffer) -> Result<Self> {
+        HipNativeBuffer::host_bytes_matmul(
+            &Arc::new(self.to_native_host_buffer()),
+            &Arc::new(rhs.to_native_host_buffer()),
+        )?
+        .and_then(|buffer| buffer.materialize_host_buffer().ok().flatten())
+        .ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for matmul host buffer".into())
+        })
+    }
 }
 
 impl HipDeviceBuffer {
@@ -735,6 +746,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(lhs.matmul(&rhs)?));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?.matmul(&rhs.materialize_tensor()?)?,
         ))
@@ -4426,6 +4440,24 @@ mod tests {
         let expected1 = -(((2.0f32 - 0.5).exp() + 1.0).ln() * 1.5);
         assert!((vals[0] - expected0).abs() < 1e-5);
         assert!((vals[1] - expected1).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_matmul_stays_pending() -> Result<()> {
+        let lhs = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let rhs = host_f32_tensor(&[2, 1], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = lhs.matmul(&rhs)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[1, 1]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![11.0]);
         Ok(())
     }
 
