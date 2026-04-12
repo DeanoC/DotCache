@@ -347,6 +347,32 @@ impl HipHostBuffer {
                 candle_core::Error::Msg("expected host materialization for l2norm host buffer".into())
             })
     }
+
+    fn rms_norm(&self, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Self> {
+        rms_norm_host(&HipTensor::from_host_buffer(self.clone()), weight, eps, add_unit_offset)?
+            .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for rms-norm host buffer".into())
+            })
+    }
+
+    fn rms_norm_gated(
+        &self,
+        gate: &HipHostBuffer,
+        weight: &Tensor,
+        eps: f64,
+    ) -> Result<Self> {
+        rms_norm_gated_host(
+            &HipTensor::from_host_buffer(self.clone()),
+            &HipTensor::from_host_buffer(gate.clone()),
+            weight,
+            eps,
+        )?
+        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
+        .ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for gated rms-norm host buffer".into())
+        })
+    }
 }
 
 impl HipDeviceBuffer {
@@ -706,6 +732,11 @@ impl HipDeviceBuffer {
         eps: f64,
         add_unit_offset: bool,
     ) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(
+                buffer.rms_norm(weight, eps, add_unit_offset)?,
+            ));
+        }
         let inner = *self.dims().last().ok_or_else(|| {
             candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
         })?;
@@ -732,6 +763,11 @@ impl HipDeviceBuffer {
         weight: &Tensor,
         eps: f64,
     ) -> Result<Self> {
+        if let (Some(hidden), Some(gate)) = (self.try_host_buffer()?, gate.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(
+                hidden.rms_norm_gated(&gate, weight, eps)?,
+            ));
+        }
         let normed = self.rms_norm(weight, eps, false)?;
         let gate = gate.materialize_tensor()?;
         let sig = (gate.neg()?.exp()? + 1.0)?.recip()?;
@@ -2272,7 +2308,6 @@ impl HipStorage {
 pub(crate) struct HipTensor(pub(crate) HipStorage);
 
 impl HipTensor {
-    #[cfg(test)]
     pub(crate) fn from_host_buffer(buffer: HipHostBuffer) -> Self {
         Self(HipStorage::from_native_buffer(HipNativeBuffer {
             expr: HipNativeExpr::HostBytes { bytes: buffer.bytes },
@@ -4259,6 +4294,48 @@ mod tests {
         let vals = host_buffer_values_f32(&host)?;
         assert!((vals[0] - 0.6).abs() < 1e-5);
         assert!((vals[1] - 0.8).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_rms_norm_stays_pending() -> Result<()> {
+        let device = Device::Cpu;
+        let src = host_f32_tensor(&[1, 2], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let weight = Tensor::from_vec(vec![1f32, 1.0], (2,), &device)?;
+        let out = src.rms_norm(&weight, 0.0, false)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        let denom = ((9.0 + 16.0) / 2.0f32).sqrt();
+        assert!((vals[0] - (3.0 / denom)).abs() < 1e-5);
+        assert!((vals[1] - (4.0 / denom)).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_rms_norm_gated_stays_pending() -> Result<()> {
+        let device = Device::Cpu;
+        let hidden = host_f32_tensor(&[1, 2], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let gate = host_f32_tensor(&[1, 2], &[0.5, -1.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let weight = Tensor::from_vec(vec![1f32, 1.0], (2,), &device)?;
+        let out = hidden.rms_norm_gated(&gate, &weight, 0.0)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        let denom = ((9.0 + 16.0) / 2.0f32).sqrt();
+        let silu0 = 0.5f32 / (1.0 + (-0.5f32).exp());
+        let silu1 = -1.0f32 / (1.0 + 1.0f32.exp());
+        assert!((vals[0] - ((3.0 / denom) * silu0)).abs() < 1e-5);
+        assert!((vals[1] - ((4.0 / denom) * silu1)).abs() < 1e-5);
         Ok(())
     }
 
