@@ -208,6 +208,10 @@ impl HipHostBuffer {
     pub(crate) fn upload_to_tensor(self) -> Result<Tensor> {
         Tensor::from_raw_buffer(self.bytes.as_ref(), self.dtype, &self.shape, &self.device)
     }
+
+    pub(crate) fn upload_to_state_buffer(self) -> Result<StateBuffer> {
+        StateBuffer::from_tensor(self.upload_to_device_buffer()?.into_tensor())
+    }
 }
 
 impl HipDeviceBuffer {
@@ -1604,7 +1608,7 @@ impl HipNativeBuffer {
 
     pub(crate) fn materialize(&self) -> Result<Tensor> {
         if let Some(buffer) = self.materialize_host_buffer()? {
-            return buffer.upload_to_tensor();
+            return Ok(buffer.upload_to_device_buffer()?.into_tensor());
         }
         match &self.expr {
             HipNativeExpr::DeviceBuffer(buffer) => buffer.materialize_tensor(),
@@ -2071,13 +2075,10 @@ impl HipTensor {
                 .try_host_buffer()
                 .expect("materialize native scaffold host buffer")
             {
-                return HipTensor::from_device_buffer(
-                    buffer
-                        .upload_to_device_buffer()
-                        .expect("upload host buffer to device buffer"),
-                )
-                .0
-                .into_tensor();
+                return buffer
+                    .upload_to_device_buffer()
+                    .expect("upload host buffer to device buffer")
+                    .into_tensor();
             }
         }
         self.0.into_tensor()
@@ -2222,7 +2223,7 @@ impl HipTensor {
     pub(crate) fn into_state_buffer(self) -> Result<StateBuffer> {
         if self.0 .0.is_host_graph() {
             if let Some(buffer) = self.try_host_buffer()? {
-                return StateBuffer::from_tensor(buffer.upload_to_device_buffer()?.into_tensor());
+                return buffer.upload_to_state_buffer();
             }
         }
         StateBuffer::from_tensor(self.0.into_tensor())
