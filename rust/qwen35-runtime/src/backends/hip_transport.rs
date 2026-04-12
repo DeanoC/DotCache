@@ -3452,10 +3452,10 @@ fn causal_mask_host(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_full_attention_inputs_hip(
-    q_and_gate: &StateBuffer,
-    k_proj: &StateBuffer,
-    v_proj: &StateBuffer,
+fn prepare_full_attention_inputs_tensors_hip(
+    q_and_gate: &HipTensor,
+    k_proj: &HipTensor,
+    v_proj: &HipTensor,
     b_sz: usize,
     q_len: usize,
     num_heads: usize,
@@ -3466,9 +3466,6 @@ fn prepare_full_attention_inputs_hip(
     k_norm_weight: &Tensor,
     k_norm_eps: f64,
 ) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor)> {
-    let q_and_gate = HipTensor::from_state_buffer(q_and_gate);
-    let k_proj = HipTensor::from_state_buffer(k_proj);
-    let v_proj = HipTensor::from_state_buffer(v_proj);
     if let (Some(q_and_gate), Some(k_proj), Some(v_proj)) = (
         q_and_gate.0 .0.direct_materialized_device_buffer(),
         k_proj.0 .0.direct_materialized_device_buffer(),
@@ -3529,6 +3526,40 @@ fn prepare_full_attention_inputs_hip(
         .reshape((b_sz, q_len, num_kv_heads, head_dim))?
         .transpose(1, 2)?;
     Ok((query_states, gate, key_states, value_states))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_full_attention_inputs_hip(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor)> {
+    let q_and_gate = HipTensor::from_state_buffer(q_and_gate);
+    let k_proj = HipTensor::from_state_buffer(k_proj);
+    let v_proj = HipTensor::from_state_buffer(v_proj);
+    prepare_full_attention_inputs_tensors_hip(
+        &q_and_gate,
+        &k_proj,
+        &v_proj,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4910,6 +4941,54 @@ mod tests {
             1e-6,
         )?;
 
+        assert_eq!(query_states.0.shape(), vec![1, 1, 1, 2]);
+        assert_eq!(gate.0.shape(), vec![1, 1, 2]);
+        assert_eq!(key_states.0.shape(), vec![1, 1, 1, 2]);
+        assert_eq!(value_states.0.shape(), vec![1, 1, 1, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_prepare_full_attention_inputs_stays_host_extractable() -> Result<()> {
+        let device = Device::Cpu;
+        let q_and_gate = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 4], &[1.0, 2.0, 3.0, 4.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let k_proj = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 2], &[5.0, 6.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let v_proj = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 2], &[7.0, 8.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let q_norm_weight = Tensor::ones((2,), DType::F32, &device)?;
+        let k_norm_weight = Tensor::ones((2,), DType::F32, &device)?;
+
+        let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_tensors_hip(
+            &q_and_gate,
+            &k_proj,
+            &v_proj,
+            1,
+            1,
+            1,
+            1,
+            2,
+            &q_norm_weight,
+            1e-6,
+            &k_norm_weight,
+            1e-6,
+        )?;
+
+        assert!(gate.try_host_buffer()?.is_some());
+        assert!(value_states.try_host_buffer()?.is_some());
         assert_eq!(query_states.0.shape(), vec![1, 1, 1, 2]);
         assert_eq!(gate.0.shape(), vec![1, 1, 2]);
         assert_eq!(key_states.0.shape(), vec![1, 1, 1, 2]);
