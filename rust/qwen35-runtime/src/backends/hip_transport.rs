@@ -1490,6 +1490,83 @@ impl HipDeviceBuffer {
         )))
     }
 
+    fn binary_candle_view_host_output(&self, rhs: &Self, op: i32) -> Result<Option<Self>> {
+        let Some((lhs_ordinal, lhs_dtype, lhs_shape, lhs_strides, lhs_ptr)) =
+            self.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_ordinal, rhs_dtype, rhs_shape, rhs_strides, rhs_ptr)) =
+            rhs.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        if lhs_ordinal != rhs_ordinal || lhs_dtype != rhs_dtype {
+            return Ok(None);
+        }
+        let rank = lhs_shape.len().max(rhs_shape.len());
+        let lhs_pad = rank.saturating_sub(lhs_shape.len());
+        let rhs_pad = rank.saturating_sub(rhs_shape.len());
+        let mut out_shape = vec![0usize; rank];
+        let mut lhs_broadcast_strides = vec![0i32; rank];
+        let mut rhs_broadcast_strides = vec![0i32; rank];
+        let mut total_elems = 1usize;
+        for dim in 0..rank {
+            let lhs_dim = if dim < lhs_pad { 1 } else { lhs_shape[dim - lhs_pad] };
+            let rhs_dim = if dim < rhs_pad { 1 } else { rhs_shape[dim - rhs_pad] };
+            if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+                return Ok(None);
+            }
+            let out_dim = lhs_dim.max(rhs_dim);
+            out_shape[dim] = out_dim;
+            total_elems = total_elems.saturating_mul(out_dim);
+            lhs_broadcast_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+                0
+            } else {
+                lhs_strides[dim - lhs_pad]
+            };
+            rhs_broadcast_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+                0
+            } else {
+                rhs_strides[dim - rhs_pad]
+            };
+        }
+        let out_dims = out_shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let mut out = vec![0u8; total_elems.saturating_mul(lhs_dtype.size_in_bytes())];
+        let host_ptr = out.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(lhs_ordinal, host_ptr, out.len())?;
+        let dtype_code = hip::dtype_code(lhs_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_binary_broadcast(
+                op,
+                dtype_code,
+                lhs_ordinal,
+                i32::try_from(rank).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                total_elems,
+                lhs_ptr,
+                rhs_ptr,
+                lhs_broadcast_strides.as_ptr(),
+                rhs_broadcast_strides.as_ptr(),
+                out_dims.as_ptr(),
+                device_ptr as *mut c_void,
+            )
+        };
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error("hip-binary-view", status));
+        }
+        Ok(Some(Self::from_raw_hip_host_output(
+            out,
+            out_shape,
+            lhs_dtype,
+            &self.device,
+        )))
+    }
+
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
         if let Some(buffer) = self.materialize_host_buffer_with_views()? {
             return buffer.upload_to_tensor();
@@ -1694,6 +1771,9 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
+        if let Some(out) = self.binary_candle_view_host_output(rhs, 0)? {
+            return Ok(out);
+        }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_add_host_buffer)? {
@@ -1709,6 +1789,9 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_sub(
                 &lhs_buffer, &rhs_buffer,
             )?));
+        }
+        if let Some(out) = self.binary_candle_view_host_output(rhs, 1)? {
+            return Ok(out);
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
@@ -1726,6 +1809,9 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
+        if let Some(out) = self.binary_candle_view_host_output(rhs, 3)? {
+            return Ok(out);
+        }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_div_host_buffer)? {
@@ -1741,6 +1827,9 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_mul(
                 &lhs_buffer, &rhs_buffer,
             )?));
+        }
+        if let Some(out) = self.binary_candle_view_host_output(rhs, 2)? {
+            return Ok(out);
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
@@ -11003,7 +11092,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
     fn device_leaf_generic_mul_scalar_stays_device_backed_via_kernel() -> Result<()> {
         let device = Device::Cpu;
         let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
