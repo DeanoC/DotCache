@@ -5307,6 +5307,102 @@ fn mapped_linear_decode_step_hip_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_full_attention_prefill_hip_host_buffer(
+    query: &HipMappedHostBuffer,
+    key: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match query.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key.buffer.device.same_device(&query.buffer.device)
+        && value.buffer.device.same_device(&query.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query.buffer.dtype) else {
+        return Ok(None);
+    };
+    if query.buffer.dtype != key.buffer.dtype || query.buffer.dtype != value.buffer.dtype {
+        return Ok(None);
+    }
+    let [batch_size, q_heads, q_len, head_dim] = *query.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let [key_batch, kv_heads, kv_len, key_head_dim] = *key.buffer.shape.as_slice() else {
+        return Ok(None);
+    };
+    let [value_batch, value_kv_heads, value_kv_len, value_head_dim] = *value.buffer.shape.as_slice()
+    else {
+        return Ok(None);
+    };
+    if key_batch != batch_size
+        || value_batch != batch_size
+        || value_kv_heads != kv_heads
+        || value_kv_len != kv_len
+        || key_head_dim != head_dim
+        || value_head_dim != head_dim
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_size, q_heads, q_len, head_dim];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, DType::F32)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
+            dtype_code,
+            ordinal,
+            batch_size,
+            q_heads,
+            kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            query.raw_device_ptr(),
+            key.raw_device_ptr(),
+            value.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "full-attention-prefill-mapped-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: DType::F32,
+            device: query.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_full_attention_prefill_hip_host_buffer(
+    query: &HipMappedHostBuffer,
+    key: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (query, key, value, num_kv_groups, scale, seqlen_offset);
+    Ok(None)
+}
+
 fn embedding_lookup_hip_host_buffer(
     embeddings: &Tensor,
     indexes: &Tensor,
@@ -9956,6 +10052,32 @@ pub(crate) fn full_attention_prefill(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    let query_hip = HipTensor::from_scaffold_tensor(query.clone());
+    let key_hip = HipTensor::from_scaffold_tensor(key.clone());
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (Some(query), Some(key), Some(value)) = (
+        query_hip.0 .0.direct_materialized_device_buffer(),
+        key_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(query_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (&query.storage, &key.storage, &value.storage)
+        {
+            if let Some(out) = mapped_full_attention_prefill_hip_host_buffer(
+                query_mapped,
+                key_mapped,
+                value_mapped,
+                num_kv_groups,
+                scale,
+                seqlen_offset,
+            )? {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = full_attention_prefill_hip_host_buffer(
         query,
         key,
@@ -10003,6 +10125,32 @@ pub(crate) fn full_attention_decode(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    let query_hip = HipTensor::from_scaffold_tensor(query.clone());
+    let key_hip = HipTensor::from_scaffold_tensor(key.clone());
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (Some(query), Some(key), Some(value)) = (
+        query_hip.0 .0.direct_materialized_device_buffer(),
+        key_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(query_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (&query.storage, &key.storage, &value.storage)
+        {
+            if let Some(out) = mapped_full_attention_prefill_hip_host_buffer(
+                query_mapped,
+                key_mapped,
+                value_mapped,
+                num_kv_groups,
+                scale,
+                seqlen_offset,
+            )? {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = full_attention_prefill_hip_host_buffer(
         query,
         key,
