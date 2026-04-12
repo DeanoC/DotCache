@@ -278,6 +278,12 @@ impl HipDeviceBuffer {
         })
     }
 
+    pub(crate) fn recip(&self) -> Result<Self> {
+        Ok(Self {
+            tensor: self.tensor.recip()?,
+        })
+    }
+
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
             tensor: self.tensor.matmul(&rhs.tensor)?,
@@ -1601,6 +1607,9 @@ impl HipStorage {
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.0.direct_device_buffer(), rhs.0.direct_device_buffer()) {
+            return Ok(Self::from_device_buffer(lhs.matmul(rhs)?));
+        }
         if let Some(native) =
             HipNativeBuffer::host_bytes_matmul(&Arc::new(self.0.clone()), &Arc::new(rhs.0.clone()))?
         {
@@ -1682,6 +1691,15 @@ impl HipStorage {
         )?))
     }
 
+    pub(crate) fn recip(&self) -> Result<Self> {
+        if let Some(buffer) = self.0.direct_device_buffer() {
+            return Ok(Self::from_device_buffer(buffer.recip()?));
+        }
+        Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
+            self.0.clone(),
+        ))))
+    }
+
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
         if let Some(buffer) = self.0.direct_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.l2norm(eps)?));
@@ -1696,14 +1714,13 @@ impl HipStorage {
         if let Some(buffer) = self.0.direct_device_buffer() {
             return Ok(Self::from_device_buffer(buffer.sigmoid()?));
         }
-        Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
-            HipNativeBuffer::add_scalar(
-                Arc::new(HipNativeBuffer::exp(Arc::new(HipNativeBuffer::neg(
-                    Arc::new(self.0.clone()),
-                )))),
-                1.0,
-            ),
-        ))))
+        Self::from_native_buffer(HipNativeBuffer::add_scalar(
+            Arc::new(HipNativeBuffer::exp(Arc::new(HipNativeBuffer::neg(
+                Arc::new(self.0.clone()),
+            )))),
+            1.0,
+        ))
+        .recip()
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
