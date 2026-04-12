@@ -4,7 +4,8 @@ use crate::qwen35_minimal_impl::model::{
     delta_full_scan_packed, delta_local_attn_scan, delta_recurrent_prefill, delta_state_scan,
     delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
-    hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_immutable_embedding_lookup,
+    hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
+    hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
     hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer,
@@ -4353,6 +4354,41 @@ fn value_decay_hip_host_buffer(
     )))
 }
 
+fn embedding_lookup_hip_host_buffer(
+    embeddings: &Tensor,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_embedding_lookup_host_buffer(embeddings, indexes)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: embeddings.dtype(),
+            device: embeddings.device().clone(),
+        }),
+    )))
+}
+
+fn immutable_embedding_lookup_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_immutable_embedding_lookup_host_buffer(embedding, indexes)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: embedding.dtype(),
+            device: indexes.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -7722,6 +7758,9 @@ mod tests {
 }
 
 pub(crate) fn embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<HipTensor> {
+    if let Some(host) = embedding_lookup_hip_host_buffer(embeddings, indexes)? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(hip_embedding_lookup(embeddings, indexes)?))
 }
 
@@ -7736,6 +7775,9 @@ pub(crate) fn immutable_embedding_lookup(
     embedding: &ImmutableEmbedding,
     indexes: &Tensor,
 ) -> Result<HipTensor> {
+    if let Some(host) = immutable_embedding_lookup_hip_host_buffer(embedding, indexes)? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(hip_immutable_embedding_lookup(
         embedding, indexes,
     )?))

@@ -322,6 +322,10 @@ impl ImmutableEmbedding {
         &self.meta.device
     }
 
+    pub(crate) fn dtype(&self) -> DType {
+        self.meta.dtype
+    }
+
     fn materialized_embedding(&self) -> Result<Embedding> {
         Ok(Embedding::new(
             self.weight
@@ -2022,6 +2026,78 @@ pub(crate) fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Res
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_embedding_lookup_host_buffer(
+    embeddings: &Tensor,
+    indexes: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let embeddings = embeddings.contiguous()?;
+    let indexes = indexes.contiguous()?;
+    let ordinal = match embeddings.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !indexes.device().same_device(embeddings.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(embeddings.dtype()) else {
+        return Ok(None);
+    };
+    let Ok(index_dtype_code) = hip::index_dtype_code(indexes.dtype()) else {
+        return Ok(None);
+    };
+    let (embeddings_storage, embeddings_layout) = embeddings.storage_and_layout();
+    let (indexes_storage, indexes_layout) = indexes.storage_and_layout();
+    let (Storage::Hip(embeddings_storage), Storage::Hip(indexes_storage)) =
+        (&*embeddings_storage, &*indexes_storage)
+    else {
+        return Ok(None);
+    };
+    if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let (vocab_size, hidden_size) = embeddings_layout.shape().dims2()?;
+    let token_count = indexes_layout.shape().elem_count();
+    let mut shape = indexes_layout.shape().dims().to_vec();
+    shape.push(hidden_size);
+    let mut out =
+        vec![0u8; token_count.saturating_mul(hidden_size).saturating_mul(embeddings.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            vocab_size,
+            hidden_size,
+            embeddings_storage
+                .raw_device_ptr_with_offset(embeddings_layout.start_offset())? as *const c_void,
+            indexes_storage.raw_device_ptr_with_offset(indexes_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-embedding-lookup-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_embedding_lookup_host_buffer(
+    embeddings: &Tensor,
+    indexes: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (embeddings, indexes);
+    Ok(None)
+}
+
 #[derive(Debug, Clone)]
 struct HipImmutableEmbeddingLookup {
     embedding: ImmutableEmbedding,
@@ -2084,6 +2160,77 @@ pub(crate) fn hip_immutable_embedding_lookup(embedding: &ImmutableEmbedding, ind
     indexes.apply_op1_no_bwd(&HipImmutableEmbeddingLookup {
         embedding: embedding.clone(),
     })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_immutable_embedding_lookup_host_buffer(
+    embedding: &ImmutableEmbedding,
+    indexes: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let indexes = indexes.contiguous()?;
+    let ordinal = match indexes.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(embedding.meta.dtype) else {
+        return Ok(None);
+    };
+    let Ok(index_dtype_code) = hip::index_dtype_code(indexes.dtype()) else {
+        return Ok(None);
+    };
+    let (indexes_storage, indexes_layout) = indexes.storage_and_layout();
+    let Storage::Hip(indexes_storage) = &*indexes_storage else {
+        return Ok(None);
+    };
+    if !indexes_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let token_count = indexes_layout.shape().elem_count();
+    let mut shape = indexes_layout.shape().dims().to_vec();
+    shape.push(embedding.meta.hidden_size);
+    let mut out = vec![
+        0u8;
+        token_count
+            .saturating_mul(embedding.meta.hidden_size)
+            .saturating_mul(embedding.meta.dtype.size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let embedding_ptr = embedding.registered_device_ptr(ordinal)?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            embedding.meta.vocab_size,
+            embedding.meta.hidden_size,
+            embedding_ptr as *const c_void,
+            indexes_storage.raw_device_ptr_with_offset(indexes_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "hip-immutable-embedding-lookup-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_immutable_embedding_lookup_host_buffer(
+    embedding: &ImmutableEmbedding,
+    indexes: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (embedding, indexes);
+    Ok(None)
 }
 
 #[derive(Debug, Clone)]
