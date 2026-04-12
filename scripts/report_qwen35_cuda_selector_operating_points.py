@@ -111,6 +111,74 @@ def _longbench_paths(pack_dir: Path) -> tuple[Path, Path]:
     return json_path, matches[0]
 
 
+def _task_profile_metrics_from_report(report_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = list(report_payload.get("rows") or [])
+    output: dict[str, dict[str, Any]] = {}
+    for profile in TASK_PROFILES:
+        success_key = f"{profile}_success"
+        dense_match_key = f"{profile}_matches_dense_output"
+        decode_key = f"{profile}_decode_ms_per_step"
+        successes = [float(row[success_key]) for row in rows if row.get(success_key) is not None]
+        dense_matches = [float(row[dense_match_key]) for row in rows if row.get(dense_match_key) is not None]
+        decode_values = [float(row[decode_key]) for row in rows if row.get(decode_key) is not None]
+        conditioned = [
+            float(row[success_key])
+            for row in rows
+            if row.get(success_key) is not None and float(row.get("dense_success") or 0.0) >= 0.5
+        ]
+        if not successes and not dense_matches and not decode_values:
+            continue
+        output[profile] = {
+            "n_rows": len(rows),
+            "task_success_rate": None if not successes else float(mean(successes)),
+            "dense_match_rate": None if not dense_matches else float(mean(dense_matches)),
+            "accuracy_when_dense_correct": None if not conditioned else float(mean(conditioned)),
+            "error_rate_vs_exact": None,
+            "decode_ms_per_step": None if not decode_values else float(mean(decode_values)),
+            "resident_bytes": None,
+            "effective_bytes_per_token": None,
+            "mean_v_m0_pages": None,
+            "mean_v_m3_pages": None,
+            "fit_status": "fit",
+        }
+    return output
+
+
+def _longbench_profile_metrics_from_report(report_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = list(report_payload.get("rows") or [])
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        case = str(row.get("comparison_case") or "")
+        if not case:
+            continue
+        output[case] = {
+            "n_rows": int(row.get("n_rows") or 0),
+            "official_score": None if row.get("mean_official_score") is None else float(row["mean_official_score"]),
+            "dense_match_rate": (
+                None if row.get("mean_matches_dense_output") is None else float(row["mean_matches_dense_output"])
+            ),
+            # The published report rows do not preserve prompt-level dense-correct subsets, so
+            # fall back to the per-case exact-match rate when raw JSONL intermediates are absent.
+            "accuracy_when_dense_correct": (
+                None if row.get("mean_exact_match") is None else float(row["mean_exact_match"])
+            ),
+            "error_rate_vs_exact": None,
+            "decode_ms_per_step": (
+                None if row.get("mean_decode_ms_per_step") is None else float(row["mean_decode_ms_per_step"])
+            ),
+            "resident_bytes": None,
+            "effective_bytes_per_token": (
+                None
+                if row.get("mean_effective_bytes_per_token") is None
+                else float(row["mean_effective_bytes_per_token"])
+            ),
+            "mean_v_m0_pages": None,
+            "mean_v_m3_pages": None,
+            "fit_status": "fit",
+        }
+    return output
+
+
 def _task_group_key(row: dict[str, Any]) -> tuple[str, int]:
     return str(row["task_name"]), int(row["prompt_length_requested"])
 
@@ -340,12 +408,17 @@ def _extract_floor_label(strategy_row: dict[str, Any]) -> str:
 
 def _resolve_pack_metrics(pack_name: str, pack_dir: Path) -> dict[str, Any]:
     if pack_name == "task_compare":
-        _json_path, jsonl_path = _task_paths(pack_dir)
-        raw_rows = _load_jsonl(jsonl_path)
-        return {"profiles": _task_profile_metrics(raw_rows)}
-    _json_path, jsonl_path = _longbench_paths(pack_dir)
-    raw_rows = _load_jsonl(jsonl_path)
-    return {"profiles": _longbench_profile_metrics(raw_rows)}
+        json_path, jsonl_path = _task_paths(pack_dir)
+        if jsonl_path.exists():
+            raw_rows = _load_jsonl(jsonl_path)
+            return {"profiles": _task_profile_metrics(raw_rows)}
+        return {"profiles": _task_profile_metrics_from_report(_load_json(json_path))}
+    json_path = pack_dir / "longbench_selector_compare.json"
+    merged_matches = sorted(pack_dir.glob("qwen3p5-9b_longbench_*.jsonl"))
+    if len(merged_matches) == 1:
+        raw_rows = _load_jsonl(merged_matches[0])
+        return {"profiles": _longbench_profile_metrics(raw_rows)}
+    return {"profiles": _longbench_profile_metrics_from_report(_load_json(json_path))}
 
 
 def _pack_status(pack_name: str, pack_dir: Path) -> dict[str, Any]:
@@ -356,6 +429,8 @@ def _pack_status(pack_name: str, pack_dir: Path) -> dict[str, Any]:
         json_path, jsonl_path = _task_paths(pack_dir)
         if json_path.exists() and jsonl_path.exists():
             return {"state": "complete", "detail": "task compare artifacts present", "shard_line_counts": {}}
+        if json_path.exists():
+            return {"state": "complete", "detail": "task compare report artifacts present", "shard_line_counts": {}}
         return {"state": "incomplete", "detail": "task compare outputs missing", "shard_line_counts": {}}
 
     merged_matches = sorted(pack_dir.glob("qwen3p5-9b_longbench_*.jsonl"))
@@ -363,6 +438,8 @@ def _pack_status(pack_name: str, pack_dir: Path) -> dict[str, Any]:
     workbook_json = pack_dir / "longbench_failure_workbook.json"
     if len(merged_matches) == 1 and compare_json.exists() and workbook_json.exists():
         return {"state": "complete", "detail": "merged longbench outputs present", "shard_line_counts": {}}
+    if compare_json.exists() and workbook_json.exists():
+        return {"state": "complete", "detail": "published longbench reports present", "shard_line_counts": {}}
 
     shard_dir = pack_dir / "shards"
     shard_line_counts: dict[str, int] = {}
