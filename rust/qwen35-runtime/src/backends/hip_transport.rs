@@ -156,6 +156,26 @@ impl HipHostBuffer {
 }
 
 impl HipDeviceBuffer {
+    pub(crate) fn tensor(&self) -> &Tensor {
+        &self.tensor
+    }
+
+    pub(crate) fn dims(&self) -> &[usize] {
+        self.tensor.dims()
+    }
+
+    pub(crate) fn dtype(&self) -> DType {
+        self.tensor.dtype()
+    }
+
+    pub(crate) fn device(&self) -> &Device {
+        self.tensor.device()
+    }
+
+    pub(crate) fn is_contiguous(&self) -> bool {
+        self.tensor.is_contiguous()
+    }
+
     pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<Self> {
         Ok(Self {
             tensor: Tensor::zeros(dims.as_slice(), dtype, device)?,
@@ -163,7 +183,7 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn narrow(&self, dim: usize, start: usize, len: usize) -> Result<Self> {
-        let dims = self.tensor.dims();
+        let dims = self.dims();
         if dim >= dims.len() {
             candle_core::bail!("narrow dim {dim} out of range for {:?}", dims);
         }
@@ -171,38 +191,38 @@ impl HipDeviceBuffer {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.narrow(dim, start, len)?,
+            tensor: self.tensor().narrow(dim, start, len)?,
         })
     }
 
     pub(crate) fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.pad_with_zeros(dim, left, right)?,
+            tensor: self.tensor().pad_with_zeros(dim, left, right)?,
         })
     }
 
     pub(crate) fn cat(buffers: &[&HipDeviceBuffer], dim: usize) -> Result<Self> {
-        let tensors = buffers.iter().map(|b| &b.tensor).collect::<Vec<_>>();
+        let tensors = buffers.iter().map(|b| b.tensor()).collect::<Vec<_>>();
         Ok(Self {
             tensor: Tensor::cat(&tensors, dim)?,
         })
     }
 
     pub(crate) fn reshape(&self, shape: Vec<usize>) -> Result<Self> {
-        if self.tensor.dims() == shape.as_slice() {
+        if self.dims() == shape.as_slice() {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.reshape(shape)?,
+            tensor: self.tensor().reshape(shape)?,
         })
     }
 
     pub(crate) fn expand(&self, shape: Vec<usize>) -> Result<Self> {
-        if self.tensor.dims() == shape.as_slice() {
+        if self.dims() == shape.as_slice() {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.expand(shape)?,
+            tensor: self.tensor().expand(shape)?,
         })
     }
 
@@ -211,89 +231,89 @@ impl HipDeviceBuffer {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.transpose(dim1, dim2)?,
+            tensor: self.tensor().transpose(dim1, dim2)?,
         })
     }
 
     pub(crate) fn to_dtype(&self, dtype: DType) -> Result<Self> {
-        if self.tensor.dtype() == dtype {
+        if self.dtype() == dtype {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.to_dtype(dtype)?,
+            tensor: self.tensor().to_dtype(dtype)?,
         })
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.exp()?,
+            tensor: self.tensor().exp()?,
         })
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
         Ok(Self {
-            tensor: (self.tensor.neg()?.exp()? + 1.0)?.recip()?,
+            tensor: (self.tensor().neg()?.exp()? + 1.0)?.recip()?,
         })
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.broadcast_add(&rhs.tensor)?,
+            tensor: self.tensor().broadcast_add(rhs.tensor())?,
         })
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.broadcast_sub(&rhs.tensor)?,
+            tensor: self.tensor().broadcast_sub(rhs.tensor())?,
         })
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.broadcast_div(&rhs.tensor)?,
+            tensor: self.tensor().broadcast_div(rhs.tensor())?,
         })
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.broadcast_mul(&rhs.tensor)?,
+            tensor: self.tensor().broadcast_mul(rhs.tensor())?,
         })
     }
 
     pub(crate) fn max_keepdim(&self, dim: usize) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.max_keepdim(dim)?,
+            tensor: self.tensor().max_keepdim(dim)?,
         })
     }
 
     pub(crate) fn sum_keepdim(&self, dim: usize) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.sum_keepdim(dim)?,
+            tensor: self.tensor().sum_keepdim(dim)?,
         })
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
         Ok(Self {
-            tensor: (&self.tensor * value)?,
+            tensor: (self.tensor() * value)?,
         })
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.recip()?,
+            tensor: self.tensor().recip()?,
         })
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
         Ok(Self {
-            tensor: self.tensor.matmul(&rhs.tensor)?,
+            tensor: self.tensor().matmul(rhs.tensor())?,
         })
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
-        let norm = (self.tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
+        let norm = (self.tensor().sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
         Ok(Self {
-            tensor: self.tensor.broadcast_div(&norm)?,
+            tensor: self.tensor().broadcast_div(&norm)?,
         })
     }
 
@@ -303,16 +323,16 @@ impl HipDeviceBuffer {
         eps: f64,
         add_unit_offset: bool,
     ) -> Result<Self> {
-        let inner = *self.tensor.dims().last().ok_or_else(|| {
+        let inner = *self.dims().last().ok_or_else(|| {
             candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
         })?;
-        let mean_sq = (&self.tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)?
+        let mean_sq = (&self.tensor().sqr()?.sum_keepdim(candle_core::D::Minus1)?
             * (1.0 / inner as f64))?;
-        let normed = self.tensor.broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
-        let weight = if weight.dtype() == self.tensor.dtype() {
+        let normed = self.tensor().broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
+        let weight = if weight.dtype() == self.dtype() {
             weight.clone()
         } else {
-            weight.to_dtype(self.tensor.dtype())?
+            weight.to_dtype(self.dtype())?
         };
         let weight = if add_unit_offset {
             (&weight + 1.0)?
@@ -331,27 +351,27 @@ impl HipDeviceBuffer {
         eps: f64,
     ) -> Result<Self> {
         let normed = self.rms_norm(weight, eps, false)?;
-        let sig = (gate.tensor.neg()?.exp()? + 1.0)?.recip()?;
-        let silu = gate.tensor.broadcast_mul(&sig)?;
+        let sig = (gate.tensor().neg()?.exp()? + 1.0)?.recip()?;
+        let silu = gate.tensor().broadcast_mul(&sig)?;
         Ok(Self {
-            tensor: normed.tensor.broadcast_mul(&silu)?,
+            tensor: normed.tensor().broadcast_mul(&silu)?,
         })
     }
 
     pub(crate) fn swiglu_mul(&self, up: &Self) -> Result<Self> {
-        let sig = (self.tensor.neg()?.exp()? + 1.0)?.recip()?;
-        let silu = self.tensor.broadcast_mul(&sig)?;
+        let sig = (self.tensor().neg()?.exp()? + 1.0)?.recip()?;
+        let silu = self.tensor().broadcast_mul(&sig)?;
         Ok(Self {
-            tensor: silu.broadcast_mul(&up.tensor)?,
+            tensor: silu.broadcast_mul(up.tensor())?,
         })
     }
 
     pub(crate) fn contiguous(&self) -> Result<Self> {
-        if self.tensor.is_contiguous() {
+        if self.is_contiguous() {
             return Ok(self.clone());
         }
         Ok(Self {
-            tensor: self.tensor.contiguous()?,
+            tensor: self.tensor().contiguous()?,
         })
     }
 
