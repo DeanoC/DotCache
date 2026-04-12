@@ -1202,7 +1202,27 @@ impl HipDeviceBuffer {
         true
     }
 
+    fn materialize_host_buffer_with_views(&self) -> Result<Option<HipHostBuffer>> {
+        let Some(mut buffer) = self.storage.as_host_buffer().cloned() else {
+            return Ok(None);
+        };
+        for op in &self.view_ops {
+            buffer = match op {
+                HipDeviceViewOp::Narrow { dim, start, len } => buffer.narrow_copy(*dim, *start, *len)?,
+                HipDeviceViewOp::Select { dim, index } => buffer.select_copy(*dim, *index)?,
+                HipDeviceViewOp::Reshape { shape } => buffer.reshape_copy(shape.clone())?,
+                HipDeviceViewOp::Transpose { dim1, dim2 } => buffer.transpose_copy(*dim1, *dim2)?,
+                HipDeviceViewOp::Contiguous => buffer,
+                HipDeviceViewOp::Expand { .. } => return Ok(None),
+            };
+        }
+        Ok(Some(buffer))
+    }
+
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
+        if let Some(buffer) = self.materialize_host_buffer_with_views()? {
+            return buffer.upload_to_tensor();
+        }
         let mut tensor = self.storage.materialize_tensor()?;
         for op in &self.view_ops {
             tensor = match op {
@@ -9304,6 +9324,26 @@ mod tests {
         assert!(matches!(out.storage, HipDeviceStorage::HostBuffer(_)));
         let host = out.try_host_buffer()?.expect("host-backed storage");
         assert_eq!(host_buffer_values_f32(&host)?, vec![19.0, 22.0, 43.0, 50.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_view_materialization_stays_host_side() -> Result<()> {
+        let device = Device::Cpu;
+        let buffer = HipDeviceBuffer::from_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?)
+        .transpose(0, 1)?
+        .narrow(1, 0, 1)?;
+
+        let host = buffer
+            .materialize_host_buffer_with_views()?
+            .expect("host-side view materialization");
+
+        assert_eq!(host.shape(), &[2, 1]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0]);
         Ok(())
     }
 
