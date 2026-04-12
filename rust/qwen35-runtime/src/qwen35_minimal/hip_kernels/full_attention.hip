@@ -1678,6 +1678,32 @@ __global__ void dotcache_qwen35_cumsum_last_dim_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_exp_kernel(
+    int total_elems,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(expf(dotcache_qwen35_to_float(xs[idx])));
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_recip_kernel(
+    int total_elems,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(1.0f / dotcache_qwen35_to_float(xs[idx]));
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_delta_full_scan_pack_kernel(
     int batch_heads,
     int num_chunks,

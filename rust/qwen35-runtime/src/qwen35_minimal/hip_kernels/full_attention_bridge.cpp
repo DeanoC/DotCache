@@ -953,6 +953,56 @@ int cumsum_last_dim_device(
 }
 
 template <typename T>
+int exp_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_exp_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 129;
+    if (hipDeviceSynchronize() != hipSuccess) return 130;
+    return 0;
+}
+
+template <typename T>
+int recip_device(
+    int device_ordinal,
+    int total_elems,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_recip_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 131;
+    if (hipDeviceSynchronize() != hipSuccess) return 132;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -2565,6 +2615,66 @@ extern "C" int dotcache_qwen35_hip_delta_full_scan_packed(
             out);
     default:
         return 113;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_exp(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return exp_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 1:
+        return exp_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 2:
+        return exp_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    default:
+        return 129;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_recip(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return recip_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 1:
+        return recip_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    case 2:
+        return recip_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            xs,
+            out);
+    default:
+        return 131;
     }
 }
 

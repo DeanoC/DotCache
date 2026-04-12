@@ -11,9 +11,10 @@ use crate::qwen35_minimal_impl::model::{
     full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
+    hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
     hip_l2norm_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
-    hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
+    hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_prefill_conv_pack_host_buffer, linear_stateful_conv_hip,
@@ -1339,7 +1340,13 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.exp()?));
         }
-        Ok(Self::from_tensor(self.materialize_tensor()?.exp()?))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = exp_hip_host_buffer(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from exp host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(tensor.exp()?))
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
@@ -1433,7 +1440,13 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.recip()?));
         }
-        Ok(Self::from_tensor(self.materialize_tensor()?.recip()?))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = recip_hip_host_buffer(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from recip host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(tensor.recip()?))
     }
 
     pub(crate) fn matmul(&self, rhs: &Self) -> Result<Self> {
@@ -3374,9 +3387,7 @@ impl HipTensor {
 
     #[cfg(test)]
     pub(crate) fn recip(&self) -> Result<Self> {
-        Ok(Self(HipStorage::from_native_buffer(HipNativeBuffer::recip(
-            Arc::new(self.0.0.clone()),
-        ))))
+        Ok(Self(self.0.recip()?))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -4414,6 +4425,34 @@ fn causal_mask_hip_host_buffer(
 
 fn cumsum_last_dim_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_cumsum_last_dim_host_buffer(xs)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn exp_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_exp_host_buffer(xs)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn recip_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_recip_host_buffer(xs)? else {
         return Ok(None);
     };
     Ok(Some(HipTensor::from_device_buffer(
@@ -10248,6 +10287,44 @@ mod tests {
         assert!((vals[1] - 0.26894143).abs() < 1e-5);
         assert!((vals[2] - 0.7310586).abs() < 1e-5);
         assert!((vals[3] - 0.8807971).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_exp_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![0f32, 1.0, -1.0],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.exp()?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 1.0).abs() < 1e-6);
+        assert!((vals[1] - std::f32::consts::E).abs() < 1e-5);
+        assert!((vals[2] - (-1.0f32).exp()).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_recip_stays_device_backed() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![2f32, -4.0, 0.5],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.recip()?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let vals = values_f32(out)?;
+        assert!((vals[0] - 0.5).abs() < 1e-6);
+        assert!((vals[1] + 0.25).abs() < 1e-6);
+        assert!((vals[2] - 2.0).abs() < 1e-6);
         Ok(())
     }
 
