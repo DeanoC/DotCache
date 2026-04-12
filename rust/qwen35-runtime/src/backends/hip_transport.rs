@@ -5621,6 +5621,103 @@ fn delta_full_scan_pack_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_full_scan_pack_hip_host_buffer(
+    query_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+    k_cumdecay_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match query_scan.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.buffer.device.same_device(&query_scan.buffer.device)
+        && exp_g_scan.buffer.device.same_device(&query_scan.buffer.device)
+        && k_cumdecay_scan.buffer.device.same_device(&query_scan.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query_scan.buffer.dtype) else {
+        return Ok(None);
+    };
+    if query_scan.buffer.dtype != key_scan.buffer.dtype
+        || query_scan.buffer.dtype != exp_g_scan.buffer.dtype
+        || query_scan.buffer.dtype != k_cumdecay_scan.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, num_chunks, chunk_size, k_head_dim] =
+        <[usize; 4]>::try_from(query_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-pack query rank".into()))?;
+    let [key_bh, key_chunks, key_chunk_size, key_k] =
+        <[usize; 4]>::try_from(key_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-pack key rank".into()))?;
+    let [exp_bh, exp_chunks, exp_chunk_size] =
+        <[usize; 3]>::try_from(exp_g_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-pack exp_g rank".into()))?;
+    let [cum_bh, cum_chunks, cum_chunk_size, cum_k] =
+        <[usize; 4]>::try_from(k_cumdecay_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-pack k_cumdecay rank".into()))?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || cum_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || cum_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || cum_chunk_size != chunk_size
+        || key_k != k_head_dim
+        || cum_k != k_head_dim
+    {
+        return Ok(None);
+    }
+    let packed_width = 3 * k_head_dim + 1;
+    let shape = vec![batch_heads, num_chunks, chunk_size, packed_width];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, query_scan.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan_pack(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            query_scan.raw_device_ptr(),
+            key_scan.raw_device_ptr(),
+            exp_g_scan.raw_device_ptr(),
+            k_cumdecay_scan.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-pack-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: query_scan.buffer.dtype,
+            device: query_scan.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_full_scan_pack_hip_host_buffer(
+    query_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+    k_cumdecay_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (query_scan, key_scan, exp_g_scan, k_cumdecay_scan);
+    Ok(None)
+}
+
 fn delta_full_scan_packed_hip_host_buffer(
     initial_state: &Tensor,
     packed_scan: &Tensor,
@@ -5643,6 +5740,102 @@ fn delta_full_scan_packed_hip_host_buffer(
             device: initial_state.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_full_scan_packed_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    packed_scan: &HipMappedHostBuffer,
+    local_attn_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match initial_state.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(packed_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && local_attn_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && value.buffer.device.same_device(&initial_state.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(initial_state.buffer.dtype) else {
+        return Ok(None);
+    };
+    if initial_state.buffer.dtype != packed_scan.buffer.dtype
+        || initial_state.buffer.dtype != local_attn_scan.buffer.dtype
+        || initial_state.buffer.dtype != value.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, k_head_dim, v_head_dim] =
+        <[usize; 3]>::try_from(initial_state.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-packed initial_state rank".into()))?;
+    let [packed_bh, num_chunks, chunk_size, packed_width] =
+        <[usize; 4]>::try_from(packed_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-packed packed_scan rank".into()))?;
+    let [local_bh, local_chunks, local_chunk_size, local_width] =
+        <[usize; 4]>::try_from(local_attn_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-packed local_attn rank".into()))?;
+    let [value_bh, value_chunks, value_chunk_size, value_v] =
+        <[usize; 4]>::try_from(value.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan-packed value rank".into()))?;
+    if packed_bh != batch_heads
+        || local_bh != batch_heads
+        || value_bh != batch_heads
+        || local_chunks != num_chunks
+        || value_chunks != num_chunks
+        || local_chunk_size != chunk_size
+        || value_chunk_size != chunk_size
+        || local_width != chunk_size
+        || value_v != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, initial_state.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_state.raw_device_ptr(),
+            packed_scan.raw_device_ptr(),
+            local_attn_scan.raw_device_ptr(),
+            value.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-packed-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: initial_state.buffer.dtype,
+            device: initial_state.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_full_scan_packed_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    packed_scan: &HipMappedHostBuffer,
+    local_attn_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (initial_state, packed_scan, local_attn_scan, value);
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5674,6 +5867,146 @@ fn delta_full_scan_hip_host_buffer(
             device: initial_state.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+#[allow(clippy::too_many_arguments)]
+fn mapped_delta_full_scan_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    weighted_key_scan: &HipMappedHostBuffer,
+    k_cumdecay_scan: &HipMappedHostBuffer,
+    q_state_scan: &HipMappedHostBuffer,
+    local_attn_scan: &HipMappedHostBuffer,
+    state_decay_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match initial_state.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(weighted_key_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && k_cumdecay_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && q_state_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && local_attn_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && state_decay_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && value.buffer.device.same_device(&initial_state.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(initial_state.buffer.dtype) else {
+        return Ok(None);
+    };
+    if initial_state.buffer.dtype != weighted_key_scan.buffer.dtype
+        || initial_state.buffer.dtype != k_cumdecay_scan.buffer.dtype
+        || initial_state.buffer.dtype != q_state_scan.buffer.dtype
+        || initial_state.buffer.dtype != local_attn_scan.buffer.dtype
+        || initial_state.buffer.dtype != state_decay_scan.buffer.dtype
+        || initial_state.buffer.dtype != value.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, k_head_dim, v_head_dim] =
+        <[usize; 3]>::try_from(initial_state.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan initial_state rank".into()))?;
+    let [weighted_key_bh, num_chunks, chunk_size, weighted_key_width] =
+        <[usize; 4]>::try_from(weighted_key_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan weighted_key rank".into()))?;
+    let [k_cumdecay_bh, k_cumdecay_num_chunks, k_cumdecay_chunk_size, k_cumdecay_width] =
+        <[usize; 4]>::try_from(k_cumdecay_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan k_cumdecay rank".into()))?;
+    let [q_state_bh, q_state_num_chunks, q_state_chunk_size, q_state_width] =
+        <[usize; 4]>::try_from(q_state_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan q_state rank".into()))?;
+    let [local_attn_bh, local_attn_num_chunks, local_attn_chunk_size, local_attn_width] =
+        <[usize; 4]>::try_from(local_attn_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan local_attn rank".into()))?;
+    let [state_decay_bh, state_decay_num_chunks] =
+        <[usize; 2]>::try_from(state_decay_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan state_decay rank".into()))?;
+    let [value_bh, value_num_chunks, value_chunk_size, value_v_head_dim] =
+        <[usize; 4]>::try_from(value.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-full-scan value rank".into()))?;
+    if weighted_key_bh != batch_heads
+        || k_cumdecay_bh != batch_heads
+        || q_state_bh != batch_heads
+        || local_attn_bh != batch_heads
+        || state_decay_bh != batch_heads
+        || value_bh != batch_heads
+        || k_cumdecay_num_chunks != num_chunks
+        || q_state_num_chunks != num_chunks
+        || local_attn_num_chunks != num_chunks
+        || state_decay_num_chunks != num_chunks
+        || value_num_chunks != num_chunks
+        || k_cumdecay_chunk_size != chunk_size
+        || q_state_chunk_size != chunk_size
+        || local_attn_chunk_size != chunk_size
+        || value_chunk_size != chunk_size
+        || weighted_key_width != k_head_dim
+        || k_cumdecay_width != k_head_dim
+        || q_state_width != k_head_dim
+        || local_attn_width != chunk_size
+        || value_v_head_dim != v_head_dim
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, initial_state.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_state.raw_device_ptr(),
+            weighted_key_scan.raw_device_ptr(),
+            k_cumdecay_scan.raw_device_ptr(),
+            q_state_scan.raw_device_ptr(),
+            local_attn_scan.raw_device_ptr(),
+            state_decay_scan.raw_device_ptr(),
+            value.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: initial_state.buffer.dtype,
+            device: initial_state.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+#[allow(clippy::too_many_arguments)]
+fn mapped_delta_full_scan_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    weighted_key_scan: &HipMappedHostBuffer,
+    k_cumdecay_scan: &HipMappedHostBuffer,
+    q_state_scan: &HipMappedHostBuffer,
+    local_attn_scan: &HipMappedHostBuffer,
+    state_decay_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (
+        initial_state,
+        weighted_key_scan,
+        k_cumdecay_scan,
+        q_state_scan,
+        local_attn_scan,
+        state_decay_scan,
+        value,
+    );
+    Ok(None)
 }
 
 fn delta_local_attn_scan_hip_host_buffer(
@@ -11365,6 +11698,37 @@ pub(crate) fn delta_full_scan_pack_buffer(
     exp_g_scan: &Tensor,
     k_cumdecay_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    let query_scan_hip = HipTensor::from_scaffold_tensor(query_scan.clone());
+    let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
+    let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
+    let k_cumdecay_scan_hip = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
+    if let (Some(query_scan), Some(key_scan), Some(exp_g_scan), Some(k_cumdecay_scan)) = (
+        query_scan_hip.0 .0.direct_materialized_device_buffer(),
+        key_scan_hip.0 .0.direct_materialized_device_buffer(),
+        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay_scan_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(query_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(exp_g_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(k_cumdecay_scan_mapped),
+        ) = (
+            &query_scan.storage,
+            &key_scan.storage,
+            &exp_g_scan.storage,
+            &k_cumdecay_scan.storage,
+        ) {
+            if let Some(out) = mapped_delta_full_scan_pack_hip_host_buffer(
+                query_scan_mapped,
+                key_scan_mapped,
+                exp_g_scan_mapped,
+                k_cumdecay_scan_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) =
         delta_full_scan_pack_hip_host_buffer(query_scan, key_scan, exp_g_scan, k_cumdecay_scan)?
     {
@@ -11385,6 +11749,37 @@ pub(crate) fn delta_full_scan_packed_buffer(
     local_attn_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    let initial_state_hip = HipTensor::from_state_buffer(initial_state);
+    let packed_scan_hip = HipTensor::from_state_buffer(packed_scan);
+    let local_attn_scan_hip = HipTensor::from_state_buffer(local_attn_scan);
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (Some(initial_state), Some(packed_scan), Some(local_attn_scan), Some(value)) = (
+        initial_state_hip.0 .0.direct_materialized_device_buffer(),
+        packed_scan_hip.0 .0.direct_materialized_device_buffer(),
+        local_attn_scan_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(packed_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(local_attn_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (
+            &initial_state.storage,
+            &packed_scan.storage,
+            &local_attn_scan.storage,
+            &value.storage,
+        ) {
+            if let Some(out) = mapped_delta_full_scan_packed_hip_host_buffer(
+                initial_state_mapped,
+                packed_scan_mapped,
+                local_attn_scan_mapped,
+                value_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) = delta_full_scan_packed_hip_host_buffer(
         initial_state.tensor(),
         packed_scan.tensor(),
@@ -11412,6 +11807,60 @@ pub(crate) fn delta_full_scan_buffer(
     state_decay_scan: &Tensor,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    let initial_state_hip = HipTensor::from_state_buffer(initial_state);
+    let weighted_key_scan_hip = HipTensor::from_scaffold_tensor(weighted_key_scan.clone());
+    let k_cumdecay_scan_hip = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
+    let q_state_scan_hip = HipTensor::from_scaffold_tensor(q_state_scan.clone());
+    let local_attn_scan_hip = HipTensor::from_state_buffer(local_attn_scan);
+    let state_decay_scan_hip = HipTensor::from_scaffold_tensor(state_decay_scan.clone());
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (
+        Some(initial_state),
+        Some(weighted_key_scan),
+        Some(k_cumdecay_scan),
+        Some(q_state_scan),
+        Some(local_attn_scan),
+        Some(state_decay_scan),
+        Some(value),
+    ) = (
+        initial_state_hip.0 .0.direct_materialized_device_buffer(),
+        weighted_key_scan_hip.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay_scan_hip.0 .0.direct_materialized_device_buffer(),
+        q_state_scan_hip.0 .0.direct_materialized_device_buffer(),
+        local_attn_scan_hip.0 .0.direct_materialized_device_buffer(),
+        state_decay_scan_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(weighted_key_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(k_cumdecay_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(q_state_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(local_attn_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(state_decay_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (
+            &initial_state.storage,
+            &weighted_key_scan.storage,
+            &k_cumdecay_scan.storage,
+            &q_state_scan.storage,
+            &local_attn_scan.storage,
+            &state_decay_scan.storage,
+            &value.storage,
+        ) {
+            if let Some(out) = mapped_delta_full_scan_hip_host_buffer(
+                initial_state_mapped,
+                weighted_key_scan_mapped,
+                k_cumdecay_scan_mapped,
+                q_state_scan_mapped,
+                local_attn_scan_mapped,
+                state_decay_scan_mapped,
+                value_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) = delta_full_scan_hip_host_buffer(
         initial_state.tensor(),
         weighted_key_scan,
