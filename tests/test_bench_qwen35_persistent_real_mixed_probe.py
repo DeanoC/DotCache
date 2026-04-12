@@ -30,6 +30,7 @@ def test_real_mixed_probe_configs_match_canonical_stage9_settings() -> None:
     assert serving_config.full_attention_streaming_priority_value_upper_weight == 0.25
     assert serving_config.full_attention_key_centroid_count_by_layer == {19: 8, 23: 16}
     assert serving_config.full_attention_mixed_mode_detailed_timing is False
+    assert serving_config.full_attention_mixed_mode_execution_max_k_comp_error_by_layer is None
 
 
 def test_real_mixed_probe_summary_aggregates_query_prep_and_gather() -> None:

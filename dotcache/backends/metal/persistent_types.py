@@ -14,6 +14,7 @@ class PersistentServingConfig:
     full_attention_mixed_mode_execution_strategy: str = "cached_reconstruct"
     full_attention_mixed_mode_execution_allow_value_m0: bool = False
     full_attention_mixed_mode_execution_max_k_comp_error: float | None = 0.10
+    full_attention_mixed_mode_execution_max_k_comp_error_by_layer: dict[int, float] | None = None
     full_attention_mixed_mode_score_dtype: str = "auto"
     full_attention_mixed_mode_detailed_timing: bool = False
     enable_priority: bool = False

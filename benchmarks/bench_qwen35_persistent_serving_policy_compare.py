@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
         default="cached_reconstruct",
     )
     parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error", default="0.10")
+    parser.add_argument("--full-attention-mixed-mode-execution-max-k-comp-error-by-layer", default=None)
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--prompt-files", nargs="*", default=[])
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
@@ -180,6 +181,7 @@ def _persistent_base_config(
     mixed_execution_strategy: str = "cached_reconstruct",
     allow_value_m0: bool = False,
     max_k_comp_error: float | None = 0.10,
+    max_k_comp_error_by_layer: dict[int, float] | None = None,
 ) -> PersistentServingConfig:
     config = PersistentServingConfig(
         enable_priority=True,
@@ -271,6 +273,11 @@ def _persistent_base_config(
         config.full_attention_streaming_proxy_value_weight_by_layer = {
             int(layer_id): float(weight)
             for layer_id, weight in dict(full_attention_streaming_proxy_value_weight_by_layer).items()
+        }
+    if max_k_comp_error_by_layer is not None:
+        config.full_attention_mixed_mode_execution_max_k_comp_error_by_layer = {
+            int(layer_id): float(value)
+            for layer_id, value in dict(max_k_comp_error_by_layer).items()
         }
     return config
 
@@ -573,6 +580,14 @@ def main() -> None:
         if args.full_attention_value_centroid_count_by_layer
         else None
     )
+    full_attention_mixed_mode_execution_max_k_comp_error_by_layer = (
+        {
+            int(layer_id): float(value)
+            for layer_id, value in json.loads(str(args.full_attention_mixed_mode_execution_max_k_comp_error_by_layer)).items()
+        }
+        if args.full_attention_mixed_mode_execution_max_k_comp_error_by_layer
+        else None
+    )
     prompt_records = _resolve_prompt_records(
         manifest_path=args.manifest_path,
         prompt_files=[str(path) for path in args.prompt_files],
@@ -638,6 +653,7 @@ def main() -> None:
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         ),
         backend=str(args.backend),
     )
@@ -698,6 +714,7 @@ def main() -> None:
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         )
         hand_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
@@ -739,6 +756,7 @@ def main() -> None:
             mixed_execution_strategy=mixed_execution_strategy,
             allow_value_m0=allow_value_m0,
             max_k_comp_error=max_k_comp_error,
+            max_k_comp_error_by_layer=full_attention_mixed_mode_execution_max_k_comp_error_by_layer,
         )
         bias_result = run_qwen35_attention_subset_persistent_serving_harness(
             persistent_model,
@@ -1110,6 +1128,9 @@ def main() -> None:
             "full_attention_value_centroid_count_by_layer": full_attention_value_centroid_count_by_layer,
             "full_attention_streaming_proxy_value_weight_by_layer": (
                 full_attention_streaming_proxy_value_weight_by_layer
+            ),
+            "full_attention_mixed_mode_execution_max_k_comp_error_by_layer": (
+                full_attention_mixed_mode_execution_max_k_comp_error_by_layer
             ),
             "enable_full_attention_mixed_mode_execution": bool(args.enable_full_attention_mixed_mode_execution),
             "full_attention_mixed_mode_execution_strategy": mixed_execution_strategy,

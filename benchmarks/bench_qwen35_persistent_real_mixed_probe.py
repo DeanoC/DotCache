@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest-path", default=str(_DEFAULT_REAL_MIXED_MANIFEST))
     parser.add_argument("--prompt-files", nargs="*", default=[])
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
+    parser.add_argument("--max-k-comp-error-by-layer", default=None)
     parser.add_argument("--detailed-timing", action="store_true")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
@@ -57,7 +58,12 @@ def real_mixed_probe_dotcache_config() -> DotCacheConfig:
     )
 
 
-def real_mixed_probe_serving_config(*, policy_path: str | None, detailed_timing: bool = False) -> Any:
+def real_mixed_probe_serving_config(
+    *,
+    policy_path: str | None,
+    detailed_timing: bool = False,
+    max_k_comp_error_by_layer: dict[int, float] | None = None,
+) -> Any:
     config = _persistent_base_config(
         policy_path=policy_path,
         enable_early_exit=True,
@@ -71,6 +77,10 @@ def real_mixed_probe_serving_config(*, policy_path: str | None, detailed_timing:
         max_k_comp_error=0.20,
     )
     config.full_attention_mixed_mode_detailed_timing = bool(detailed_timing)
+    if max_k_comp_error_by_layer is not None:
+        config.full_attention_mixed_mode_execution_max_k_comp_error_by_layer = {
+            int(layer_id): float(value) for layer_id, value in dict(max_k_comp_error_by_layer).items()
+        }
     return config
 
 
@@ -252,6 +262,14 @@ def main() -> None:
     args = parse_args()
     if not transformers_available():
         raise RuntimeError("transformers is required for the real mixed probe")
+    max_k_comp_error_by_layer = (
+        {
+            int(layer_id): float(value)
+            for layer_id, value in json.loads(str(args.max_k_comp_error_by_layer)).items()
+        }
+        if args.max_k_comp_error_by_layer
+        else None
+    )
 
     prompt_records = _resolve_prompt_records(
         manifest_path=str(args.manifest_path) if args.manifest_path else None,
@@ -270,6 +288,7 @@ def main() -> None:
         persistent_serving_config=real_mixed_probe_serving_config(
             policy_path=str(_DEFAULT_POLICY_PATH),
             detailed_timing=bool(args.detailed_timing),
+            max_k_comp_error_by_layer=max_k_comp_error_by_layer,
         ),
         backend=str(args.backend),
     )
@@ -301,6 +320,7 @@ def main() -> None:
         adapter.persistent_serving_config = real_mixed_probe_serving_config(
             policy_path=str(_DEFAULT_POLICY_PATH),
             detailed_timing=bool(args.detailed_timing),
+            max_k_comp_error_by_layer=max_k_comp_error_by_layer,
         )
         bias_result = run_qwen35_attention_subset_persistent_serving_harness(
             model,
@@ -443,6 +463,7 @@ def main() -> None:
             "full_attention_streaming_priority_value_upper_weight": 0.25,
             "full_attention_key_centroid_count_by_layer": dict(_REAL_MIXED_KEY_CENTROIDS),
             "full_attention_mixed_mode_detailed_timing": bool(args.detailed_timing),
+            "full_attention_mixed_mode_execution_max_k_comp_error_by_layer": max_k_comp_error_by_layer,
         },
         "records": records,
         "summary": _summarize_records(records),

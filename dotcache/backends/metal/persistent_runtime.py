@@ -2871,6 +2871,7 @@ def _mixed_mode_execution_enabled_for_slice(
     mode: Any,
     kind: str,
     k_comp_error: float | None = None,
+    layer_id: int | None = None,
 ) -> bool:
     normalized_mode = _normalize_stage8_mode_name(mode)
     if normalized_mode != "M0":
@@ -2881,6 +2882,18 @@ def _mixed_mode_execution_enabled_for_slice(
         return False
     if str(kind).upper() == "K":
         max_k_comp_error = getattr(config, "full_attention_mixed_mode_execution_max_k_comp_error", None)
+        if layer_id is not None:
+            per_layer_thresholds = getattr(
+                config,
+                "full_attention_mixed_mode_execution_max_k_comp_error_by_layer",
+                None,
+            )
+            if per_layer_thresholds is not None:
+                try:
+                    if int(layer_id) in per_layer_thresholds:
+                        max_k_comp_error = float(per_layer_thresholds[int(layer_id)])
+                except Exception:
+                    pass
         if max_k_comp_error is not None and float(k_comp_error or 0.0) > float(max_k_comp_error):
             return False
     return True
@@ -2942,6 +2955,7 @@ def _refresh_cached_mixed_execution_blocks(
                     mode=key_mode,
                     kind="K",
                     k_comp_error=key_comp_error,
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="K",
                 dotcache_config=dotcache_config,
@@ -2952,6 +2966,7 @@ def _refresh_cached_mixed_execution_blocks(
                     config=config,
                     mode=value_mode,
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="V",
                 dotcache_config=dotcache_config,
@@ -3084,6 +3099,7 @@ def _prepare_selected_block_execution_tensors(
                     mode=state.block_k_mode[block_id, kv_head_idx],
                     kind="K",
                     k_comp_error=float(state.block_k_comp_error[block_id, kv_head_idx].item()),
+                    layer_id=int(state.layer_id),
                 ):
                     block_used_m0 = True
                     break
@@ -3091,6 +3107,7 @@ def _prepare_selected_block_execution_tensors(
                     config=config,
                     mode=state.block_v_mode[block_id, kv_head_idx],
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ):
                     block_used_m0 = True
                     break
@@ -3127,6 +3144,7 @@ def _prepare_selected_block_execution_tensors(
                     mode=key_mode,
                     kind="K",
                     k_comp_error=key_comp_error,
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="K",
                 dotcache_config=dotcache_config,
@@ -3137,6 +3155,7 @@ def _prepare_selected_block_execution_tensors(
                     config=config,
                     mode=value_mode,
                     kind="V",
+                    layer_id=int(state.layer_id),
                 ) else "M3"),
                 kind="V",
                 dotcache_config=dotcache_config,
@@ -3341,6 +3360,7 @@ def _decode_selected_blocks_direct_m0_torch(
                     mode=mode,
                     kind="K",
                     k_comp_error=float(comp_error),
+                    layer_id=int(state.layer_id),
                 )
                 for mode, comp_error in zip(key_modes.tolist(), key_comp_errors.tolist(), strict=False)
             ),
