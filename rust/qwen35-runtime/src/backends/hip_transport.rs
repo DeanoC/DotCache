@@ -243,6 +243,54 @@ impl HipHostBuffer {
                 candle_core::Error::Msg("expected host materialization for concatenated host buffers".into())
             })
     }
+
+    fn cast(&self, dtype: DType) -> Result<Self> {
+        HipNativeBuffer::cast(Arc::new(self.to_native_host_buffer()), dtype)
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for cast host buffer".into())
+            })
+    }
+
+    fn exp(&self) -> Result<Self> {
+        HipNativeBuffer::exp(Arc::new(self.to_native_host_buffer()))
+            .materialize_host_buffer()?
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for exp host buffer".into())
+            })
+    }
+
+    fn broadcast_binary(
+        lhs: &HipHostBuffer,
+        rhs: &HipHostBuffer,
+        f: fn(Arc<HipNativeBuffer>, Arc<HipNativeBuffer>) -> Result<HipNativeBuffer>,
+        op_name: &'static str,
+    ) -> Result<Self> {
+        f(
+            Arc::new(lhs.to_native_host_buffer()),
+            Arc::new(rhs.to_native_host_buffer()),
+        )?
+        .materialize_host_buffer()?
+        .ok_or_else(|| {
+            candle_core::Error::Msg(format!("expected host materialization for {op_name} host buffer"))
+        })
+    }
+
+    fn broadcast_add(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
+        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_add, "broadcast add")
+    }
+
+    fn broadcast_sub(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
+        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_sub, "broadcast sub")
+    }
+
+    fn broadcast_div(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
+        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_div, "broadcast div")
+    }
+
+    fn broadcast_mul(lhs: &HipHostBuffer, rhs: &HipHostBuffer) -> Result<Self> {
+        Self::broadcast_binary(lhs, rhs, HipNativeBuffer::broadcast_mul, "broadcast mul")
+    }
 }
 
 impl HipDeviceBuffer {
@@ -483,10 +531,16 @@ impl HipDeviceBuffer {
         if self.dtype() == dtype {
             return Ok(self.clone());
         }
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.cast(dtype)?));
+        }
         Ok(Self::from_tensor(self.materialize_tensor()?.to_dtype(dtype)?))
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.exp()?));
+        }
         Ok(Self::from_tensor(self.materialize_tensor()?.exp()?))
     }
 
@@ -497,6 +551,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_add(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_add(
+                &lhs, &rhs,
+            )?));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?
                 .broadcast_add(&rhs.materialize_tensor()?)?,
@@ -504,6 +563,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_sub(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_sub(
+                &lhs, &rhs,
+            )?));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?
                 .broadcast_sub(&rhs.materialize_tensor()?)?,
@@ -511,6 +575,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_div(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_div(
+                &lhs, &rhs,
+            )?));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?
                 .broadcast_div(&rhs.materialize_tensor()?)?,
@@ -518,6 +587,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn broadcast_mul(&self, rhs: &Self) -> Result<Self> {
+        if let (Some(lhs), Some(rhs)) = (self.try_host_buffer()?, rhs.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(HipHostBuffer::broadcast_mul(
+                &lhs, &rhs,
+            )?));
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?
                 .broadcast_mul(&rhs.materialize_tensor()?)?,
@@ -3979,6 +4053,54 @@ mod tests {
         let host = out.try_host_buffer()?.expect("pending upload host bytes");
         assert_eq!(host.shape(), &[1, 4]);
         assert_eq!(host_buffer_values_f32(&host)?, vec![0.0, 1.0, 2.0, 0.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_cast_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.to_dtype(DType::F16)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.dtype(), DType::F16);
+        let roundtrip = HipTensor::from_device_buffer(out);
+        assert_eq!(values_f32(roundtrip.to_dtype(DType::F32)?)?, vec![1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_exp_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[1, 2], &[0.0, 1.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.exp()?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[1, 2]);
+        let vals = host_buffer_values_f32(&host)?;
+        assert!((vals[0] - 1.0).abs() < 1e-5);
+        assert!((vals[1] - std::f32::consts::E).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_broadcast_add_stays_pending() -> Result<()> {
+        let lhs = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let rhs = host_f32_tensor(&[1, 2], &[3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = lhs.broadcast_add(&rhs)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![4.0, 6.0]);
         Ok(())
     }
 
