@@ -1170,42 +1170,52 @@ pub(crate) fn narrow_tensor_to_state(
         .into_state_buffer()
 }
 
-pub(crate) fn prepare_depthwise_conv_input(
+fn prepare_depthwise_conv_input_hip(
     prev_state: Option<&StateBuffer>,
     mixed_qkv: &Tensor,
     kernel_size: usize,
-) -> Result<(Tensor, Option<StateBuffer>)> {
+) -> Result<(HipTensor, Option<HipTensor>)> {
     let mixed_qkv = match prev_state {
         Some(conv_state) => {
             let conv_state = HipTensor::from_state_buffer_as(conv_state, mixed_qkv.dtype())?;
             let mixed_qkv = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
-            HipTensor::cat(&[&conv_state, &mixed_qkv], 2)?.into_tensor()
+            HipTensor::cat(&[&conv_state, &mixed_qkv], 2)?
         }
         None => HipTensor::from_scaffold_tensor(mixed_qkv.clone())
-            .pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?
-            .into_tensor(),
+            .pad_with_zeros(2, kernel_size.saturating_sub(1), 0)?,
     };
-    let mixed_qkv_buf = HipTensor::from_scaffold_tensor(mixed_qkv);
-    let total_len = mixed_qkv_buf.dim(2)?;
+    let total_len = mixed_qkv.dim(2)?;
     let state_len = kernel_size.saturating_sub(1);
     let next_state = if state_len == 0 {
         None
     } else {
         Some(
-            mixed_qkv_buf
+            mixed_qkv
                 .narrow(2, total_len - state_len, state_len)?
-                .contiguous()?
-                .into_state_buffer()?,
+                .contiguous()?,
         )
     };
-    Ok((mixed_qkv_buf.into_tensor(), next_state))
+    Ok((mixed_qkv, next_state))
 }
 
-pub(crate) fn update_depthwise_conv_state(
+pub(crate) fn prepare_depthwise_conv_input(
     prev_state: Option<&StateBuffer>,
     mixed_qkv: &Tensor,
     kernel_size: usize,
-) -> Result<Option<StateBuffer>> {
+) -> Result<(Tensor, Option<StateBuffer>)> {
+    let (mixed_qkv, next_state) =
+        prepare_depthwise_conv_input_hip(prev_state, mixed_qkv, kernel_size)?;
+    Ok((
+        mixed_qkv.into_tensor(),
+        next_state.map(|t| t.into_state_buffer()).transpose()?,
+    ))
+}
+
+fn update_depthwise_conv_state_hip(
+    prev_state: Option<&StateBuffer>,
+    mixed_qkv: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
     let state_len = kernel_size.saturating_sub(1);
     if state_len == 0 {
         return Ok(None);
@@ -1234,15 +1244,40 @@ pub(crate) fn update_depthwise_conv_state(
             }
         }
     };
-    Ok(Some(state.into_state_buffer()?))
+    Ok(Some(state))
 }
 
-pub(crate) fn concat_last_dim(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<StateBuffer> {
+pub(crate) fn update_depthwise_conv_state(
+    prev_state: Option<&StateBuffer>,
+    mixed_qkv: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<StateBuffer>> {
+    update_depthwise_conv_state_hip(prev_state, mixed_qkv, kernel_size)?
+        .map(|t| t.into_state_buffer())
+        .transpose()
+}
+
+fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor> {
     let lhs = HipTensor::from_state_buffer(lhs);
     let rhs = HipTensor::from_state_buffer(rhs);
     HipTensor::cat(&[&lhs, &rhs], lhs.0.shape().len() - 1)?
-        .contiguous()?
-        .into_state_buffer()
+        .contiguous()
+}
+
+pub(crate) fn concat_last_dim(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<StateBuffer> {
+    concat_last_dim_hip(lhs, rhs)?.into_state_buffer()
+}
+
+fn pack_delta_state_scan_hip(
+    weighted_key_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+    state_decay_feature: &Tensor,
+) -> Result<HipTensor> {
+    let weighted_key_scan = HipTensor::from_scaffold_tensor(weighted_key_scan.clone());
+    let k_cumdecay_scan = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
+    let state_decay_feature = HipTensor::from_scaffold_tensor(state_decay_feature.clone());
+    HipTensor::cat(&[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature], 3)?
+        .contiguous()
 }
 
 pub(crate) fn pack_delta_state_scan(
@@ -1250,12 +1285,22 @@ pub(crate) fn pack_delta_state_scan(
     k_cumdecay_scan: &Tensor,
     state_decay_feature: &Tensor,
 ) -> Result<StateBuffer> {
-    let weighted_key_scan = HipTensor::from_scaffold_tensor(weighted_key_scan.clone());
-    let k_cumdecay_scan = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
-    let state_decay_feature = HipTensor::from_scaffold_tensor(state_decay_feature.clone());
-    HipTensor::cat(&[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature], 3)?
-        .contiguous()?
+    pack_delta_state_scan_hip(weighted_key_scan, k_cumdecay_scan, state_decay_feature)?
         .into_state_buffer()
+}
+
+fn pack_delta_chunk_fused_hip(
+    weighted_key: &Tensor,
+    k_cumdecay: &Tensor,
+    q_state: &Tensor,
+    state_decay: &Tensor,
+) -> Result<HipTensor> {
+    let weighted_key = HipTensor::from_scaffold_tensor(weighted_key.clone());
+    let k_cumdecay = HipTensor::from_scaffold_tensor(k_cumdecay.clone());
+    let q_state = HipTensor::from_scaffold_tensor(q_state.clone());
+    let state_decay = HipTensor::from_scaffold_tensor(state_decay.clone());
+    HipTensor::cat(&[&weighted_key, &k_cumdecay, &q_state, &state_decay], 2)?
+        .contiguous()
 }
 
 pub(crate) fn pack_delta_chunk_fused(
@@ -1264,13 +1309,28 @@ pub(crate) fn pack_delta_chunk_fused(
     q_state: &Tensor,
     state_decay: &Tensor,
 ) -> Result<StateBuffer> {
-    let weighted_key = HipTensor::from_scaffold_tensor(weighted_key.clone());
-    let k_cumdecay = HipTensor::from_scaffold_tensor(k_cumdecay.clone());
-    let q_state = HipTensor::from_scaffold_tensor(q_state.clone());
-    let state_decay = HipTensor::from_scaffold_tensor(state_decay.clone());
-    HipTensor::cat(&[&weighted_key, &k_cumdecay, &q_state, &state_decay], 2)?
-        .contiguous()?
+    pack_delta_chunk_fused_hip(weighted_key, k_cumdecay, q_state, state_decay)?
         .into_state_buffer()
+}
+
+fn unpack_linear_decode_output_hip(
+    fused: &StateBuffer,
+    batch_size: usize,
+    seq_len: usize,
+    value_dim: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+) -> Result<(HipTensor, HipTensor)> {
+    let fused = HipTensor::from_state_buffer(fused);
+    let core_attn_out = fused
+        .narrow(1, 0, value_dim)?
+        .reshape((batch_size, seq_len, value_dim))?;
+    let recurrent_state = fused
+        .narrow(1, value_dim, num_v_heads * head_k_dim * head_v_dim)?
+        .reshape((batch_size, num_v_heads, head_k_dim, head_v_dim))?
+        .contiguous()?;
+    Ok((core_attn_out, recurrent_state))
 }
 
 pub(crate) fn unpack_linear_decode_output(
@@ -1282,26 +1342,26 @@ pub(crate) fn unpack_linear_decode_output(
     head_k_dim: usize,
     head_v_dim: usize,
 ) -> Result<(Tensor, StateBuffer)> {
-    let fused = HipTensor::from_state_buffer(fused);
-    let core_attn_out = fused
-        .narrow(1, 0, value_dim)?
-        .reshape((batch_size, seq_len, value_dim))?;
-    let recurrent_state = fused
-        .narrow(1, value_dim, num_v_heads * head_k_dim * head_v_dim)?
-        .reshape((batch_size, num_v_heads, head_k_dim, head_v_dim))?
-        .contiguous()?
-        .into_state_buffer()?;
-    Ok((core_attn_out.into_tensor(), recurrent_state))
+    let (core_attn_out, recurrent_state) = unpack_linear_decode_output_hip(
+        fused,
+        batch_size,
+        seq_len,
+        value_dim,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+    )?;
+    Ok((core_attn_out.into_tensor(), recurrent_state.into_state_buffer()?))
 }
 
-pub(crate) fn unpack_linear_prefill_output(
+fn unpack_linear_prefill_output_hip(
     fused: &StateBuffer,
     batch_size: usize,
     seq_len: usize,
     conv_dim: usize,
     num_v_heads: usize,
     state_len: usize,
-) -> Result<(Tensor, Tensor, StateBuffer)> {
+) -> Result<(HipTensor, HipTensor, HipTensor)> {
     let out_width = conv_dim + num_v_heads;
     let fused = HipTensor::from_state_buffer(fused);
     let packed = fused
@@ -1312,12 +1372,34 @@ pub(crate) fn unpack_linear_prefill_output(
     let conv_state = fused
         .narrow(1, seq_len * out_width, conv_dim * state_len)?
         .reshape((batch_size, conv_dim, state_len))?
-        .contiguous()?
-        .into_state_buffer()?;
-    Ok((mixed_qkv.into_tensor(), g.into_tensor(), conv_state))
+        .contiguous()?;
+    Ok((mixed_qkv, g, conv_state))
 }
 
-pub(crate) fn unpack_scan_fused_output_and_state(
+pub(crate) fn unpack_linear_prefill_output(
+    fused: &StateBuffer,
+    batch_size: usize,
+    seq_len: usize,
+    conv_dim: usize,
+    num_v_heads: usize,
+    state_len: usize,
+) -> Result<(Tensor, Tensor, StateBuffer)> {
+    let (mixed_qkv, g, conv_state) = unpack_linear_prefill_output_hip(
+        fused,
+        batch_size,
+        seq_len,
+        conv_dim,
+        num_v_heads,
+        state_len,
+    )?;
+    Ok((
+        mixed_qkv.into_tensor(),
+        g.into_tensor(),
+        conv_state.into_state_buffer()?,
+    ))
+}
+
+fn unpack_scan_fused_output_and_state_hip(
     fused: &StateBuffer,
     total_sequence_length: usize,
     output_sequence_length: usize,
@@ -1326,7 +1408,7 @@ pub(crate) fn unpack_scan_fused_output_and_state(
     v_head_dim: usize,
     k_head_dim: usize,
     output_dtype: DType,
-) -> Result<(StateBuffer, StateBuffer)> {
+) -> Result<(HipTensor, HipTensor)> {
     let fused = HipTensor::from_state_buffer(fused);
     let output_scan = fused
         .narrow(1, 0, total_sequence_length)?
@@ -1340,9 +1422,31 @@ pub(crate) fn unpack_scan_fused_output_and_state(
     let recurrent_state = fused
         .narrow(1, total_sequence_length, k_head_dim)?
         .reshape((batch_size * num_heads, k_head_dim, v_head_dim))?
-        .contiguous()?
-        .into_tensor();
-    Ok((to_state_buffer(output)?, to_state_buffer(recurrent_state)?))
+        .contiguous()?;
+    Ok((HipTensor::from_scaffold_tensor(output), recurrent_state))
+}
+
+pub(crate) fn unpack_scan_fused_output_and_state(
+    fused: &StateBuffer,
+    total_sequence_length: usize,
+    output_sequence_length: usize,
+    batch_size: usize,
+    num_heads: usize,
+    v_head_dim: usize,
+    k_head_dim: usize,
+    output_dtype: DType,
+) -> Result<(StateBuffer, StateBuffer)> {
+    let (output, recurrent_state) = unpack_scan_fused_output_and_state_hip(
+        fused,
+        total_sequence_length,
+        output_sequence_length,
+        batch_size,
+        num_heads,
+        v_head_dim,
+        k_head_dim,
+        output_dtype,
+    )?;
+    Ok((output.into_state_buffer()?, recurrent_state.into_state_buffer()?))
 }
 
 pub(crate) fn state_scan_chunk(state_scan: &StateBuffer, chunk_idx: usize) -> Result<StateBuffer> {
@@ -1361,25 +1465,36 @@ pub(crate) fn state_scan_next_chunk(
         .into_state_buffer()
 }
 
+fn unpack_chunk_fused_hip(
+    fused: &StateBuffer,
+    chunk_size: usize,
+    k_head_dim: usize,
+) -> Result<(HipTensor, HipTensor, HipTensor)> {
+    let fused = HipTensor::from_state_buffer(fused);
+    Ok((
+        fused.narrow(1, 0, chunk_size)?,
+        fused.narrow(1, chunk_size, chunk_size)?,
+        fused.narrow(1, 2 * chunk_size, k_head_dim)?,
+    ))
+}
+
 pub(crate) fn unpack_chunk_fused(
     fused: &StateBuffer,
     chunk_size: usize,
     k_head_dim: usize,
 ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
-    let fused = HipTensor::from_state_buffer(fused);
+    let (attn, local, q_state) = unpack_chunk_fused_hip(fused, chunk_size, k_head_dim)?;
     Ok((
-        fused.narrow(1, 0, chunk_size)?.into_state_buffer()?,
-        fused.narrow(1, chunk_size, chunk_size)?.into_state_buffer()?,
-        fused.narrow(1, 2 * chunk_size, k_head_dim)?.into_state_buffer()?,
+        attn.into_state_buffer()?,
+        local.into_state_buffer()?,
+        q_state.into_state_buffer()?,
     ))
 }
 
-pub(crate) fn linear_forward(
-    x: &StateBuffer,
+fn linear_forward_matmul(
+    x: &Tensor,
     weight: &Tensor,
-    bias: Option<&Tensor>,
-) -> Result<StateBuffer> {
-    let x = x.tensor();
+) -> Result<Tensor> {
     let projected = match *x.dims() {
         [b1, b2, m, k] => {
             if x.is_contiguous() {
@@ -1408,12 +1523,29 @@ pub(crate) fn linear_forward(
             x.matmul(&w)?
         }
     };
+    Ok(projected)
+}
+
+fn linear_forward_hip(
+    x: &StateBuffer,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+) -> Result<HipTensor> {
+    let projected = linear_forward_matmul(x.tensor(), weight)?;
     let projected = match bias {
         None => HipTensor::from_scaffold_tensor(projected),
         Some(bias) => HipTensor::from_scaffold_tensor(projected)
             .broadcast_add(&HipTensor::from_scaffold_tensor(bias.clone()))?,
     };
-    to_state_buffer(projected.into_tensor())
+    Ok(projected)
+}
+
+pub(crate) fn linear_forward(
+    x: &StateBuffer,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+) -> Result<StateBuffer> {
+    linear_forward_hip(x, weight, bias)?.into_state_buffer()
 }
 
 pub(crate) fn add(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<StateBuffer> {
@@ -1623,13 +1755,24 @@ pub(crate) fn prepare_linear_attention_inputs(
     ))
 }
 
+fn wrap_kv_cache_hip(
+    key_states: Tensor,
+    value_states: Tensor,
+) -> Result<(HipTensor, HipTensor)> {
+    Ok((
+        HipTensor::from_scaffold_tensor(key_states),
+        HipTensor::from_scaffold_tensor(value_states),
+    ))
+}
+
 pub(crate) fn wrap_kv_cache(
     key_states: Tensor,
     value_states: Tensor,
 ) -> Result<(StateBuffer, StateBuffer)> {
+    let (key_states, value_states) = wrap_kv_cache_hip(key_states, value_states)?;
     Ok((
-        HipTensor::from_scaffold_tensor(key_states).into_state_buffer()?,
-        HipTensor::from_scaffold_tensor(value_states).into_state_buffer()?,
+        key_states.into_state_buffer()?,
+        value_states.into_state_buffer()?,
     ))
 }
 
@@ -1650,12 +1793,12 @@ pub(crate) fn prepare_full_attention_output(
         .into_state_buffer()
 }
 
-pub(crate) fn append_full_attention_kv(
+fn append_full_attention_kv_hip(
     prev_k: Option<&StateBuffer>,
     prev_v: Option<&StateBuffer>,
     key_states: &Tensor,
     value_states: &Tensor,
-) -> Result<(Tensor, Tensor)> {
+) -> Result<(HipTensor, HipTensor)> {
     match (prev_k, prev_v) {
         (Some(prev_k), Some(prev_v)) => {
             let prev_k = HipTensor::from_state_buffer_as(prev_k, key_states.dtype())?;
@@ -1663,12 +1806,38 @@ pub(crate) fn append_full_attention_kv(
             let key_states = HipTensor::from_scaffold_tensor(key_states.clone());
             let value_states = HipTensor::from_scaffold_tensor(value_states.clone());
             Ok((
-                HipTensor::cat(&[&prev_k, &key_states], 2)?.into_tensor(),
-                HipTensor::cat(&[&prev_v, &value_states], 2)?.into_tensor(),
+                HipTensor::cat(&[&prev_k, &key_states], 2)?,
+                HipTensor::cat(&[&prev_v, &value_states], 2)?,
             ))
         }
-        _ => Ok((key_states.clone(), value_states.clone())),
+        _ => Ok((
+            HipTensor::from_scaffold_tensor(key_states.clone()),
+            HipTensor::from_scaffold_tensor(value_states.clone()),
+        )),
     }
+}
+
+pub(crate) fn append_full_attention_kv(
+    prev_k: Option<&StateBuffer>,
+    prev_v: Option<&StateBuffer>,
+    key_states: &Tensor,
+    value_states: &Tensor,
+) -> Result<(Tensor, Tensor)> {
+    let (key_states, value_states) =
+        append_full_attention_kv_hip(prev_k, prev_v, key_states, value_states)?;
+    Ok((key_states.into_tensor(), value_states.into_tensor()))
+}
+
+fn prepare_full_attention_kernel_inputs_hip(
+    query_states: &Tensor,
+    key_states: &Tensor,
+    value_states: &Tensor,
+) -> Result<(HipTensor, HipTensor, HipTensor)> {
+    Ok((
+        HipTensor::from_scaffold_tensor(query_states.clone()).contiguous()?,
+        HipTensor::from_scaffold_tensor(key_states.clone()).contiguous()?,
+        HipTensor::from_scaffold_tensor(value_states.clone()).contiguous()?,
+    ))
 }
 
 pub(crate) fn prepare_full_attention_kernel_inputs(
@@ -1676,16 +1845,31 @@ pub(crate) fn prepare_full_attention_kernel_inputs(
     key_states: &Tensor,
     value_states: &Tensor,
 ) -> Result<(Tensor, Tensor, Tensor)> {
+    let (query_states, key_states, value_states) =
+        prepare_full_attention_kernel_inputs_hip(query_states, key_states, value_states)?;
     Ok((
-        HipTensor::from_scaffold_tensor(query_states.clone())
-            .contiguous()?
-            .into_tensor(),
-        HipTensor::from_scaffold_tensor(key_states.clone())
-            .contiguous()?
-            .into_tensor(),
-        HipTensor::from_scaffold_tensor(value_states.clone())
-            .contiguous()?
-            .into_tensor(),
+        query_states.into_tensor(),
+        key_states.into_tensor(),
+        value_states.into_tensor(),
+    ))
+}
+
+fn materialize_full_attention_dense_inputs_hip(
+    query_states: &Tensor,
+    key_states: &Tensor,
+    value_states: &Tensor,
+    num_kv_groups: usize,
+) -> Result<(HipTensor, HipTensor, HipTensor)> {
+    let key_states = repeat_kv_impl(key_states, num_kv_groups)?
+        .contiguous()?
+        .to_dtype(DType::F32)?;
+    let value_states = repeat_kv_impl(value_states, num_kv_groups)?
+        .contiguous()?
+        .to_dtype(DType::F32)?;
+    Ok((
+        HipTensor::from_scaffold_tensor(query_states.clone()).to_dtype(DType::F32)?,
+        key_states,
+        value_states,
     ))
 }
 
@@ -1695,30 +1879,26 @@ pub(crate) fn materialize_full_attention_dense_inputs(
     value_states: &Tensor,
     num_kv_groups: usize,
 ) -> Result<(Tensor, Tensor, Tensor)> {
-    let key_states = repeat_kv_impl(key_states, num_kv_groups)?
-        .contiguous()?
-        .to_dtype(DType::F32)?
-        .into_tensor();
-    let value_states = repeat_kv_impl(value_states, num_kv_groups)?
-        .contiguous()?
-        .to_dtype(DType::F32)?
-        .into_tensor();
-    Ok((
-        HipTensor::from_scaffold_tensor(query_states.clone())
-            .to_dtype(DType::F32)?
-            .into_tensor(),
+    let (query_states, key_states, value_states) = materialize_full_attention_dense_inputs_hip(
+        query_states,
         key_states,
         value_states,
+        num_kv_groups,
+    )?;
+    Ok((
+        query_states.into_tensor(),
+        key_states.into_tensor(),
+        value_states.into_tensor(),
     ))
 }
 
-pub(crate) fn dense_full_attention_fallback(
+fn dense_full_attention_fallback_hip(
     query_states_f: &Tensor,
     key_states_f: &Tensor,
     value_states_f: &Tensor,
     attention_mask: Option<&Tensor>,
     scale: f64,
-) -> Result<Tensor> {
+) -> Result<HipTensor> {
     let key_states_t = HipTensor::from_scaffold_tensor(key_states_f.clone())
         .transpose(2, 3)?
         .contiguous()?;
@@ -1734,9 +1914,24 @@ pub(crate) fn dense_full_attention_fallback(
     let num = diff.exp()?;
     let den = num.sum_keepdim(candle_core::D::Minus1)?;
     let attn_weights = num.broadcast_div(&den)?;
-    Ok(attn_weights
-        .matmul(&HipTensor::from_scaffold_tensor(value_states_f.clone()))?
-        .into_tensor())
+    attn_weights.matmul(&HipTensor::from_scaffold_tensor(value_states_f.clone()))
+}
+
+pub(crate) fn dense_full_attention_fallback(
+    query_states_f: &Tensor,
+    key_states_f: &Tensor,
+    value_states_f: &Tensor,
+    attention_mask: Option<&Tensor>,
+    scale: f64,
+) -> Result<Tensor> {
+    dense_full_attention_fallback_hip(
+        query_states_f,
+        key_states_f,
+        value_states_f,
+        attention_mask,
+        scale,
+    )
+    .map(|t| t.into_tensor())
 }
 
 pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<HipTensor> {
