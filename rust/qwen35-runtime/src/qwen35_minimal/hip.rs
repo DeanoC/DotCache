@@ -604,6 +604,26 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_batched_matmul_view(
+            dtype: c_int,
+            device_ordinal: usize,
+            batch_rank: c_int,
+            batch_elems: usize,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            lhs_batch_strides: *const c_int,
+            rhs_batch_strides: *const c_int,
+            out_batch_dims: *const c_int,
+            lhs_row_stride: c_int,
+            lhs_k_stride: c_int,
+            rhs_k_stride: c_int,
+            rhs_col_stride: c_int,
+            lhs: *const c_void,
+            rhs: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_mul_scalar(
             dtype: c_int,
             device_ordinal: usize,

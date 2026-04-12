@@ -1639,11 +1639,6 @@ impl HipDeviceBuffer {
         if lhs_ordinal != rhs_ordinal || lhs_dtype != rhs_dtype {
             return Ok(None);
         }
-        if !Self::is_standard_contiguous_i32(&lhs_shape, &lhs_strides)
-            || !Self::is_standard_contiguous_i32(&rhs_shape, &rhs_strides)
-        {
-            return Ok(None);
-        }
         if lhs_shape.is_empty() || rhs_shape.is_empty() {
             return Ok(None);
         }
@@ -1662,11 +1657,25 @@ impl HipDeviceBuffer {
         if batch_rank > 8 {
             return Ok(None);
         }
+        let lhs_matrix_rank = lhs_rank.min(2);
+        let rhs_matrix_rank = rhs_rank.min(2);
+        let lhs_row_stride = if lhs_matrix_rank == 2 {
+            lhs_strides[lhs_rank - 2]
+        } else {
+            0
+        };
+        let lhs_k_stride = lhs_strides[lhs_rank - 1];
+        let rhs_k_stride = if rhs_matrix_rank == 2 {
+            rhs_strides[rhs_rank - 2]
+        } else {
+            0
+        };
+        let rhs_col_stride = rhs_strides[rhs_rank - 1];
         let lhs_pad = batch_rank.saturating_sub(lhs_batch.len());
         let rhs_pad = batch_rank.saturating_sub(rhs_batch.len());
         let mut out_batch_dims = vec![1i32; batch_rank];
-        let mut lhs_batch_dims = vec![1i32; batch_rank];
-        let mut rhs_batch_dims = vec![1i32; batch_rank];
+        let mut lhs_batch_strides = vec![0i32; batch_rank];
+        let mut rhs_batch_strides = vec![0i32; batch_rank];
         let mut batch_elems = 1usize;
         for dim in 0..batch_rank {
             let lhs_dim = if dim < lhs_pad { 1 } else { lhs_batch[dim - lhs_pad] };
@@ -1677,10 +1686,16 @@ impl HipDeviceBuffer {
             let out_dim = lhs_dim.max(rhs_dim);
             out_batch_dims[dim] = i32::try_from(out_dim)
                 .map_err(|_| candle_core::Error::Msg("matmul batch dim overflow".into()))?;
-            lhs_batch_dims[dim] = i32::try_from(lhs_dim)
-                .map_err(|_| candle_core::Error::Msg("matmul lhs batch dim overflow".into()))?;
-            rhs_batch_dims[dim] = i32::try_from(rhs_dim)
-                .map_err(|_| candle_core::Error::Msg("matmul rhs batch dim overflow".into()))?;
+            lhs_batch_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+                0
+            } else {
+                lhs_strides[dim - lhs_pad]
+            };
+            rhs_batch_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+                0
+            } else {
+                rhs_strides[dim - rhs_pad]
+            };
             batch_elems = batch_elems.saturating_mul(out_dim);
         }
         let mut out_shape = out_batch_dims.iter().map(|&d| d as usize).collect::<Vec<_>>();
@@ -1694,7 +1709,7 @@ impl HipDeviceBuffer {
         let device_ptr = hip::register_host_mapping_for_device(lhs_ordinal, host_ptr, out.len())?;
         let dtype_code = hip::dtype_code(lhs_dtype)?;
         let status = unsafe {
-            hip::ffi::dotcache_qwen35_hip_batched_matmul(
+            hip::ffi::dotcache_qwen35_hip_batched_matmul_view(
                 dtype_code,
                 lhs_ordinal,
                 i32::try_from(batch_rank).map_err(|_| candle_core::Error::Msg("batch rank overflow".into()))?,
@@ -1702,9 +1717,13 @@ impl HipDeviceBuffer {
                 i32::try_from(m).map_err(|_| candle_core::Error::Msg("m overflow".into()))?,
                 i32::try_from(n).map_err(|_| candle_core::Error::Msg("n overflow".into()))?,
                 i32::try_from(lhs_k).map_err(|_| candle_core::Error::Msg("k overflow".into()))?,
-                lhs_batch_dims.as_ptr(),
-                rhs_batch_dims.as_ptr(),
+                lhs_batch_strides.as_ptr(),
+                rhs_batch_strides.as_ptr(),
                 out_batch_dims.as_ptr(),
+                lhs_row_stride,
+                lhs_k_stride,
+                rhs_k_stride,
+                rhs_col_stride,
                 lhs_ptr,
                 rhs_ptr,
                 device_ptr as *mut c_void,

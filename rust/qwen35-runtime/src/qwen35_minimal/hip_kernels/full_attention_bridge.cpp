@@ -1434,6 +1434,99 @@ int batched_matmul_device(
 }
 
 template <typename T>
+int batched_matmul_view_device(
+    int device_ordinal,
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_strides,
+    const int* rhs_batch_strides,
+    const int* out_batch_dims,
+    int lhs_row_stride,
+    int lhs_k_stride,
+    int rhs_k_stride,
+    int rhs_col_stride,
+    const void* lhs,
+    const void* rhs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    int* lhs_batch_strides_dev = nullptr;
+    int* rhs_batch_strides_dev = nullptr;
+    int* out_batch_dims_dev = nullptr;
+    const size_t bytes = static_cast<size_t>(batch_rank) * sizeof(int);
+    if (batch_rank > 0) {
+        if (hipMalloc(&lhs_batch_strides_dev, bytes) != hipSuccess) return 171;
+        if (hipMalloc(&rhs_batch_strides_dev, bytes) != hipSuccess) {
+            hipFree(lhs_batch_strides_dev);
+            return 171;
+        }
+        if (hipMalloc(&out_batch_dims_dev, bytes) != hipSuccess) {
+            hipFree(lhs_batch_strides_dev);
+            hipFree(rhs_batch_strides_dev);
+            return 171;
+        }
+        if (hipMemcpy(lhs_batch_strides_dev, lhs_batch_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(rhs_batch_strides_dev, rhs_batch_strides, bytes, hipMemcpyHostToDevice) != hipSuccess ||
+            hipMemcpy(out_batch_dims_dev, out_batch_dims, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+            hipFree(lhs_batch_strides_dev);
+            hipFree(rhs_batch_strides_dev);
+            hipFree(out_batch_dims_dev);
+            return 171;
+        }
+    }
+    constexpr int block = 256;
+    const size_t total = batch_elems * static_cast<size_t>(m) * static_cast<size_t>(n);
+    const unsigned int grid =
+        static_cast<unsigned int>((total + static_cast<size_t>(block) - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_batched_matmul_view_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_rank,
+        batch_elems,
+        m,
+        n,
+        k,
+        lhs_batch_strides_dev,
+        rhs_batch_strides_dev,
+        out_batch_dims_dev,
+        lhs_row_stride,
+        lhs_k_stride,
+        rhs_k_stride,
+        rhs_col_stride,
+        static_cast<const T*>(lhs),
+        static_cast<const T*>(rhs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) {
+        if (batch_rank > 0) {
+            hipFree(lhs_batch_strides_dev);
+            hipFree(rhs_batch_strides_dev);
+            hipFree(out_batch_dims_dev);
+        }
+        return 172;
+    }
+    if (hipDeviceSynchronize() != hipSuccess) {
+        if (batch_rank > 0) {
+            hipFree(lhs_batch_strides_dev);
+            hipFree(rhs_batch_strides_dev);
+            hipFree(out_batch_dims_dev);
+        }
+        return 173;
+    }
+    if (batch_rank > 0) {
+        hipFree(lhs_batch_strides_dev);
+        hipFree(rhs_batch_strides_dev);
+        hipFree(out_batch_dims_dev);
+    }
+    return 0;
+}
+
+template <typename T>
 int mul_scalar_device(
     int device_ordinal,
     int total_elems,
@@ -3379,6 +3472,45 @@ extern "C" int dotcache_qwen35_hip_reduce_keepdim_view(
             static_cast<int>(device_ordinal), rank, reduce_dim, reduce_len, total_out_elems, sum, xs, in_strides, out_dims, out);
     default:
         return 170;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_batched_matmul_view(
+    int dtype,
+    size_t device_ordinal,
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_strides,
+    const int* rhs_batch_strides,
+    const int* out_batch_dims,
+    int lhs_row_stride,
+    int lhs_k_stride,
+    int rhs_k_stride,
+    int rhs_col_stride,
+    const void* lhs,
+    const void* rhs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return batched_matmul_view_device<half>(
+            static_cast<int>(device_ordinal), batch_rank, batch_elems, m, n, k,
+            lhs_batch_strides, rhs_batch_strides, out_batch_dims,
+            lhs_row_stride, lhs_k_stride, rhs_k_stride, rhs_col_stride, lhs, rhs, out);
+    case 1:
+        return batched_matmul_view_device<float>(
+            static_cast<int>(device_ordinal), batch_rank, batch_elems, m, n, k,
+            lhs_batch_strides, rhs_batch_strides, out_batch_dims,
+            lhs_row_stride, lhs_k_stride, rhs_k_stride, rhs_col_stride, lhs, rhs, out);
+    case 2:
+        return batched_matmul_view_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), batch_rank, batch_elems, m, n, k,
+            lhs_batch_strides, rhs_batch_strides, out_batch_dims,
+            lhs_row_stride, lhs_k_stride, rhs_k_stride, rhs_col_stride, lhs, rhs, out);
+    default:
+        return 174;
     }
 }
 

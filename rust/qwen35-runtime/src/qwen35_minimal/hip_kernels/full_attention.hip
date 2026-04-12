@@ -2038,6 +2038,58 @@ __global__ void dotcache_qwen35_batched_matmul_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_batched_matmul_view_kernel(
+    int batch_rank,
+    size_t batch_elems,
+    int m,
+    int n,
+    int k,
+    const int* lhs_batch_strides,
+    const int* rhs_batch_strides,
+    const int* out_batch_dims,
+    int lhs_row_stride,
+    int lhs_k_stride,
+    int rhs_k_stride,
+    int rhs_col_stride,
+    const T* lhs,
+    const T* rhs,
+    T* out
+) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = batch_elems * static_cast<size_t>(m) * static_cast<size_t>(n);
+    if (idx >= total) {
+        return;
+    }
+
+    const size_t matrix_idx = idx % (static_cast<size_t>(m) * static_cast<size_t>(n));
+    const size_t batch_idx = idx / (static_cast<size_t>(m) * static_cast<size_t>(n));
+    const int row = static_cast<int>(matrix_idx / static_cast<size_t>(n));
+    const int col = static_cast<int>(matrix_idx % static_cast<size_t>(n));
+
+    size_t remaining = batch_idx;
+    size_t lhs_base = 0;
+    size_t rhs_base = 0;
+    for (int dim = batch_rank - 1; dim >= 0; --dim) {
+        const int out_dim = out_batch_dims[dim];
+        const int coord = static_cast<int>(remaining % static_cast<size_t>(out_dim));
+        remaining /= static_cast<size_t>(out_dim);
+        lhs_base += static_cast<size_t>(coord) * static_cast<size_t>(lhs_batch_strides[dim]);
+        rhs_base += static_cast<size_t>(coord) * static_cast<size_t>(rhs_batch_strides[dim]);
+    }
+
+    float acc = 0.0f;
+    for (int kk = 0; kk < k; ++kk) {
+        acc += dotcache_qwen35_to_float(
+                   lhs[lhs_base + static_cast<size_t>(row) * static_cast<size_t>(lhs_row_stride) +
+                       static_cast<size_t>(kk) * static_cast<size_t>(lhs_k_stride)]) *
+               dotcache_qwen35_to_float(
+                   rhs[rhs_base + static_cast<size_t>(kk) * static_cast<size_t>(rhs_k_stride) +
+                       static_cast<size_t>(col) * static_cast<size_t>(rhs_col_stride)]);
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(acc);
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_delta_full_scan_pack_kernel(
     int batch_heads,
     int num_chunks,
