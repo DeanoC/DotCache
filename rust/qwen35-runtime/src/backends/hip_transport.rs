@@ -5568,6 +5568,12 @@ mod tests {
         let out = value_decay(&a, &dt_bias, &a_log_exp)?;
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         Ok(())
     }
 
@@ -5580,6 +5586,12 @@ mod tests {
         let out = rms_norm(&xs, &weight, 1e-6, true)?;
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         Ok(())
     }
 
@@ -5593,6 +5605,12 @@ mod tests {
         let out = rms_norm_gated(&hidden, &gate, &weight, 1e-6)?;
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
         Ok(())
     }
 
