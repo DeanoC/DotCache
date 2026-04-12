@@ -1557,7 +1557,7 @@ impl Mlp {
         let hidden = if matches!(self.act_fn, Activation::Silu) {
             backend.swiglu_mul(&gate, &up)?
         } else {
-            StateBuffer::from_tensor((gate.tensor().apply(&self.act_fn)? * up.tensor())?)?
+            backend.tensor_to_buffer((gate.tensor().apply(&self.act_fn)? * up.tensor())?)?
         };
         self.down_proj.forward_buffer(&hidden)
     }
