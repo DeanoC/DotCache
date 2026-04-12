@@ -451,6 +451,57 @@ impl HipHostBuffer {
         })
     }
 
+    fn expand_copy(&self, shape: Vec<usize>) -> Result<Self> {
+        if shape.len() < self.shape.len() {
+            candle_core::bail!("expand rank shrinks: {:?} -> {:?}", self.shape, shape);
+        }
+        let leading = shape.len() - self.shape.len();
+        for (src, dst) in self.shape.iter().zip(shape[leading..].iter()) {
+            if *src != 1 && *src != *dst {
+                candle_core::bail!("expand incompatible shapes: {:?} -> {:?}", self.shape, shape);
+            }
+        }
+        if self.shape == shape {
+            return Ok(self.clone());
+        }
+
+        let elem_count = HipNativeBuffer::elem_count(&shape);
+        let elem_size = self.elem_size();
+        let mut src_strides = vec![1usize; self.shape.len()];
+        for i in (0..self.shape.len().saturating_sub(1)).rev() {
+            src_strides[i] = src_strides[i + 1].saturating_mul(self.shape[i + 1]);
+        }
+        let mut dst_strides = vec![1usize; shape.len()];
+        for i in (0..shape.len().saturating_sub(1)).rev() {
+            dst_strides[i] = dst_strides[i + 1].saturating_mul(shape[i + 1]);
+        }
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype)];
+        for dst_idx in 0..elem_count {
+            let mut rem = dst_idx;
+            let mut src_idx = 0usize;
+            for axis in 0..shape.len() {
+                let stride = dst_strides[axis];
+                let coord = if stride == 0 { 0 } else { rem / stride };
+                rem %= stride.max(1);
+                if axis >= leading {
+                    let src_axis = axis - leading;
+                    let src_coord = if self.shape[src_axis] == 1 { 0 } else { coord };
+                    src_idx = src_idx.saturating_add(src_coord.saturating_mul(src_strides[src_axis]));
+                }
+            }
+            let src_byte = src_idx.saturating_mul(elem_size);
+            let dst_byte = dst_idx.saturating_mul(elem_size);
+            out[dst_byte..dst_byte + elem_size]
+                .copy_from_slice(&self.bytes.as_ref()[src_byte..src_byte + elem_size]);
+        }
+        Ok(Self {
+            bytes: out.into(),
+            shape,
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
+    }
+
     fn transpose_copy(&self, dim1: usize, dim2: usize) -> Result<Self> {
         if dim1 >= self.shape.len() || dim2 >= self.shape.len() {
             candle_core::bail!("transpose dims out of range for host buffer shape {:?}", self.shape);
@@ -1211,9 +1262,9 @@ impl HipDeviceBuffer {
                 HipDeviceViewOp::Narrow { dim, start, len } => buffer.narrow_copy(*dim, *start, *len)?,
                 HipDeviceViewOp::Select { dim, index } => buffer.select_copy(*dim, *index)?,
                 HipDeviceViewOp::Reshape { shape } => buffer.reshape_copy(shape.clone())?,
+                HipDeviceViewOp::Expand { shape } => buffer.expand_copy(shape.clone())?,
                 HipDeviceViewOp::Transpose { dim1, dim2 } => buffer.transpose_copy(*dim1, *dim2)?,
                 HipDeviceViewOp::Contiguous => buffer,
-                HipDeviceViewOp::Expand { .. } => return Ok(None),
             };
         }
         Ok(Some(buffer))
@@ -9344,6 +9395,21 @@ mod tests {
 
         assert_eq!(host.shape(), &[2, 1]);
         assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_host_storage_expand_materialization_stays_host_side() -> Result<()> {
+        let device = Device::Cpu;
+        let buffer = HipDeviceBuffer::from_tensor(Tensor::from_vec(vec![1f32, 2.0], (1, 2), &device)?)
+            .expand(vec![3, 2])?;
+
+        let host = buffer
+            .materialize_host_buffer_with_views()?
+            .expect("host-side expand materialization");
+
+        assert_eq!(host.shape(), &[3, 2]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
         Ok(())
     }
 
