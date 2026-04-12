@@ -5379,6 +5379,108 @@ pub(crate) fn full_attention_prefill_megakernel(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn full_attention_prefill_host_buffer(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    let ordinal = match query.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key.device().same_device(query.device()) && value.device().same_device(query.device())) {
+        return Ok(None);
+    }
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(query_storage), Storage::Hip(key_storage), Storage::Hip(value_storage)) =
+        (&*query_storage, &*key_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(query_layout.is_contiguous() && key_layout.is_contiguous() && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, q_heads, q_len, head_dim) = query_layout.shape().dims4()?;
+    let (key_batch, kv_heads, kv_len, key_head_dim) = key_layout.shape().dims4()?;
+    let (value_batch, value_kv_heads, value_kv_len, value_head_dim) =
+        value_layout.shape().dims4()?;
+    if key_batch != batch_size
+        || value_batch != batch_size
+        || value_kv_heads != kv_heads
+        || value_kv_len != kv_len
+        || key_head_dim != head_dim
+        || value_head_dim != head_dim
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_size, q_heads, q_len, head_dim];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(DType::F32.size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
+            dtype_code,
+            ordinal,
+            batch_size,
+            q_heads,
+            kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "full-attention-prefill-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn full_attention_prefill_host_buffer(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (query, key, value, num_kv_groups, scale, seqlen_offset);
+    Ok(None)
+}
+
 pub(crate) fn full_attention_decode_megakernel(
     query: &Tensor,
     key: &Tensor,

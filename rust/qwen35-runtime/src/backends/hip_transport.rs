@@ -3,6 +3,7 @@ use crate::qwen35_minimal_impl::model::{
     delta_chunk_scan_raw, delta_chunk_single_prefill, delta_full_scan, delta_full_scan_pack,
     delta_full_scan_packed, delta_local_attn_scan, delta_recurrent_prefill, delta_state_scan,
     delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
+    full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
@@ -4523,6 +4524,34 @@ fn linear_decode_step_hip_host_buffer(
     )))
 }
 
+fn full_attention_prefill_hip_host_buffer(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = full_attention_prefill_host_buffer(
+        query,
+        key,
+        value,
+        num_kv_groups,
+        scale,
+        seqlen_offset,
+    )? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: DType::F32,
+            device: query.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -8512,6 +8541,16 @@ pub(crate) fn full_attention_prefill(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(host) = full_attention_prefill_hip_host_buffer(
+        query,
+        key,
+        value,
+        num_kv_groups,
+        scale,
+        seqlen_offset,
+    )? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(full_attention_prefill_megakernel(
         query,
         key,
@@ -8549,6 +8588,16 @@ pub(crate) fn full_attention_decode(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(host) = full_attention_prefill_hip_host_buffer(
+        query,
+        key,
+        value,
+        num_kv_groups,
+        scale,
+        seqlen_offset,
+    )? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(full_attention_decode_megakernel(
         query,
         key,
