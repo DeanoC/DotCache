@@ -793,36 +793,45 @@ def fused_selected_blocks_context_triton(
             mask=q_mask[:, None] & d_mask[None, :],
         )
 
+    payload_words_kernel = payload_words.contiguous()
+    scales_kernel = scales.contiguous()
+    bias_kernel = bias.contiguous()
+    selected_block_ids_kernel = selected_block_ids.to(dtype=torch.int32).contiguous()
+    valid_mask_kernel = valid_mask.to(dtype=torch.int32).contiguous()
+    queries_kernel = queries.contiguous()
+    query_group_sums_kernel = query_group_sums.contiguous()
+    values_kernel = values.to(dtype=torch.float32).contiguous()
+
     output = torch.empty((query_count, head_dim), dtype=torch.float32, device=queries.device)
     grid = (triton.cdiv(query_count, 4), triton.cdiv(head_dim, 64))
     _kernel[grid](
-        payload_words.contiguous(),
-        scales.contiguous(),
-        bias.contiguous(),
-        selected_block_ids.to(dtype=torch.int32),
-        valid_mask.to(dtype=torch.int32),
-        queries.contiguous(),
-        query_group_sums.contiguous(),
-        values.to(dtype=torch.float32).contiguous(),
+        payload_words_kernel,
+        scales_kernel,
+        bias_kernel,
+        selected_block_ids_kernel,
+        valid_mask_kernel,
+        queries_kernel,
+        query_group_sums_kernel,
+        values_kernel,
         output,
         query_count,
         selected_block_count,
         head_dim,
         float(query_scale),
-        payload_words.stride(0),
-        payload_words.stride(1),
-        payload_words.stride(2),
-        payload_words.stride(3),
-        scales.stride(0),
-        scales.stride(1),
-        scales.stride(2),
-        valid_mask.stride(0),
-        queries.stride(0),
-        queries.stride(1),
-        queries.stride(2),
-        values.stride(0),
-        values.stride(1),
-        values.stride(2),
+        payload_words_kernel.stride(0),
+        payload_words_kernel.stride(1),
+        payload_words_kernel.stride(2),
+        payload_words_kernel.stride(3),
+        scales_kernel.stride(0),
+        scales_kernel.stride(1),
+        scales_kernel.stride(2),
+        valid_mask_kernel.stride(0),
+        queries_kernel.stride(0),
+        queries_kernel.stride(1),
+        queries_kernel.stride(2),
+        values_kernel.stride(0),
+        values_kernel.stride(1),
+        values_kernel.stride(2),
         output.stride(0),
         output.stride(1),
         BLOCK_Q=4,
