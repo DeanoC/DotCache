@@ -1,9 +1,9 @@
 use crate::qwen35_minimal_impl::model::{
     delta_attn_solve_from_inputs, delta_attn_solve_scan, delta_base_attn_scan, delta_chunk_fused,
     delta_chunk_scan_raw, delta_chunk_single_prefill, delta_full_scan, delta_full_scan_pack,
-    delta_full_scan_packed, delta_local_attn_scan, delta_recurrent_prefill, delta_state_scan,
-    delta_state_update, full_attention_decode_megakernel, full_attention_prefill_megakernel,
-    full_attention_prefill_host_buffer,
+    delta_full_scan_pack_host_buffer, delta_full_scan_packed, delta_local_attn_scan,
+    delta_recurrent_prefill, delta_state_scan, delta_state_update, full_attention_decode_megakernel,
+    full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
@@ -4552,6 +4552,30 @@ fn full_attention_prefill_hip_host_buffer(
     )))
 }
 
+fn delta_full_scan_pack_hip_host_buffer(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = delta_full_scan_pack_host_buffer(
+        query_scan,
+        key_scan,
+        exp_g_scan,
+        k_cumdecay_scan,
+    )? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: query_scan.dtype(),
+            device: query_scan.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -8726,6 +8750,11 @@ pub(crate) fn delta_full_scan_pack_buffer(
     exp_g_scan: &Tensor,
     k_cumdecay_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(host) =
+        delta_full_scan_pack_hip_host_buffer(query_scan, key_scan, exp_g_scan, k_cumdecay_scan)?
+    {
+        return host.into_state_buffer();
+    }
     from_kernel_tensor(delta_full_scan_pack(
         query_scan,
         key_scan,
