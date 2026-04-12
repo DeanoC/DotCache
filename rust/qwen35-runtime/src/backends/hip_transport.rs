@@ -373,6 +373,29 @@ impl HipHostBuffer {
             candle_core::Error::Msg("expected host materialization for gated rms-norm host buffer".into())
         })
     }
+
+    fn swiglu_mul(&self, up: &HipHostBuffer) -> Result<Self> {
+        swiglu_mul_host(
+            &HipTensor::from_host_buffer(self.clone()),
+            &HipTensor::from_host_buffer(up.clone()),
+        )?
+        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
+        .ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for swiglu host buffer".into())
+        })
+    }
+
+    fn value_decay(&self, dt_bias: &HipHostBuffer, a_log_exp: &HipHostBuffer) -> Result<Self> {
+        value_decay_host(
+            &HipTensor::from_host_buffer(self.clone()),
+            &HipTensor::from_host_buffer(dt_bias.clone()),
+            &HipTensor::from_host_buffer(a_log_exp.clone()),
+        )?
+        .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
+        .ok_or_else(|| {
+            candle_core::Error::Msg("expected host materialization for value-decay host buffer".into())
+        })
+    }
 }
 
 impl HipDeviceBuffer {
@@ -775,7 +798,28 @@ impl HipDeviceBuffer {
         Ok(Self::from_tensor(normed.materialize_tensor()?.broadcast_mul(&silu)?))
     }
 
+    pub(crate) fn value_decay(&self, dt_bias: &Self, a_log_exp: &Self) -> Result<Self> {
+        if let (Some(a), Some(dt_bias), Some(a_log_exp)) = (
+            self.try_host_buffer()?,
+            dt_bias.try_host_buffer()?,
+            a_log_exp.try_host_buffer()?,
+        ) {
+            return Ok(Self::from_pending_host_upload(
+                a.value_decay(&dt_bias, &a_log_exp)?,
+            ));
+        }
+        let a = self.materialize_tensor()?;
+        let dt_bias = dt_bias.materialize_tensor()?;
+        let a_log_exp = a_log_exp.materialize_tensor()?;
+        let softplus = ((a.broadcast_add(&dt_bias)?.exp()? + 1.0)?).log()?;
+        let out = softplus.broadcast_mul(&a_log_exp)?.neg()?;
+        Ok(Self::from_tensor(out))
+    }
+
     pub(crate) fn swiglu_mul(&self, up: &Self) -> Result<Self> {
+        if let (Some(gate), Some(up)) = (self.try_host_buffer()?, up.try_host_buffer()?) {
+            return Ok(Self::from_pending_host_upload(gate.swiglu_mul(&up)?));
+        }
         let tensor = self.materialize_tensor()?;
         let sig = (tensor.neg()?.exp()? + 1.0)?.recip()?;
         let silu = tensor.broadcast_mul(&sig)?;
@@ -4340,6 +4384,52 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_pending_upload_swiglu_mul_stays_pending() -> Result<()> {
+        let gate = host_f32_tensor(&[1, 2], &[0.5, -1.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let up = host_f32_tensor(&[1, 2], &[2.0, 3.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = gate.swiglu_mul(&up)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        let silu0 = 0.5f32 / (1.0 + (-0.5f32).exp());
+        let silu1 = -1.0f32 / (1.0 + 1.0f32.exp());
+        assert!((vals[0] - (silu0 * 2.0)).abs() < 1e-5);
+        assert!((vals[1] - (silu1 * 3.0)).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_value_decay_stays_pending() -> Result<()> {
+        let a = host_f32_tensor(&[1, 2], &[1.0, 2.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let dt_bias = host_f32_tensor(&[1, 2], &[0.25, -0.5])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let a_log_exp = host_f32_tensor(&[1, 2], &[0.5, 1.5])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = a.value_decay(&dt_bias, &a_log_exp)?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        let vals = host_buffer_values_f32(&host)?;
+        let expected0 = -(((1.0f32 + 0.25).exp() + 1.0).ln() * 0.5);
+        let expected1 = -(((2.0f32 - 0.5).exp() + 1.0).ln() * 1.5);
+        assert!((vals[0] - expected0).abs() < 1e-5);
+        assert!((vals[1] - expected1).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_kv_append_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let prev_k = Tensor::from_vec(vec![1f32, 2.0], (1, 1, 2, 1), &device)?;
@@ -5330,12 +5420,7 @@ pub(crate) fn value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> R
                 &a_log_exp,
             )?));
         }
-        let a = a.materialize_tensor()?;
-        let dt_bias = dt_bias.materialize_tensor()?;
-        let a_log_exp = a_log_exp.materialize_tensor()?;
-        let softplus = ((a.broadcast_add(&dt_bias)?.exp()? + 1.0)?).log()?;
-        let out = softplus.broadcast_mul(&a_log_exp)?.neg()?;
-        return Ok(from_device_tensor(out));
+        return Ok(HipTensor::from_device_buffer(a.value_decay(dt_bias, a_log_exp)?));
     }
     if let Some(host) = value_decay_host(&a_hip, &dt_bias_hip, &a_log_exp_hip)? {
         return Ok(host);
