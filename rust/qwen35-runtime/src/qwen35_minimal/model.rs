@@ -17,6 +17,7 @@ use super::with_tracing::Linear;
 use crate::backends;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
+use candle_core::backend::BackendDevice;
 use crate::{BufferMutability, BufferViewDesc, ImmutableBufferView, ImmutableWeightHandle, ScalarType, TargetSpec};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1259,7 +1260,7 @@ impl candle::CustomOp2 for HipRmsNorm {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
@@ -6690,7 +6691,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -6955,7 +6956,7 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -7548,7 +7549,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -8101,49 +8102,10 @@ impl candle::CustomOp6 for DeltaChunkStepWindowedRaw {
 
         macro_rules! launch {
             ($ty:ty, $zero:expr) => {{
-                let prev_state = prev_state.cpu_storage().as_slice::<$ty>()?;
-                let prev_state = match prev_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &prev_state[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
-                let query = query.cpu_storage().as_slice::<$ty>()?;
-                let query = match query_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &query[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
-                let key = key.cpu_storage().as_slice::<$ty>()?;
-                let key = match key_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &key[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
-                let value = value.cpu_storage().as_slice::<$ty>()?;
-                let value = match value_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &value[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
-                let beta = beta.cpu_storage().as_slice::<$ty>()?;
-                let beta = match beta_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &beta[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
-                let g = g.cpu_storage().as_slice::<$ty>()?;
-                let g = match g_layout.contiguous_offsets() {
-                    Some((o1, o2)) => &g[o1..o2],
-                    None => {
-                        candle::bail!("delta-chunk-step-windowed-raw requires contiguous inputs")
-                    }
-                };
                 let mut output = vec![$zero; elem_count];
+                let host_ptr = output.as_mut_ptr() as *const c_void;
+                let device_ptr =
+                    hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len() * std::mem::size_of::<$ty>())?;
                 let status = unsafe {
                     candle::hip::ffi::qwen35_hip_delta_chunk_windowed(
                         dtype_code,
@@ -8153,15 +8115,17 @@ impl candle::CustomOp6 for DeltaChunkStepWindowedRaw {
                         chunk_size,
                         k_head_dim,
                         v_head_dim,
-                        prev_state.as_ptr() as *const c_void,
-                        query.as_ptr() as *const c_void,
-                        key.as_ptr() as *const c_void,
-                        value.as_ptr() as *const c_void,
-                        beta.as_ptr() as *const c_void,
-                        g.as_ptr() as *const c_void,
-                        output.as_mut_ptr() as *mut c_void,
+                        prev_state.raw_device_ptr_with_offset(prev_layout.start_offset())?
+                            as *const c_void,
+                        query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                        key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                        value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                        beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                        g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                        device_ptr as *mut c_void,
                     )
                 };
+                hip::unregister_host_mapping(host_ptr);
                 if status != 0 {
                     return Err(candle::hip::qwen35_error(self.name(), status));
                 }
