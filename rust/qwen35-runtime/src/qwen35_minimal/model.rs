@@ -8770,25 +8770,25 @@ impl FullAttention {
         };
 
         let output_reshape_start = profile_start(device)?;
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((b_sz, q_len, self.attention_size))?
-            .to_dtype(xs.dtype())?;
+        let attn_output = backend.prepare_full_attention_output(
+            &attn_output,
+            &gate,
+            b_sz,
+            q_len,
+            self.attention_size,
+            xs.dtype(),
+        )?;
         profile.full_attention_output_reshape_millis +=
             profile_elapsed(output_reshape_start, device)?;
         if external_full_attention.is_none() {
-            self.kv_cache = Some((
-                backend.tensor_to_buffer(key_states)?,
-                backend.tensor_to_buffer(value_states)?,
-            ));
+            self.kv_cache = Some(backend.wrap_kv_cache(key_states, value_states)?);
         } else {
             self.kv_cache = None;
         }
         let gate_start = profile_start(device)?;
-        let gated = attn_output.broadcast_mul(&ops::sigmoid(&gate)?)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = self.o_proj.forward(&gated)?;
+        let output = self.o_proj.forward_buffer(&attn_output)?.clone_tensor_as(xs.dtype())?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))

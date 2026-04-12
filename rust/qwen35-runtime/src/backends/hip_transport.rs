@@ -3641,6 +3641,7 @@ mod tests {
         Ok(())
     }
 
+    #[test]
     fn device_leaf_rms_norm_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let xs = Tensor::from_vec(vec![3f32, 4.0, 5.0, 12.0], (2, 2), &device)?;
