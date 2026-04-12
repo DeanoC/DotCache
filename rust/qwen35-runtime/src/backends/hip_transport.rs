@@ -5695,6 +5695,90 @@ fn delta_local_attn_scan_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_local_attn_scan_hip_host_buffer(
+    query_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match query_scan.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.buffer.device.same_device(&query_scan.buffer.device)
+        && exp_g_scan.buffer.device.same_device(&query_scan.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query_scan.buffer.dtype) else {
+        return Ok(None);
+    };
+    if query_scan.buffer.dtype != key_scan.buffer.dtype
+        || query_scan.buffer.dtype != exp_g_scan.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, num_chunks, chunk_size, k_head_dim] =
+        <[usize; 4]>::try_from(query_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-local-attn-scan query rank".into()))?;
+    let [key_bh, key_chunks, key_chunk_size, key_k] =
+        <[usize; 4]>::try_from(key_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-local-attn-scan key rank".into()))?;
+    let [exp_bh, exp_chunks, exp_chunk_size] =
+        <[usize; 3]>::try_from(exp_g_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-local-attn-scan exp_g rank".into()))?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, query_scan.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_local_attn_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            query_scan.raw_device_ptr(),
+            key_scan.raw_device_ptr(),
+            exp_g_scan.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-local-attn-scan-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: query_scan.buffer.dtype,
+            device: query_scan.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_local_attn_scan_hip_host_buffer(
+    query_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (query_scan, key_scan, exp_g_scan);
+    Ok(None)
+}
+
 fn delta_base_attn_scan_hip_host_buffer(
     k_beta_scan: &Tensor,
     key_scan: &Tensor,
@@ -5713,6 +5797,90 @@ fn delta_base_attn_scan_hip_host_buffer(
             device: k_beta_scan.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_base_attn_scan_hip_host_buffer(
+    k_beta_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match k_beta_scan.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.buffer.device.same_device(&k_beta_scan.buffer.device)
+        && exp_g_scan.buffer.device.same_device(&k_beta_scan.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(k_beta_scan.buffer.dtype) else {
+        return Ok(None);
+    };
+    if k_beta_scan.buffer.dtype != key_scan.buffer.dtype
+        || k_beta_scan.buffer.dtype != exp_g_scan.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, num_chunks, chunk_size, k_head_dim] =
+        <[usize; 4]>::try_from(k_beta_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-base-attn-scan k_beta rank".into()))?;
+    let [key_bh, key_chunks, key_chunk_size, key_k] =
+        <[usize; 4]>::try_from(key_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-base-attn-scan key rank".into()))?;
+    let [exp_bh, exp_chunks, exp_chunk_size] =
+        <[usize; 3]>::try_from(exp_g_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-base-attn-scan exp_g rank".into()))?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, k_beta_scan.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_base_attn_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            k_beta_scan.raw_device_ptr(),
+            key_scan.raw_device_ptr(),
+            exp_g_scan.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-base-attn-scan-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: k_beta_scan.buffer.dtype,
+            device: k_beta_scan.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_base_attn_scan_hip_host_buffer(
+    k_beta_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (k_beta_scan, key_scan, exp_g_scan);
+    Ok(None)
 }
 
 fn delta_attn_solve_from_inputs_hip_host_buffer(
@@ -5735,6 +5903,90 @@ fn delta_attn_solve_from_inputs_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_attn_solve_from_inputs_hip_host_buffer(
+    k_beta_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match k_beta_scan.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.buffer.device.same_device(&k_beta_scan.buffer.device)
+        && exp_g_scan.buffer.device.same_device(&k_beta_scan.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(k_beta_scan.buffer.dtype) else {
+        return Ok(None);
+    };
+    if k_beta_scan.buffer.dtype != key_scan.buffer.dtype
+        || k_beta_scan.buffer.dtype != exp_g_scan.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, num_chunks, chunk_size, k_head_dim] =
+        <[usize; 4]>::try_from(k_beta_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-attn-solve-from-inputs k_beta rank".into()))?;
+    let [key_bh, key_chunks, key_chunk_size, key_k] =
+        <[usize; 4]>::try_from(key_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-attn-solve-from-inputs key rank".into()))?;
+    let [exp_bh, exp_chunks, exp_chunk_size] =
+        <[usize; 3]>::try_from(exp_g_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-attn-solve-from-inputs exp_g rank".into()))?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, k_beta_scan.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_attn_solve_from_inputs(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            k_beta_scan.raw_device_ptr(),
+            key_scan.raw_device_ptr(),
+            exp_g_scan.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-attn-solve-from-inputs-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: k_beta_scan.buffer.dtype,
+            device: k_beta_scan.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_attn_solve_from_inputs_hip_host_buffer(
+    k_beta_scan: &HipMappedHostBuffer,
+    key_scan: &HipMappedHostBuffer,
+    exp_g_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (k_beta_scan, key_scan, exp_g_scan);
+    Ok(None)
+}
+
 fn delta_attn_solve_scan_hip_host_buffer(base_attn_scan: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = delta_attn_solve_scan_host_buffer(base_attn_scan)? else {
         return Ok(None);
@@ -5747,6 +5999,60 @@ fn delta_attn_solve_scan_hip_host_buffer(base_attn_scan: &Tensor) -> Result<Opti
             device: base_attn_scan.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_attn_solve_scan_hip_host_buffer(
+    base_attn_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match base_attn_scan.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(base_attn_scan.buffer.dtype) else {
+        return Ok(None);
+    };
+    let [batch_heads, num_chunks, chunk_size, width] =
+        <[usize; 4]>::try_from(base_attn_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-attn-solve-scan base_attn rank".into()))?;
+    if width != chunk_size {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, base_attn_scan.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_attn_solve_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            base_attn_scan.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-attn-solve-scan-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: base_attn_scan.buffer.dtype,
+            device: base_attn_scan.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_attn_solve_scan_hip_host_buffer(
+    base_attn_scan: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = base_attn_scan;
+    Ok(None)
 }
 
 fn delta_recurrent_prefill_hip_host_buffer(
@@ -6179,6 +6485,90 @@ fn delta_state_scan_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_state_scan_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    packed_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match initial_state.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(packed_scan.buffer.device.same_device(&initial_state.buffer.device)
+        && value.buffer.device.same_device(&initial_state.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(initial_state.buffer.dtype) else {
+        return Ok(None);
+    };
+    if initial_state.buffer.dtype != packed_scan.buffer.dtype
+        || initial_state.buffer.dtype != value.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, k_head_dim, v_head_dim] =
+        <[usize; 3]>::try_from(initial_state.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-state-scan initial_state rank".into()))?;
+    let [packed_bh, num_chunks, chunk_size, packed_width] =
+        <[usize; 4]>::try_from(packed_scan.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-state-scan packed_scan rank".into()))?;
+    let [value_bh, value_num_chunks, value_chunk_size, value_v_head_dim] =
+        <[usize; 4]>::try_from(value.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-state-scan value rank".into()))?;
+    if packed_bh != batch_heads
+        || value_bh != batch_heads
+        || value_num_chunks != num_chunks
+        || value_chunk_size != chunk_size
+        || value_v_head_dim != v_head_dim
+        || packed_width != 2 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, num_chunks + 1, k_head_dim, v_head_dim];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, initial_state.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_state_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_state.raw_device_ptr(),
+            packed_scan.raw_device_ptr(),
+            value.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-state-scan-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: initial_state.buffer.dtype,
+            device: initial_state.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_state_scan_hip_host_buffer(
+    initial_state: &HipMappedHostBuffer,
+    packed_scan: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (initial_state, packed_scan, value);
+    Ok(None)
+}
+
 fn delta_chunk_fused_hip_host_buffer(
     prev_state: &Tensor,
     packed_chunk: &Tensor,
@@ -6196,6 +6586,88 @@ fn delta_chunk_fused_hip_host_buffer(
             device: prev_state.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_delta_chunk_fused_hip_host_buffer(
+    prev_state: &HipMappedHostBuffer,
+    packed_chunk: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match prev_state.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(packed_chunk.buffer.device.same_device(&prev_state.buffer.device)
+        && value.buffer.device.same_device(&prev_state.buffer.device))
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(prev_state.buffer.dtype) else {
+        return Ok(None);
+    };
+    if prev_state.buffer.dtype != packed_chunk.buffer.dtype
+        || prev_state.buffer.dtype != value.buffer.dtype
+    {
+        return Ok(None);
+    }
+    let [batch_heads, k_head_dim, v_head_dim] =
+        <[usize; 3]>::try_from(prev_state.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-chunk-fused prev_state rank".into()))?;
+    let [packed_bh, chunk_size, packed_width] =
+        <[usize; 3]>::try_from(packed_chunk.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-chunk-fused packed_chunk rank".into()))?;
+    let [value_bh, value_chunk_size, value_v_head_dim] =
+        <[usize; 3]>::try_from(value.buffer.shape.as_slice())
+            .map_err(|_| candle_core::Error::Msg("delta-chunk-fused value rank".into()))?;
+    if packed_bh != batch_heads
+        || value_bh != batch_heads
+        || value_chunk_size != chunk_size
+        || value_v_head_dim != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let shape = vec![batch_heads, 2 * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, prev_state.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            prev_state.raw_device_ptr(),
+            packed_chunk.raw_device_ptr(),
+            value.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-chunk-fused-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: prev_state.buffer.dtype,
+            device: prev_state.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_delta_chunk_fused_hip_host_buffer(
+    prev_state: &HipMappedHostBuffer,
+    packed_chunk: &HipMappedHostBuffer,
+    value: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (prev_state, packed_chunk, value);
+    Ok(None)
 }
 
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
@@ -10761,6 +11233,29 @@ pub(crate) fn delta_base_attn_scan_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    let k_beta_scan_hip = HipTensor::from_scaffold_tensor(k_beta_scan.clone());
+    let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
+    let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
+    if let (Some(k_beta_scan), Some(key_scan), Some(exp_g_scan)) = (
+        k_beta_scan_hip.0 .0.direct_materialized_device_buffer(),
+        key_scan_hip.0 .0.direct_materialized_device_buffer(),
+        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(k_beta_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(exp_g_scan_mapped),
+        ) = (&k_beta_scan.storage, &key_scan.storage, &exp_g_scan.storage)
+        {
+            if let Some(out) = mapped_delta_base_attn_scan_hip_host_buffer(
+                k_beta_scan_mapped,
+                key_scan_mapped,
+                exp_g_scan_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) =
         delta_base_attn_scan_hip_host_buffer(k_beta_scan, key_scan, exp_g_scan)?
     {
@@ -10775,6 +11270,29 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    let k_beta_scan_hip = HipTensor::from_scaffold_tensor(k_beta_scan.clone());
+    let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
+    let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
+    if let (Some(k_beta_scan), Some(key_scan), Some(exp_g_scan)) = (
+        k_beta_scan_hip.0 .0.direct_materialized_device_buffer(),
+        key_scan_hip.0 .0.direct_materialized_device_buffer(),
+        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(k_beta_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(exp_g_scan_mapped),
+        ) = (&k_beta_scan.storage, &key_scan.storage, &exp_g_scan.storage)
+        {
+            if let Some(out) = mapped_delta_attn_solve_from_inputs_hip_host_buffer(
+                k_beta_scan_mapped,
+                key_scan_mapped,
+                exp_g_scan_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) =
         delta_attn_solve_from_inputs_hip_host_buffer(k_beta_scan, key_scan, exp_g_scan)?
     {
@@ -10789,6 +11307,16 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
 }
 
 pub(crate) fn delta_attn_solve_scan_buffer(base_attn_scan: &StateBuffer) -> Result<StateBuffer> {
+    let base_attn_scan_hip = HipTensor::from_state_buffer(base_attn_scan);
+    if let Some(base_attn_scan) = base_attn_scan_hip.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(base_attn_scan_mapped) = &base_attn_scan.storage {
+            if let Some(out) =
+                mapped_delta_attn_solve_scan_hip_host_buffer(base_attn_scan_mapped)?
+            {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) = delta_attn_solve_scan_hip_host_buffer(base_attn_scan.tensor())? {
         return host.into_state_buffer();
     }
@@ -10801,6 +11329,29 @@ pub(crate) fn delta_local_attn_scan_buffer(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    let query_scan_hip = HipTensor::from_scaffold_tensor(query_scan.clone());
+    let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
+    let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
+    if let (Some(query_scan), Some(key_scan), Some(exp_g_scan)) = (
+        query_scan_hip.0 .0.direct_materialized_device_buffer(),
+        key_scan_hip.0 .0.direct_materialized_device_buffer(),
+        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(query_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(key_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(exp_g_scan_mapped),
+        ) = (&query_scan.storage, &key_scan.storage, &exp_g_scan.storage)
+        {
+            if let Some(out) = mapped_delta_local_attn_scan_hip_host_buffer(
+                query_scan_mapped,
+                key_scan_mapped,
+                exp_g_scan_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) = delta_local_attn_scan_hip_host_buffer(query_scan, key_scan, exp_g_scan)? {
         return host.into_state_buffer();
     }
@@ -10889,6 +11440,29 @@ pub(crate) fn delta_state_scan_buffer(
     packed_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    let initial_state_hip = HipTensor::from_state_buffer(initial_state);
+    let packed_scan_hip = HipTensor::from_state_buffer(packed_scan);
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (Some(initial_state), Some(packed_scan), Some(value)) = (
+        initial_state_hip.0 .0.direct_materialized_device_buffer(),
+        packed_scan_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(packed_scan_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (&initial_state.storage, &packed_scan.storage, &value.storage)
+        {
+            if let Some(out) = mapped_delta_state_scan_hip_host_buffer(
+                initial_state_mapped,
+                packed_scan_mapped,
+                value_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) =
         delta_state_scan_hip_host_buffer(initial_state.tensor(), packed_scan.tensor(), value)?
     {
@@ -10907,6 +11481,29 @@ pub(crate) fn delta_chunk_fused_buffer(
     packed_chunk: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    let prev_state_hip = HipTensor::from_state_buffer(prev_state);
+    let packed_chunk_hip = HipTensor::from_state_buffer(packed_chunk);
+    let value_hip = HipTensor::from_scaffold_tensor(value.clone());
+    if let (Some(prev_state), Some(packed_chunk), Some(value)) = (
+        prev_state_hip.0 .0.direct_materialized_device_buffer(),
+        packed_chunk_hip.0 .0.direct_materialized_device_buffer(),
+        value_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(prev_state_mapped),
+            HipDeviceStorage::MappedHostBuffer(packed_chunk_mapped),
+            HipDeviceStorage::MappedHostBuffer(value_mapped),
+        ) = (&prev_state.storage, &packed_chunk.storage, &value.storage)
+        {
+            if let Some(out) = mapped_delta_chunk_fused_hip_host_buffer(
+                prev_state_mapped,
+                packed_chunk_mapped,
+                value_mapped,
+            )? {
+                return out.into_state_buffer();
+            }
+        }
+    }
     if let Some(host) =
         delta_chunk_fused_hip_host_buffer(prev_state.tensor(), packed_chunk.tensor(), value)?
     {
