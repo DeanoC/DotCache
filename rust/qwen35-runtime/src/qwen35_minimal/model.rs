@@ -9125,6 +9125,40 @@ struct LinearValueCache {
 }
 
 impl GatedDeltaNet {
+    fn finalize_linear_output_buffer(
+        &self,
+        hidden_dtype: DType,
+        batch_size: usize,
+        seq_len: usize,
+        z: &StateBuffer,
+        core_attn_out: &Tensor,
+    ) -> Result<StateBuffer> {
+        let backend = backend_buffer_api::for_device(z.device());
+        let core_attn_out = self
+            .norm
+            .forward_buffer(
+                &backend.reshape_tensor_to_buffer(
+                    core_attn_out,
+                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
+                )?,
+                &backend.reshape_tensor_to_buffer(
+                    z.tensor(),
+                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
+                )?,
+            )?
+            .tensor()
+            .reshape((batch_size, seq_len, self.value_dim))?;
+        let core_attn_out = if core_attn_out.dtype() == hidden_dtype {
+            core_attn_out
+        } else {
+            core_attn_out.to_dtype(hidden_dtype)?
+        };
+        self.out_proj.forward_buffer(&backend.reshape_tensor_to_buffer(
+            &core_attn_out,
+            &[batch_size, seq_len, self.value_dim],
+        )?)
+    }
+
     fn cache_state(&self) -> LinearAttentionCacheState {
         LinearAttentionCacheState {
             conv_state: self.conv_state.clone(),
@@ -10865,29 +10899,13 @@ impl GatedDeltaNet {
             profile.linear_recurrent_loop_millis += kv_append_elapsed;
 
             let output_start = profile_start(device)?;
-            let core_attn_out = self
-                .norm
-                .forward_buffer(
-                    &backend.reshape_tensor_to_buffer(
-                        &core_attn_out,
-                        &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
-                    )?,
-                    &backend.reshape_tensor_to_buffer(
-                        z.tensor(),
-                        &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
-                    )?,
-                )?
-                .tensor()
-                .reshape((batch_size, seq_len, self.value_dim))?;
-            let core_attn_out = if core_attn_out.dtype() == hidden_dtype {
-                core_attn_out
-            } else {
-                core_attn_out.to_dtype(hidden_dtype)?
-            };
-            let output = self.out_proj.forward_buffer(&backend.reshape_tensor_to_buffer(
+            let output = self.finalize_linear_output_buffer(
+                hidden_dtype,
+                batch_size,
+                seq_len,
+                z,
                 &core_attn_out,
-                &[batch_size, seq_len, self.value_dim],
-            )?)?;
+            )?;
             profile.output_projection_millis += profile_elapsed(output_start, device)?;
             profile.linear_attention_millis += profile_elapsed(total_start, device)?;
             return Ok((output, recurrent_state, profile));
@@ -11002,29 +11020,13 @@ impl GatedDeltaNet {
         profile.add_assign(&linear_profile);
 
         let output_start = profile_start(device)?;
-        let core_attn_out = self
-            .norm
-            .forward_buffer(
-                &backend.reshape_tensor_to_buffer(
-                    &core_attn_out,
-                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
-                )?,
-                &backend.reshape_tensor_to_buffer(
-                    z.tensor(),
-                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
-                )?,
-            )?
-            .tensor()
-            .reshape((batch_size, seq_len, self.value_dim))?;
-        let core_attn_out = if core_attn_out.dtype() == hidden_dtype {
-            core_attn_out
-        } else {
-            core_attn_out.to_dtype(hidden_dtype)?
-        };
-        let output = self.out_proj.forward_buffer(&backend.reshape_tensor_to_buffer(
+        let output = self.finalize_linear_output_buffer(
+            hidden_dtype,
+            batch_size,
+            seq_len,
+            z,
             &core_attn_out,
-            &[batch_size, seq_len, self.value_dim],
-        )?)?;
+        )?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.linear_attention_millis +=
             profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
