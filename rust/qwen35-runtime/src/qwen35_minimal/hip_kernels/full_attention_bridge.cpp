@@ -1210,6 +1210,33 @@ int batched_matmul_device(
 }
 
 template <typename T>
+int mul_scalar_device(
+    int device_ordinal,
+    int total_elems,
+    float scalar,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total_elems) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_mul_scalar_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        total_elems,
+        scalar,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 145;
+    if (hipDeviceSynchronize() != hipSuccess) return 146;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -3075,6 +3102,40 @@ extern "C" int dotcache_qwen35_hip_batched_matmul(
             out);
     default:
         return 144;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_mul_scalar(
+    int dtype,
+    size_t device_ordinal,
+    size_t total_elems,
+    float scalar,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return mul_scalar_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    case 1:
+        return mul_scalar_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    case 2:
+        return mul_scalar_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(total_elems),
+            scalar,
+            xs,
+            out);
+    default:
+        return 147;
     }
 }
 

@@ -1802,6 +1802,20 @@ __global__ void dotcache_qwen35_binary_broadcast_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_mul_scalar_kernel(
+    int total_elems,
+    float scalar,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= total_elems) {
+        return;
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(dotcache_qwen35_to_float(xs[idx]) * scalar);
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_batched_matmul_kernel(
     int batch_rank,
     size_t batch_elems,

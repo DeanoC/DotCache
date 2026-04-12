@@ -3240,6 +3240,60 @@ pub(crate) fn hip_matmul_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn hip_mul_scalar_host_buffer(
+    xs: &Tensor,
+    scalar: f64,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let total_elems = layout.shape().elem_count();
+    let mut out = vec![0u8; total_elems.saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_mul_scalar(
+            dtype_code,
+            ordinal,
+            total_elems,
+            scalar as f32,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-mul-scalar-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn hip_mul_scalar_host_buffer(
+    xs: &Tensor,
+    scalar: f64,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (xs, scalar);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipL2Norm {
     n_rows: usize,

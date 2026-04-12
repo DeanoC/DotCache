@@ -14,7 +14,7 @@ use crate::qwen35_minimal_impl::model::{
     hip_broadcast_add_host_buffer, hip_broadcast_div_host_buffer, hip_broadcast_mul_host_buffer,
     hip_broadcast_sub_host_buffer, hip_cast_host_buffer, hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
-    hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
+    hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_mul_scalar_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
     hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
@@ -1460,7 +1460,13 @@ impl HipDeviceBuffer {
                 buffer.mul_scalar(value)?,
             ));
         }
-        Ok(Self::from_tensor((self.materialize_tensor()? * value)?))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = mul_scalar_hip_host_buffer(&tensor, value)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from mul_scalar host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor((tensor * value)?))
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
@@ -4553,6 +4559,20 @@ fn matmul_hip_host_buffer(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor
             shape,
             dtype: lhs.dtype(),
             device: lhs.device().clone(),
+        }),
+    )))
+}
+
+fn mul_scalar_hip_host_buffer(xs: &Tensor, value: f64) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = hip_mul_scalar_host_buffer(xs, value)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
         }),
     )))
 }
@@ -10435,6 +10455,22 @@ mod tests {
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(out)?, vec![11.0, 22.0, 13.0, 24.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_mul_scalar_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, -2.0, 4.0],
+            (3,),
+            &device,
+        )?);
+
+        let out = xs.mul_scalar(0.5)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![0.5, -1.0, 2.0]);
         Ok(())
     }
 
