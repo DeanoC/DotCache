@@ -506,6 +506,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("missing or invalid float field `{key}`").into())
     }
 
+    fn json_f64_any(record: &Value, keys: &[&str]) -> Result<f64, Box<dyn std::error::Error>> {
+        for key in keys {
+            if let Some(value) = record.get(*key).and_then(Value::as_f64) {
+                return Ok(value);
+            }
+        }
+        Err(format!("missing or invalid float field in {:?}", keys).into())
+    }
+
     fn json_f64_default(record: &Value, key: &str) -> f64 {
         record.get(key).and_then(Value::as_f64).unwrap_or(0.0)
     }
@@ -783,7 +792,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prompt_token_target: args.prompt_token_target,
             generated_token_count,
             warmup_runs: json_usize(&record, "warmup_runs")?,
-            warmup_millis: json_f64(&record, "warmup_millis")?,
+            warmup_millis: if args.runtime_mode == RuntimeMode::TorchControl {
+                json_f64_any(&record, &["warmup_millis", "warmup_ms"])?
+            } else {
+                json_f64(&record, "warmup_millis")?
+            },
             max_new_tokens: args.max_new_tokens,
             tokens_per_page: args.tokens_per_page,
             resident_page_budget: None,

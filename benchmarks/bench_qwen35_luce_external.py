@@ -190,13 +190,12 @@ def main() -> None:
     for step in range(max(args.max_new_tokens - 1, 0)):
         if invalid_token_id is not None:
             break
-        next_id = decoder.step(next_id)
-        if next_id == tokenizer.eos_token_id:
-            break
-        if not valid_token_id(tokenizer, next_id):
-            invalid_token_id = int(next_id)
+        candidate_id = decoder.step(next_id)
+        if not valid_token_id(tokenizer, candidate_id):
+            invalid_token_id = int(candidate_id)
             invalid_token_step = step + 1
             break
+        next_id = int(candidate_id)
         out_ids.append(next_id)
     ended.record()
     torch.cuda.synchronize()
