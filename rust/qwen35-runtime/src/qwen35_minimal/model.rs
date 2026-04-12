@@ -10810,8 +10810,8 @@ impl GatedDeltaNet {
                 beta_raw.tensor().to_dtype(target_dtype)?
             };
             let a_beta_raw = backend.concat_last_dim(
-                &StateBuffer::from_tensor(a)?,
-                &StateBuffer::from_tensor(beta_raw)?,
+                &backend.tensor_to_buffer(a)?,
+                &backend.tensor_to_buffer(beta_raw)?,
             )?;
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let initial_state = match &self.recurrent_state {
@@ -10901,7 +10901,7 @@ impl GatedDeltaNet {
             } else {
                 a.tensor().to_dtype(target_dtype)?
             };
-            let a = StateBuffer::from_tensor(a_tensor)?;
+            let a = backend.tensor_to_buffer(a_tensor)?;
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
