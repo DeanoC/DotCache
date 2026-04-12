@@ -1588,9 +1588,9 @@ impl HipDeviceBuffer {
             })?);
         }
         let normed = self.rms_norm(weight, eps, false)?;
-        let sig = (gate_tensor.neg()?.exp()? + 1.0)?.recip()?;
-        let silu = gate_tensor.broadcast_mul(&sig)?;
-        Ok(Self::from_tensor(normed.materialize_tensor()?.broadcast_mul(&silu)?))
+        let sig = gate.sigmoid()?;
+        let silu = gate.broadcast_mul(&sig)?;
+        normed.broadcast_mul(&silu)
     }
 
     pub(crate) fn value_decay(&self, dt_bias: &Self, a_log_exp: &Self) -> Result<Self> {
@@ -1667,9 +1667,9 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from swiglu_mul host buffer".into())
             })?);
         }
-        let sig = (tensor.neg()?.exp()? + 1.0)?.recip()?;
-        let silu = tensor.broadcast_mul(&sig)?;
-        Ok(Self::from_tensor(silu.broadcast_mul(&up_tensor)?))
+        let sig = self.sigmoid()?;
+        let silu = self.broadcast_mul(&sig)?;
+        silu.broadcast_mul(up)
     }
 
     pub(crate) fn contiguous(&self) -> Result<Self> {
