@@ -363,6 +363,14 @@ impl ImmutableEmbedding {
         self.meta.dtype
     }
 
+    pub(crate) fn hidden_size(&self) -> usize {
+        self.meta.hidden_size
+    }
+
+    pub(crate) fn vocab_size(&self) -> usize {
+        self.meta.vocab_size
+    }
+
     fn materialized_embedding(&self) -> Result<Embedding> {
         Ok(Embedding::new(
             self.weight
@@ -388,7 +396,10 @@ impl ImmutableEmbedding {
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
-    fn registered_device_ptr(&self, device_ordinal: usize) -> Result<*const std::ffi::c_void> {
+    pub(crate) fn registered_device_ptr(
+        &self,
+        device_ordinal: usize,
+    ) -> Result<*const std::ffi::c_void> {
         let mut state = self.state.lock().expect("immutable embedding state poisoned");
         match &*state {
             ImmutableEmbeddingState::Registered(weight) => return Ok(weight.device_ptr()),

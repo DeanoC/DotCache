@@ -5420,6 +5420,68 @@ fn embedding_lookup_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_embedding_lookup_hip_host_buffer(
+    embeddings: &HipMappedHostBuffer,
+    indexes: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match embeddings.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !indexes.buffer.device.same_device(&embeddings.buffer.device) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(embeddings.buffer.dtype) else {
+        return Ok(None);
+    };
+    let Ok(index_dtype_code) = hip::index_dtype_code(indexes.buffer.dtype) else {
+        return Ok(None);
+    };
+    let [vocab_size, hidden_size] = <[usize; 2]>::try_from(embeddings.buffer.shape.as_slice())
+        .map_err(|_| candle_core::Error::Msg("embedding-lookup embeddings rank".into()))?;
+    let token_count = indexes.buffer.shape.iter().product::<usize>();
+    let mut shape = indexes.buffer.shape.clone();
+    shape.push(hidden_size);
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, embeddings.buffer.dtype)];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            vocab_size,
+            hidden_size,
+            embeddings.raw_device_ptr(),
+            indexes.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("embedding-lookup-mapped-host-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: embeddings.buffer.dtype,
+            device: embeddings.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_embedding_lookup_hip_host_buffer(
+    embeddings: &HipMappedHostBuffer,
+    indexes: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (embeddings, indexes);
+    Ok(None)
+}
+
 fn immutable_embedding_lookup_hip_host_buffer(
     embedding: &ImmutableEmbedding,
     indexes: &Tensor,
@@ -5438,6 +5500,67 @@ fn immutable_embedding_lookup_hip_host_buffer(
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_immutable_embedding_lookup_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    indexes: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match indexes.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(embedding.dtype()) else {
+        return Ok(None);
+    };
+    let Ok(index_dtype_code) = hip::index_dtype_code(indexes.buffer.dtype) else {
+        return Ok(None);
+    };
+    let token_count = indexes.buffer.shape.iter().product::<usize>();
+    let mut shape = indexes.buffer.shape.clone();
+    shape.push(embedding.hidden_size());
+    let embedding_ptr = embedding.registered_device_ptr(ordinal)?;
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, embedding.dtype())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            embedding.vocab_size(),
+            embedding.hidden_size(),
+            embedding_ptr as *const c_void,
+            indexes.raw_device_ptr(),
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "immutable-embedding-lookup-mapped-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: embedding.dtype(),
+            device: indexes.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_immutable_embedding_lookup_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    indexes: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (embedding, indexes);
+    Ok(None)
+}
+
 fn output_projection_hip_host_buffer(
     embedding: &ImmutableEmbedding,
     hidden_states: &Tensor,
@@ -5454,6 +5577,67 @@ fn output_projection_hip_host_buffer(
             device: hidden_states.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn mapped_output_projection_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match hidden_states.buffer.device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let dims = &hidden_states.buffer.shape;
+    let hidden_size = *dims
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("hidden state rank must be >= 1".into()))?;
+    if hidden_size != embedding.hidden_size() {
+        return Ok(None);
+    }
+    let rows = dims.iter().product::<usize>() / hidden_size;
+    let mut shape = dims.clone();
+    *shape.last_mut().expect("validated non-empty dims") = embedding.vocab_size();
+    let weight_ptr = embedding.registered_device_ptr(ordinal)?;
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, embedding.dtype())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
+            hip::dtype_code(embedding.dtype())?,
+            ordinal,
+            rows,
+            embedding.hidden_size(),
+            embedding.vocab_size(),
+            hidden_states.raw_device_ptr(),
+            weight_ptr,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "immutable-output-projection-mapped-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: out.into(),
+            shape,
+            dtype: embedding.dtype(),
+            device: hidden_states.buffer.device.clone(),
+        }),
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn mapped_output_projection_hip_host_buffer(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &HipMappedHostBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (embedding, hidden_states);
+    Ok(None)
 }
 
 fn linear_prefill_conv_hip_host_buffer(
@@ -10397,6 +10581,24 @@ mod tests {
 }
 
 pub(crate) fn embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<HipTensor> {
+    let embeddings_hip = HipTensor::from_scaffold_tensor(embeddings.clone());
+    let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
+    if let (Some(embeddings), Some(indexes)) = (
+        embeddings_hip.0 .0.direct_materialized_device_buffer(),
+        indexes_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            HipDeviceStorage::MappedHostBuffer(embeddings_mapped),
+            HipDeviceStorage::MappedHostBuffer(indexes_mapped),
+        ) = (&embeddings.storage, &indexes.storage)
+        {
+            if let Some(out) =
+                mapped_embedding_lookup_hip_host_buffer(embeddings_mapped, indexes_mapped)?
+            {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = embedding_lookup_hip_host_buffer(embeddings, indexes)? {
         return Ok(host);
     }
@@ -10414,6 +10616,16 @@ pub(crate) fn immutable_embedding_lookup(
     embedding: &ImmutableEmbedding,
     indexes: &Tensor,
 ) -> Result<HipTensor> {
+    let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
+    if let Some(indexes) = indexes_hip.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(indexes_mapped) = &indexes.storage {
+            if let Some(out) =
+                mapped_immutable_embedding_lookup_hip_host_buffer(embedding, indexes_mapped)?
+            {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = immutable_embedding_lookup_hip_host_buffer(embedding, indexes)? {
         return Ok(host);
     }
@@ -10426,6 +10638,16 @@ pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &Tensor,
 ) -> Result<HipTensor> {
+    let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
+    if let Some(hidden_states) = hidden_states_hip.0 .0.direct_materialized_device_buffer() {
+        if let HipDeviceStorage::MappedHostBuffer(hidden_states_mapped) = &hidden_states.storage {
+            if let Some(out) =
+                mapped_output_projection_hip_host_buffer(embedding, hidden_states_mapped)?
+            {
+                return Ok(out);
+            }
+        }
+    }
     if let Some(host) = output_projection_hip_host_buffer(embedding, hidden_states)? {
         return Ok(host);
     }
