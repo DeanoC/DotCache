@@ -2440,7 +2440,7 @@ fn unpack_linear_decode_output_hip(
     head_v_dim: usize,
 ) -> Result<(HipTensor, HipTensor)> {
     let fused = HipTensor::from_state_buffer(fused);
-    if let Some(fused) = fused.0 .0.direct_device_buffer() {
+    if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
         let (core_attn_out, recurrent_state) = fused.unpack_linear_decode_output(
             batch_size,
             seq_len,
@@ -2495,7 +2495,7 @@ fn unpack_linear_prefill_output_hip(
 ) -> Result<(HipTensor, HipTensor, HipTensor)> {
     let out_width = conv_dim + num_v_heads;
     let fused = HipTensor::from_state_buffer(fused);
-    if let Some(fused) = fused.0 .0.direct_device_buffer() {
+    if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
         let (mixed_qkv, g, conv_state) = fused.unpack_linear_prefill_output(
             batch_size,
             seq_len,
@@ -2555,7 +2555,7 @@ fn unpack_scan_fused_output_and_state_hip(
     output_dtype: DType,
 ) -> Result<(HipTensor, HipTensor)> {
     let fused = HipTensor::from_state_buffer(fused);
-    if let Some(fused) = fused.0 .0.direct_device_buffer() {
+    if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
         let (output, recurrent_state) = fused.unpack_scan_fused_output_and_state(
             total_sequence_length,
             output_sequence_length,
@@ -2631,7 +2631,7 @@ fn unpack_chunk_fused_hip(
     k_head_dim: usize,
 ) -> Result<(HipTensor, HipTensor, HipTensor)> {
     let fused = HipTensor::from_state_buffer(fused);
-    if let Some(fused) = fused.0 .0.direct_device_buffer() {
+    if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
         let (attn, local, q_state) = fused.unpack_chunk_fused(chunk_size, k_head_dim)?;
         return Ok((
             HipTensor::from_device_buffer(attn),
