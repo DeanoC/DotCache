@@ -122,6 +122,7 @@ pub(crate) struct HipDeviceBuffer {
 #[derive(Debug, Clone)]
 enum HipDeviceViewOp {
     Narrow { dim: usize, start: usize, len: usize },
+    Select { dim: usize, index: usize },
     Reshape { shape: Vec<usize> },
     Expand { shape: Vec<usize> },
     Transpose { dim1: usize, dim2: usize },
@@ -236,6 +237,9 @@ impl HipDeviceBuffer {
         for op in &self.view_ops {
             tensor = match op {
                 HipDeviceViewOp::Narrow { dim, start, len } => tensor.narrow(*dim, *start, *len)?,
+                HipDeviceViewOp::Select { dim, index } => {
+                    tensor.narrow(*dim, *index, 1)?.squeeze(*dim)?
+                }
                 HipDeviceViewOp::Reshape { shape } => tensor.reshape(shape.clone())?,
                 HipDeviceViewOp::Expand { shape } => tensor.expand(shape.clone())?,
                 HipDeviceViewOp::Transpose { dim1, dim2 } => tensor.transpose(*dim1, *dim2)?,
@@ -266,6 +270,19 @@ impl HipDeviceBuffer {
         let mut shape = dims.to_vec();
         shape[dim] = len;
         Ok(self.with_view_op(HipDeviceViewOp::Narrow { dim, start, len }, shape))
+    }
+
+    pub(crate) fn select(&self, dim: usize, index: usize) -> Result<Self> {
+        let dims = self.dims();
+        if dim >= dims.len() {
+            candle_core::bail!("select dim {dim} out of range for {:?}", dims);
+        }
+        if index >= dims[dim] {
+            candle_core::bail!("select index {index} out of range for dim size {}", dims[dim]);
+        }
+        let mut shape = dims.to_vec();
+        shape.remove(dim);
+        Ok(self.with_view_op(HipDeviceViewOp::Select { dim, index }, shape))
     }
 
     pub(crate) fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
@@ -605,17 +622,11 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn state_scan_chunk(&self, chunk_idx: usize) -> Result<Self> {
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?.i((.., chunk_idx, .., ..))?,
-        ))
+        self.select(1, chunk_idx)
     }
 
     pub(crate) fn state_scan_next_chunk(&self, next_chunk_idx: usize) -> Result<Self> {
-        Ok(Self::from_tensor(
-            self.materialize_tensor()?
-                .i((.., next_chunk_idx, .., ..))?
-                .contiguous()?,
-        ))
+        self.select(1, next_chunk_idx)?.contiguous()
     }
 
     pub(crate) fn unpack_chunk_fused(
@@ -3596,6 +3607,22 @@ mod tests {
         assert!(buffer.has_pending_views());
         assert_eq!(buffer.dims(), &[2, 1, 2]);
         assert_eq!(values_f32(tensor)?, vec![1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_state_scan_chunk_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = Tensor::from_vec(
+            (0..8).map(|v| v as f32).collect::<Vec<_>>(),
+            (1, 2, 2, 2),
+            &device,
+        )?;
+        let buffer = HipDeviceBuffer::from_tensor(tensor).state_scan_chunk(1)?;
+        assert!(buffer.has_pending_views());
+        assert_eq!(buffer.dims(), &[1, 2, 2]);
+        let tensor = HipTensor::from_device_buffer(buffer);
+        assert_eq!(values_f32(tensor)?, vec![4.0, 5.0, 6.0, 7.0]);
         Ok(())
     }
 
