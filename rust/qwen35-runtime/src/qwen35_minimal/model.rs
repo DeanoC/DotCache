@@ -10205,13 +10205,9 @@ impl GatedDeltaNet {
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
         let g_start = profile_start(device)?;
-            let g = if g_raw.device().is_hip() {
-            backend_buffer_api::for_device(g_raw.device())
-                .cumsum_last_dim(&backend_buffer_api::for_device(g_raw.device()).tensor_to_buffer(g_raw.clone())?)?
-                .clone_tensor()
-        } else {
-            g_raw.cumsum(D::Minus1)?
-        };
+        let g = backend
+            .cumsum_last_dim(&backend.tensor_to_buffer(g_raw.clone())?)?
+            .clone_tensor();
         let exp_g = g.exp()?;
         let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
         profile.linear_chunk_prepare_g_millis += profile_elapsed(g_start, device)?;
@@ -10958,18 +10954,9 @@ impl GatedDeltaNet {
                 a.tensor().to_dtype(compute_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
-            let g = if device.is_hip() {
-                backend.value_decay(
-                    &backend.tensor_to_buffer(a.clone())?,
-                    &dt_bias,
-                    &a_log_exp,
-                )?
-                .clone_tensor()
-            } else {
-                softplus(&a.broadcast_add(&dt_bias)?)?
-                    .broadcast_mul(&a_log_exp)?
-                    .neg()?
-            };
+            let g = backend
+                .value_decay(&backend.tensor_to_buffer(a.clone())?, &dt_bias, &a_log_exp)?
+                .clone_tensor();
             (mixed_qkv, g)
         };
         let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
