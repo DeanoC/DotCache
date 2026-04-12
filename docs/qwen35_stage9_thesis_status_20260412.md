@@ -243,6 +243,28 @@ Current pattern:
 
 That strengthens the case for a cost-aware mixed policy instead of a single threshold rule. The frontier is simple enough to target, but not simple enough to flatten globally.
 
+Cheap policy study across the checked-in portable frontier artifacts:
+
+- study artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_policy_study_20260412_repo_frontiers/qwen35_persistent_exact_key_policy_study.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_policy_study_20260412_repo_frontiers/qwen35_persistent_exact_key_policy_study.md)
+- policies compared:
+  - baseline
+  - always `layer 15 -> 0.20`
+  - always `layer 15 -> 0.24`
+  - simple prompt-length splits between `0.20` and `0.24`
+- best simple global policy on the saved portable frontier set:
+  - always `layer 15 -> 0.20`
+  - aggregate average `1489.86 ms/step`
+  - versus baseline aggregate average `1593.67 ms/step`
+
+So the current best cheap recommendation is surprisingly simple:
+
+- do not try to remove the layer-15 frontier globally
+- instead, keep the frontier and lower layer `15` to `0.20`
+- that beats both the current baseline and the prompt-length split heuristics on the checked-in portable studies
+
+That is not the final policy yet, but it is the strongest current small-policy candidate to test in the live runtime.
+
 ### 5. Hard-case explanation
 
 The system should still have a clean story for the remaining hard prompts and layers:
