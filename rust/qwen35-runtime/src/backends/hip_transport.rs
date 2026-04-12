@@ -3629,22 +3629,54 @@ impl HipNativeBuffer {
                 }
             }
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
-                lhs.materialize()?.broadcast_add(&rhs.materialize()?)
+                if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
+                    (&lhs.expr, &rhs.expr)
+                {
+                    Ok(lhs.broadcast_add(rhs)?.into_tensor())
+                } else {
+                    lhs.materialize()?.broadcast_add(&rhs.materialize()?)
+                }
             }
             HipNativeExpr::BroadcastMul { lhs, rhs } => {
-                lhs.materialize()?.broadcast_mul(&rhs.materialize()?)
+                if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
+                    (&lhs.expr, &rhs.expr)
+                {
+                    Ok(lhs.broadcast_mul(rhs)?.into_tensor())
+                } else {
+                    lhs.materialize()?.broadcast_mul(&rhs.materialize()?)
+                }
             }
             HipNativeExpr::BroadcastSub { lhs, rhs } => {
-                lhs.materialize()?.broadcast_sub(&rhs.materialize()?)
+                if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
+                    (&lhs.expr, &rhs.expr)
+                {
+                    Ok(lhs.broadcast_sub(rhs)?.into_tensor())
+                } else {
+                    lhs.materialize()?.broadcast_sub(&rhs.materialize()?)
+                }
             }
             HipNativeExpr::BroadcastDiv { lhs, rhs } => {
-                lhs.materialize()?.broadcast_div(&rhs.materialize()?)
+                if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
+                    (&lhs.expr, &rhs.expr)
+                {
+                    Ok(lhs.broadcast_div(rhs)?.into_tensor())
+                } else {
+                    lhs.materialize()?.broadcast_div(&rhs.materialize()?)
+                }
             }
             HipNativeExpr::MaxKeepdim { source, dim } => {
-                source.materialize()?.max_keepdim(*dim)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.max_keepdim(*dim)?.into_tensor())
+                } else {
+                    source.materialize()?.max_keepdim(*dim)
+                }
             }
             HipNativeExpr::SumKeepdim { source, dim } => {
-                source.materialize()?.sum_keepdim(*dim)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.sum_keepdim(*dim)?.into_tensor())
+                } else {
+                    source.materialize()?.sum_keepdim(*dim)
+                }
             }
             HipNativeExpr::Neg { source } => source.materialize()?.neg(),
             HipNativeExpr::AddScalar { source, value } => {
