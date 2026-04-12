@@ -3569,10 +3569,10 @@ pub(crate) fn prepare_full_attention_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_linear_attention_inputs_hip(
-    mixed_qkv: &Tensor,
-    beta_raw: &StateBuffer,
-    g: &Tensor,
+fn prepare_linear_attention_inputs_tensors_hip(
+    mixed_qkv: &HipTensor,
+    beta_raw: &HipTensor,
+    g: &HipTensor,
     batch_size: usize,
     seq_len: usize,
     key_dim: usize,
@@ -3584,9 +3584,6 @@ fn prepare_linear_attention_inputs_hip(
     compute_dtype: DType,
     repeat_kv_heads: bool,
 ) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor, HipTensor)> {
-    let mixed_qkv = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
-    let beta_raw = HipTensor::from_state_buffer(beta_raw);
-    let g = HipTensor::from_scaffold_tensor(g.clone());
     if let (Some(mixed_qkv), Some(beta_raw), Some(g)) = (
         mixed_qkv.0 .0.direct_materialized_device_buffer(),
         beta_raw.0 .0.direct_materialized_device_buffer(),
@@ -3653,6 +3650,42 @@ fn prepare_linear_attention_inputs_hip(
     let g = g
         .to_dtype(compute_dtype)?;
     Ok((query, key, value, beta, g))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_linear_attention_inputs_hip(
+    mixed_qkv: &Tensor,
+    beta_raw: &StateBuffer,
+    g: &Tensor,
+    batch_size: usize,
+    seq_len: usize,
+    key_dim: usize,
+    value_dim: usize,
+    num_k_heads: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    compute_dtype: DType,
+    repeat_kv_heads: bool,
+) -> Result<(HipTensor, HipTensor, HipTensor, HipTensor, HipTensor)> {
+    let mixed_qkv = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
+    let beta_raw = HipTensor::from_state_buffer(beta_raw);
+    let g = HipTensor::from_scaffold_tensor(g.clone());
+    prepare_linear_attention_inputs_tensors_hip(
+        &mixed_qkv,
+        &beta_raw,
+        &g,
+        batch_size,
+        seq_len,
+        key_dim,
+        value_dim,
+        num_k_heads,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        compute_dtype,
+        repeat_kv_heads,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4957,6 +4990,67 @@ mod tests {
         assert!(matches!(value.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert!(matches!(beta.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert!(matches!(g.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_prepare_linear_attention_inputs_stays_host_extractable() -> Result<()> {
+        let mixed_qkv = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let beta_raw = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1], &[0.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let g = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1], &[1.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+
+        let (query, key, value, beta, g) = prepare_linear_attention_inputs_tensors_hip(
+            &mixed_qkv,
+            &beta_raw,
+            &g,
+            1,
+            1,
+            2,
+            2,
+            1,
+            1,
+            2,
+            2,
+            DType::F32,
+            false,
+        )?;
+
+        let query_vals = values_f32(query.clone())?;
+        let key_vals = values_f32(key.clone())?;
+        let value_vals = values_f32(value.clone())?;
+        let beta_vals = values_f32(beta.clone())?;
+        let g_vals = values_f32(g.clone())?;
+        let expected_query = [1.0 / 5.0f32.sqrt(), 2.0 / 5.0f32.sqrt()];
+        let expected_key = [3.0 / 25.0f32.sqrt(), 4.0 / 25.0f32.sqrt()];
+        for (got, expected) in query_vals.iter().zip(expected_query.iter()) {
+            assert!((got - expected).abs() < 1e-5);
+        }
+        for (got, expected) in key_vals.iter().zip(expected_key.iter()) {
+            assert!((got - expected).abs() < 1e-5);
+        }
+        assert_eq!(value_vals, vec![5.0, 6.0]);
+        assert_eq!(beta_vals, vec![0.5]);
+        assert_eq!(g_vals, vec![1.0]);
+        assert!(query.try_host_buffer()?.is_some());
+        assert!(key.try_host_buffer()?.is_some());
+        assert!(value.try_host_buffer()?.is_some());
+        assert!(beta.try_host_buffer()?.is_some());
+        assert!(g.try_host_buffer()?.is_some());
         Ok(())
     }
 
