@@ -429,7 +429,10 @@ impl EmbeddingSource {
     fn forward_buffer(&self, input_ids: &Tensor) -> Result<StateBuffer> {
         match self {
             Self::Materialized(embedding) => embedding.forward_buffer(input_ids),
-            Self::Immutable(embedding) => StateBuffer::from_tensor(embedding.forward(input_ids)?),
+            Self::Immutable(embedding) => {
+                let backend = backend_buffer_api::for_device(input_ids.device());
+                backend.tensor_to_buffer(backend.immutable_embedding_lookup(embedding, input_ids)?)
+            }
         }
     }
 
