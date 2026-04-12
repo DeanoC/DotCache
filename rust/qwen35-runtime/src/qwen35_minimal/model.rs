@@ -4687,6 +4687,195 @@ pub(crate) fn linear_decode_step_hip(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn linear_decode_step_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_beta_raw = a_beta_raw.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_conv_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a_beta_raw.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device())
+        && initial_state.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_conv_state_storage, prev_conv_state_layout) = prev_conv_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_beta_raw_storage, a_beta_raw_layout) = a_beta_raw.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (initial_state_storage, initial_state_layout) = initial_state.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_conv_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_beta_raw_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+        Storage::Hip(initial_state_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_conv_state_storage,
+        &*weights_storage,
+        &*a_beta_raw_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+        &*initial_state_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_conv_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_beta_raw_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous()
+        && initial_state_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    if initial_state.dtype() != DType::F32 {
+        return Ok(None);
+    }
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (_, _, state_len) = prev_conv_state_layout.shape().dims3()?;
+    if seq_len != 1 {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let packed_width = 2 * head_k_dim + head_v_dim + 2;
+    let packed_len = batch_size
+        .saturating_mul(num_v_heads)
+        .saturating_mul(packed_width);
+    let mut packed = vec![0u8; packed_len.saturating_mul(DType::F32.size_in_bytes())];
+    let packed_host_ptr = packed.as_mut_ptr() as *const c_void;
+    let packed_device_ptr =
+        hip::register_host_mapping_for_device(ordinal, packed_host_ptr, packed.len())?;
+    let prepare_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
+            dtype_code,
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_conv_state_storage
+                .raw_device_ptr_with_offset(prev_conv_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_beta_raw_storage.raw_device_ptr_with_offset(a_beta_raw_layout.start_offset())?
+                as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            packed_device_ptr as *mut c_void,
+        )
+    };
+    if prepare_status != 0 {
+        hip::unregister_host_mapping(packed_host_ptr);
+        return Err(hip::hip_error(
+            "linear-decode-prepare-host-buffer",
+            prepare_status,
+        ));
+    }
+    let output_width = num_v_heads * head_v_dim + num_v_heads * head_k_dim * head_v_dim;
+    let output_shape = vec![batch_size, output_width];
+    let mut out =
+        vec![0u8; batch_size.saturating_mul(output_width).saturating_mul(DType::F32.size_in_bytes())];
+    let out_host_ptr = out.as_mut_ptr() as *const c_void;
+    let out_device_ptr = hip::register_host_mapping_for_device(ordinal, out_host_ptr, out.len())?;
+    let apply_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            packed_device_ptr as *const c_void,
+            initial_state_storage.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
+                as *const c_void,
+            out_device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(out_host_ptr);
+    hip::unregister_host_mapping(packed_host_ptr);
+    if apply_status != 0 {
+        return Err(hip::hip_error(
+            "linear-decode-apply-host-buffer",
+            apply_status,
+        ));
+    }
+    Ok(Some((out, output_shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn linear_decode_step_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    );
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FullAttentionPrefillMegakernel {
     batch_size: usize,

@@ -11,7 +11,8 @@ use crate::qwen35_minimal_impl::model::{
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
     linear_prefill_conv_pack_host_buffer, linear_stateful_conv_hip,
-    linear_stateful_conv_host_buffer, linear_stateful_conv_value_decay_with_state_hip,
+    linear_decode_step_host_buffer, linear_stateful_conv_host_buffer,
+    linear_stateful_conv_value_decay_with_state_hip,
     ImmutableEmbedding, StateBuffer,
 };
 use half::{bf16, f16};
@@ -4450,6 +4451,47 @@ fn linear_stateful_conv_hip_host_buffer(
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn linear_decode_step_hip_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = linear_decode_step_host_buffer(
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    )? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: DType::F32,
+            device: mixed_qkv.device().clone(),
+        }),
+    )))
+}
+
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
         return Ok(HipTensor::from_device_buffer(
@@ -8315,6 +8357,22 @@ pub(crate) fn linear_decode_step(
     kernel_size: usize,
     head_repeat: usize,
 ) -> Result<HipTensor> {
+    if let Some(host) = linear_decode_step_hip_host_buffer(
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    )? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(linear_decode_step_hip(
         mixed_qkv,
         prev_conv_state,
