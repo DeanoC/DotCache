@@ -1,0 +1,34 @@
+{
+  "records": [
+    {
+      "case_tag": "model_roadmap",
+      "prompt_file_path": "../../docs/model_roadmap.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "submission_execution_plan",
+      "prompt_file_path": "../../docs/dotcache_submission_execution_plan.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "cuda_shortlist_paper_table",
+      "prompt_file_path": "../../docs/qwen35_cuda_shortlist_paper_table.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "stage9_backend_comparison",
+      "prompt_file_path": "../../docs/qwen35_stage9_backend_comparison_20260412.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "real_mixed_probe_code",
+      "prompt_file_path": "../../benchmarks/bench_qwen35_persistent_real_mixed_probe.py",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "serving_policy_compare_code",
+      "prompt_file_path": "../../benchmarks/bench_qwen35_persistent_serving_policy_compare.py",
+      "prompt_length": 2048
+    }
+  ]
+}

@@ -157,6 +157,40 @@ The practical question is not only "does it win on one pack?" but:
 - does it keep winning on docs, code-heavy prompts, design docs, and harder long-context mixes
 - does `bias` stay the default winner
 
+New local read on a broader repo-local public-validation mix:
+
+- manifest:
+  - [benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json)
+- result note:
+  - [docs/qwen35_stage9_public_validation_20260412.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_public_validation_20260412.md)
+
+That run mixed roadmap docs, planning docs, backend notes, and code-heavy benchmark source files.
+
+Current MPS `bias` results on that validation set:
+
+- real mixed: `552.24 ms/step`
+- conservative certified: `1434.78`
+- non-`M0` Stage 9: `2273.01`
+
+So on this broader public-validation corpus, the winner ordering still holds cleanly:
+
+- real mixed remains the serving winner
+- conservative certified remains the middle lane
+- non-`M0` Stage 9 remains the slowest of the three
+
+That materially strengthens the current confidence story on MPS, because the win is no longer resting only on the earlier large / broad / external manifest family.
+
+Quick repeatability read on the real-mixed public-validation lane:
+
+- bias ms/step values:
+  - `552.24`
+  - `591.98`
+  - `590.81`
+- mean: `578.34`
+- population stdev: `18.46`
+
+So even with some run-to-run spread, the public-validation winner ordering remains comfortably intact.
+
 ### 3. Repeatability
 
 The current numbers are strong, but the thesis should rest on stable runs rather than one especially lucky point.

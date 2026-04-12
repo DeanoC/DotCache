@@ -85,3 +85,8 @@ This recommendation is for the current `0.8B` portable corpus set. It does not i
 - broaden public-corpus validation
 - refine the exact-key fallback policy
 - investigate value-side `M0` only after the current cross-backend checkpoint is stable
+
+Update:
+
+- broader public-corpus validation has now started with:
+  - [docs/qwen35_stage9_public_validation_20260412.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_public_validation_20260412.md)
