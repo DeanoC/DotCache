@@ -2198,12 +2198,19 @@ fn prepare_depthwise_conv_input_hip(
         let prev_device = prev_state
             .as_ref()
             .and_then(|state| state.0 .0.direct_device_buffer());
-        let (prepared, next_state) =
-            HipDeviceBuffer::prepare_depthwise_conv_input(prev_device, mixed_device, kernel_size)?;
-        return Ok((
-            HipTensor::from_device_buffer(prepared),
-            next_state.map(HipTensor::from_device_buffer),
-        ));
+        if !mixed_device.has_pending_views()
+            && prev_device.map_or(true, |state| !state.has_pending_views())
+        {
+            let (prepared, next_state) = HipDeviceBuffer::prepare_depthwise_conv_input(
+                prev_device,
+                mixed_device,
+                kernel_size,
+            )?;
+            return Ok((
+                HipTensor::from_device_buffer(prepared),
+                next_state.map(HipTensor::from_device_buffer),
+            ));
+        }
     }
 
     let mixed_qkv = match prev_state {
@@ -2251,8 +2258,16 @@ fn update_depthwise_conv_state_hip(
         let prev_device = prev_state
             .as_ref()
             .and_then(|state| state.0 .0.direct_device_buffer());
-        return HipDeviceBuffer::update_depthwise_conv_state(prev_device, mixed_device, kernel_size)
+        if !mixed_device.has_pending_views()
+            && prev_device.map_or(true, |state| !state.has_pending_views())
+        {
+            return HipDeviceBuffer::update_depthwise_conv_state(
+                prev_device,
+                mixed_device,
+                kernel_size,
+            )
             .map(|state| state.map(HipTensor::from_device_buffer));
+        }
     }
 
     let state_len = kernel_size.saturating_sub(1);
