@@ -117,7 +117,7 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         q_norm_eps: f64,
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
-    ) -> Result<(Tensor, Tensor, Tensor, Tensor)>;
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)>;
     #[allow(clippy::too_many_arguments)]
     fn prepare_linear_attention_inputs(
         &self,
@@ -195,7 +195,16 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
     fn prepare_full_attention_output(
         &self,
         attn_output: &Tensor,
-        gate: &Tensor,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer>;
+    fn prepare_full_attention_output_buffer(
+        &self,
+        attn_output: &StateBuffer,
+        gate: &StateBuffer,
         b_sz: usize,
         q_len: usize,
         attention_size: usize,
@@ -223,7 +232,7 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
     ) -> Result<(Tensor, Tensor, Tensor)>;
     fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         &self,
-        query_states: &Tensor,
+        query_states: &StateBuffer,
         key_states: &StateBuffer,
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)>;
@@ -242,6 +251,20 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         attention_mask: Option<&Tensor>,
         scale: f64,
     ) -> Result<Tensor>;
+    #[allow(clippy::too_many_arguments)]
+    fn dense_full_attention_fallback_buffer(
+        &self,
+        query_states_f: &Tensor,
+        key_states_f: &Tensor,
+        value_states_f: &Tensor,
+        attention_mask: Option<&Tensor>,
+        scale: f64,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer>;
     fn linear_prefill_conv(
         &self,
         mixed_qkv: &Tensor,
@@ -669,7 +692,7 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         q_norm_eps: f64,
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
-    ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
         let q_and_gate = q_and_gate
             .tensor()
             .reshape((b_sz, q_len, num_heads, head_dim * 2))?;
@@ -701,7 +724,12 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             .tensor()
             .reshape((b_sz, q_len, num_kv_heads, head_dim))?
             .transpose(1, 2)?;
-        Ok((query_states, gate, key_states, value_states))
+        Ok((
+            StateBuffer::from_tensor(query_states)?,
+            StateBuffer::from_tensor(gate)?,
+            StateBuffer::from_tensor(key_states)?,
+            StateBuffer::from_tensor(value_states)?,
+        ))
     }
     fn prepare_linear_attention_inputs(
         &self,
@@ -879,7 +907,7 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
     fn prepare_full_attention_output(
         &self,
         attn_output: &Tensor,
-        gate: &Tensor,
+        gate: &StateBuffer,
         b_sz: usize,
         q_len: usize,
         attention_size: usize,
@@ -889,8 +917,26 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             .transpose(1, 2)?
             .reshape((b_sz, q_len, attention_size))?
             .to_dtype(hidden_dtype)?;
-        let gated = attn_output.broadcast_mul(&ops::sigmoid(gate)?)?;
+        let gated = attn_output.broadcast_mul(&ops::sigmoid(gate.tensor())?)?;
         StateBuffer::from_tensor(gated)
+    }
+    fn prepare_full_attention_output_buffer(
+        &self,
+        attn_output: &StateBuffer,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer> {
+        self.prepare_full_attention_output(
+            attn_output.tensor(),
+            gate,
+            b_sz,
+            q_len,
+            attention_size,
+            hidden_dtype,
+        )
     }
     fn append_full_attention_kv(
         &self,
@@ -936,12 +982,12 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
     }
     fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         &self,
-        query_states: &Tensor,
+        query_states: &StateBuffer,
         key_states: &StateBuffer,
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)> {
         self.prepare_full_attention_kernel_inputs(
-            query_states,
+            query_states.tensor(),
             key_states.tensor(),
             value_states.tensor(),
         )
@@ -976,6 +1022,35 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         }
         let attn_weights = ops::softmax_last_dim(&attn_weights)?;
         attn_weights.matmul(value_states_f)
+    }
+    fn dense_full_attention_fallback_buffer(
+        &self,
+        query_states_f: &Tensor,
+        key_states_f: &Tensor,
+        value_states_f: &Tensor,
+        attention_mask: Option<&Tensor>,
+        scale: f64,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer> {
+        let attn_output = self.dense_full_attention_fallback(
+            query_states_f,
+            key_states_f,
+            value_states_f,
+            attention_mask,
+            scale,
+        )?;
+        self.prepare_full_attention_output(
+            &attn_output,
+            gate,
+            b_sz,
+            q_len,
+            attention_size,
+            hidden_dtype,
+        )
     }
     fn linear_prefill_conv(
         &self,
@@ -1399,7 +1474,7 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         q_norm_eps: f64,
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
-    ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
         backends::hip::prepare_full_attention_inputs(
             q_and_gate,
             k_proj,
@@ -1544,13 +1619,31 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     fn prepare_full_attention_output(
         &self,
         attn_output: &Tensor,
-        gate: &Tensor,
+        gate: &StateBuffer,
         b_sz: usize,
         q_len: usize,
         attention_size: usize,
         hidden_dtype: DType,
         ) -> Result<StateBuffer> {
         backends::hip::prepare_full_attention_output(
+            attn_output,
+            gate,
+            b_sz,
+            q_len,
+            attention_size,
+            hidden_dtype,
+        )
+    }
+    fn prepare_full_attention_output_buffer(
+        &self,
+        attn_output: &StateBuffer,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer> {
+        backends::hip::prepare_full_attention_output_buffer(
             attn_output,
             gate,
             b_sz,
@@ -1587,7 +1680,7 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     }
     fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         &self,
-        query_states: &Tensor,
+        query_states: &StateBuffer,
         key_states: &StateBuffer,
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)> {
@@ -1625,6 +1718,32 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
             value_states_f,
             attention_mask,
             scale,
+        )
+    }
+    fn dense_full_attention_fallback_buffer(
+        &self,
+        query_states_f: &Tensor,
+        key_states_f: &Tensor,
+        value_states_f: &Tensor,
+        attention_mask: Option<&Tensor>,
+        scale: f64,
+        gate: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        attention_size: usize,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer> {
+        backends::hip::dense_full_attention_fallback_buffer(
+            query_states_f,
+            key_states_f,
+            value_states_f,
+            attention_mask,
+            scale,
+            gate,
+            b_sz,
+            q_len,
+            attention_size,
+            hidden_dtype,
         )
     }
     fn linear_prefill_conv(

@@ -165,7 +165,7 @@ pub(crate) fn prepare_full_attention_inputs(
     q_norm_eps: f64,
     k_norm_weight: &Tensor,
     k_norm_eps: f64,
-) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
     transport::prepare_full_attention_inputs(
         q_and_gate,
         k_proj,
@@ -306,13 +306,31 @@ pub(crate) fn wrap_kv_cache(
 
 pub(crate) fn prepare_full_attention_output(
     attn_output: &Tensor,
-    gate: &Tensor,
+    gate: &StateBuffer,
     b_sz: usize,
     q_len: usize,
     attention_size: usize,
     hidden_dtype: DType,
 ) -> Result<StateBuffer> {
     transport::prepare_full_attention_output(
+        attn_output,
+        gate,
+        b_sz,
+        q_len,
+        attention_size,
+        hidden_dtype,
+    )
+}
+
+pub(crate) fn prepare_full_attention_output_buffer(
+    attn_output: &StateBuffer,
+    gate: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<StateBuffer> {
+    transport::prepare_full_attention_output_buffer(
         attn_output,
         gate,
         b_sz,
@@ -349,7 +367,7 @@ pub(crate) fn prepare_full_attention_kernel_inputs(
 }
 
 pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
-    query_states: &Tensor,
+    query_states: &StateBuffer,
     key_states: &StateBuffer,
     value_states: &StateBuffer,
 ) -> Result<(Tensor, Tensor, Tensor)> {
@@ -358,6 +376,10 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         key_states,
         value_states,
     )
+}
+
+pub(crate) fn rope_buffer(xs: &StateBuffer, cos: &Tensor, sin: &Tensor) -> Result<StateBuffer> {
+    transport::rope_buffer(xs, cos, sin)
 }
 
 pub(crate) fn materialize_full_attention_dense_inputs(
@@ -387,6 +409,32 @@ pub(crate) fn dense_full_attention_fallback(
         value_states_f,
         attention_mask,
         scale,
+    )
+}
+
+pub(crate) fn dense_full_attention_fallback_buffer(
+    query_states_f: &Tensor,
+    key_states_f: &Tensor,
+    value_states_f: &Tensor,
+    attention_mask: Option<&Tensor>,
+    scale: f64,
+    gate: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<StateBuffer> {
+    transport::dense_full_attention_fallback_buffer(
+        query_states_f,
+        key_states_f,
+        value_states_f,
+        attention_mask,
+        scale,
+        gate,
+        b_sz,
+        q_len,
+        attention_size,
+        hidden_dtype,
     )
 }
 

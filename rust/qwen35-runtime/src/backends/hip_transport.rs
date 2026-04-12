@@ -3122,7 +3122,7 @@ pub(crate) fn prepare_full_attention_inputs(
     q_norm_eps: f64,
     k_norm_weight: &Tensor,
     k_norm_eps: f64,
-) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
     let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_hip(
         q_and_gate,
         k_proj,
@@ -3138,10 +3138,10 @@ pub(crate) fn prepare_full_attention_inputs(
         k_norm_eps,
     )?;
     Ok((
-        query_states.into_tensor(),
-        gate.into_tensor(),
-        key_states.into_tensor(),
-        value_states.into_tensor(),
+        query_states.into_state_buffer()?,
+        gate.into_state_buffer()?,
+        key_states.into_state_buffer()?,
+        value_states.into_state_buffer()?,
     ))
 }
 
@@ -3306,14 +3306,45 @@ pub(crate) fn wrap_kv_cache(
 
 pub(crate) fn prepare_full_attention_output(
     attn_output: &Tensor,
-    gate: &Tensor,
+    gate: &StateBuffer,
     b_sz: usize,
     q_len: usize,
     attention_size: usize,
     hidden_dtype: DType,
 ) -> Result<StateBuffer> {
     let attn_output_hip = HipTensor::from_scaffold_tensor(attn_output.clone());
-    let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
+    let gate_hip = HipTensor::from_state_buffer(gate);
+    if let (Some(attn_output), Some(gate)) = (
+        attn_output_hip.0 .0.direct_device_buffer(),
+        gate_hip.0 .0.direct_device_buffer(),
+    ) {
+        return HipTensor::from_device_buffer(
+            attn_output
+                .transpose(1, 2)?
+                .reshape(vec![b_sz, q_len, attention_size])?
+                .to_dtype(hidden_dtype)?
+                .broadcast_mul(&gate.sigmoid()?)?,
+        )
+        .into_state_buffer();
+    }
+    let attn_output = attn_output_hip
+        .transpose(1, 2)?
+        .reshape((b_sz, q_len, attention_size))?
+        .to_dtype(hidden_dtype)?;
+    let gate = gate_hip.sigmoid()?;
+    attn_output.broadcast_mul(&gate)?.into_state_buffer()
+}
+
+pub(crate) fn prepare_full_attention_output_buffer(
+    attn_output: &StateBuffer,
+    gate: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<StateBuffer> {
+    let attn_output_hip = HipTensor::from_state_buffer(attn_output);
+    let gate_hip = HipTensor::from_state_buffer(gate);
     if let (Some(attn_output), Some(gate)) = (
         attn_output_hip.0 .0.direct_device_buffer(),
         gate_hip.0 .0.direct_device_buffer(),
@@ -3442,11 +3473,11 @@ pub(crate) fn prepare_full_attention_kernel_inputs(
 }
 
 pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
-    query_states: &Tensor,
+    query_states: &StateBuffer,
     key_states: &StateBuffer,
     value_states: &StateBuffer,
 ) -> Result<(Tensor, Tensor, Tensor)> {
-    let query_states = HipTensor::from_scaffold_tensor(query_states.clone());
+    let query_states = HipTensor::from_state_buffer(query_states);
     let key_states = HipTensor::from_state_buffer(key_states);
     let value_states = HipTensor::from_state_buffer(value_states);
     let (query_states, key_states, value_states) = if let (
@@ -3475,6 +3506,10 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
         key_states.into_tensor(),
         value_states.into_tensor(),
     ))
+}
+
+pub(crate) fn rope_buffer(xs: &StateBuffer, cos: &Tensor, sin: &Tensor) -> Result<StateBuffer> {
+    rope_hip(&HipTensor::from_state_buffer(xs), cos, sin)?.into_state_buffer()
 }
 
 fn materialize_full_attention_dense_inputs_hip(
@@ -3605,6 +3640,36 @@ pub(crate) fn dense_full_attention_fallback(
         scale,
     )
     .map(|t| t.into_tensor())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dense_full_attention_fallback_buffer(
+    query_states_f: &Tensor,
+    key_states_f: &Tensor,
+    value_states_f: &Tensor,
+    attention_mask: Option<&Tensor>,
+    scale: f64,
+    gate: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<StateBuffer> {
+    let attn_output = dense_full_attention_fallback_hip(
+        query_states_f,
+        key_states_f,
+        value_states_f,
+        attention_mask,
+        scale,
+    )?;
+    prepare_full_attention_output_buffer(
+        &attn_output.into_state_buffer()?,
+        gate,
+        b_sz,
+        q_len,
+        attention_size,
+        hidden_dtype,
+    )
 }
 
 pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<HipTensor> {
@@ -3968,7 +4033,7 @@ mod tests {
     fn device_leaf_prepare_full_attention_output_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let attn_output = Tensor::from_vec(vec![2f32, 4.0], (1, 1, 1, 2), &device)?;
-        let gate = Tensor::from_vec(vec![0f32, 0.0], (1, 1, 2), &device)?;
+        let gate = StateBuffer::from_tensor(Tensor::from_vec(vec![0f32, 0.0], (1, 1, 2), &device)?)?;
 
         let out = prepare_full_attention_output(&attn_output, &gate, 1, 1, 2, DType::F32)?;
         let out = HipTensor::from_state_buffer(&out);
