@@ -4961,6 +4961,72 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_pending_upload_delta_chunk_recurrent_read_stays_host_extractable() -> Result<()> {
+        let prev_state = HipTensor::from_device_buffer(
+            host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let k_cumdecay_chunk = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 2], &[1.0, 0.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let q_state_chunk = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 2], &[0.0, 1.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let value_chunk = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 2], &[10.0, 20.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+
+        let (v_new, attn_inter) = delta_chunk_recurrent_read_tensors_hip(
+            &prev_state,
+            &k_cumdecay_chunk,
+            &q_state_chunk,
+            &value_chunk,
+        )?;
+
+        assert_eq!(host_buffer_values_f32(&v_new.try_host_buffer()?.expect("host"))?, vec![9.0, 18.0]);
+        assert_eq!(host_buffer_values_f32(&attn_inter.try_host_buffer()?.expect("host"))?, vec![3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_mix_chunk_attention_stays_host_extractable() -> Result<()> {
+        let attn = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1], &[2.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let attn_inter = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 2], &[1.0, 2.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let value_chunk = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 2], &[3.0, 4.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+
+        let mixed = mix_chunk_attention_tensors_hip(&attn, &attn_inter, &value_chunk)?;
+
+        assert_eq!(host_buffer_values_f32(&mixed.try_host_buffer()?.expect("host"))?, vec![7.0, 10.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_prepare_linear_attention_inputs_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let mixed_qkv =
@@ -6143,6 +6209,29 @@ pub(crate) fn delta_chunk_fused_buffer(
     .into_state_buffer()
 }
 
+fn delta_chunk_recurrent_read_tensors_hip(
+    prev_state: &HipTensor,
+    k_cumdecay_chunk: &HipTensor,
+    q_state_chunk: &HipTensor,
+    value_chunk: &HipTensor,
+) -> Result<(HipTensor, HipTensor)> {
+    if let (Some(prev_state), Some(k_cumdecay_chunk), Some(q_state_chunk), Some(value_chunk)) = (
+        prev_state.0 .0.direct_materialized_device_buffer(),
+        k_cumdecay_chunk.0 .0.direct_materialized_device_buffer(),
+        q_state_chunk.0 .0.direct_materialized_device_buffer(),
+        value_chunk.0 .0.direct_materialized_device_buffer(),
+    ) {
+        let v_prime = k_cumdecay_chunk.matmul(prev_state)?;
+        let v_new = value_chunk.broadcast_sub(&v_prime)?;
+        let attn_inter = q_state_chunk.matmul(prev_state)?;
+        return Ok((HipTensor::from_device_buffer(v_new), HipTensor::from_device_buffer(attn_inter)));
+    }
+    let v_prime = k_cumdecay_chunk.matmul(&prev_state)?;
+    let v_new = value_chunk.broadcast_sub(&v_prime)?;
+    let attn_inter = q_state_chunk.matmul(&prev_state)?;
+    Ok((v_new, attn_inter))
+}
+
 pub(crate) fn delta_chunk_recurrent_read(
     prev_state: &StateBuffer,
     k_cumdecay_chunk: &Tensor,
@@ -6153,24 +6242,32 @@ pub(crate) fn delta_chunk_recurrent_read(
     let k_cumdecay_chunk = HipTensor::from_scaffold_tensor(k_cumdecay_chunk.clone());
     let q_state_chunk = HipTensor::from_scaffold_tensor(q_state_chunk.clone());
     let value_chunk = HipTensor::from_scaffold_tensor(value_chunk.clone());
-    if let (Some(prev_state), Some(k_cumdecay_chunk), Some(q_state_chunk), Some(value_chunk)) = (
-        prev_state.0 .0.direct_materialized_device_buffer(),
-        k_cumdecay_chunk.0 .0.direct_materialized_device_buffer(),
-        q_state_chunk.0 .0.direct_materialized_device_buffer(),
+    let (v_new, attn_inter) = delta_chunk_recurrent_read_tensors_hip(
+        &prev_state,
+        &k_cumdecay_chunk,
+        &q_state_chunk,
+        &value_chunk,
+    )?;
+    Ok((v_new.into_state_buffer()?, attn_inter.into_state_buffer()?))
+}
+
+fn mix_chunk_attention_tensors_hip(
+    attn: &HipTensor,
+    attn_inter: &HipTensor,
+    value_chunk: &HipTensor,
+) -> Result<HipTensor> {
+    if let (Some(attn), Some(attn_inter), Some(value_chunk)) = (
+        attn.0 .0.direct_materialized_device_buffer(),
+        attn_inter.0 .0.direct_materialized_device_buffer(),
         value_chunk.0 .0.direct_materialized_device_buffer(),
     ) {
-        let v_prime = k_cumdecay_chunk.matmul(prev_state)?;
-        let v_new = value_chunk.broadcast_sub(&v_prime)?;
-        let attn_inter = q_state_chunk.matmul(prev_state)?;
-        return Ok((
-            HipTensor::from_device_buffer(v_new).into_state_buffer()?,
-            HipTensor::from_device_buffer(attn_inter).into_state_buffer()?,
-        ));
+        let attn_value = attn.matmul(value_chunk)?;
+        let mixed = attn_inter.broadcast_add(&attn_value)?;
+        return Ok(HipTensor::from_device_buffer(mixed));
     }
-    let v_prime = k_cumdecay_chunk.matmul(&prev_state)?;
-    let v_new = value_chunk.broadcast_sub(&v_prime)?;
-    let attn_inter = q_state_chunk.matmul(&prev_state)?;
-    Ok((v_new.into_state_buffer()?, attn_inter.into_state_buffer()?))
+    let attn_value = attn.matmul(&value_chunk)?;
+    let mixed = attn_inter.broadcast_add(&attn_value)?;
+    Ok(mixed)
 }
 
 pub(crate) fn mix_chunk_attention(
@@ -6181,18 +6278,7 @@ pub(crate) fn mix_chunk_attention(
     let attn = HipTensor::from_scaffold_tensor(attn.clone());
     let attn_inter = HipTensor::from_state_buffer(attn_inter);
     let value_chunk = HipTensor::from_state_buffer(value_chunk);
-    if let (Some(attn), Some(attn_inter), Some(value_chunk)) = (
-        attn.0 .0.direct_materialized_device_buffer(),
-        attn_inter.0 .0.direct_materialized_device_buffer(),
-        value_chunk.0 .0.direct_materialized_device_buffer(),
-    ) {
-        let attn_value = attn.matmul(value_chunk)?;
-        let mixed = attn_inter.broadcast_add(&attn_value)?;
-        return HipTensor::from_device_buffer(mixed).into_state_buffer();
-    }
-    let attn_value = attn.matmul(&value_chunk)?;
-    let mixed = attn_inter.broadcast_add(&attn_value)?;
-    mixed.into_state_buffer()
+    mix_chunk_attention_tensors_hip(&attn, &attn_inter, &value_chunk)?.into_state_buffer()
 }
 
 pub(crate) fn delta_state_update_buffer(
