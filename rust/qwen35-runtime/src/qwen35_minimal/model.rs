@@ -8872,6 +8872,184 @@ pub(crate) fn delta_full_scan(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_full_scan_host_buffer(
+    initial_state: &Tensor,
+    weighted_key_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+    q_state_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    state_decay_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let initial_state = initial_state.contiguous()?;
+    let weighted_key_scan = weighted_key_scan.contiguous()?;
+    let k_cumdecay_scan = k_cumdecay_scan.contiguous()?;
+    let q_state_scan = q_state_scan.contiguous()?;
+    let local_attn_scan = local_attn_scan.contiguous()?;
+    let state_decay_scan = state_decay_scan.contiguous()?;
+    let value = value.contiguous()?;
+    let ordinal = match initial_state.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(weighted_key_scan.device().same_device(initial_state.device())
+        && k_cumdecay_scan.device().same_device(initial_state.device())
+        && q_state_scan.device().same_device(initial_state.device())
+        && local_attn_scan.device().same_device(initial_state.device())
+        && state_decay_scan.device().same_device(initial_state.device())
+        && value.device().same_device(initial_state.device()))
+    {
+        return Ok(None);
+    }
+    let (initial_storage, initial_layout) = initial_state.storage_and_layout();
+    let (weighted_key_storage, weighted_key_layout) = weighted_key_scan.storage_and_layout();
+    let (k_cumdecay_storage, k_cumdecay_layout) = k_cumdecay_scan.storage_and_layout();
+    let (q_state_storage, q_state_layout) = q_state_scan.storage_and_layout();
+    let (local_attn_storage, local_attn_layout) = local_attn_scan.storage_and_layout();
+    let (state_decay_storage, state_decay_layout) = state_decay_scan.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (
+        Storage::Hip(initial_storage),
+        Storage::Hip(weighted_key_storage),
+        Storage::Hip(k_cumdecay_storage),
+        Storage::Hip(q_state_storage),
+        Storage::Hip(local_attn_storage),
+        Storage::Hip(state_decay_storage),
+        Storage::Hip(value_storage),
+    ) = (
+        &*initial_storage,
+        &*weighted_key_storage,
+        &*k_cumdecay_storage,
+        &*q_state_storage,
+        &*local_attn_storage,
+        &*state_decay_storage,
+        &*value_storage,
+    )
+    else {
+        return Ok(None);
+    };
+    if !(initial_layout.is_contiguous()
+        && weighted_key_layout.is_contiguous()
+        && k_cumdecay_layout.is_contiguous()
+        && q_state_layout.is_contiguous()
+        && local_attn_layout.is_contiguous()
+        && state_decay_layout.is_contiguous()
+        && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+    let (weighted_key_bh, num_chunks, chunk_size, weighted_key_width) =
+        weighted_key_layout.shape().dims4()?;
+    let (k_cumdecay_bh, k_cumdecay_num_chunks, k_cumdecay_chunk_size, k_cumdecay_width) =
+        k_cumdecay_layout.shape().dims4()?;
+    let (q_state_bh, q_state_num_chunks, q_state_chunk_size, q_state_width) =
+        q_state_layout.shape().dims4()?;
+    let (local_attn_bh, local_attn_num_chunks, local_attn_chunk_size, local_attn_width) =
+        local_attn_layout.shape().dims4()?;
+    let (state_decay_bh, state_decay_num_chunks) = state_decay_layout.shape().dims2()?;
+    let (value_bh, value_num_chunks, value_chunk_size, value_v_head_dim) =
+        value_layout.shape().dims4()?;
+    if weighted_key_bh != batch_heads
+        || k_cumdecay_bh != batch_heads
+        || q_state_bh != batch_heads
+        || local_attn_bh != batch_heads
+        || state_decay_bh != batch_heads
+        || value_bh != batch_heads
+        || k_cumdecay_num_chunks != num_chunks
+        || q_state_num_chunks != num_chunks
+        || local_attn_num_chunks != num_chunks
+        || state_decay_num_chunks != num_chunks
+        || value_num_chunks != num_chunks
+        || k_cumdecay_chunk_size != chunk_size
+        || q_state_chunk_size != chunk_size
+        || local_attn_chunk_size != chunk_size
+        || value_chunk_size != chunk_size
+        || weighted_key_width != k_head_dim
+        || k_cumdecay_width != k_head_dim
+        || q_state_width != k_head_dim
+        || local_attn_width != chunk_size
+        || value_v_head_dim != v_head_dim
+        || initial_state.dtype() != weighted_key_scan.dtype()
+        || initial_state.dtype() != k_cumdecay_scan.dtype()
+        || initial_state.dtype() != q_state_scan.dtype()
+        || initial_state.dtype() != local_attn_scan.dtype()
+        || initial_state.dtype() != state_decay_scan.dtype()
+        || initial_state.dtype() != value.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(initial_state.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks * chunk_size + k_head_dim, v_head_dim];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(initial_state.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_storage.raw_device_ptr_with_offset(initial_layout.start_offset())?
+                as *const c_void,
+            weighted_key_storage.raw_device_ptr_with_offset(weighted_key_layout.start_offset())?
+                as *const c_void,
+            k_cumdecay_storage.raw_device_ptr_with_offset(k_cumdecay_layout.start_offset())?
+                as *const c_void,
+            q_state_storage.raw_device_ptr_with_offset(q_state_layout.start_offset())?
+                as *const c_void,
+            local_attn_storage.raw_device_ptr_with_offset(local_attn_layout.start_offset())?
+                as *const c_void,
+            state_decay_storage.raw_device_ptr_with_offset(state_decay_layout.start_offset())?
+                as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_full_scan_host_buffer(
+    initial_state: &Tensor,
+    weighted_key_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+    q_state_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    state_decay_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (
+        initial_state,
+        weighted_key_scan,
+        k_cumdecay_scan,
+        q_state_scan,
+        local_attn_scan,
+        state_decay_scan,
+        value,
+    );
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaLocalAttnScan;
 
