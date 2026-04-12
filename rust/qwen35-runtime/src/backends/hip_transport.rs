@@ -3992,25 +3992,18 @@ pub(crate) fn materialize_full_attention_dense_inputs(
     ))
 }
 
-fn dense_full_attention_fallback_hip(
-    query_states_f: &Tensor,
-    key_states_f: &Tensor,
-    value_states_f: &Tensor,
-    attention_mask: Option<&Tensor>,
+fn dense_full_attention_fallback_tensors_hip(
+    query_states_hip: &HipTensor,
+    key_states_hip: &HipTensor,
+    value_states_hip: &HipTensor,
+    attention_mask: Option<&HipTensor>,
     scale: f64,
 ) -> Result<HipTensor> {
-    let query_states_hip = HipTensor::from_scaffold_tensor(query_states_f.clone());
-    let key_states_hip = HipTensor::from_scaffold_tensor(key_states_f.clone());
-    let value_states_hip = HipTensor::from_scaffold_tensor(value_states_f.clone());
-    let mask_hip = match attention_mask {
-        Some(mask) => Some(HipTensor::from_scaffold_tensor(mask.to_dtype(DType::F32)?)),
-        None => None,
-    };
     if let (Some(query_states_f), Some(key_states_f), Some(value_states_f), mask_device) = (
         query_states_hip.0 .0.direct_materialized_device_buffer(),
         key_states_hip.0 .0.direct_materialized_device_buffer(),
         value_states_hip.0 .0.direct_materialized_device_buffer(),
-        mask_hip
+        attention_mask
             .as_ref()
             .and_then(|mask| mask.0 .0.direct_materialized_device_buffer()),
     ) {
@@ -4026,11 +4019,34 @@ fn dense_full_attention_fallback_hip(
     }
     let key_states_t = key_states_hip.transpose(2, 3)?.contiguous()?;
     let mut attn_weights = query_states_hip.matmul(&key_states_t)?.mul_scalar(scale)?;
-    if let Some(mask) = mask_hip {
+    if let Some(mask) = attention_mask {
         attn_weights = attn_weights.broadcast_add(&mask)?;
     }
     let attn_weights = softmax_last_dim_hip(&attn_weights)?;
     attn_weights.matmul(&value_states_hip)
+}
+
+fn dense_full_attention_fallback_hip(
+    query_states_f: &Tensor,
+    key_states_f: &Tensor,
+    value_states_f: &Tensor,
+    attention_mask: Option<&Tensor>,
+    scale: f64,
+) -> Result<HipTensor> {
+    let query_states_hip = HipTensor::from_scaffold_tensor(query_states_f.clone());
+    let key_states_hip = HipTensor::from_scaffold_tensor(key_states_f.clone());
+    let value_states_hip = HipTensor::from_scaffold_tensor(value_states_f.clone());
+    let mask_hip = match attention_mask {
+        Some(mask) => Some(HipTensor::from_scaffold_tensor(mask.to_dtype(DType::F32)?)),
+        None => None,
+    };
+    dense_full_attention_fallback_tensors_hip(
+        &query_states_hip,
+        &key_states_hip,
+        &value_states_hip,
+        mask_hip.as_ref(),
+        scale,
+    )
 }
 
 fn softmax_last_dim_hip(xs: &HipTensor) -> Result<HipTensor> {
@@ -4760,6 +4776,40 @@ mod tests {
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(out)?, vec![7.0, 8.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_pending_upload_dense_full_attention_fallback_stays_host_extractable() -> Result<()> {
+        let query_states = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1, 2], &[1.0, 0.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let key_states = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1, 2], &[1.0, 0.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+        let value_states = HipTensor::from_device_buffer(
+            host_f32_tensor(&[1, 1, 1, 2], &[7.0, 8.0])
+                .try_host_buffer()?
+                .expect("host buffer")
+                .upload_to_device_buffer()?,
+        );
+
+        let out = dense_full_attention_fallback_tensors_hip(
+            &query_states,
+            &key_states,
+            &value_states,
+            None,
+            1.0,
+        )?;
+
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![7.0, 8.0]);
         Ok(())
     }
 
