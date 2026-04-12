@@ -9150,6 +9150,98 @@ pub(crate) fn delta_local_attn_scan(
     query_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaLocalAttnScan)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_local_attn_scan_host_buffer(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let query_scan = query_scan.contiguous()?;
+    let key_scan = key_scan.contiguous()?;
+    let exp_g_scan = exp_g_scan.contiguous()?;
+    let ordinal = match query_scan.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.device().same_device(query_scan.device())
+        && exp_g_scan.device().same_device(query_scan.device()))
+    {
+        return Ok(None);
+    }
+    let (query_storage, query_layout) = query_scan.storage_and_layout();
+    let (key_storage, key_layout) = key_scan.storage_and_layout();
+    let (exp_g_storage, exp_g_layout) = exp_g_scan.storage_and_layout();
+    let (Storage::Hip(query_storage), Storage::Hip(key_storage), Storage::Hip(exp_g_storage)) =
+        (&*query_storage, &*key_storage, &*exp_g_storage)
+    else {
+        return Ok(None);
+    };
+    if !(query_layout.is_contiguous() && key_layout.is_contiguous() && exp_g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, num_chunks, chunk_size, k_head_dim) = query_layout.shape().dims4()?;
+    let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+    let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+        || query_scan.dtype() != key_scan.dtype()
+        || query_scan.dtype() != exp_g_scan.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query_scan.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(query_scan.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_local_attn_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            exp_g_storage.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-local-attn-scan-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_local_attn_scan_host_buffer(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (query_scan, key_scan, exp_g_scan);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DeltaBaseAttnScan;
 
@@ -9248,6 +9340,98 @@ pub(crate) fn delta_base_attn_scan(
     exp_g_scan: &Tensor,
 ) -> Result<Tensor> {
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaBaseAttnScan)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_base_attn_scan_host_buffer(
+    k_beta_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let k_beta_scan = k_beta_scan.contiguous()?;
+    let key_scan = key_scan.contiguous()?;
+    let exp_g_scan = exp_g_scan.contiguous()?;
+    let ordinal = match k_beta_scan.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.device().same_device(k_beta_scan.device())
+        && exp_g_scan.device().same_device(k_beta_scan.device()))
+    {
+        return Ok(None);
+    }
+    let (k_beta_storage, k_beta_layout) = k_beta_scan.storage_and_layout();
+    let (key_storage, key_layout) = key_scan.storage_and_layout();
+    let (exp_g_storage, exp_g_layout) = exp_g_scan.storage_and_layout();
+    let (Storage::Hip(k_beta_storage), Storage::Hip(key_storage), Storage::Hip(exp_g_storage)) =
+        (&*k_beta_storage, &*key_storage, &*exp_g_storage)
+    else {
+        return Ok(None);
+    };
+    if !(k_beta_layout.is_contiguous() && key_layout.is_contiguous() && exp_g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, num_chunks, chunk_size, k_head_dim) = k_beta_layout.shape().dims4()?;
+    let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+    let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+        || k_beta_scan.dtype() != key_scan.dtype()
+        || k_beta_scan.dtype() != exp_g_scan.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(k_beta_scan.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(k_beta_scan.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_base_attn_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            k_beta_storage.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            exp_g_storage.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("delta-base-attn-scan-host-buffer", status));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_base_attn_scan_host_buffer(
+    k_beta_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (k_beta_scan, key_scan, exp_g_scan);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9409,6 +9593,101 @@ pub(crate) fn delta_attn_solve_from_inputs(
     exp_g_scan: &Tensor,
 ) -> Result<Tensor> {
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaAttnSolveFromInputs)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn delta_attn_solve_from_inputs_host_buffer(
+    k_beta_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let k_beta_scan = k_beta_scan.contiguous()?;
+    let key_scan = key_scan.contiguous()?;
+    let exp_g_scan = exp_g_scan.contiguous()?;
+    let ordinal = match k_beta_scan.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key_scan.device().same_device(k_beta_scan.device())
+        && exp_g_scan.device().same_device(k_beta_scan.device()))
+    {
+        return Ok(None);
+    }
+    let (k_beta_storage, k_beta_layout) = k_beta_scan.storage_and_layout();
+    let (key_storage, key_layout) = key_scan.storage_and_layout();
+    let (exp_g_storage, exp_g_layout) = exp_g_scan.storage_and_layout();
+    let (Storage::Hip(k_beta_storage), Storage::Hip(key_storage), Storage::Hip(exp_g_storage)) =
+        (&*k_beta_storage, &*key_storage, &*exp_g_storage)
+    else {
+        return Ok(None);
+    };
+    if !(k_beta_layout.is_contiguous() && key_layout.is_contiguous() && exp_g_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_heads, num_chunks, chunk_size, k_head_dim) = k_beta_layout.shape().dims4()?;
+    let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+    let (exp_bh, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || key_k != k_head_dim
+        || k_beta_scan.dtype() != key_scan.dtype()
+        || k_beta_scan.dtype() != exp_g_scan.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(k_beta_scan.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_heads, num_chunks, chunk_size, chunk_size];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(k_beta_scan.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_attn_solve_from_inputs(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            k_beta_storage.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            exp_g_storage.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "delta-attn-solve-from-inputs-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn delta_attn_solve_from_inputs_host_buffer(
+    k_beta_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (k_beta_scan, key_scan, exp_g_scan);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
