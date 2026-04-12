@@ -4916,7 +4916,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -4962,7 +4962,11 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         let device = initial_state.device().clone();
         let storage_dtype = initial_state.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, seq_len + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_recurrent_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -4978,13 +4982,20 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -5041,7 +5052,7 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -5088,7 +5099,11 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
         let storage_dtype = initial_state.dtype();
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_single_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -5102,13 +5117,20 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
