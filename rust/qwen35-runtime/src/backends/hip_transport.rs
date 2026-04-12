@@ -1454,6 +1454,11 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.l2norm(eps)?));
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = l2norm_hip_host_buffer(&tensor, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from l2norm host buffer".into())
+            })?);
+        }
         let norm = (tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)? + eps)?.sqrt()?;
         Ok(Self::from_tensor(tensor.broadcast_div(&norm)?))
     }
@@ -1470,10 +1475,15 @@ impl HipDeviceBuffer {
                 buffer.rms_norm(weight, eps, add_unit_offset)?,
             ));
         }
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = rms_norm_hip_host_buffer(&tensor, weight, eps, add_unit_offset)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from rms_norm host buffer".into())
+            })?);
+        }
         let inner = *self.dims().last().ok_or_else(|| {
             candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
         })?;
-        let tensor = self.materialize_tensor()?;
         let mean_sq = (&tensor.sqr()?.sum_keepdim(candle_core::D::Minus1)?
             * (1.0 / inner as f64))?;
         let normed = tensor.broadcast_div(&(mean_sq + eps)?.sqrt()?)?;
@@ -1503,10 +1513,18 @@ impl HipDeviceBuffer {
                 hidden_buffer.rms_norm_gated(&gate_buffer, weight, eps)?,
             ));
         }
+        let hidden = self.materialize_tensor()?;
+        let gate_tensor = gate.materialize_tensor()?;
+        if let Some(out) = rms_norm_gated_hip_host_buffer(&hidden, &gate_tensor, weight, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "expected direct device buffer from rms_norm_gated host buffer".into(),
+                )
+            })?);
+        }
         let normed = self.rms_norm(weight, eps, false)?;
-        let gate = gate.materialize_tensor()?;
-        let sig = (gate.neg()?.exp()? + 1.0)?.recip()?;
-        let silu = gate.broadcast_mul(&sig)?;
+        let sig = (gate_tensor.neg()?.exp()? + 1.0)?.recip()?;
+        let silu = gate_tensor.broadcast_mul(&sig)?;
         Ok(Self::from_tensor(normed.materialize_tensor()?.broadcast_mul(&silu)?))
     }
 
@@ -1525,6 +1543,11 @@ impl HipDeviceBuffer {
         let a = self.materialize_tensor()?;
         let dt_bias = dt_bias.materialize_tensor()?;
         let a_log_exp = a_log_exp.materialize_tensor()?;
+        if let Some(out) = value_decay_hip_host_buffer(&a, &dt_bias, &a_log_exp)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from value_decay host buffer".into())
+            })?);
+        }
         let softplus = ((a.broadcast_add(&dt_bias)?.exp()? + 1.0)?).log()?;
         let out = softplus.broadcast_mul(&a_log_exp)?.neg()?;
         Ok(Self::from_tensor(out))
@@ -1538,6 +1561,13 @@ impl HipDeviceBuffer {
             ));
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = cumsum_last_dim_hip_host_buffer(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "expected direct device buffer from cumsum_last_dim host buffer".into(),
+                )
+            })?);
+        }
         let shape = tensor.dims().to_vec();
         let Some(&inner) = shape.last() else {
             candle_core::bail!("dotcache-hip-cumsum-last-dim requires non-empty shape");
@@ -1566,9 +1596,15 @@ impl HipDeviceBuffer {
             ));
         }
         let tensor = self.materialize_tensor()?;
+        let up_tensor = up.materialize_tensor()?;
+        if let Some(out) = swiglu_mul_hip_host_buffer(&tensor, &up_tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from swiglu_mul host buffer".into())
+            })?);
+        }
         let sig = (tensor.neg()?.exp()? + 1.0)?.recip()?;
         let silu = tensor.broadcast_mul(&sig)?;
-        Ok(Self::from_tensor(silu.broadcast_mul(&up.materialize_tensor()?)?))
+        Ok(Self::from_tensor(silu.broadcast_mul(&up_tensor)?))
     }
 
     pub(crate) fn contiguous(&self) -> Result<Self> {
