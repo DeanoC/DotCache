@@ -7595,29 +7595,50 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         let storage_dtype = prev_state.dtype();
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
-        let status = unsafe {
-            hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
-                hip::dtype_code(storage_dtype)?,
-                device.ordinal(),
-                batch_heads,
-                chunk_size,
-                k_head_dim,
-                v_head_dim,
-                prev_state.raw_device_ptr_with_offset(prev_layout.start_offset())?
-                    as *const c_void,
-                query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
-                key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
-                value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
-                g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
-            )
-        };
-        if status != 0 {
-            return Err(hip::hip_error(self.name(), status));
+        let elem_count = out_shape.elem_count();
+
+        macro_rules! launch {
+            ($ty:ty, $zero:expr) => {{
+                let mut output = vec![$zero; elem_count];
+                let host_ptr = output.as_mut_ptr() as *const c_void;
+                let device_ptr =
+                    hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len() * std::mem::size_of::<$ty>())?;
+                let status = unsafe {
+                    hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
+                        hip::dtype_code(storage_dtype)?,
+                        device.ordinal(),
+                        batch_heads,
+                        chunk_size,
+                        k_head_dim,
+                        v_head_dim,
+                        prev_state.raw_device_ptr_with_offset(prev_layout.start_offset())?
+                            as *const c_void,
+                        query.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+                        key.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                        value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+                        beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
+                        g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
+                        device_ptr as *mut c_void,
+                    )
+                };
+                hip::unregister_host_mapping(host_ptr);
+                if status != 0 {
+                    return Err(hip::hip_error(self.name(), status));
+                }
+                let storage = <$ty as candle::WithDType>::to_cpu_storage_owned(output);
+                Ok((
+                    candle::HipStorage::wrap_cpu_storage(storage, device.clone()),
+                    out_shape.clone(),
+                ))
+            }};
         }
-        Ok((output, out_shape))
+
+        match storage_dtype {
+            DType::F16 => launch!(half::f16, half::f16::from_bits(0)),
+            DType::F32 => launch!(f32, 0.0f32),
+            DType::BF16 => launch!(half::bf16, half::bf16::from_bits(0)),
+            other => candle::bail!("delta-chunk-step-raw unsupported dtype {other:?}"),
+        }
     }
 }
 
