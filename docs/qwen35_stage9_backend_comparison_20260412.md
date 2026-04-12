@@ -45,6 +45,23 @@ Across these refreshed MPS portable runs:
 - a small exact-key fallback frontier still exists:
   - `executed_exact_key_m3_blocks_per_case = 8.0`
 
+Refreshed MPS comparison baselines on the same portable corpus:
+
+- non-`M0` Stage 9:
+  - large `3784.86`
+  - broad `4234.40`
+  - external `1700.51`
+- conservative certified:
+  - large `2054.42`
+  - broad `2828.78`
+  - external `1340.05`
+
+That makes the current MPS read very clean:
+
+- real mixed is the serving winner on all three portable corpora
+- refreshed MPS non-`M0` is no longer competitive on this current runtime
+- refreshed MPS conservative remains useful as the safe exact lane, but not the speed winner
+
 ## Current CUDA portable reference
 
 Current CUDA real-mixed bundles:
@@ -110,15 +127,16 @@ This is the main backend-dependent result.
 
 Portable-corpus `bias` comparison at the current checked-in checkpoints:
 
-| Corpus | MPS real mixed | CUDA real mixed | CUDA non-`M0` Stage 9 | CUDA conservative certified |
-| --- | ---: | ---: | ---: | ---: |
-| large | `1407.44` | `399.74` | `468.69` | `652.91` |
-| broad | `1627.72` | `460.70` | `632.12` | `792.60` |
-| external | `843.77` | `252.42` | `192.54` | `380.85` |
+| Corpus | MPS real mixed | MPS non-`M0` | MPS conservative | CUDA real mixed | CUDA non-`M0` Stage 9 | CUDA conservative certified |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| large | `1407.44` | `3784.86` | `2054.42` | `399.74` | `468.69` | `652.91` |
+| broad | `1627.72` | `4234.40` | `2828.78` | `460.70` | `632.12` | `792.60` |
+| external | `843.77` | `1700.51` | `1340.05` | `252.42` | `192.54` | `380.85` |
 
 Across this matrix:
 
 - exact-match stays `1.0` for the checked-in MPS real-mixed and CUDA real-mixed runs
+- refreshed MPS real mixed is the current serving winner on all three portable corpora
 - CUDA real mixed is now the current serving winner on `large` and `broad`
 - CUDA non-`M0` Stage 9 still wins on `external`
 - CUDA conservative certified remains a useful safe lane, but not the latency winner

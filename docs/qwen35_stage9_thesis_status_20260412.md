@@ -71,6 +71,23 @@ On these portable corpora:
 - bias/hand exact-match stays `1.0`
 - the current runtime is genuinely executing heavy key-side `M0`, not only falling back to all-`M3`
 
+The portable MPS policy lanes are now fully refreshed on the current runtime too:
+
+- real mixed:
+  - large `1407.44`
+  - broad `1627.72`
+  - external `843.77`
+- non-`M0` Stage 9:
+  - large `3784.86`
+  - broad `4234.40`
+  - external `1700.51`
+- conservative certified:
+  - large `2054.42`
+  - broad `2828.78`
+  - external `1340.05`
+
+So on the portable MPS set, the current real-mixed path is not just the winner in principle. It is comfortably ahead of both refreshed alternative policy lanes across all three corpora.
+
 The refreshed portable MPS numbers are also useful because they confirm that the newer real-mixed runtime optimizations materially improved the public cross-machine reference set, so older portable MPS bundles should be treated as stale comparison anchors rather than the final MPS read.
 
 ### Practical MPS machine limit
