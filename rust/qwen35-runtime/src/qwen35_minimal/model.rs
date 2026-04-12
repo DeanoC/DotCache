@@ -3744,6 +3744,93 @@ pub(crate) fn linear_prefill_conv_pack(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(crate) fn linear_prefill_conv_pack_host_buffer(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let weights = weights.contiguous()?;
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weights.device().same_device(mixed_qkv.device()) {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (Storage::Hip(mixed_qkv_storage), Storage::Hip(weights_storage)) =
+        (&*mixed_qkv_storage, &*weights_storage)
+    else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, total_len) = mixed_qkv_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if weights_conv_dim != conv_dim || weights_kernel_size != kernel_size {
+        return Ok(None);
+    }
+    if total_len < seq_len + kernel_size.saturating_sub(1) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_size, seq_len, conv_dim];
+    let mut out = vec![
+        0u8;
+        batch_size
+            .saturating_mul(seq_len)
+            .saturating_mul(conv_dim)
+            .saturating_mul(mixed_qkv.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            total_len,
+            seq_len,
+            kernel_size,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "dotcache-hip-linear-prefill-conv-pack-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+pub(crate) fn linear_prefill_conv_pack_host_buffer(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (mixed_qkv, weights, seq_len, kernel_size);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LinearStatefulConv {
     batch_size: usize,
