@@ -13,6 +13,7 @@ use crate::qwen35_minimal_impl::model::{
     linear_prefill_conv_pack_host_buffer, linear_stateful_conv_hip,
     linear_decode_step_host_buffer, linear_stateful_conv_host_buffer,
     linear_stateful_conv_value_decay_with_state_hip,
+    linear_stateful_conv_value_decay_with_state_host_buffer,
     ImmutableEmbedding, StateBuffer,
 };
 use half::{bf16, f16};
@@ -4451,6 +4452,36 @@ fn linear_stateful_conv_hip_host_buffer(
     )))
 }
 
+fn linear_stateful_conv_value_decay_with_state_hip_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = linear_stateful_conv_value_decay_with_state_host_buffer(
+        mixed_qkv,
+        prev_state,
+        weights,
+        a,
+        dt_bias,
+        a_log_exp,
+        kernel_size,
+    )? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: mixed_qkv.dtype(),
+            device: mixed_qkv.device().clone(),
+        }),
+    )))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn linear_decode_step_hip_host_buffer(
     mixed_qkv: &Tensor,
@@ -8398,6 +8429,17 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state(
     a_log_exp: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
+    if let Some(host) = linear_stateful_conv_value_decay_with_state_hip_host_buffer(
+        mixed_qkv,
+        prev_state,
+        weights,
+        a,
+        dt_bias,
+        a_log_exp,
+        kernel_size,
+    )? {
+        return Ok(host);
+    }
     Ok(from_kernel_tensor(linear_stateful_conv_value_decay_with_state_hip(
         mixed_qkv,
         prev_state,
