@@ -1,0 +1,6 @@
+{
+  "updated_at_utc": "2026-04-12T05:50:00Z",
+  "phase": "longbench_lb21_16_smoke_20260406",
+  "state": "stopped",
+  "detail": "stopped by user request; partial summary generated from completed outputs and partial shards"
+}
