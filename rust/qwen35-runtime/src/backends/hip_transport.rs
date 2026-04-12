@@ -187,10 +187,6 @@ impl HipDeviceBuffer {
         }
     }
 
-    pub(crate) fn tensor(&self) -> &Tensor {
-        &self.tensor
-    }
-
     pub(crate) fn dims(&self) -> &[usize] {
         &self.shape
     }
@@ -623,10 +619,6 @@ impl HipDeviceBuffer {
             .reshape(vec![batch_size * num_heads, k_head_dim, v_head_dim])?
             .contiguous()?;
         Ok((Self::from_tensor(output), recurrent_state))
-    }
-
-    pub(crate) fn state_scan_chunk(&self, chunk_idx: usize) -> Result<Self> {
-        self.select(1, chunk_idx)
     }
 
     pub(crate) fn unpack_chunk_fused(
@@ -3678,6 +3670,40 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_repeat_heads_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 2, 2, 1), &device)?;
+        let tensor =
+            repeat_heads_hip(&HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor)), 2)?;
+        let buffer = tensor
+            .0
+            .0
+            .direct_device_buffer()
+            .expect("device-backed repeat expected");
+        assert!(buffer.has_pending_views());
+        assert_eq!(buffer.dims(), &[1, 2, 4, 1]);
+        assert_eq!(values_f32(tensor)?, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_repeat_kv_stays_lazy() -> Result<()> {
+        let device = Device::Cpu;
+        let tensor = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 2, 2, 1), &device)?;
+        let tensor =
+            repeat_kv_hip(&HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor)), 2)?;
+        let buffer = tensor
+            .0
+            .0
+            .direct_device_buffer()
+            .expect("device-backed repeat expected");
+        assert!(buffer.has_pending_views());
+        assert_eq!(buffer.dims(), &[1, 4, 2, 1]);
+        assert_eq!(values_f32(tensor)?, vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_state_scan_chunk_stays_lazy() -> Result<()> {
         let device = Device::Cpu;
         let tensor = Tensor::from_vec(
@@ -3685,10 +3711,15 @@ mod tests {
             (1, 2, 2, 2),
             &device,
         )?;
-        let buffer = HipDeviceBuffer::from_tensor(tensor).state_scan_chunk(1)?;
+        let tensor =
+            HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor)).select(1, 1)?;
+        let buffer = tensor
+            .0
+            .0
+            .direct_device_buffer()
+            .expect("device-backed select expected");
         assert!(buffer.has_pending_views());
         assert_eq!(buffer.dims(), &[1, 2, 2]);
-        let tensor = HipTensor::from_device_buffer(buffer);
         assert_eq!(values_f32(tensor)?, vec![4.0, 5.0, 6.0, 7.0]);
         Ok(())
     }
