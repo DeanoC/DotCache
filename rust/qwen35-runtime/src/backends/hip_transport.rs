@@ -2298,9 +2298,11 @@ fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor
     let lhs = HipTensor::from_state_buffer(lhs);
     let rhs = HipTensor::from_state_buffer(rhs);
     if let (Some(lhs), Some(rhs)) = (lhs.0 .0.direct_device_buffer(), rhs.0 .0.direct_device_buffer()) {
-        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::concat_last_dim(
-            lhs, rhs,
-        )?));
+        if !lhs.has_pending_views() && !rhs.has_pending_views() {
+            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::concat_last_dim(
+                lhs, rhs,
+            )?));
+        }
     }
     HipTensor::cat(&[&lhs, &rhs], lhs.rank() - 1)?
         .contiguous()
@@ -2323,11 +2325,16 @@ fn pack_delta_state_scan_hip(
         k_cumdecay_scan.0 .0.direct_device_buffer(),
         state_decay_feature.0 .0.direct_device_buffer(),
     ) {
-        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_state_scan(
-            weighted_key_scan,
-            k_cumdecay_scan,
-            state_decay_feature,
-        )?));
+        if !weighted_key_scan.has_pending_views()
+            && !k_cumdecay_scan.has_pending_views()
+            && !state_decay_feature.has_pending_views()
+        {
+            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_state_scan(
+                weighted_key_scan,
+                k_cumdecay_scan,
+                state_decay_feature,
+            )?));
+        }
     }
     HipTensor::cat(&[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature], 3)?
         .contiguous()
@@ -2358,12 +2365,18 @@ fn pack_delta_chunk_fused_hip(
         q_state.0 .0.direct_device_buffer(),
         state_decay.0 .0.direct_device_buffer(),
     ) {
-        return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_chunk_fused(
-            weighted_key,
-            k_cumdecay,
-            q_state,
-            state_decay,
-        )?));
+        if !weighted_key.has_pending_views()
+            && !k_cumdecay.has_pending_views()
+            && !q_state.has_pending_views()
+            && !state_decay.has_pending_views()
+        {
+            return Ok(HipTensor::from_device_buffer(HipDeviceBuffer::pack_delta_chunk_fused(
+                weighted_key,
+                k_cumdecay,
+                q_state,
+                state_decay,
+            )?));
+        }
     }
     HipTensor::cat(&[&weighted_key, &k_cumdecay, &q_state, &state_decay], 2)?
         .contiguous()
@@ -3325,16 +3338,22 @@ fn append_full_attention_kv_hip(
                 key_states.0 .0.direct_device_buffer(),
                 value_states.0 .0.direct_device_buffer(),
             ) {
-                return Ok((
-                    HipTensor::from_device_buffer(HipDeviceBuffer::cat(
-                        &[prev_k_device, key_device],
-                        2,
-                    )?),
-                    HipTensor::from_device_buffer(HipDeviceBuffer::cat(
-                        &[prev_v_device, value_device],
-                        2,
-                    )?),
-                ));
+                if !prev_k_device.has_pending_views()
+                    && !prev_v_device.has_pending_views()
+                    && !key_device.has_pending_views()
+                    && !value_device.has_pending_views()
+                {
+                    return Ok((
+                        HipTensor::from_device_buffer(HipDeviceBuffer::cat(
+                            &[prev_k_device, key_device],
+                            2,
+                        )?),
+                        HipTensor::from_device_buffer(HipDeviceBuffer::cat(
+                            &[prev_v_device, value_device],
+                            2,
+                        )?),
+                    ));
+                }
             }
             Ok((
                 HipTensor::cat(&[&prev_k, &key_states], 2)?,
