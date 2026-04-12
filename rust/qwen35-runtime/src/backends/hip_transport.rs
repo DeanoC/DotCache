@@ -3927,6 +3927,75 @@ fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> 
     Ok(host)
 }
 
+fn prepare_full_attention_output_host_buffer(
+    attn_output: &HipHostBuffer,
+    gate: &HipHostBuffer,
+    b_sz: usize,
+    q_len: usize,
+    attention_size: usize,
+    hidden_dtype: DType,
+) -> Result<HipHostBuffer> {
+    if !HipNativeBuffer::supports_host_float_ops(attn_output.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(gate.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(hidden_dtype)
+    {
+        candle_core::bail!(
+            "prepare_full_attention_output host path unsupported for dtypes {:?}, {:?} -> {:?}",
+            attn_output.dtype,
+            gate.dtype,
+            hidden_dtype
+        );
+    }
+    if attn_output.shape.len() != 4 {
+        candle_core::bail!(
+            "prepare_full_attention_output expects rank-4 attn output, got {:?}",
+            attn_output.shape
+        );
+    }
+    if gate.shape != [b_sz, q_len, attention_size] {
+        candle_core::bail!(
+            "prepare_full_attention_output gate shape mismatch: expected {:?}, got {:?}",
+            vec![b_sz, q_len, attention_size],
+            gate.shape
+        );
+    }
+    let heads = attn_output.shape[1];
+    let head_dim = attn_output.shape[3];
+    if attn_output.shape[0] != b_sz || attn_output.shape[2] != q_len {
+        candle_core::bail!(
+            "prepare_full_attention_output attn shape mismatch: expected [{b_sz}, heads, {q_len}, head_dim], got {:?}",
+            attn_output.shape
+        );
+    }
+    if heads.saturating_mul(head_dim) != attention_size {
+        candle_core::bail!(
+            "prepare_full_attention_output attention size mismatch: heads={heads} head_dim={head_dim} attention_size={attention_size}"
+        );
+    }
+    let out_shape = vec![b_sz, q_len, attention_size];
+    let elem_count = HipNativeBuffer::elem_count(&out_shape);
+    let mut out = vec![0u8; HipNativeBuffer::byte_len(&out_shape, hidden_dtype)];
+    for idx in 0..elem_count {
+        let a = idx % attention_size;
+        let q = (idx / attention_size) % q_len;
+        let b = idx / (q_len * attention_size);
+        let h = a / head_dim;
+        let d = a % head_dim;
+        let attn_idx = (((b * heads + h) * q_len + q) * head_dim) + d;
+        let attn_val =
+            HipNativeBuffer::read_host_float(attn_output.bytes.as_ref(), attn_output.dtype, attn_idx)?;
+        let gate_val = HipNativeBuffer::read_host_float(gate.bytes.as_ref(), gate.dtype, idx)?;
+        let silu_gate = 1.0 / (1.0 + (-gate_val).exp());
+        HipNativeBuffer::write_host_float(&mut out, hidden_dtype, idx, attn_val * silu_gate)?;
+    }
+    Ok(HipHostBuffer {
+        bytes: out.into(),
+        shape: out_shape,
+        dtype: hidden_dtype,
+        device: attn_output.device.clone(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_full_attention_inputs_tensors_hip(
     q_and_gate: &HipTensor,
@@ -4076,6 +4145,137 @@ pub(crate) fn prepare_full_attention_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn prepare_linear_attention_inputs_host_buffers(
+    mixed_qkv: &HipHostBuffer,
+    beta_raw: &HipHostBuffer,
+    g: &HipHostBuffer,
+    batch_size: usize,
+    seq_len: usize,
+    key_dim: usize,
+    value_dim: usize,
+    num_k_heads: usize,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    compute_dtype: DType,
+    repeat_kv_heads: bool,
+) -> Result<(HipHostBuffer, HipHostBuffer, HipHostBuffer, HipHostBuffer, HipHostBuffer)> {
+    if !HipNativeBuffer::supports_host_float_ops(mixed_qkv.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(beta_raw.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(g.dtype)
+        || !HipNativeBuffer::supports_host_float_ops(compute_dtype)
+    {
+        candle_core::bail!(
+            "linear attention host path unsupported for dtypes {:?}, {:?}, {:?} -> {:?}",
+            mixed_qkv.dtype,
+            beta_raw.dtype,
+            g.dtype,
+            compute_dtype
+        );
+    }
+    if mixed_qkv.shape != [batch_size, seq_len, key_dim * 2 + value_dim] {
+        candle_core::bail!(
+            "linear attention mixed_qkv shape mismatch: expected {:?}, got {:?}",
+            vec![batch_size, seq_len, key_dim * 2 + value_dim],
+            mixed_qkv.shape
+        );
+    }
+    let head_repeat = num_v_heads / num_k_heads;
+    let out_k_heads = if repeat_kv_heads && head_repeat > 1 {
+        num_k_heads * head_repeat
+    } else {
+        num_k_heads
+    };
+    let outer = batch_size.saturating_mul(seq_len);
+    let source_stride = key_dim * 2 + value_dim;
+    let query_shape = vec![batch_size, seq_len, out_k_heads, head_k_dim];
+    let key_shape = vec![batch_size, seq_len, out_k_heads, head_k_dim];
+    let value_shape = vec![batch_size, seq_len, num_v_heads, head_v_dim];
+    let mut query_out = vec![0u8; HipNativeBuffer::byte_len(&query_shape, compute_dtype)];
+    let mut key_out = vec![0u8; HipNativeBuffer::byte_len(&key_shape, compute_dtype)];
+    let mut value_out = vec![0u8; HipNativeBuffer::byte_len(&value_shape, compute_dtype)];
+    for outer_idx in 0..outer.max(1) {
+        for head in 0..num_k_heads {
+            let mut query_sum_sq = 0.0f64;
+            let mut key_sum_sq = 0.0f64;
+            for dim in 0..head_k_dim {
+                let query_src_idx = outer_idx * source_stride + head * head_k_dim + dim;
+                let key_src_idx = outer_idx * source_stride + key_dim + head * head_k_dim + dim;
+                let query_val = HipNativeBuffer::read_host_float(
+                    mixed_qkv.bytes.as_ref(),
+                    mixed_qkv.dtype,
+                    query_src_idx,
+                )?;
+                let key_val = HipNativeBuffer::read_host_float(
+                    mixed_qkv.bytes.as_ref(),
+                    mixed_qkv.dtype,
+                    key_src_idx,
+                )?;
+                query_sum_sq += query_val * query_val;
+                key_sum_sq += key_val * key_val;
+            }
+            let query_denom = (query_sum_sq + 1e-6).sqrt();
+            let key_denom = (key_sum_sq + 1e-6).sqrt();
+            let repeat_range = if repeat_kv_heads && head_repeat > 1 {
+                (head * head_repeat)..((head + 1) * head_repeat)
+            } else {
+                head..(head + 1)
+            };
+            for dim in 0..head_k_dim {
+                let query_src_idx = outer_idx * source_stride + head * head_k_dim + dim;
+                let key_src_idx = outer_idx * source_stride + key_dim + head * head_k_dim + dim;
+                let query_val = HipNativeBuffer::read_host_float(
+                    mixed_qkv.bytes.as_ref(),
+                    mixed_qkv.dtype,
+                    query_src_idx,
+                )? / query_denom;
+                let key_val = HipNativeBuffer::read_host_float(
+                    mixed_qkv.bytes.as_ref(),
+                    mixed_qkv.dtype,
+                    key_src_idx,
+                )? / key_denom;
+                for out_head in repeat_range.clone() {
+                    let out_idx = (outer_idx * out_k_heads + out_head) * head_k_dim + dim;
+                    HipNativeBuffer::write_host_float(&mut query_out, compute_dtype, out_idx, query_val)?;
+                    HipNativeBuffer::write_host_float(&mut key_out, compute_dtype, out_idx, key_val)?;
+                }
+            }
+        }
+        for head in 0..num_v_heads {
+            for dim in 0..head_v_dim {
+                let src_idx = outer_idx * source_stride + key_dim * 2 + head * head_v_dim + dim;
+                let out_idx = (outer_idx * num_v_heads + head) * head_v_dim + dim;
+                let value =
+                    HipNativeBuffer::read_host_float(mixed_qkv.bytes.as_ref(), mixed_qkv.dtype, src_idx)?;
+                HipNativeBuffer::write_host_float(&mut value_out, compute_dtype, out_idx, value)?;
+            }
+        }
+    }
+    Ok((
+        HipHostBuffer {
+            bytes: query_out.into(),
+            shape: query_shape,
+            dtype: compute_dtype,
+            device: mixed_qkv.device.clone(),
+        },
+        HipHostBuffer {
+            bytes: key_out.into(),
+            shape: key_shape,
+            dtype: compute_dtype,
+            device: mixed_qkv.device.clone(),
+        },
+        HipHostBuffer {
+            bytes: value_out.into(),
+            shape: value_shape,
+            dtype: compute_dtype,
+            device: mixed_qkv.device.clone(),
+        },
+        beta_raw.sigmoid()?.cast(compute_dtype)?,
+        g.cast(compute_dtype)?,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_linear_attention_inputs_tensors_hip(
     mixed_qkv: &HipTensor,
     beta_raw: &HipTensor,
@@ -4096,6 +4296,35 @@ fn prepare_linear_attention_inputs_tensors_hip(
         beta_raw.0 .0.direct_materialized_device_buffer(),
         g.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (
+            HipDeviceStorage::HostBuffer(mixed_qkv_host),
+            HipDeviceStorage::HostBuffer(beta_raw_host),
+            HipDeviceStorage::HostBuffer(g_host),
+        ) = (&mixed_qkv.storage, &beta_raw.storage, &g.storage)
+        {
+            let (query, key, value, beta, g) = prepare_linear_attention_inputs_host_buffers(
+                mixed_qkv_host,
+                beta_raw_host,
+                g_host,
+                batch_size,
+                seq_len,
+                key_dim,
+                value_dim,
+                num_k_heads,
+                num_v_heads,
+                head_k_dim,
+                head_v_dim,
+                compute_dtype,
+                repeat_kv_heads,
+            )?;
+            return Ok((
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(query)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(key)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(value)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(beta)),
+                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(g)),
+            ));
+        }
         let last_dim = mixed_qkv.dims().len() - 1;
         let query = mixed_qkv
             .narrow(last_dim, 0, key_dim)?
@@ -4279,6 +4508,22 @@ fn prepare_full_attention_output_hip(
         attn_output_hip.0 .0.direct_materialized_device_buffer(),
         gate_hip.0 .0.direct_materialized_device_buffer(),
     ) {
+        if let (HipDeviceStorage::HostBuffer(attn_host), HipDeviceStorage::HostBuffer(gate_host)) =
+            (&attn_output.storage, &gate.storage)
+        {
+            return Ok(HipTensor::from_device_buffer(
+                HipDeviceBuffer::from_materialized_host_buffer(
+                    prepare_full_attention_output_host_buffer(
+                        attn_host,
+                        gate_host,
+                        b_sz,
+                        q_len,
+                        attention_size,
+                        hidden_dtype,
+                    )?,
+                ),
+            ));
+        }
         return Ok(HipTensor::from_device_buffer(
             attn_output
                 .transpose(1, 2)?
@@ -5469,6 +5714,29 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_host_storage_prepare_full_attention_output_reorders_heads_correctly() -> Result<()> {
+        let device = Device::Cpu;
+        let attn_output = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (1, 2, 2, 1), &device)?,
+        ));
+        let gate = HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(
+            Tensor::from_vec(vec![0f32, 0.0, 0.0, 0.0], (1, 2, 2), &device)?,
+        ));
+
+        let out = prepare_full_attention_output_hip(&attn_output, &gate, 1, 2, 2, DType::F32)?;
+
+        let buffer = out
+            .0
+            .0
+            .direct_materialized_device_buffer()
+            .expect("materialized device leaf");
+        assert!(matches!(buffer.storage, HipDeviceStorage::HostBuffer(_)));
+        let host = out.try_host_buffer()?.expect("host-backed output");
+        assert_eq!(host_buffer_values_f32(&host)?, vec![0.5, 1.5, 1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_prepare_full_attention_inputs_stays_device_backed() -> Result<()> {
         let device = Device::Cpu;
         let q_and_gate =
@@ -5782,6 +6050,22 @@ mod tests {
             false,
         )?;
 
+        let query_vals = values_f32(query.clone())?;
+        let key_vals = values_f32(key.clone())?;
+        let value_vals = values_f32(value.clone())?;
+        let beta_vals = values_f32(beta.clone())?;
+        let g_vals = values_f32(g.clone())?;
+        let expected_query = [1.0 / 5.0f32.sqrt(), 2.0 / 5.0f32.sqrt()];
+        let expected_key = [3.0 / 25.0f32.sqrt(), 4.0 / 25.0f32.sqrt()];
+        for (got, expected) in query_vals.iter().zip(expected_query.iter()) {
+            assert!((got - expected).abs() < 1e-5);
+        }
+        for (got, expected) in key_vals.iter().zip(expected_key.iter()) {
+            assert!((got - expected).abs() < 1e-5);
+        }
+        assert_eq!(value_vals, vec![5.0, 6.0]);
+        assert_eq!(beta_vals, vec![0.5]);
+        assert_eq!(g_vals, vec![1.0]);
         for tensor in [&query, &key, &value, &beta, &g] {
             assert!(tensor.try_host_buffer()?.is_some());
             if let Some(buffer) = tensor.0 .0.direct_materialized_device_buffer() {
