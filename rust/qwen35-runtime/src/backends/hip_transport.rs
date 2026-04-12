@@ -397,6 +397,14 @@ impl HipHostBuffer {
         })
     }
 
+    fn cumsum_last_dim(&self) -> Result<Self> {
+        cumsum_last_dim_host(&HipTensor::from_host_buffer(self.clone()))?
+            .and_then(|tensor| tensor.try_host_buffer().ok().flatten())
+            .ok_or_else(|| {
+                candle_core::Error::Msg("expected host materialization for cumsum host buffer".into())
+            })
+    }
+
     fn matmul(&self, rhs: &HipHostBuffer) -> Result<Self> {
         HipNativeBuffer::host_bytes_matmul(
             &Arc::new(self.to_native_host_buffer()),
@@ -827,6 +835,30 @@ impl HipDeviceBuffer {
         let a_log_exp = a_log_exp.materialize_tensor()?;
         let softplus = ((a.broadcast_add(&dt_bias)?.exp()? + 1.0)?).log()?;
         let out = softplus.broadcast_mul(&a_log_exp)?.neg()?;
+        Ok(Self::from_tensor(out))
+    }
+
+    pub(crate) fn cumsum_last_dim(&self) -> Result<Self> {
+        if let Some(buffer) = self.try_host_buffer()? {
+            return Ok(Self::from_pending_host_upload(buffer.cumsum_last_dim()?));
+        }
+        let tensor = self.materialize_tensor()?;
+        let shape = tensor.dims().to_vec();
+        let Some(&inner) = shape.last() else {
+            candle_core::bail!("dotcache-hip-cumsum-last-dim requires non-empty shape");
+        };
+        let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
+        let mut out = vec![0f32; tensor.elem_count()];
+        let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        for outer_idx in 0..outer.max(1) {
+            let mut running = 0.0f32;
+            for inner_idx in 0..inner {
+                let idx = outer_idx * inner + inner_idx;
+                running += flat[idx];
+                out[idx] = running;
+            }
+        }
+        let out = Tensor::from_vec(out, shape.as_slice(), tensor.device())?.to_dtype(self.dtype())?;
         Ok(Self::from_tensor(out))
     }
 
@@ -4444,6 +4476,20 @@ mod tests {
     }
 
     #[test]
+    fn device_leaf_pending_upload_cumsum_last_dim_stays_pending() -> Result<()> {
+        let src = host_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0])
+            .try_host_buffer()?
+            .expect("host buffer")
+            .upload_to_device_buffer()?;
+        let out = src.cumsum_last_dim()?;
+        assert!(!out.is_materialized());
+        let host = out.try_host_buffer()?.expect("pending upload host bytes");
+        assert_eq!(host.shape(), &[2, 2]);
+        assert_eq!(host_buffer_values_f32(&host)?, vec![1.0, 3.0, 3.0, 7.0]);
+        Ok(())
+    }
+
+    #[test]
     fn device_leaf_pending_upload_matmul_stays_pending() -> Result<()> {
         let lhs = host_f32_tensor(&[1, 2], &[1.0, 2.0])
             .try_host_buffer()?
@@ -5407,12 +5453,7 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
             let xs = xs.materialize_tensor()?;
             return Ok(from_device_tensor(hip_cumsum_last_dim(&xs)?));
         }
-        if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
-            if let Some(buffer) = host.try_host_buffer()? {
-                return Ok(HipTensor::from_device_buffer(buffer.upload_to_device_buffer()?));
-            }
-            return Ok(host);
-        }
+        return Ok(HipTensor::from_device_buffer(xs.cumsum_last_dim()?));
     }
     if let Some(host) = cumsum_last_dim_host(&xs_hip)? {
         return Ok(host);
