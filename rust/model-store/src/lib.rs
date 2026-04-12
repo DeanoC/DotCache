@@ -4,12 +4,14 @@ use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use candle_core::{op::BackpropOp, Device, DeviceLocation, Tensor, WithDType};
+use candle_core::{op::BackpropOp, Device, Tensor, WithDType};
+pub use dotcache_runtime_core::{
+    BackendKind, BufferMutability, BufferViewDesc, ImmutableBufferView, ScalarType, TargetSpec,
+};
 use hf_hub::api::sync::{Api, ApiBuilder};
 use memmap2::Mmap;
 use safetensors::SafeTensors;
@@ -65,75 +67,6 @@ impl std::fmt::Display for ModelStoreError {
 
 impl std::error::Error for ModelStoreError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackendKind {
-    Cpu,
-    Hip,
-    Cuda,
-}
-
-impl BackendKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Cpu => "cpu",
-            Self::Hip => "hip",
-            Self::Cuda => "cuda",
-        }
-    }
-}
-
-impl Display for BackendKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TargetSpec {
-    pub backend: BackendKind,
-    pub family: String,
-}
-
-impl TargetSpec {
-    pub fn detect(device: &Device) -> Result<Self> {
-        if let Ok(override_family) = std::env::var("DOTCACHE_MODEL_PACKAGE_FAMILY") {
-            let backend = match device.location() {
-                DeviceLocation::Cpu => BackendKind::Cpu,
-                DeviceLocation::Hip { .. } => BackendKind::Hip,
-                DeviceLocation::Cuda { .. } => BackendKind::Cuda,
-                DeviceLocation::Metal { .. } => {
-                    return Err(ModelStoreError::UnsupportedBackend {
-                        backend: "metal".to_string(),
-                    })
-                }
-            };
-            return Ok(Self {
-                backend,
-                family: override_family,
-            });
-        }
-
-        match device.location() {
-            DeviceLocation::Cpu => Ok(Self {
-                backend: BackendKind::Cpu,
-                family: "host".to_string(),
-            }),
-            DeviceLocation::Hip { .. } => Ok(Self {
-                backend: BackendKind::Hip,
-                family: detect_hip_family().unwrap_or_else(|| "hip-generic".to_string()),
-            }),
-            DeviceLocation::Cuda { .. } => Ok(Self {
-                backend: BackendKind::Cuda,
-                family: detect_cuda_family().unwrap_or_else(|| "cuda-generic".to_string()),
-            }),
-            DeviceLocation::Metal { .. } => Err(ModelStoreError::UnsupportedBackend {
-                backend: "metal".to_string(),
-            }),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageKey {
     pub model_family: String,
@@ -188,6 +121,19 @@ impl PreparedDType {
                     "unsupported safetensors dtype {other:?} in model-store v1 conversion"
                 ),
             }),
+        }
+    }
+
+    fn scalar_type(self) -> ScalarType {
+        match self {
+            Self::U8 => ScalarType::U8,
+            Self::U32 => ScalarType::U32,
+            Self::I16 => ScalarType::I16,
+            Self::I32 => ScalarType::I32,
+            Self::I64 => ScalarType::I64,
+            Self::BF16 => ScalarType::BF16,
+            Self::F16 => ScalarType::F16,
+            Self::F32 => ScalarType::F32,
         }
     }
 }
@@ -281,6 +227,16 @@ impl<'a> WeightView<'a> {
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
+
+    pub fn buffer_view_desc(&self) -> BufferViewDesc {
+        BufferViewDesc {
+            scalar_type: self.entry.dtype.scalar_type(),
+            shape: self.entry.shape.clone(),
+            byte_offset: self.entry.offset,
+            byte_len: self.entry.byte_len,
+            mutability: BufferMutability::Immutable,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +274,19 @@ impl ImmutableWeightHandle {
         &self.package.manifest.target_family
     }
 
+    pub fn target_spec(&self) -> TargetSpec {
+        TargetSpec {
+            backend: match self.package.manifest.target_backend.as_str() {
+                "cpu" => BackendKind::Cpu,
+                "hip" => BackendKind::Hip,
+                "cuda" => BackendKind::Cuda,
+                "metal" => BackendKind::Metal,
+                other => panic!("unknown prepared package backend `{other}`"),
+            },
+            family: self.package.manifest.target_family.clone(),
+        }
+    }
+
     pub fn offset(&self) -> u64 {
         self.entry().offset
     }
@@ -332,6 +301,24 @@ impl ImmutableWeightHandle {
         let byte_len =
             usize::try_from(entry.byte_len).expect("validated package byte_len fits usize");
         &self.package.weights[start..start + byte_len]
+    }
+
+    pub fn buffer_view_desc(&self) -> BufferViewDesc {
+        BufferViewDesc {
+            scalar_type: self.entry().dtype.scalar_type(),
+            shape: self.entry().shape.clone(),
+            byte_offset: self.entry().offset,
+            byte_len: self.entry().byte_len,
+            mutability: BufferMutability::Immutable,
+        }
+    }
+
+    pub fn immutable_buffer_view(&self) -> ImmutableBufferView<'_> {
+        ImmutableBufferView {
+            target: self.target_spec(),
+            desc: self.buffer_view_desc(),
+            bytes: self.bytes(),
+        }
     }
 
     pub fn materialize(&self, device: &Device) -> Result<Tensor> {
@@ -372,7 +359,7 @@ impl PreparedPackage {
         device: &Device,
         converter: &C,
     ) -> Result<Self> {
-        let target = TargetSpec::detect(device)?;
+        let target = detect_target_spec(device)?;
         if let Some(alias) = read_alias(converter.model_family(), model_id, &target)? {
             if alias.package_root.exists() {
                 let package = Self::open(&alias.package_root)?;
@@ -1485,45 +1472,22 @@ fn sanitize_path_component(value: &str) -> OsString {
     OsString::from(encoded)
 }
 
+fn detect_target_spec(device: &Device) -> Result<TargetSpec> {
+    let target = TargetSpec::detect(device);
+    if matches!(target.backend, BackendKind::Metal) {
+        return Err(ModelStoreError::UnsupportedBackend {
+            backend: "metal".to_string(),
+        });
+    }
+    Ok(target)
+}
+
 fn align_up(value: u64, alignment: u64) -> u64 {
     let rem = value % alignment;
     if rem == 0 {
         value
     } else {
         value + (alignment - rem)
-    }
-}
-
-fn detect_hip_family() -> Option<String> {
-    let output = Command::new("rocminfo").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .split_whitespace()
-        .find(|token| token.starts_with("gfx"))
-        .map(|token| token.trim().to_string())
-}
-
-fn detect_cuda_family() -> Option<String> {
-    let output = Command::new("nvidia-smi")
-        .args(["--query-gpu=compute_cap", "--format=csv,noheader,nounits"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let cap = stdout.lines().next()?.trim();
-    let digits = cap
-        .chars()
-        .filter(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    if digits.is_empty() {
-        None
-    } else {
-        Some(format!("sm{digits}"))
     }
 }
 

@@ -200,12 +200,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     fn report_linear_nan_trace(runner: &mut MinimalQwen35Runner, input_ids: &Tensor) -> Result<()> {
-        for layer_id in runner.model.linear_attention_layer_ids() {
-            let trace = runner
-                .model
-                .trace_linear_attention_layer(input_ids, layer_id, 0)?;
-            let output_nans = logit_nan_count(&trace.layer_output)?;
-            let state_nans = logit_nan_count(&trace.recurrent_state)?;
+        for layer_id in runner.linear_attention_layer_ids() {
+            let trace = runner.trace_linear_attention_layer(input_ids, layer_id, 0)?;
+            let output_nans = logit_nan_count(trace.layer_output.tensor())?;
+            let state_nans = logit_nan_count(trace.recurrent_state.tensor())?;
             if output_nans > 0 || state_nans > 0 {
                 eprintln!(
                     "warning: linear layer {layer_id} emitted NaNs output={} recurrent_state={}",
@@ -320,10 +318,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         print_hip_counters("prefill");
     }
     let cpu_prefill_nans = match cpu_logits.as_ref() {
-        Some(cpu_logits) => logit_nan_count(cpu_logits)?,
+        Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
         None => 0,
     };
-    let device_prefill_nans = logit_nan_count(&device_logits)?;
+    let device_prefill_nans = logit_nan_count(device_logits.tensor())?;
     if cpu_prefill_nans > 0 || device_prefill_nans > 0 {
         eprintln!(
             "warning: prefill logits contain NaNs cpu={} device={}",
@@ -335,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let prefill_delta = match cpu_logits.as_ref() {
-        Some(cpu_logits) => max_logit_delta(cpu_logits, &device_logits)?,
+        Some(cpu_logits) => max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?,
         None => f32::NAN,
     };
     let mut generated_ids = prompt_ids.clone();
@@ -343,8 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut cpu_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
     let mut next_token = match cpu_logits.as_ref() {
-        Some(cpu_logits) => argmax_last_token(cpu_logits)?,
-        None => argmax_last_token(&device_logits)?,
+        Some(cpu_logits) => argmax_last_token(cpu_logits.tensor())?,
+        None => argmax_last_token(device_logits.tensor())?,
     };
     for _ in 0..max_new_tokens {
         generated_ids.push(next_token);
@@ -376,10 +374,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             print_hip_counters("decode-step");
         }
         let cpu_decode_nans = match cpu_logits.as_ref() {
-            Some(cpu_logits) => logit_nan_count(cpu_logits)?,
+            Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
             None => 0,
         };
-        let device_decode_nans = logit_nan_count(&device_logits)?;
+        let device_decode_nans = logit_nan_count(device_logits.tensor())?;
         if cpu_decode_nans > 0 || device_decode_nans > 0 {
             eprintln!(
                 "warning: decode logits contain NaNs cpu={} device={}",
@@ -388,10 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         if let Some(cpu_logits) = cpu_logits.as_ref() {
-            max_decode_delta = max_decode_delta.max(max_logit_delta(cpu_logits, &device_logits)?);
-            next_token = argmax_last_token(cpu_logits)?;
+            max_decode_delta = max_decode_delta
+                .max(max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?);
+            next_token = argmax_last_token(cpu_logits.tensor())?;
         } else {
-            next_token = argmax_last_token(&device_logits)?;
+            next_token = argmax_last_token(device_logits.tensor())?;
         }
     }
 

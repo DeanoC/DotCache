@@ -18,8 +18,6 @@ pub mod page;
 pub mod page_mode;
 #[cfg(feature = "candle")]
 pub mod policy;
-#[cfg(feature = "qwen35-minimal")]
-pub mod qwen35_minimal;
 pub mod session;
 #[cfg(feature = "candle")]
 pub mod torch_control;
@@ -52,9 +50,13 @@ pub use page_mode::{
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
 #[cfg(feature = "qwen35-minimal")]
-pub use qwen35_minimal::{
-    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionLayerSpec,
-    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35Runner, MinimalQwen35Weights,
+pub use dotcache_qwen35_runtime::{
+    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
+    MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LinearAttentionTrace,
+    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35Runner, MinimalQwen35StateBuffer,
+    MinimalQwen35Weights,
+    MinimalQwen35TextConfig, Qwen35Backend, Qwen35BackendDescriptor, Qwen35BackendOps,
+    Qwen35Runtime, Qwen35Weights,
 };
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;
@@ -300,6 +302,16 @@ impl From<candle_core::Error> for RuntimeError {
     fn from(err: candle_core::Error) -> Self {
         Self::External {
             context: "candle",
+            message: err.to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "qwen35-minimal")]
+impl From<dotcache_qwen35_runtime::RuntimeError> for RuntimeError {
+    fn from(err: dotcache_qwen35_runtime::RuntimeError) -> Self {
+        Self::External {
+            context: "qwen35-runtime",
             message: err.to_string(),
         }
     }

@@ -591,6 +591,7 @@ name = "dotcache-model-store"
 version = "0.1.0"
 dependencies = [
  "candle-core",
+ "dotcache-runtime-core",
  "half",
  "hf-hub",
  "libc",
@@ -609,6 +610,8 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "dotcache-model-store",
+ "dotcache-qwen35-runtime",
+ "dotcache-runtime-core",
  "half",
  "hf-hub",
  "libc",
@@ -617,6 +620,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tokenizers",
+]
+
+[[package]]
+name = "dotcache-qwen35-runtime"
+version = "0.1.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "dotcache-model-store",
+ "dotcache-runtime-core",
+ "half",
+ "hf-hub",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dotcache-runtime-core"
+version = "0.1.0"
+dependencies = [
+ "candle-core",
+ "serde",
 ]
 
 [[package]]

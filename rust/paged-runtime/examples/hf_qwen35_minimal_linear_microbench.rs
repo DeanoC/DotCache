@@ -369,7 +369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
     let prompt_ids = build_prompt_ids(&tokenizer, args.prompt.as_str(), args.prompt_token_target)?;
 
-    let linear_layer_ids = runner.model.linear_attention_layer_ids();
+    let linear_layer_ids = runner.linear_attention_layer_ids();
     let layer_id = args.layer_id.unwrap_or_else(|| linear_layer_ids[0]);
     if !linear_layer_ids.contains(&layer_id) {
         return Err(format!(
@@ -378,22 +378,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .into());
     }
-    let layer_spec = runner.model.linear_attention_layer_spec(layer_id)?;
+    let layer_spec = runner.linear_attention_layer_spec(layer_id)?;
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &device)?;
     let capture_started = Instant::now();
     if args.warmup_repeats > 0 {
-        let _ = runner.model.bench_linear_attention_layer(
+        let _ = runner.bench_linear_attention_layer(
             &input_ids,
             layer_id,
             0,
             args.warmup_repeats,
         )?;
     }
-    let result =
-        runner
-            .model
-            .bench_linear_attention_layer(&input_ids, layer_id, 0, args.repeats)?;
+    let result = runner.bench_linear_attention_layer(&input_ids, layer_id, 0, args.repeats)?;
     let capture_elapsed = capture_started.elapsed().as_secs_f64() * 1_000.0;
 
     let dtype_bytes = 2u64;
