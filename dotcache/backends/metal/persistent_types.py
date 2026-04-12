@@ -15,6 +15,7 @@ class PersistentServingConfig:
     full_attention_mixed_mode_execution_allow_value_m0: bool = False
     full_attention_mixed_mode_execution_max_k_comp_error: float | None = 0.10
     full_attention_mixed_mode_score_dtype: str = "auto"
+    full_attention_mixed_mode_detailed_timing: bool = False
     enable_priority: bool = False
     enable_early_exit: bool = False
     enable_compression: bool = False
@@ -103,6 +104,9 @@ class PersistentLayerTelemetry:
     mixed_execution_direct_m0_score_ms_total: float = 0.0
     mixed_execution_exact_m3_score_ms_total: float = 0.0
     mixed_execution_final_mix_ms_total: float = 0.0
+    mixed_execution_final_mix_logits_ms_total: float = 0.0
+    mixed_execution_final_mix_softmax_ms_total: float = 0.0
+    mixed_execution_final_mix_value_ms_total: float = 0.0
     selected_m0_metadata_block_count_total: int = 0
     selected_m3_metadata_block_count_total: int = 0
     executed_m0_block_count_total: int = 0
@@ -148,6 +152,7 @@ class PersistentFullAttentionLayerState:
     mixed_key_bias_cache: Any | None
     mixed_key_fused_scaled_score_cache: Any | None
     mixed_key_bias_score_cache: Any | None
+    mixed_key_fused_with_bias_score_cache: Any | None
     mixed_key_packed_payload_cache: Any | None
     mixed_key_packed_scales_cache: Any | None
     mixed_key_packed_bias_cache: Any | None

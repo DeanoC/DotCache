@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest-path", default=str(_DEFAULT_REAL_MIXED_MANIFEST))
     parser.add_argument("--prompt-files", nargs="*", default=[])
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
+    parser.add_argument("--detailed-timing", action="store_true")
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
     return parser.parse_args()
@@ -56,8 +57,8 @@ def real_mixed_probe_dotcache_config() -> DotCacheConfig:
     )
 
 
-def real_mixed_probe_serving_config(*, policy_path: str | None) -> Any:
-    return _persistent_base_config(
+def real_mixed_probe_serving_config(*, policy_path: str | None, detailed_timing: bool = False) -> Any:
+    config = _persistent_base_config(
         policy_path=policy_path,
         enable_early_exit=True,
         full_attention_check_interval=16,
@@ -69,6 +70,8 @@ def real_mixed_probe_serving_config(*, policy_path: str | None) -> Any:
         allow_value_m0=False,
         max_k_comp_error=0.20,
     )
+    config.full_attention_mixed_mode_detailed_timing = bool(detailed_timing)
+    return config
 
 
 def _metric_sum(result: dict[str, Any], key: str) -> float:
@@ -97,6 +100,12 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             "bias_exact_m3_score_ms_per_case": 0.0,
             "hand_tuned_final_mix_ms_per_case": 0.0,
             "bias_final_mix_ms_per_case": 0.0,
+            "hand_tuned_final_mix_logits_ms_per_case": 0.0,
+            "bias_final_mix_logits_ms_per_case": 0.0,
+            "hand_tuned_final_mix_softmax_ms_per_case": 0.0,
+            "bias_final_mix_softmax_ms_per_case": 0.0,
+            "hand_tuned_final_mix_value_ms_per_case": 0.0,
+            "bias_final_mix_value_ms_per_case": 0.0,
             "hand_tuned_executed_m0_blocks_per_case": 0.0,
             "bias_executed_m0_blocks_per_case": 0.0,
             "hand_tuned_executed_m3_blocks_per_case": 0.0,
@@ -149,6 +158,24 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "bias_final_mix_ms_per_case": float(
             sum(float(record["bias_final_mix_ms_total"]) for record in records) / case_count
         ),
+        "hand_tuned_final_mix_logits_ms_per_case": float(
+            sum(float(record["hand_tuned_final_mix_logits_ms_total"]) for record in records) / case_count
+        ),
+        "bias_final_mix_logits_ms_per_case": float(
+            sum(float(record["bias_final_mix_logits_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_final_mix_softmax_ms_per_case": float(
+            sum(float(record["hand_tuned_final_mix_softmax_ms_total"]) for record in records) / case_count
+        ),
+        "bias_final_mix_softmax_ms_per_case": float(
+            sum(float(record["bias_final_mix_softmax_ms_total"]) for record in records) / case_count
+        ),
+        "hand_tuned_final_mix_value_ms_per_case": float(
+            sum(float(record["hand_tuned_final_mix_value_ms_total"]) for record in records) / case_count
+        ),
+        "bias_final_mix_value_ms_per_case": float(
+            sum(float(record["bias_final_mix_value_ms_total"]) for record in records) / case_count
+        ),
         "hand_tuned_executed_m0_blocks_per_case": float(
             sum(float(record["hand_tuned_executed_m0_block_count_total"]) for record in records) / case_count
         ),
@@ -186,6 +213,12 @@ def _render_markdown(*, payload: dict[str, Any]) -> str:
         f"- bias exact-M3 score ms/case: {float(summary['bias_exact_m3_score_ms_per_case']):.4f}",
         f"- hand-tuned final-mix ms/case: {float(summary['hand_tuned_final_mix_ms_per_case']):.4f}",
         f"- bias final-mix ms/case: {float(summary['bias_final_mix_ms_per_case']):.4f}",
+        f"- hand-tuned final-mix logits ms/case: {float(summary['hand_tuned_final_mix_logits_ms_per_case']):.4f}",
+        f"- bias final-mix logits ms/case: {float(summary['bias_final_mix_logits_ms_per_case']):.4f}",
+        f"- hand-tuned final-mix softmax ms/case: {float(summary['hand_tuned_final_mix_softmax_ms_per_case']):.4f}",
+        f"- bias final-mix softmax ms/case: {float(summary['bias_final_mix_softmax_ms_per_case']):.4f}",
+        f"- hand-tuned final-mix value ms/case: {float(summary['hand_tuned_final_mix_value_ms_per_case']):.4f}",
+        f"- bias final-mix value ms/case: {float(summary['bias_final_mix_value_ms_per_case']):.4f}",
         f"- hand-tuned executed M0 blocks/case: {float(summary['hand_tuned_executed_m0_blocks_per_case']):.2f}",
         f"- bias executed M0 blocks/case: {float(summary['bias_executed_m0_blocks_per_case']):.2f}",
         "",
@@ -212,7 +245,10 @@ def main() -> None:
     adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
         model=model,
         dotcache_config=real_mixed_probe_dotcache_config(),
-        persistent_serving_config=real_mixed_probe_serving_config(policy_path=str(_DEFAULT_POLICY_PATH)),
+        persistent_serving_config=real_mixed_probe_serving_config(
+            policy_path=str(_DEFAULT_POLICY_PATH),
+            detailed_timing=bool(args.detailed_timing),
+        ),
         backend=str(args.backend),
     )
 
@@ -227,7 +263,10 @@ def main() -> None:
             prompt_text=prompt_text,
             prompt_length=int(prompt_record.get("prompt_length", 0)),
         )
-        adapter.persistent_serving_config = real_mixed_probe_serving_config(policy_path=None)
+        adapter.persistent_serving_config = real_mixed_probe_serving_config(
+            policy_path=None,
+            detailed_timing=bool(args.detailed_timing),
+        )
         hand_result = run_qwen35_attention_subset_persistent_serving_harness(
             model,
             adapter,
@@ -237,7 +276,10 @@ def main() -> None:
             decode_steps=int(args.decode_steps),
             persistent_policy_prompt_family=str(prompt_record["case_tag"]),
         )
-        adapter.persistent_serving_config = real_mixed_probe_serving_config(policy_path=str(_DEFAULT_POLICY_PATH))
+        adapter.persistent_serving_config = real_mixed_probe_serving_config(
+            policy_path=str(_DEFAULT_POLICY_PATH),
+            detailed_timing=bool(args.detailed_timing),
+        )
         bias_result = run_qwen35_attention_subset_persistent_serving_harness(
             model,
             adapter,
@@ -298,6 +340,30 @@ def main() -> None:
                     bias_result,
                     "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer",
                 ),
+                "hand_tuned_final_mix_logits_ms_total": _metric_sum(
+                    hand_result,
+                    "persistent_full_attention_mixed_execution_final_mix_logits_ms_total_by_layer",
+                ),
+                "bias_final_mix_logits_ms_total": _metric_sum(
+                    bias_result,
+                    "persistent_full_attention_mixed_execution_final_mix_logits_ms_total_by_layer",
+                ),
+                "hand_tuned_final_mix_softmax_ms_total": _metric_sum(
+                    hand_result,
+                    "persistent_full_attention_mixed_execution_final_mix_softmax_ms_total_by_layer",
+                ),
+                "bias_final_mix_softmax_ms_total": _metric_sum(
+                    bias_result,
+                    "persistent_full_attention_mixed_execution_final_mix_softmax_ms_total_by_layer",
+                ),
+                "hand_tuned_final_mix_value_ms_total": _metric_sum(
+                    hand_result,
+                    "persistent_full_attention_mixed_execution_final_mix_value_ms_total_by_layer",
+                ),
+                "bias_final_mix_value_ms_total": _metric_sum(
+                    bias_result,
+                    "persistent_full_attention_mixed_execution_final_mix_value_ms_total_by_layer",
+                ),
                 "hand_tuned_executed_m0_block_count_total": _metric_sum_int(
                     hand_result,
                     "persistent_full_attention_executed_m0_block_count_total_by_layer",
@@ -338,6 +404,7 @@ def main() -> None:
             "full_attention_streaming_order_mode": "priority_value_hybrid",
             "full_attention_streaming_priority_value_upper_weight": 0.25,
             "full_attention_key_centroid_count_by_layer": dict(_REAL_MIXED_KEY_CENTROIDS),
+            "full_attention_mixed_mode_detailed_timing": bool(args.detailed_timing),
         },
         "records": records,
         "summary": _summarize_records(records),

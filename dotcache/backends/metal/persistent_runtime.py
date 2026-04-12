@@ -2916,6 +2916,7 @@ def _refresh_cached_mixed_execution_blocks(
         or state.mixed_key_bias_cache is None
         or state.mixed_key_fused_scaled_score_cache is None
         or state.mixed_key_bias_score_cache is None
+        or state.mixed_key_fused_with_bias_score_cache is None
         or state.mixed_value_fused_scaled_cache is None
         or state.mixed_value_bias_cache is None
     ):
@@ -2968,6 +2969,7 @@ def _refresh_cached_mixed_execution_blocks(
             state.mixed_key_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_key_fused_scaled_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
+            state.mixed_key_fused_with_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_fused_scaled_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             state.mixed_value_bias_cache[kv_head_idx, token_start : token_start + token_count, :].zero_()
             if (
@@ -3002,6 +3004,17 @@ def _refresh_cached_mixed_execution_blocks(
                 )
                 state.mixed_key_bias_score_cache[kv_head_idx, token_start : token_start + token_count, :].copy_(
                     direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device)
+                )
+                state.mixed_key_fused_with_bias_score_cache[
+                    kv_head_idx, token_start : token_start + token_count, :
+                ].copy_(
+                    torch.cat(
+                        [
+                            direct_key_slice.to(dtype=score_dtype, device=state.key_cache.device),
+                            direct_key_bias.to(dtype=score_dtype, device=state.key_cache.device),
+                        ],
+                        dim=-1,
+                    )
                 )
                 if (
                     packed_key_payload is not None
@@ -3258,6 +3271,7 @@ def _decode_selected_blocks_direct_m0_torch(
         and score_dtype == state.mixed_key_score_cache.dtype
     )
     strategy = str(getattr(config, "full_attention_mixed_mode_execution_strategy", "cached_reconstruct") or "cached_reconstruct").strip().lower()
+    detailed_mixed_timing = bool(getattr(config, "full_attention_mixed_mode_detailed_timing", False))
     output = torch.empty(
         (query_tensor.shape[0], gathered_values.shape[-1]),
         dtype=torch.float32,
@@ -3275,6 +3289,9 @@ def _decode_selected_blocks_direct_m0_torch(
         "direct_m0_score_ms": 0.0,
         "exact_m3_score_ms": 0.0,
         "final_mix_ms": 0.0,
+        "final_mix_logits_ms": 0.0,
+        "final_mix_softmax_ms": 0.0,
+        "final_mix_value_ms": 0.0,
     }
     executed_m0_blocks: set[int] = set()
     per_head_logits: list[Any] = [
@@ -3288,7 +3305,18 @@ def _decode_selected_blocks_direct_m0_torch(
         dtype=torch.float32,
         device=query_tensor.device,
     )
-    block_max_logits = np.full((int(len(resolved_block_ids)),), float("-inf"), dtype=np.float32)
+    block_max_logits = torch.full(
+        (int(len(resolved_block_ids)),),
+        float("-inf"),
+        dtype=torch.float32,
+        device=query_tensor.device,
+    )
+    token_block_ids: Any | None = None
+    if total_tokens > 0 and token_counts:
+        token_block_ids = torch.repeat_interleave(
+            torch.arange(int(len(token_counts)), dtype=torch.int64, device=query_tensor.device),
+            torch.as_tensor(token_counts, dtype=torch.int64, device=query_tensor.device),
+        )
     for kv_head in sorted(set(int(value) for value in q_head_to_kv.tolist())):
         head_ids = np.flatnonzero(q_head_to_kv == int(kv_head))
         if head_ids.size == 0:
@@ -3376,8 +3404,13 @@ def _decode_selected_blocks_direct_m0_torch(
                 device=query_tensor.device,
             )
             if use_fast_score_cache:
-                fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
-                bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+                if state.mixed_key_fused_with_bias_score_cache is not None:
+                    combined_concat = state.mixed_key_fused_with_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
+                    fused_concat = combined_concat[:, :direct_padded_head_dim].contiguous().unsqueeze(0)
+                    bias_concat = combined_concat[:, direct_padded_head_dim:].contiguous()
+                else:
+                    fused_concat = state.mixed_key_fused_scaled_score_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
+                    bias_concat = state.mixed_key_bias_score_cache[int(kv_head)].index_select(0, m0_global_indices)
             else:
                 fused_concat = state.mixed_key_fused_scaled_cache[int(kv_head)].index_select(0, m0_global_indices).unsqueeze(0)
                 bias_concat = state.mixed_key_bias_cache[int(kv_head)].index_select(0, m0_global_indices)
@@ -3481,25 +3514,40 @@ def _decode_selected_blocks_direct_m0_torch(
         _synchronize_torch_device(q_slice)
         final_mix_start = time.perf_counter()
         logits = logits * float(query_scale)
-        if int(logits.shape[-1]) > 0:
-            for block_offset_idx, block_token_count in enumerate(token_counts):
-                resolved_block_token_count = int(block_token_count)
-                if resolved_block_token_count <= 0:
-                    continue
-                token_start = int(sum(token_counts[:block_offset_idx]))
-                block_logits = logits[:, token_start : token_start + resolved_block_token_count]
-                if int(block_logits.numel()) > 0:
-                    block_max_logits[int(block_offset_idx)] = max(
-                        float(block_max_logits[int(block_offset_idx)]),
-                        float(block_logits.max().item()),
-                    )
-        head_m = logits.max(dim=-1).values.to(dtype=torch.float32)
-        exp_scores = torch.exp(logits - head_m[:, None])
-        head_l = exp_scores.sum(dim=-1).to(dtype=torch.float32)
-        head_h = torch.matmul(exp_scores.to(dtype=torch.float32), gathered_values[int(kv_head)])
-        weights = exp_scores / head_l[:, None].clamp_min(1e-8)
-        context = head_h / head_l[:, None].clamp_min(1e-8)
+        if int(logits.shape[-1]) > 0 and token_block_ids is not None:
+            token_max_logits = logits.max(dim=0).values.to(dtype=torch.float32)
+            block_max_tensor = torch.full(
+                (int(len(token_counts)),),
+                float("-inf"),
+                dtype=torch.float32,
+                device=query_tensor.device,
+            )
+            block_max_tensor.scatter_reduce_(
+                0,
+                token_block_ids,
+                token_max_logits,
+                reduce="amax",
+                include_self=True,
+            )
+            block_max_logits = torch.maximum(block_max_logits, block_max_tensor)
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            timing["final_mix_logits_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+            final_mix_softmax_start = time.perf_counter()
+        head_m = logits.max(dim=-1).values
+        exp_scores = torch.exp(logits - head_m.unsqueeze(1))
+        head_l = exp_scores.sum(dim=-1)
+        inv_head_l = head_l.clamp_min(1e-8).reciprocal()
+        weights = exp_scores * inv_head_l.unsqueeze(1)
+        if detailed_mixed_timing:
+            _synchronize_torch_device(q_slice)
+            timing["final_mix_softmax_ms"] += (time.perf_counter() - final_mix_softmax_start) * 1000.0
+            final_mix_value_start = time.perf_counter()
+        head_h = torch.matmul(exp_scores, gathered_values[int(kv_head)])
+        context = head_h * inv_head_l.unsqueeze(1)
         _synchronize_torch_device(q_slice)
+        if detailed_mixed_timing:
+            timing["final_mix_value_ms"] += (time.perf_counter() - final_mix_value_start) * 1000.0
         timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
         output[head_index_tensor] = context
         attn_weights[0, head_index_tensor, 0, :] = weights
@@ -3513,6 +3561,7 @@ def _decode_selected_blocks_direct_m0_torch(
         "M3": int(max(len(resolved_block_ids) - len(executed_m0_blocks), 0)),
     }
     if bool(return_stream_stats):
+        _synchronize_torch_device(block_max_logits)
         return {
             "output": output,
             "attn_weights": attn_weights,
@@ -3524,7 +3573,7 @@ def _decode_selected_blocks_direct_m0_torch(
                 "m": tranche_m,
                 "l": tranche_l,
                 "h": tranche_h,
-                "block_max_logits": block_max_logits,
+                "block_max_logits": block_max_logits.detach().to(device="cpu", dtype=torch.float32).numpy(),
             },
         }
     return output, attn_weights, token_counts, executed_mode_counts, timing
@@ -3703,6 +3752,15 @@ class PersistentFullAttentionState:
                     if bool(config.enable_full_attention_mixed_mode_execution)
                     else None
                 ),
+                mixed_key_fused_with_bias_score_cache=(
+                    torch.zeros(
+                        (int(kv_keys.shape[0]), int(kv_keys.shape[1]), padded_head_dim + num_groups),
+                        dtype=_resolve_mixed_score_dtype(config=config, device=resolved_device),
+                        device=resolved_device,
+                    )
+                    if bool(config.enable_full_attention_mixed_mode_execution)
+                    else None
+                ),
                 mixed_key_packed_payload_cache=(
                     np.zeros(
                         (
@@ -3871,7 +3929,11 @@ class PersistentFullAttentionState:
                 ],
                 dim=1,
             )
-        if state.mixed_key_fused_scaled_score_cache is not None and state.mixed_key_bias_score_cache is not None:
+        if (
+            state.mixed_key_fused_scaled_score_cache is not None
+            and state.mixed_key_bias_score_cache is not None
+            and state.mixed_key_fused_with_bias_score_cache is not None
+        ):
             state.mixed_key_fused_scaled_score_cache = torch.cat(
                 [
                     state.mixed_key_fused_scaled_score_cache,
@@ -3897,6 +3959,21 @@ class PersistentFullAttentionState:
                             int(state.mixed_key_bias_score_cache.shape[-1]),
                         ),
                         dtype=state.mixed_key_bias_score_cache.dtype,
+                        device=self.device,
+                    ),
+                ],
+                dim=1,
+            )
+            state.mixed_key_fused_with_bias_score_cache = torch.cat(
+                [
+                    state.mixed_key_fused_with_bias_score_cache,
+                    torch.zeros(
+                        (
+                            int(key_tensor.shape[0]),
+                            int(key_tensor.shape[1]),
+                            int(state.mixed_key_fused_with_bias_score_cache.shape[-1]),
+                        ),
+                        dtype=state.mixed_key_fused_with_bias_score_cache.dtype,
                         device=self.device,
                     ),
                 ],
@@ -4309,9 +4386,14 @@ class PersistentFullAttentionState:
         start = time.perf_counter()
         timing = {
             "direct_m0_assembly_ms": 0.0,
+            "direct_m0_query_prep_ms": 0.0,
+            "direct_m0_gather_ms": 0.0,
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
+            "final_mix_logits_ms": 0.0,
+            "final_mix_softmax_ms": 0.0,
+            "final_mix_value_ms": 0.0,
         }
         if (
             bool(getattr(resolved_config, "enable_full_attention_mixed_mode_execution", False))
@@ -4354,6 +4436,11 @@ class PersistentFullAttentionState:
         layer_telemetry.mixed_execution_direct_m0_score_ms_total += float(timing.get("direct_m0_score_ms", 0.0))
         layer_telemetry.mixed_execution_exact_m3_score_ms_total += float(timing.get("exact_m3_score_ms", 0.0))
         layer_telemetry.mixed_execution_final_mix_ms_total += float(timing.get("final_mix_ms", 0.0))
+        layer_telemetry.mixed_execution_final_mix_logits_ms_total += float(timing.get("final_mix_logits_ms", 0.0))
+        layer_telemetry.mixed_execution_final_mix_softmax_ms_total += float(
+            timing.get("final_mix_softmax_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_value_ms_total += float(timing.get("final_mix_value_ms", 0.0))
         layer_telemetry.executed_m0_block_count_total += int(executed_mode_counts.get("M0", 0))
         layer_telemetry.executed_m3_block_count_total += int(executed_mode_counts.get("M3", 0))
         return output, attn_weights, token_counts, executed_mode_counts
@@ -4583,6 +4670,9 @@ class PersistentFullAttentionState:
             "direct_m0_score_ms": 0.0,
             "exact_m3_score_ms": 0.0,
             "final_mix_ms": 0.0,
+            "final_mix_logits_ms": 0.0,
+            "final_mix_softmax_ms": 0.0,
+            "final_mix_value_ms": 0.0,
         }
 
         next_block_index = 0
@@ -4897,6 +4987,15 @@ class PersistentFullAttentionState:
         layer_telemetry.mixed_execution_final_mix_ms_total += float(
             mixed_timing_totals.get("final_mix_ms", 0.0)
         )
+        layer_telemetry.mixed_execution_final_mix_logits_ms_total += float(
+            mixed_timing_totals.get("final_mix_logits_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_softmax_ms_total += float(
+            mixed_timing_totals.get("final_mix_softmax_ms", 0.0)
+        )
+        layer_telemetry.mixed_execution_final_mix_value_ms_total += float(
+            mixed_timing_totals.get("final_mix_value_ms", 0.0)
+        )
         layer_telemetry.mixed_execution_prepare_ms_total += float(sum(mixed_timing_totals.values()))
         state.last_first_certified_stop = None if first_certified_stop is None else dict(first_certified_stop)
         state.last_checkpoint_count = int(len(checkpoints))
@@ -4956,8 +5055,12 @@ class PersistentFullAttentionState:
             total += _nbytes_tensor_like(state.value_cache)
             total += _nbytes_tensor_like(state.mixed_key_cache)
             total += _nbytes_tensor_like(state.mixed_value_cache)
+            total += _nbytes_tensor_like(state.mixed_key_score_cache)
             total += _nbytes_tensor_like(state.mixed_key_fused_scaled_cache)
             total += _nbytes_tensor_like(state.mixed_key_bias_cache)
+            total += _nbytes_tensor_like(state.mixed_key_fused_scaled_score_cache)
+            total += _nbytes_tensor_like(state.mixed_key_bias_score_cache)
+            total += _nbytes_tensor_like(state.mixed_key_fused_with_bias_score_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_payload_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_scales_cache)
             total += _nbytes_tensor_like(state.mixed_key_packed_bias_cache)
@@ -5068,6 +5171,20 @@ class PersistentFullAttentionState:
             },
             "persistent_full_attention_mixed_execution_final_mix_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_logits_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_logits_ms_total)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_softmax_ms_total_by_layer": {
+                str(layer_id): float(
+                    self.telemetry.require_layer(layer_id).mixed_execution_final_mix_softmax_ms_total
+                )
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_mixed_execution_final_mix_value_ms_total_by_layer": {
+                str(layer_id): float(self.telemetry.require_layer(layer_id).mixed_execution_final_mix_value_ms_total)
                 for layer_id in sorted(self.layers)
             },
             "persistent_full_attention_mixed_execution_cache_refresh_ms_total_by_layer": {

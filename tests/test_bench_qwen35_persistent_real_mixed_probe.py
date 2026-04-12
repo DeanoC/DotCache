@@ -29,6 +29,7 @@ def test_real_mixed_probe_configs_match_canonical_stage9_settings() -> None:
     assert serving_config.full_attention_streaming_order_mode == "priority_value_hybrid"
     assert serving_config.full_attention_streaming_priority_value_upper_weight == 0.25
     assert serving_config.full_attention_key_centroid_count_by_layer == {19: 8, 23: 16}
+    assert serving_config.full_attention_mixed_mode_detailed_timing is False
 
 
 def test_real_mixed_probe_summary_aggregates_query_prep_and_gather() -> None:
@@ -48,6 +49,12 @@ def test_real_mixed_probe_summary_aggregates_query_prep_and_gather() -> None:
                 "bias_exact_m3_score_ms_total": 8.0,
                 "hand_tuned_final_mix_ms_total": 9.0,
                 "bias_final_mix_ms_total": 10.0,
+                "hand_tuned_final_mix_logits_ms_total": 1.5,
+                "bias_final_mix_logits_ms_total": 2.5,
+                "hand_tuned_final_mix_softmax_ms_total": 3.5,
+                "bias_final_mix_softmax_ms_total": 4.5,
+                "hand_tuned_final_mix_value_ms_total": 5.5,
+                "bias_final_mix_value_ms_total": 6.5,
                 "hand_tuned_executed_m0_block_count_total": 11,
                 "bias_executed_m0_block_count_total": 12,
                 "hand_tuned_executed_m3_block_count_total": 13,
@@ -67,6 +74,12 @@ def test_real_mixed_probe_summary_aggregates_query_prep_and_gather() -> None:
                 "bias_exact_m3_score_ms_total": 12.0,
                 "hand_tuned_final_mix_ms_total": 13.0,
                 "bias_final_mix_ms_total": 14.0,
+                "hand_tuned_final_mix_logits_ms_total": 7.5,
+                "bias_final_mix_logits_ms_total": 8.5,
+                "hand_tuned_final_mix_softmax_ms_total": 9.5,
+                "bias_final_mix_softmax_ms_total": 10.5,
+                "hand_tuned_final_mix_value_ms_total": 11.5,
+                "bias_final_mix_value_ms_total": 12.5,
                 "hand_tuned_executed_m0_block_count_total": 15,
                 "bias_executed_m0_block_count_total": 16,
                 "hand_tuned_executed_m3_block_count_total": 17,
@@ -90,6 +103,12 @@ def test_real_mixed_probe_summary_aggregates_query_prep_and_gather() -> None:
     assert summary["bias_exact_m3_score_ms_per_case"] == 10.0
     assert summary["hand_tuned_final_mix_ms_per_case"] == 11.0
     assert summary["bias_final_mix_ms_per_case"] == 12.0
+    assert summary["hand_tuned_final_mix_logits_ms_per_case"] == 4.5
+    assert summary["bias_final_mix_logits_ms_per_case"] == 5.5
+    assert summary["hand_tuned_final_mix_softmax_ms_per_case"] == 6.5
+    assert summary["bias_final_mix_softmax_ms_per_case"] == 7.5
+    assert summary["hand_tuned_final_mix_value_ms_per_case"] == 8.5
+    assert summary["bias_final_mix_value_ms_per_case"] == 9.5
     assert summary["hand_tuned_executed_m0_blocks_per_case"] == 13.0
     assert summary["bias_executed_m0_blocks_per_case"] == 14.0
     assert summary["hand_tuned_executed_m3_blocks_per_case"] == 15.0
