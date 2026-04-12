@@ -1237,6 +1237,38 @@ int mul_scalar_device(
 }
 
 template <typename T>
+int reduce_keepdim_device(
+    int device_ordinal,
+    int outer,
+    int reduce,
+    int inner,
+    bool sum,
+    const void* xs,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const int total = outer * inner;
+    const unsigned int grid =
+        static_cast<unsigned int>((static_cast<size_t>(total) + block - 1) / block);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_reduce_keepdim_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        outer,
+        reduce,
+        inner,
+        sum ? 1 : 0,
+        static_cast<const T*>(xs),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 147;
+    if (hipDeviceSynchronize() != hipSuccess) return 148;
+    return 0;
+}
+
+template <typename T>
 int delta_full_scan_pack_device(
     int device_ordinal,
     int batch_heads,
@@ -3136,6 +3168,48 @@ extern "C" int dotcache_qwen35_hip_mul_scalar(
             out);
     default:
         return 147;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_reduce_keepdim(
+    int dtype,
+    size_t device_ordinal,
+    size_t outer,
+    size_t reduce,
+    size_t inner,
+    int sum,
+    const void* xs,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return reduce_keepdim_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(outer),
+            static_cast<int>(reduce),
+            static_cast<int>(inner),
+            sum != 0,
+            xs,
+            out);
+    case 1:
+        return reduce_keepdim_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(outer),
+            static_cast<int>(reduce),
+            static_cast<int>(inner),
+            sum != 0,
+            xs,
+            out);
+    case 2:
+        return reduce_keepdim_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(outer),
+            static_cast<int>(reduce),
+            static_cast<int>(inner),
+            sum != 0,
+            xs,
+            out);
+    default:
+        return 149;
     }
 }
 

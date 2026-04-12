@@ -1816,6 +1816,35 @@ __global__ void dotcache_qwen35_mul_scalar_kernel(
 }
 
 template <typename T>
+__global__ void dotcache_qwen35_reduce_keepdim_kernel(
+    int outer,
+    int reduce,
+    int inner,
+    int sum,
+    const T* xs,
+    T* out
+) {
+    const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int total = outer * inner;
+    if (idx >= total) {
+        return;
+    }
+    const int outer_idx = idx / inner;
+    const int inner_idx = idx % inner;
+    const int base = (outer_idx * reduce) * inner + inner_idx;
+    float acc = dotcache_qwen35_to_float(xs[base]);
+    for (int r = 1; r < reduce; ++r) {
+        const float value = dotcache_qwen35_to_float(xs[base + r * inner]);
+        if (sum) {
+            acc += value;
+        } else {
+            acc = value > acc ? value : acc;
+        }
+    }
+    out[idx] = dotcache_qwen35_from_float<T>(acc);
+}
+
+template <typename T>
 __global__ void dotcache_qwen35_batched_matmul_kernel(
     int batch_rank,
     size_t batch_elems,

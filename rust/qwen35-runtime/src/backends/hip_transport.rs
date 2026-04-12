@@ -14,7 +14,9 @@ use crate::qwen35_minimal_impl::model::{
     hip_broadcast_add_host_buffer, hip_broadcast_div_host_buffer, hip_broadcast_mul_host_buffer,
     hip_broadcast_sub_host_buffer, hip_cast_host_buffer, hip_exp_host_buffer,
     hip_immutable_embedding_lookup, hip_immutable_embedding_lookup_host_buffer,
-    hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_mul_scalar_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
+    hip_l2norm_host_buffer, hip_matmul_host_buffer, hip_max_keepdim_host_buffer,
+    hip_mul_scalar_host_buffer, hip_rms_norm, hip_rms_norm_gated, hip_rms_norm_gated_host_buffer,
+    hip_sum_keepdim_host_buffer,
     hip_recip_host_buffer, hip_rms_norm_host_buffer, hip_sigmoid_host_buffer, hip_swiglu_mul, hip_swiglu_mul_host_buffer, hip_value_decay,
     hip_value_decay_host_buffer, immutable_output_projection,
     immutable_output_projection_host_buffer, linear_decode_step_hip, linear_prefill_conv_pack,
@@ -1440,7 +1442,13 @@ impl HipDeviceBuffer {
                 buffer.max_keepdim(dim)?,
             ));
         }
-        Ok(Self::from_tensor(self.materialize_tensor()?.max_keepdim(dim)?))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_max_keepdim_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from max_keepdim host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(tensor.max_keepdim(dim)?))
     }
 
     pub(crate) fn sum_keepdim(&self, dim: usize) -> Result<Self> {
@@ -1450,7 +1458,13 @@ impl HipDeviceBuffer {
                 buffer.sum_keepdim(dim)?,
             ));
         }
-        Ok(Self::from_tensor(self.materialize_tensor()?.sum_keepdim(dim)?))
+        let tensor = self.materialize_tensor()?;
+        if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_sum_keepdim_host_buffer)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from sum_keepdim host buffer".into())
+            })?);
+        }
+        Ok(Self::from_tensor(tensor.sum_keepdim(dim)?))
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
@@ -4565,6 +4579,24 @@ fn matmul_hip_host_buffer(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor
 
 fn mul_scalar_hip_host_buffer(xs: &Tensor, value: f64) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_mul_scalar_host_buffer(xs, value)? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes: bytes.into(),
+            shape,
+            dtype: xs.dtype(),
+            device: xs.device().clone(),
+        }),
+    )))
+}
+
+fn reduce_keepdim_hip_host_buffer(
+    xs: &Tensor,
+    dim: usize,
+    helper: fn(&Tensor, usize) -> Result<Option<(Vec<u8>, Vec<usize>)>>,
+) -> Result<Option<HipTensor>> {
+    let Some((bytes, shape)) = helper(xs, dim)? else {
         return Ok(None);
     };
     Ok(Some(HipTensor::from_device_buffer(
@@ -10471,6 +10503,38 @@ mod tests {
 
         assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
         assert_eq!(values_f32(out)?, vec![0.5, -1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_sum_keepdim_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+
+        let out = xs.sum_keepdim(candle_core::D::Minus1)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![3.0, 7.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn device_leaf_generic_max_keepdim_stays_device_backed_via_kernel() -> Result<()> {
+        let device = Device::Cpu;
+        let xs = HipTensor::from_scaffold_tensor(Tensor::from_vec(
+            vec![1f32, 2.0, 3.0, 4.0],
+            (2, 2),
+            &device,
+        )?);
+
+        let out = xs.max_keepdim(candle_core::D::Minus1)?;
+
+        assert!(matches!(out.0 .0.expr, HipNativeExpr::DeviceBuffer(_)));
+        assert_eq!(values_f32(out)?, vec![2.0, 4.0]);
         Ok(())
     }
 

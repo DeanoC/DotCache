@@ -3294,6 +3294,85 @@ pub(crate) fn hip_mul_scalar_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_reduce_keepdim_host_buffer(
+    xs: &Tensor,
+    dim: usize,
+    sum: bool,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    if dim >= shape.len() {
+        return Ok(None);
+    }
+    let outer = shape[..dim].iter().product::<usize>().max(1);
+    let reduce = shape[dim];
+    let inner = shape[dim + 1..].iter().product::<usize>().max(1);
+    let mut out_shape = shape.clone();
+    out_shape[dim] = 1;
+    let mut out = vec![0u8; out_shape.iter().product::<usize>().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_reduce_keepdim(
+            dtype_code,
+            ordinal,
+            outer,
+            reduce,
+            inner,
+            if sum { 1 } else { 0 },
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-reduce-keepdim-host-buffer", status));
+    }
+    Ok(Some((out, out_shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_reduce_keepdim_host_buffer(
+    xs: &Tensor,
+    dim: usize,
+    sum: bool,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (xs, dim, sum);
+    Ok(None)
+}
+
+pub(crate) fn hip_sum_keepdim_host_buffer(
+    xs: &Tensor,
+    dim: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_reduce_keepdim_host_buffer(xs, dim, true)
+}
+
+pub(crate) fn hip_max_keepdim_host_buffer(
+    xs: &Tensor,
+    dim: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    hip_reduce_keepdim_host_buffer(xs, dim, false)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HipL2Norm {
     n_rows: usize,

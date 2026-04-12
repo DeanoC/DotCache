@@ -579,5 +579,16 @@ pub mod ffi {
             xs: *const c_void,
             out: *mut c_void,
         ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_reduce_keepdim(
+            dtype: c_int,
+            device_ordinal: usize,
+            outer: usize,
+            reduce: usize,
+            inner: usize,
+            sum: c_int,
+            xs: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
     }
 }
