@@ -16819,12 +16819,12 @@ pub(crate) fn delta_recurrent_prefill_buffer(
         Some(beta_scan),
         Some(g_scan),
     ) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        query_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        value_scan_hip.0 .0.direct_materialized_device_buffer(),
-        beta_scan_hip.0 .0.direct_materialized_device_buffer(),
-        g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        query_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        value_scan_hip.try_materialized_device_buffer()?,
+        beta_scan_hip.try_materialized_device_buffer()?,
+        g_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -16899,12 +16899,12 @@ pub(crate) fn delta_chunk_single_prefill_buffer(
     let beta_hip = HipTensor::from_scaffold_tensor(beta.clone());
     let g_hip = HipTensor::from_scaffold_tensor(g.clone());
     if let (Some(initial_state), Some(query), Some(key), Some(value), Some(beta), Some(g)) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        query_hip.0 .0.direct_materialized_device_buffer(),
-        key_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
-        beta_hip.0 .0.direct_materialized_device_buffer(),
-        g_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        query_hip.try_materialized_device_buffer()?,
+        key_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
+        beta_hip.try_materialized_device_buffer()?,
+        g_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -16986,12 +16986,12 @@ pub(crate) fn delta_chunk_scan_raw_buffer(
         Some(beta_scan),
         Some(g_scan),
     ) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        query_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        value_scan_hip.0 .0.direct_materialized_device_buffer(),
-        beta_scan_hip.0 .0.direct_materialized_device_buffer(),
-        g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        query_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        value_scan_hip.try_materialized_device_buffer()?,
+        beta_scan_hip.try_materialized_device_buffer()?,
+        g_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -17055,9 +17055,9 @@ pub(crate) fn delta_base_attn_scan_buffer(
     let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
     let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
     if let (Some(k_beta_scan), Some(key_scan), Some(exp_g_scan)) = (
-        k_beta_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        k_beta_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        exp_g_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(k_beta_scan_mapped),
@@ -17097,9 +17097,9 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
     let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
     let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
     if let (Some(k_beta_scan), Some(key_scan), Some(exp_g_scan)) = (
-        k_beta_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        k_beta_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        exp_g_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(k_beta_scan_mapped),
@@ -17134,7 +17134,7 @@ pub(crate) fn delta_attn_solve_scan_buffer(base_attn_scan: &StateBuffer) -> Resu
         return device_out.into_state_buffer();
     }
     let base_attn_scan_hip = HipTensor::from_state_buffer(base_attn_scan);
-    if let Some(base_attn_scan) = base_attn_scan_hip.0 .0.direct_materialized_device_buffer() {
+    if let Some(base_attn_scan) = base_attn_scan_hip.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(base_attn_scan_mapped) = &base_attn_scan.storage {
             if let Some(out) =
                 mapped_delta_attn_solve_scan_hip_host_buffer(base_attn_scan_mapped)?
@@ -17164,9 +17164,9 @@ pub(crate) fn delta_local_attn_scan_buffer(
     let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
     let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
     if let (Some(query_scan), Some(key_scan), Some(exp_g_scan)) = (
-        query_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
+        query_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        exp_g_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(query_scan_mapped),
@@ -17209,10 +17209,10 @@ pub(crate) fn delta_full_scan_pack_buffer(
     let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
     let k_cumdecay_scan_hip = HipTensor::from_scaffold_tensor(k_cumdecay_scan.clone());
     if let (Some(query_scan), Some(key_scan), Some(exp_g_scan), Some(k_cumdecay_scan)) = (
-        query_scan_hip.0 .0.direct_materialized_device_buffer(),
-        key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        exp_g_scan_hip.0 .0.direct_materialized_device_buffer(),
-        k_cumdecay_scan_hip.0 .0.direct_materialized_device_buffer(),
+        query_scan_hip.try_materialized_device_buffer()?,
+        key_scan_hip.try_materialized_device_buffer()?,
+        exp_g_scan_hip.try_materialized_device_buffer()?,
+        k_cumdecay_scan_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(query_scan_mapped),
@@ -17268,10 +17268,10 @@ pub(crate) fn delta_full_scan_packed_buffer(
     let local_attn_scan_hip = HipTensor::from_state_buffer(local_attn_scan);
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
     if let (Some(initial_state), Some(packed_scan), Some(local_attn_scan), Some(value)) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        packed_scan_hip.0 .0.direct_materialized_device_buffer(),
-        local_attn_scan_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        packed_scan_hip.try_materialized_device_buffer()?,
+        local_attn_scan_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -17348,13 +17348,13 @@ pub(crate) fn delta_full_scan_buffer(
         Some(state_decay_scan),
         Some(value),
     ) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        weighted_key_scan_hip.0 .0.direct_materialized_device_buffer(),
-        k_cumdecay_scan_hip.0 .0.direct_materialized_device_buffer(),
-        q_state_scan_hip.0 .0.direct_materialized_device_buffer(),
-        local_attn_scan_hip.0 .0.direct_materialized_device_buffer(),
-        state_decay_scan_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        weighted_key_scan_hip.try_materialized_device_buffer()?,
+        k_cumdecay_scan_hip.try_materialized_device_buffer()?,
+        q_state_scan_hip.try_materialized_device_buffer()?,
+        local_attn_scan_hip.try_materialized_device_buffer()?,
+        state_decay_scan_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -17423,9 +17423,9 @@ pub(crate) fn delta_state_scan_buffer(
     let packed_scan_hip = HipTensor::from_state_buffer(packed_scan);
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
     if let (Some(initial_state), Some(packed_scan), Some(value)) = (
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
-        packed_scan_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        initial_state_hip.try_materialized_device_buffer()?,
+        packed_scan_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(initial_state_mapped),
@@ -17469,9 +17469,9 @@ pub(crate) fn delta_chunk_fused_buffer(
     let packed_chunk_hip = HipTensor::from_state_buffer(packed_chunk);
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
     if let (Some(prev_state), Some(packed_chunk), Some(value)) = (
-        prev_state_hip.0 .0.direct_materialized_device_buffer(),
-        packed_chunk_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        prev_state_hip.try_materialized_device_buffer()?,
+        packed_chunk_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(prev_state_mapped),
