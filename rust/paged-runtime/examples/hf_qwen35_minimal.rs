@@ -224,6 +224,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prefill_cache_max_delta: Option<f32>,
         pytorch_embedding_max_delta: Option<f32>,
         pytorch_first_layer_input_layernorm_max_delta: Option<f32>,
+        pytorch_first_layer_linear_qkv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_z_max_delta: Option<f32>,
+        pytorch_first_layer_linear_b_max_delta: Option<f32>,
+        pytorch_first_layer_linear_a_max_delta: Option<f32>,
         pytorch_first_layer_token_mixer_max_delta: Option<f32>,
         pytorch_first_layer_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_first_layer_mlp_max_delta: Option<f32>,
@@ -245,6 +249,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_ms: f64,
         embedding_output: Vec<Vec<Vec<f32>>>,
         first_layer_input_layernorm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_qkv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_z_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_b_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
         first_layer_token_mixer_output: Vec<Vec<Vec<f32>>>,
         first_layer_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
         first_layer_mlp_output: Vec<Vec<Vec<f32>>>,
@@ -688,6 +696,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let (
         pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_z_max_delta,
+        pytorch_first_layer_linear_b_max_delta,
+        pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
         pytorch_first_layer_mlp_max_delta,
@@ -697,6 +709,29 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pytorch_first_layer_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
             first_layer_trace.input_layernorm_output.tensor(),
             &pytorch_oracle.first_layer_input_layernorm_output,
+        )?);
+        let linear_projection_trace = first_layer_trace
+            .linear_projection_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "first traced layer did not expose linear projection trace".to_string(),
+            })?;
+        let pytorch_first_layer_linear_qkv_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.qkv_output.tensor(),
+            &pytorch_oracle.first_layer_linear_qkv_output,
+        )?);
+        let pytorch_first_layer_linear_z_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.z_output.tensor(),
+            &pytorch_oracle.first_layer_linear_z_output,
+        )?);
+        let pytorch_first_layer_linear_b_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.b_output.tensor(),
+            &pytorch_oracle.first_layer_linear_b_output,
+        )?);
+        let pytorch_first_layer_linear_a_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.a_output.tensor(),
+            &pytorch_oracle.first_layer_linear_a_output,
         )?);
         let pytorch_first_layer_token_mixer_max_delta = Some(max_tensor_delta_vec3(
             first_layer_trace.token_mixer_output.tensor(),
@@ -716,13 +751,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )?);
         (
             pytorch_first_layer_input_layernorm_max_delta,
+            pytorch_first_layer_linear_qkv_max_delta,
+            pytorch_first_layer_linear_z_max_delta,
+            pytorch_first_layer_linear_b_max_delta,
+            pytorch_first_layer_linear_a_max_delta,
             pytorch_first_layer_token_mixer_max_delta,
             pytorch_first_layer_post_attention_layernorm_max_delta,
             pytorch_first_layer_mlp_max_delta,
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1049,6 +1088,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prefill_cache_max_delta,
         pytorch_embedding_max_delta,
         pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_z_max_delta,
+        pytorch_first_layer_linear_b_max_delta,
+        pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
         pytorch_first_layer_mlp_max_delta,

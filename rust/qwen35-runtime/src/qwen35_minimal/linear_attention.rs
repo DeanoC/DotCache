@@ -20,7 +20,10 @@ use super::model::{
     use_hip_short_linear_prefill_recurrent, use_linear_prefill_packed_kernel, DeltaNetScanMode,
 };
 use super::prepared::PreparedTensorSource;
-use super::types::{LinearAttentionCacheState, RuntimeProfile, StateBuffer, TextConfig};
+use super::types::{
+    LinearAttentionCacheState, LinearAttentionProjectionTrace, RuntimeProfile, StateBuffer,
+    TextConfig,
+};
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
 use super::with_tracing::Linear;
@@ -2103,6 +2106,27 @@ impl GatedDeltaNet {
         let a = self.in_proj_a.forward_buffer(hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
         Ok((mixed_qkv, z, beta_raw, a, profile))
+    }
+
+    pub(super) fn trace_projection_components_buffer(
+        &self,
+        hidden_states: &StateBuffer,
+    ) -> Result<LinearAttentionProjectionTrace> {
+        let backend = backend_buffer_api::for_device(hidden_states.device());
+        let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        let qkv_output = self.in_proj_qkv.forward_buffer(hidden_states)?;
+        let z_output = backend.reshape_tensor_to_buffer(
+            self.in_proj_z.forward_buffer(hidden_states)?.tensor(),
+            &[batch_size, seq_len, self.value_dim],
+        )?;
+        let b_output = self.in_proj_b.forward_buffer(hidden_states)?;
+        let a_output = self.in_proj_a.forward_buffer(hidden_states)?;
+        Ok(LinearAttentionProjectionTrace {
+            qkv_output,
+            z_output,
+            b_output,
+            a_output,
+        })
     }
 
     pub(super) fn project_direct_decode_inputs_into_scratch(

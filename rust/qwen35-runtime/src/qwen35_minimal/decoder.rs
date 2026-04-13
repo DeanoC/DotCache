@@ -14,8 +14,8 @@ use super::linear_attention::GatedDeltaNet;
 use super::prepared::PreparedTensorSource;
 use super::types::{
     CacheState, Config, ExternalFullAttention, LayerCacheState, LinearAttentionBenchResult,
-    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile,
-    StateBuffer, TextConfig,
+    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionProjectionTrace,
+    LinearAttentionTrace, RuntimeProfile, StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
@@ -634,15 +634,26 @@ impl TextModel {
             None
         };
         let input_layernorm_output = target.input_layernorm.forward_buffer(&xs)?;
-        let (token_mixer_output, _) = match &mut target.token_mixer {
-            LayerKind::Linear(linear_attn) => linear_attn.forward_profiled_buffer(&input_layernorm_output, mask)?,
+        let (linear_projection_trace, token_mixer_output, _) = match &mut target.token_mixer {
+            LayerKind::Linear(linear_attn) => {
+                let projection_trace =
+                    linear_attn.trace_projection_components_buffer(&input_layernorm_output)?;
+                let (token_mixer_output, profile) =
+                    linear_attn.forward_profiled_buffer(&input_layernorm_output, mask)?;
+                (
+                    Some(projection_trace),
+                    token_mixer_output,
+                    profile,
+                )
+            }
             LayerKind::Full(self_attn) => self_attn.forward_profiled_with_external_buffer(
                 &input_layernorm_output,
                 mask,
                 seqlen_offset,
                 target_layer,
                 &mut None,
-            )?,
+            )
+            .map(|(output, profile)| (None, output, profile))?,
         };
         let backend = backend_buffer_api::for_device(xs.device());
         let attention_residual = backend.add(&xs, &token_mixer_output)?;
@@ -655,6 +666,7 @@ impl TextModel {
             layer_id: target_layer,
             sequence_length: seq_len,
             input_layernorm_output,
+            linear_projection_trace,
             token_mixer_output,
             post_attention_layernorm_output,
             mlp_output,

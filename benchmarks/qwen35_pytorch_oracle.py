@@ -41,6 +41,10 @@ def main() -> None:
     embedding_output = None
     first_layer_output = None
     first_layer_input_layernorm_output = None
+    first_layer_linear_qkv_output = None
+    first_layer_linear_z_output = None
+    first_layer_linear_b_output = None
+    first_layer_linear_a_output = None
     first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
     first_layer_mlp_output = None
@@ -66,6 +70,22 @@ def main() -> None:
         nonlocal first_layer_token_mixer_output
         first_layer_token_mixer_output = capture_tensor(output)
 
+    def linear_qkv_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_qkv_output
+        first_layer_linear_qkv_output = capture_tensor(output)
+
+    def linear_z_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_z_output
+        first_layer_linear_z_output = capture_tensor(output)
+
+    def linear_b_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_b_output
+        first_layer_linear_b_output = capture_tensor(output)
+
+    def linear_a_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_a_output
+        first_layer_linear_a_output = capture_tensor(output)
+
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
         first_layer_post_attention_layernorm_output = capture_tensor(output)
@@ -82,6 +102,18 @@ def main() -> None:
     token_mixer_handle = model.model.layers[0].linear_attn.register_forward_hook(
         token_mixer_hook
     )
+    linear_qkv_handle = model.model.layers[0].linear_attn.in_proj_qkv.register_forward_hook(
+        linear_qkv_hook
+    )
+    linear_z_handle = model.model.layers[0].linear_attn.in_proj_z.register_forward_hook(
+        linear_z_hook
+    )
+    linear_b_handle = model.model.layers[0].linear_attn.in_proj_b.register_forward_hook(
+        linear_b_hook
+    )
+    linear_a_handle = model.model.layers[0].linear_attn.in_proj_a.register_forward_hook(
+        linear_a_hook
+    )
     post_attention_layernorm_handle = (
         model.model.layers[0]
         .post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook)
@@ -95,6 +127,10 @@ def main() -> None:
         layer_handle.remove()
         input_layernorm_handle.remove()
         token_mixer_handle.remove()
+        linear_qkv_handle.remove()
+        linear_z_handle.remove()
+        linear_b_handle.remove()
+        linear_a_handle.remove()
         post_attention_layernorm_handle.remove()
         mlp_handle.remove()
 
@@ -102,6 +138,10 @@ def main() -> None:
         embedding_output is None
         or first_layer_output is None
         or first_layer_input_layernorm_output is None
+        or first_layer_linear_qkv_output is None
+        or first_layer_linear_z_output is None
+        or first_layer_linear_b_output is None
+        or first_layer_linear_a_output is None
         or first_layer_token_mixer_output is None
         or first_layer_post_attention_layernorm_output is None
         or first_layer_mlp_output is None
@@ -139,6 +179,10 @@ def main() -> None:
         "embedding_output": embedding_output.tolist(),
         "first_layer_output": first_layer_output.tolist(),
         "first_layer_input_layernorm_output": first_layer_input_layernorm_output.tolist(),
+        "first_layer_linear_qkv_output": first_layer_linear_qkv_output.tolist(),
+        "first_layer_linear_z_output": first_layer_linear_z_output.tolist(),
+        "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
+        "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
         "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
         "first_layer_mlp_output": first_layer_mlp_output.tolist(),

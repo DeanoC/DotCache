@@ -335,10 +335,19 @@ pub struct DecoderLayerTrace {
     pub layer_id: usize,
     pub sequence_length: usize,
     pub input_layernorm_output: StateBuffer,
+    pub linear_projection_trace: Option<LinearAttentionProjectionTrace>,
     pub token_mixer_output: StateBuffer,
     pub post_attention_layernorm_output: StateBuffer,
     pub mlp_output: StateBuffer,
     pub layer_output: StateBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinearAttentionProjectionTrace {
+    pub qkv_output: StateBuffer,
+    pub z_output: StateBuffer,
+    pub b_output: StateBuffer,
+    pub a_output: StateBuffer,
 }
 
 pub struct ExternalFullAttentionOutput {
