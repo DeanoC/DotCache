@@ -113,7 +113,11 @@ impl MinimalQwen35Runner {
         let config: MinimalQwen35Config =
             serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
         let vb = unsafe {
-            WeightBuilder::from_mmaped_safetensors(&artifacts.weight_paths, DType::F16, device)?
+            WeightBuilder::from_mmaped_safetensors(
+                &artifacts.weight_paths,
+                candle_core::DType::F16,
+                device,
+            )?
         };
         let model = ModelForCausalLM::new(&config, vb)?;
         Ok(Self {

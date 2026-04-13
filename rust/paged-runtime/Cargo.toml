@@ -14,7 +14,7 @@ candle-metal = ["candle", "dep:candle-metal-kernels", "candle-core/metal", "cand
 candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 candle-hip = ["candle"]
 candle-accelerate = ["candle", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-qwen35-minimal = ["hf", "dep:candle-core", "dep:candle-nn", "dep:dotcache-qwen35-runtime", "dotcache-qwen35-runtime/qwen35-minimal"]
+qwen35-minimal = ["hf", "dep:candle-core", "dep:candle-nn", "dep:dotcache-qwen35-runtime", "dotcache-qwen35-runtime/qwen35-minimal", "dotcache-qwen35-runtime/hf"]
 qwen35-minimal-hip = ["qwen35-minimal", "candle-core/hip", "candle-nn/hip", "dotcache-qwen35-runtime/qwen35-minimal-hip"]
 qwen35-minimal-cuda = ["qwen35-minimal", "candle-core/cuda", "candle-nn/cuda", "dotcache-qwen35-runtime/qwen35-minimal-cuda"]
 

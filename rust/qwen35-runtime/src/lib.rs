@@ -88,6 +88,7 @@ impl From<std::io::Error> for RuntimeError {
     }
 }
 
+#[cfg(feature = "qwen35-minimal")]
 impl From<serde_json::Error> for RuntimeError {
     fn from(err: serde_json::Error) -> Self {
         Self::External {
