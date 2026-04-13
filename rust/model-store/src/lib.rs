@@ -131,6 +131,29 @@ pub struct PreparedQwen35DirectWorkspaceEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectTensorBinding {
+    pub name: String,
+    pub tensor_name: String,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectLayerBindings {
+    pub layer_idx: usize,
+    pub layer_type: String,
+    pub tensors: Vec<PreparedQwen35DirectTensorBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectStateLayoutEntry {
+    pub name: String,
+    pub layer_idx: Option<usize>,
+    pub dtype: PreparedDType,
+    pub dims: Vec<usize>,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedQwen35DirectMetadata {
     pub profile: PreparedPackageProfile,
     pub vocab_size: usize,
@@ -138,9 +161,12 @@ pub struct PreparedQwen35DirectMetadata {
     pub num_hidden_layers: usize,
     pub max_position_embeddings: usize,
     pub activation_dtype: PreparedDType,
+    pub global_tensors: Vec<PreparedQwen35DirectTensorBinding>,
     pub layers: Vec<PreparedQwen35DirectLayerEntry>,
+    pub layer_bindings: Vec<PreparedQwen35DirectLayerBindings>,
     pub decode_phases: Vec<PreparedQwen35DirectPhaseEntry>,
     pub workspace: Vec<PreparedQwen35DirectWorkspaceEntry>,
+    pub state_layouts: Vec<PreparedQwen35DirectStateLayoutEntry>,
     pub full_attention_layer_ids: Vec<usize>,
     pub linear_attention_layer_ids: Vec<usize>,
 }
@@ -936,10 +962,58 @@ struct Qwen35MinimalPackageConfig {
 struct Qwen35MinimalPackageTextConfig {
     vocab_size: usize,
     hidden_size: usize,
+    #[serde(default = "default_qwen35_num_attention_heads")]
+    num_attention_heads: usize,
+    #[serde(default = "default_qwen35_num_key_value_heads")]
+    num_key_value_heads: usize,
     num_hidden_layers: usize,
     max_position_embeddings: usize,
+    #[serde(default = "default_qwen35_head_dim")]
+    head_dim: usize,
+    #[serde(default = "default_qwen35_linear_conv_kernel_dim")]
+    linear_conv_kernel_dim: usize,
+    #[serde(default = "default_qwen35_linear_key_head_dim")]
+    linear_key_head_dim: usize,
+    #[serde(default = "default_qwen35_linear_value_head_dim")]
+    linear_value_head_dim: usize,
+    #[serde(default = "default_qwen35_linear_num_key_heads")]
+    linear_num_key_heads: usize,
+    #[serde(default = "default_qwen35_linear_num_value_heads")]
+    linear_num_value_heads: usize,
     #[serde(default)]
     layer_types: Vec<String>,
+}
+
+const fn default_qwen35_head_dim() -> usize {
+    128
+}
+
+const fn default_qwen35_num_attention_heads() -> usize {
+    8
+}
+
+const fn default_qwen35_num_key_value_heads() -> usize {
+    2
+}
+
+const fn default_qwen35_linear_conv_kernel_dim() -> usize {
+    4
+}
+
+const fn default_qwen35_linear_key_head_dim() -> usize {
+    64
+}
+
+const fn default_qwen35_linear_value_head_dim() -> usize {
+    128
+}
+
+const fn default_qwen35_linear_num_key_heads() -> usize {
+    4
+}
+
+const fn default_qwen35_linear_num_value_heads() -> usize {
+    8
 }
 
 impl Qwen35MinimalPackageTextConfig {
@@ -1274,6 +1348,157 @@ fn qwen35_minimal_keeps_tensor(name: &str) -> bool {
     name.starts_with("model.language_model.") || name == "lm_head.weight"
 }
 
+fn qwen35_direct_global_tensors() -> Vec<PreparedQwen35DirectTensorBinding> {
+    vec![
+        PreparedQwen35DirectTensorBinding {
+            name: "embed_tokens".to_string(),
+            tensor_name: "model.language_model.embed_tokens.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "final_norm".to_string(),
+            tensor_name: "model.language_model.norm.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "lm_head".to_string(),
+            tensor_name: "lm_head.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ]
+}
+
+fn qwen35_direct_layer_bindings(
+    layer_idx: usize,
+    layer_type: &str,
+) -> PreparedQwen35DirectLayerBindings {
+    let layer_prefix = format!("model.language_model.layers.{layer_idx}");
+    let mut tensors = vec![
+        PreparedQwen35DirectTensorBinding {
+            name: "input_layernorm".to_string(),
+            tensor_name: format!("{layer_prefix}.input_layernorm.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "post_attention_layernorm".to_string(),
+            tensor_name: format!("{layer_prefix}.post_attention_layernorm.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_gate_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.gate_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_up_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.up_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_down_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.down_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ];
+    match layer_type {
+        "linear_attention" => {
+            tensors.extend([
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_qkv".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_qkv.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_z".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_z.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_b".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_b.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_a".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_a.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "conv1d".to_string(),
+                    tensor_name: format!(
+                        "{layer_prefix}.token_mixer.conv1d.weight.__dotcache_depthwise_squeezed"
+                    ),
+                    layout: TensorLayoutTag::DepthwiseConvSqueezed,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "dt_bias".to_string(),
+                    tensor_name: format!(
+                        "{layer_prefix}.token_mixer.dt_bias.__dotcache_head_bias_reshaped"
+                    ),
+                    layout: TensorLayoutTag::HeadBiasReshaped,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "a_log".to_string(),
+                    tensor_name: format!(
+                        "{layer_prefix}.token_mixer.A_log.__dotcache_head_exp_reshaped"
+                    ),
+                    layout: TensorLayoutTag::HeadExpReshaped,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "norm".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "out_proj".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.out_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+            ]);
+        }
+        "full_attention" => {
+            tensors.extend([
+                PreparedQwen35DirectTensorBinding {
+                    name: "q_proj".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.q_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "k_proj".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.k_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "v_proj".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.v_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "o_proj".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.o_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "q_norm".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.q_norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "k_norm".to_string(),
+                    tensor_name: format!("{layer_prefix}.token_mixer.k_norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+            ]);
+        }
+        _ => {}
+    }
+    PreparedQwen35DirectLayerBindings {
+        layer_idx,
+        layer_type: layer_type.to_string(),
+        tensors,
+    }
+}
+
 fn maybe_qwen35_direct_metadata(
     config: &Qwen35MinimalPackageConfig,
     package_profile: PreparedPackageProfile,
@@ -1283,6 +1508,7 @@ fn maybe_qwen35_direct_metadata(
     }
     let layer_types = config.text_config.normalized_layer_types();
     let mut layers = Vec::with_capacity(layer_types.len());
+    let mut layer_bindings = Vec::with_capacity(layer_types.len());
     let mut full_attention_layer_ids = Vec::new();
     let mut linear_attention_layer_ids = Vec::new();
     for (layer_idx, layer_type) in layer_types.iter().cloned().enumerate() {
@@ -1291,6 +1517,7 @@ fn maybe_qwen35_direct_metadata(
             "linear_attention" => linear_attention_layer_ids.push(layer_idx),
             _ => {}
         }
+        layer_bindings.push(qwen35_direct_layer_bindings(layer_idx, &layer_type));
         layers.push(PreparedQwen35DirectLayerEntry {
             layer_idx,
             layer_type,
@@ -1312,6 +1539,7 @@ fn maybe_qwen35_direct_metadata(
         start_layer_idx = end_layer_idx;
     }
     let activation_dtype = PreparedDType::BF16;
+    let global_tensors = qwen35_direct_global_tensors();
     let workspace = vec![
         PreparedQwen35DirectWorkspaceEntry {
             name: "decode_hidden_ping".to_string(),
@@ -1332,6 +1560,61 @@ fn maybe_qwen35_direct_metadata(
             layout: TensorLayoutTag::StandardContiguous,
         },
     ];
+    let linear_conv_dim = config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim
+        * 2
+        + config.text_config.linear_num_value_heads * config.text_config.linear_value_head_dim;
+    let mut state_layouts = Vec::new();
+    for &layer_idx in linear_attention_layer_ids.iter() {
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "linear_conv_state".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                linear_conv_dim,
+                config.text_config.linear_conv_kernel_dim.saturating_sub(1),
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "linear_recurrent_state".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: PreparedDType::F32,
+            dims: vec![
+                1,
+                config.text_config.linear_num_value_heads,
+                config.text_config.linear_key_head_dim,
+                config.text_config.linear_value_head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+    }
+    for &layer_idx in full_attention_layer_ids.iter() {
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "full_attention_k_cache".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                config.text_config.max_position_embeddings,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "full_attention_v_cache".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                config.text_config.max_position_embeddings,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+    }
     Some(PreparedQwen35DirectMetadata {
         profile: package_profile,
         vocab_size: config.text_config.vocab_size,
@@ -1339,9 +1622,12 @@ fn maybe_qwen35_direct_metadata(
         num_hidden_layers: config.text_config.num_hidden_layers,
         max_position_embeddings: config.text_config.max_position_embeddings,
         activation_dtype,
+        global_tensors,
         layers,
+        layer_bindings,
         decode_phases,
         workspace,
+        state_layouts,
         full_attention_layer_ids,
         linear_attention_layer_ids,
     })
@@ -1864,8 +2150,16 @@ mod tests {
             text_config: Qwen35MinimalPackageTextConfig {
                 vocab_size: 151_936,
                 hidden_size: 1024,
+                num_attention_heads: 8,
+                num_key_value_heads: 2,
                 num_hidden_layers: 24,
                 max_position_embeddings: 32_768,
+                head_dim: 128,
+                linear_conv_kernel_dim: 4,
+                linear_key_head_dim: 64,
+                linear_value_head_dim: 128,
+                linear_num_key_heads: 4,
+                linear_num_value_heads: 8,
                 layer_types: Vec::new(),
             },
         };
@@ -1880,8 +2174,22 @@ mod tests {
         assert_eq!(metadata.decode_phases[0].layer_type, "linear_attention");
         assert_eq!(metadata.decode_phases[0].start_layer_idx, 0);
         assert_eq!(metadata.decode_phases[0].end_layer_idx, 3);
+        assert_eq!(metadata.global_tensors.len(), 3);
+        assert_eq!(metadata.global_tensors[0].tensor_name, "model.language_model.embed_tokens.weight");
+        assert_eq!(metadata.layer_bindings.len(), 24);
+        assert_eq!(metadata.layer_bindings[0].layer_type, "linear_attention");
+        assert!(metadata.layer_bindings[0]
+            .tensors
+            .iter()
+            .any(|entry| entry.tensor_name.ends_with("token_mixer.in_proj_qkv.weight")));
+        assert_eq!(metadata.layer_bindings[3].layer_type, "full_attention");
+        assert!(metadata.layer_bindings[3]
+            .tensors
+            .iter()
+            .any(|entry| entry.tensor_name.ends_with("token_mixer.q_proj.weight")));
         assert_eq!(metadata.workspace.len(), 3);
         assert_eq!(metadata.workspace[0].name, "decode_hidden_ping");
+        assert_eq!(metadata.state_layouts.len(), 48);
         assert_eq!(
             metadata.full_attention_layer_ids,
             vec![3, 7, 11, 15, 19, 23]

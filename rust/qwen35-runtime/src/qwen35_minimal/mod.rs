@@ -262,6 +262,39 @@ impl MinimalQwen35Runner {
                 message: "direct HIP runtime requires at least one decode phase".to_string(),
             });
         }
+        for binding in metadata.global_tensors.iter() {
+            if !package.contains_tensor(&binding.tensor_name) {
+                return Err(RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!(
+                        "direct HIP package missing global binding `{}` -> `{}`",
+                        binding.name, binding.tensor_name
+                    ),
+                });
+            }
+        }
+        for layer in metadata.layer_bindings.iter() {
+            if layer.layer_idx >= metadata.num_hidden_layers {
+                return Err(RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!(
+                        "direct HIP layer binding index {} is out of range for {} layers",
+                        layer.layer_idx, metadata.num_hidden_layers
+                    ),
+                });
+            }
+            for binding in layer.tensors.iter() {
+                if !package.contains_tensor(&binding.tensor_name) {
+                    return Err(RuntimeError::External {
+                        context: "qwen35-hip-direct",
+                        message: format!(
+                            "direct HIP package missing layer {} binding `{}` -> `{}`",
+                            layer.layer_idx, binding.name, binding.tensor_name
+                        ),
+                    });
+                }
+            }
+        }
         let backend = backend_buffer_api::for_device(device);
         let scratch_dtype = DType::BF16;
         let decode_hidden_ping_entry = metadata
