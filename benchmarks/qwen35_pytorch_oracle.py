@@ -46,6 +46,7 @@ def main() -> None:
     first_layer_linear_z_output = None
     first_layer_linear_b_output = None
     first_layer_linear_a_output = None
+    first_layer_linear_pre_conv_value_focus_head_output = None
     first_layer_linear_post_conv_output = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
@@ -84,7 +85,17 @@ def main() -> None:
 
     def linear_qkv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_qkv_output
+        nonlocal first_layer_linear_pre_conv_value_focus_head_output
         first_layer_linear_qkv_output = capture_tensor(output)
+        qkv = first_layer_linear_qkv_output
+        value_dim = first_layer_linear_z_output.shape[-1] if first_layer_linear_z_output is not None else 2048
+        key_dim = (qkv.shape[-1] - value_dim) // 2
+        num_v_heads = 16
+        head_v_dim = value_dim // num_v_heads
+        value = qkv[..., key_dim * 2 : key_dim * 2 + value_dim].reshape(
+            input_ids.shape[0], input_ids.shape[1], num_v_heads, head_v_dim
+        )
+        first_layer_linear_pre_conv_value_focus_head_output = value[0, 2, 6].cpu()
 
     def linear_z_hook(_module, _inputs, output):
         nonlocal first_layer_linear_z_output
@@ -227,6 +238,7 @@ def main() -> None:
         or first_layer_linear_z_output is None
         or first_layer_linear_b_output is None
         or first_layer_linear_a_output is None
+        or first_layer_linear_pre_conv_value_focus_head_output is None
         or first_layer_linear_post_conv_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
@@ -276,6 +288,7 @@ def main() -> None:
         "first_layer_output": first_layer_output.tolist(),
         "first_layer_input_layernorm_output": first_layer_input_layernorm_output.tolist(),
         "first_layer_linear_qkv_output": first_layer_linear_qkv_output.tolist(),
+        "first_layer_linear_pre_conv_value_focus_head_output": first_layer_linear_pre_conv_value_focus_head_output.tolist(),
         "first_layer_linear_z_output": first_layer_linear_z_output.tolist(),
         "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),

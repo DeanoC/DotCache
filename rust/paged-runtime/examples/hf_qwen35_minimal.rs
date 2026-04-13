@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::process::Command;
     use std::time::Instant;
 
-    use candle_core::{DType, Device, IndexOp, Tensor};
+    use candle_core::{D, DType, Device, IndexOp, Tensor};
     use dotcache_paged_runtime::{MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError};
     use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
@@ -225,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_embedding_max_delta: Option<f32>,
         pytorch_first_layer_input_layernorm_max_delta: Option<f32>,
         pytorch_first_layer_linear_qkv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta: Option<f32>,
         pytorch_first_layer_linear_z_max_delta: Option<f32>,
         pytorch_first_layer_linear_b_max_delta: Option<f32>,
         pytorch_first_layer_linear_a_max_delta: Option<f32>,
@@ -272,6 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         embedding_output: Vec<Vec<Vec<f32>>>,
         first_layer_input_layernorm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_qkv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_pre_conv_value_focus_head_output: Vec<f32>,
         first_layer_linear_z_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_b_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
@@ -810,6 +812,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (
         pytorch_first_layer_input_layernorm_max_delta,
         pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
         pytorch_first_layer_linear_z_max_delta,
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
@@ -856,6 +859,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_projection_trace.qkv_output.tensor(),
             &pytorch_oracle.first_layer_linear_qkv_output,
         )?);
+        let value_dim = linear_projection_trace.z_output.tensor().dim(D::Minus1)?;
+        let qkv_dim = linear_projection_trace.qkv_output.tensor().dim(D::Minus1)?;
+        let key_dim = (qkv_dim - value_dim) / 2;
+        let num_v_heads = 16;
+        let head_v_dim = value_dim / num_v_heads;
+        let pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                &linear_projection_trace
+                    .qkv_output
+                    .tensor()
+                    .narrow(D::Minus1, key_dim * 2, value_dim)?
+                    .reshape((1, prompt_ids.len(), num_v_heads, head_v_dim))?
+                    .i((0, 2, 6))?,
+                &pytorch_oracle.first_layer_linear_pre_conv_value_focus_head_output,
+            )?,
+        );
         let pytorch_first_layer_linear_z_max_delta = Some(max_tensor_delta_vec3(
             linear_projection_trace.z_output.tensor(),
             &pytorch_oracle.first_layer_linear_z_output,
@@ -989,6 +1008,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         (
             pytorch_first_layer_input_layernorm_max_delta,
             pytorch_first_layer_linear_qkv_max_delta,
+            pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
             pytorch_first_layer_linear_z_max_delta,
             pytorch_first_layer_linear_b_max_delta,
             pytorch_first_layer_linear_a_max_delta,
@@ -1020,7 +1040,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1348,6 +1368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_embedding_max_delta,
         pytorch_first_layer_input_layernorm_max_delta,
         pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
         pytorch_first_layer_linear_z_max_delta,
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
