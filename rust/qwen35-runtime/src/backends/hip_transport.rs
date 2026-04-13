@@ -4774,6 +4774,9 @@ impl HipStorage {
         if self.0.is_host_graph() {
             return Ok(self.clone());
         }
+        if let Some(buffer) = self.0.try_materialize_device_buffer()? {
+            return Ok(Self::from_device_buffer(buffer.contiguous()?));
+        }
         Ok(Self::from_tensor(self.materialize()?.contiguous()?))
     }
 
