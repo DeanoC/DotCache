@@ -8773,6 +8773,112 @@ fn delta_full_scan_pack_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn delta_full_scan_pack_hip_owned_device(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let query_scan = query_scan.contiguous()?;
+    let key_scan = key_scan.contiguous()?;
+    let exp_g_scan = exp_g_scan.contiguous()?;
+    let k_cumdecay_scan = k_cumdecay_scan.contiguous()?;
+    if !(query_scan.device().is_hip()
+        && key_scan.device().same_device(query_scan.device())
+        && exp_g_scan.device().same_device(query_scan.device())
+        && k_cumdecay_scan.device().same_device(query_scan.device()))
+    {
+        return Ok(None);
+    }
+    let (query_storage, query_layout) = query_scan.storage_and_layout();
+    let (key_storage, key_layout) = key_scan.storage_and_layout();
+    let (exp_storage, exp_layout) = exp_g_scan.storage_and_layout();
+    let (cum_storage, cum_layout) = k_cumdecay_scan.storage_and_layout();
+    let (
+        Storage::Hip(query_storage),
+        Storage::Hip(key_storage),
+        Storage::Hip(exp_storage),
+        Storage::Hip(cum_storage),
+    ) = (&*query_storage, &*key_storage, &*exp_storage, &*cum_storage)
+    else {
+        return Ok(None);
+    };
+    if !(query_layout.is_contiguous()
+        && key_layout.is_contiguous()
+        && exp_layout.is_contiguous()
+        && cum_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let ordinal = query_scan.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(query_scan.dtype())?;
+    if query_scan.dtype() != key_scan.dtype()
+        || query_scan.dtype() != exp_g_scan.dtype()
+        || query_scan.dtype() != k_cumdecay_scan.dtype()
+    {
+        return Ok(None);
+    }
+    let (batch_heads, num_chunks, chunk_size, k_head_dim) = query_layout.shape().dims4()?;
+    let (key_bh, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+    let (exp_bh, exp_chunks, exp_chunk_size) = exp_layout.shape().dims3()?;
+    let (cum_bh, cum_chunks, cum_chunk_size, cum_k) = cum_layout.shape().dims4()?;
+    if key_bh != batch_heads
+        || exp_bh != batch_heads
+        || cum_bh != batch_heads
+        || key_chunks != num_chunks
+        || exp_chunks != num_chunks
+        || cum_chunks != num_chunks
+        || key_chunk_size != chunk_size
+        || exp_chunk_size != chunk_size
+        || cum_chunk_size != chunk_size
+        || key_k != k_head_dim
+        || cum_k != k_head_dim
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_heads, num_chunks, chunk_size, 3 * k_head_dim + 1],
+        query_scan.dtype(),
+        query_scan.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan_pack(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            exp_storage.raw_device_ptr_with_offset(exp_layout.start_offset())? as *const c_void,
+            cum_storage.raw_device_ptr_with_offset(cum_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-pack-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_full_scan_pack_hip_owned_device(
+    query_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+    k_cumdecay_scan: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (query_scan, key_scan, exp_g_scan, k_cumdecay_scan);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_delta_full_scan_pack_hip_host_buffer(
     query_scan: &HipMappedHostBuffer,
     key_scan: &HipMappedHostBuffer,
@@ -8891,6 +8997,116 @@ fn delta_full_scan_packed_hip_host_buffer(
             device: initial_state.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn delta_full_scan_packed_hip_owned_device(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let initial_state = initial_state.contiguous()?;
+    let packed_scan = packed_scan.contiguous()?;
+    let local_attn_scan = local_attn_scan.contiguous()?;
+    let value = value.contiguous()?;
+    if !(initial_state.device().is_hip()
+        && packed_scan.device().same_device(initial_state.device())
+        && local_attn_scan.device().same_device(initial_state.device())
+        && value.device().same_device(initial_state.device()))
+    {
+        return Ok(None);
+    }
+    let (initial_storage, initial_layout) = initial_state.storage_and_layout();
+    let (packed_storage, packed_layout) = packed_scan.storage_and_layout();
+    let (local_storage, local_layout) = local_attn_scan.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (
+        Storage::Hip(initial_storage),
+        Storage::Hip(packed_storage),
+        Storage::Hip(local_storage),
+        Storage::Hip(value_storage),
+    ) = (
+        &*initial_storage,
+        &*packed_storage,
+        &*local_storage,
+        &*value_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(initial_layout.is_contiguous()
+        && packed_layout.is_contiguous()
+        && local_layout.is_contiguous()
+        && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let ordinal = initial_state.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(initial_state.dtype())?;
+    if initial_state.dtype() != packed_scan.dtype()
+        || initial_state.dtype() != local_attn_scan.dtype()
+        || initial_state.dtype() != value.dtype()
+    {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+    let (packed_bh, num_chunks, chunk_size, packed_width) = packed_layout.shape().dims4()?;
+    let (local_bh, local_chunks, local_chunk_size, local_width) = local_layout.shape().dims4()?;
+    let (value_bh, value_chunks, value_chunk_size, value_v) = value_layout.shape().dims4()?;
+    if packed_bh != batch_heads
+        || local_bh != batch_heads
+        || value_bh != batch_heads
+        || local_chunks != num_chunks
+        || value_chunks != num_chunks
+        || local_chunk_size != chunk_size
+        || value_chunk_size != chunk_size
+        || local_width != chunk_size
+        || value_v != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_heads, num_chunks * chunk_size + k_head_dim, v_head_dim],
+        initial_state.dtype(),
+        initial_state.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_storage.raw_device_ptr_with_offset(initial_layout.start_offset())? as *const c_void,
+            packed_storage.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
+            local_storage.raw_device_ptr_with_offset(local_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("delta-full-scan-packed-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_full_scan_packed_hip_owned_device(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    local_attn_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (initial_state, packed_scan, local_attn_scan, value);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -10274,6 +10490,91 @@ fn delta_state_scan_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn delta_state_scan_hip_owned_device(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let initial_state = initial_state.contiguous()?;
+    let packed_scan = packed_scan.contiguous()?;
+    let value = value.contiguous()?;
+    if !(initial_state.device().is_hip()
+        && packed_scan.device().same_device(initial_state.device())
+        && value.device().same_device(initial_state.device()))
+    {
+        return Ok(None);
+    }
+    let (initial_storage, initial_layout) = initial_state.storage_and_layout();
+    let (packed_storage, packed_layout) = packed_scan.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(initial_storage), Storage::Hip(packed_storage), Storage::Hip(value_storage)) =
+        (&*initial_storage, &*packed_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(initial_layout.is_contiguous() && packed_layout.is_contiguous() && value_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let ordinal = initial_state.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(initial_state.dtype())?;
+    if initial_state.dtype() != packed_scan.dtype() || initial_state.dtype() != value.dtype() {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = initial_layout.shape().dims3()?;
+    let (packed_bh, num_chunks, chunk_size, packed_width) = packed_layout.shape().dims4()?;
+    let (value_bh, value_num_chunks, value_chunk_size, value_v_head_dim) =
+        value_layout.shape().dims4()?;
+    if packed_bh != batch_heads
+        || value_bh != batch_heads
+        || value_num_chunks != num_chunks
+        || value_chunk_size != chunk_size
+        || value_v_head_dim != v_head_dim
+        || packed_width != 2 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_heads, num_chunks + 1, k_head_dim, v_head_dim],
+        initial_state.dtype(),
+        initial_state.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_state_scan(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            initial_storage.raw_device_ptr_with_offset(initial_layout.start_offset())? as *const c_void,
+            packed_storage.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("delta-state-scan-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_state_scan_hip_owned_device(
+    initial_state: &Tensor,
+    packed_scan: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (initial_state, packed_scan, value);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_delta_state_scan_hip_host_buffer(
     initial_state: &HipMappedHostBuffer,
     packed_scan: &HipMappedHostBuffer,
@@ -10374,6 +10675,88 @@ fn delta_chunk_fused_hip_host_buffer(
             device: prev_state.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn delta_chunk_fused_hip_owned_device(
+    prev_state: &Tensor,
+    packed_chunk: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let prev_state = prev_state.contiguous()?;
+    let packed_chunk = packed_chunk.contiguous()?;
+    let value = value.contiguous()?;
+    if !(prev_state.device().is_hip()
+        && packed_chunk.device().same_device(prev_state.device())
+        && value.device().same_device(prev_state.device()))
+    {
+        return Ok(None);
+    }
+    let (prev_storage, prev_layout) = prev_state.storage_and_layout();
+    let (packed_storage, packed_layout) = packed_chunk.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(prev_storage), Storage::Hip(packed_storage), Storage::Hip(value_storage)) =
+        (&*prev_storage, &*packed_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(prev_layout.is_contiguous() && packed_layout.is_contiguous() && value_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let ordinal = prev_state.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(prev_state.dtype())?;
+    if prev_state.dtype() != packed_chunk.dtype() || prev_state.dtype() != value.dtype() {
+        return Ok(None);
+    }
+    let (batch_heads, k_head_dim, v_head_dim) = prev_layout.shape().dims3()?;
+    let (packed_bh, chunk_size, packed_width) = packed_layout.shape().dims3()?;
+    let (value_bh, value_chunk_size, value_v_head_dim) = value_layout.shape().dims3()?;
+    if packed_bh != batch_heads
+        || value_bh != batch_heads
+        || value_chunk_size != chunk_size
+        || value_v_head_dim != v_head_dim
+        || packed_width != 3 * k_head_dim + 1
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_heads, 2 * chunk_size + k_head_dim, v_head_dim],
+        prev_state.dtype(),
+        prev_state.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
+            dtype_code,
+            ordinal,
+            batch_heads,
+            chunk_size,
+            k_head_dim,
+            v_head_dim,
+            prev_storage.raw_device_ptr_with_offset(prev_layout.start_offset())? as *const c_void,
+            packed_storage.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("delta-chunk-fused-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn delta_chunk_fused_hip_owned_device(
+    prev_state: &Tensor,
+    packed_chunk: &Tensor,
+    value: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (prev_state, packed_chunk, value);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -15449,6 +15832,14 @@ pub(crate) fn delta_full_scan_pack_buffer(
     exp_g_scan: &Tensor,
     k_cumdecay_scan: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(device_out) = delta_full_scan_pack_hip_owned_device(
+        query_scan,
+        key_scan,
+        exp_g_scan,
+        k_cumdecay_scan,
+    )? {
+        return device_out.into_state_buffer();
+    }
     let query_scan_hip = HipTensor::from_scaffold_tensor(query_scan.clone());
     let key_scan_hip = HipTensor::from_scaffold_tensor(key_scan.clone());
     let exp_g_scan_hip = HipTensor::from_scaffold_tensor(exp_g_scan.clone());
@@ -15500,6 +15891,14 @@ pub(crate) fn delta_full_scan_packed_buffer(
     local_attn_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(device_out) = delta_full_scan_packed_hip_owned_device(
+        initial_state.tensor(),
+        packed_scan.tensor(),
+        local_attn_scan.tensor(),
+        value,
+    )? {
+        return device_out.into_state_buffer();
+    }
     let initial_state_hip = HipTensor::from_state_buffer(initial_state);
     let packed_scan_hip = HipTensor::from_state_buffer(packed_scan);
     let local_attn_scan_hip = HipTensor::from_state_buffer(local_attn_scan);
@@ -15640,6 +16039,11 @@ pub(crate) fn delta_state_scan_buffer(
     packed_scan: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(device_out) =
+        delta_state_scan_hip_owned_device(initial_state.tensor(), packed_scan.tensor(), value)?
+    {
+        return device_out.into_state_buffer();
+    }
     let initial_state_hip = HipTensor::from_state_buffer(initial_state);
     let packed_scan_hip = HipTensor::from_state_buffer(packed_scan);
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
@@ -15681,6 +16085,11 @@ pub(crate) fn delta_chunk_fused_buffer(
     packed_chunk: &StateBuffer,
     value: &Tensor,
 ) -> Result<StateBuffer> {
+    if let Some(device_out) =
+        delta_chunk_fused_hip_owned_device(prev_state.tensor(), packed_chunk.tensor(), value)?
+    {
+        return device_out.into_state_buffer();
+    }
     let prev_state_hip = HipTensor::from_state_buffer(prev_state);
     let packed_chunk_hip = HipTensor::from_state_buffer(packed_chunk);
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
