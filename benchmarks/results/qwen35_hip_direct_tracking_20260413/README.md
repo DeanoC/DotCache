@@ -35,6 +35,9 @@ CPU oracle short checkpoint:
 - oracle_device: `cpu`
 - prefill_max_delta: `4.710938`
 - decode_max_delta: `5.808594`
+- device_load_ms: `3846.39`
+- device_prefill_ms: `1799.83`
+- device_decode_ms: `432.00`
 
 Current notes:
 - CPU oracle still measures cross-device/backend drift and should not be used to judge direct-HIP correctness.
