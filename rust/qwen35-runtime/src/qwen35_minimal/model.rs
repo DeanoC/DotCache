@@ -11932,6 +11932,12 @@ pub(crate) fn delta_base_attn_scan(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_base_attn_scan_host_buffer(k_beta_scan, key_scan, exp_g_scan)?
+    {
+        return hip_tensor_from_host_bytes(k_beta_scan.device(), k_beta_scan.dtype(), shape, output);
+    }
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaBaseAttnScan)
 }
 
@@ -12099,6 +12105,15 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
 }
 
 pub(crate) fn delta_attn_solve_scan(base_attn_scan: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = delta_attn_solve_scan_host_buffer(base_attn_scan)? {
+        return hip_tensor_from_host_bytes(
+            base_attn_scan.device(),
+            base_attn_scan.dtype(),
+            shape,
+            output,
+        );
+    }
     base_attn_scan.apply_op1_no_bwd(&DeltaAttnSolveScan)
 }
 
@@ -12269,6 +12284,12 @@ pub(crate) fn delta_attn_solve_from_inputs(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_attn_solve_from_inputs_host_buffer(k_beta_scan, key_scan, exp_g_scan)?
+    {
+        return hip_tensor_from_host_bytes(k_beta_scan.device(), k_beta_scan.dtype(), shape, output);
+    }
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaAttnSolveFromInputs)
 }
 
@@ -12494,6 +12515,12 @@ pub(crate) fn delta_full_scan_pack(
     exp_g_scan: &Tensor,
     k_cumdecay_scan: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_full_scan_pack_host_buffer(query_scan, key_scan, exp_g_scan, k_cumdecay_scan)?
+    {
+        return hip_tensor_from_host_bytes(query_scan.device(), query_scan.dtype(), shape, output);
+    }
     query_scan.apply_op4_no_bwd(key_scan, exp_g_scan, k_cumdecay_scan, &DeltaFullScanPack)
 }
 
@@ -12748,6 +12775,17 @@ pub(crate) fn delta_full_scan_packed(
     local_attn_scan: &Tensor,
     value: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_full_scan_packed_host_buffer(initial_state, packed_scan, local_attn_scan, value)?
+    {
+        return hip_tensor_from_host_bytes(
+            initial_state.device(),
+            initial_state.dtype(),
+            shape,
+            output,
+        );
+    }
     initial_state.apply_op4_no_bwd(packed_scan, local_attn_scan, value, &DeltaFullScanPacked)
 }
 
