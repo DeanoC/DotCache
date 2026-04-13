@@ -6183,6 +6183,18 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state_hip(
             a.dims()
         )
     }
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = linear_stateful_conv_value_decay_with_state_host_buffer(
+        &mixed_qkv,
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        kernel_size,
+    )? {
+        return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
+    }
     mixed_qkv.apply_op6_no_bwd(
         &prev_state,
         &weights,
