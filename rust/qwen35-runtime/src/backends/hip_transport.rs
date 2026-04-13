@@ -1641,6 +1641,18 @@ impl HipDeviceBuffer {
         )))
     }
 
+    fn standard_contiguous_launch_spec(
+        &self,
+    ) -> Result<Option<(usize, DType, Vec<usize>, *const c_void)>> {
+        let Some((ordinal, dtype, shape, strides, ptr)) = self.candle_view_launch_spec()? else {
+            return Ok(None);
+        };
+        if !Self::is_standard_contiguous_i32(&shape, &strides) {
+            return Ok(None);
+        }
+        Ok(Some((ordinal, dtype, shape, ptr)))
+    }
+
     fn from_raw_hip_host_output(
         bytes: Vec<u8>,
         shape: Vec<usize>,
@@ -6220,39 +6232,13 @@ fn cumsum_last_dim_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     )))
 }
 
-fn contiguous_hip_tensor_spec(
-    tensor: &Tensor,
-) -> Result<Option<(usize, DType, Vec<usize>, *const c_void)>> {
-    use candle_core::Storage;
-
-    let tensor = tensor.contiguous()?;
-    let ordinal = match tensor.device().location() {
-        DeviceLocation::Hip { gpu_id } => gpu_id,
-        _ => return Ok(None),
-    };
-    let (storage, layout) = tensor.storage_and_layout();
-    let Storage::Hip(storage) = &*storage else {
-        return Ok(None);
-    };
-    if !layout.is_contiguous() {
-        return Ok(None);
-    }
-    Ok(Some((
-        ordinal,
-        tensor.dtype(),
-        layout.shape().dims().to_vec(),
-        storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
-    )))
-}
-
 fn pad_with_zeros_hip_owned_device(
     xs: &HipDeviceBuffer,
     dim: usize,
     left: usize,
     right: usize,
 ) -> Result<Option<HipDeviceBuffer>> {
-    let tensor = xs.materialize_tensor()?;
-    let Some((ordinal, dtype, src_shape, src_ptr)) = contiguous_hip_tensor_spec(&tensor)? else {
+    let Some((ordinal, dtype, src_shape, src_ptr)) = xs.standard_contiguous_launch_spec()? else {
         return Ok(None);
     };
     if dim >= src_shape.len() {
@@ -6260,7 +6246,7 @@ fn pad_with_zeros_hip_owned_device(
     }
     let mut out_shape = src_shape.clone();
     out_shape[dim] = out_shape[dim].saturating_add(left).saturating_add(right);
-    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape.clone(), dtype, tensor.device())?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape.clone(), dtype, xs.device())?;
     let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
         return Ok(None);
     };
@@ -6296,13 +6282,9 @@ fn pad_with_zeros_hip_owned_device(
 }
 
 fn cat_hip_owned_device(buffers: &[&HipDeviceBuffer], dim: usize) -> Result<Option<HipDeviceBuffer>> {
-    let tensors = buffers
-        .iter()
-        .map(|buffer| buffer.materialize_tensor()?.contiguous())
-        .collect::<Result<Vec<_>>>()?;
-    let mut specs = Vec::with_capacity(tensors.len());
-    for tensor in &tensors {
-        let Some(spec) = contiguous_hip_tensor_spec(tensor)? else {
+    let mut specs = Vec::with_capacity(buffers.len());
+    for buffer in buffers {
+        let Some(spec) = buffer.standard_contiguous_launch_spec()? else {
             return Ok(None);
         };
         specs.push(spec);
@@ -6332,7 +6314,11 @@ fn cat_hip_owned_device(buffers: &[&HipDeviceBuffer], dim: usize) -> Result<Opti
         }
         out_shape[dim] = out_shape[dim].saturating_add(shape[dim]);
     }
-    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape.clone(), *dtype, tensors[0].device())?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        out_shape.clone(),
+        *dtype,
+        buffers[0].device(),
+    )?;
     let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
         return Ok(None);
     };
