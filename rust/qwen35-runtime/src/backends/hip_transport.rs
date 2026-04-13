@@ -8926,14 +8926,14 @@ fn mapped_linear_decode_step_hip_host_buffer(
             apply_status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape: output_shape,
             dtype: DType::F32,
             device: mixed_qkv.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9221,14 +9221,14 @@ fn mapped_full_attention_prefill_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: DType::F32,
             device: query.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9633,14 +9633,14 @@ fn output_projection_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: embedding.dtype(),
             device: hidden_states.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -9746,14 +9746,14 @@ fn mapped_output_projection_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: embedding.dtype(),
             device: hidden_states.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9776,14 +9776,14 @@ fn linear_prefill_conv_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: mixed_qkv.dtype(),
             device: mixed_qkv.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn linear_stateful_conv_hip_host_buffer(
@@ -9797,14 +9797,14 @@ fn linear_stateful_conv_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: mixed_qkv.dtype(),
             device: mixed_qkv.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn linear_stateful_conv_value_decay_with_state_hip_host_buffer(
@@ -9827,14 +9827,14 @@ fn linear_stateful_conv_value_decay_with_state_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: mixed_qkv.dtype(),
             device: mixed_qkv.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9868,14 +9868,14 @@ fn linear_decode_step_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: DType::F32,
             device: mixed_qkv.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn full_attention_prefill_hip_host_buffer(
@@ -9896,14 +9896,14 @@ fn full_attention_prefill_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: DType::F32,
             device: query.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn delta_full_scan_pack_hip_host_buffer(
