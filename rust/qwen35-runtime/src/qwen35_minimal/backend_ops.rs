@@ -1,4 +1,4 @@
-use candle::{DType, Device, IndexOp, Result, Tensor, D};
+use candle::{DType, Device, Result, Tensor, D};
 use candle_core as candle;
 
 use super::model::{
