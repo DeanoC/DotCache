@@ -252,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_step_max_deltas: Option<Vec<f32>>,
         pytorch_first_layer_linear_focus_state_step_max_deltas: Option<Vec<f32>>,
         pytorch_first_layer_linear_focus_output_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta: Option<f32>,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta: Option<f32>,
@@ -580,6 +581,31 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut out = Vec::with_capacity(tensors.len().min(rhs.len()));
         for (lhs, rhs_item) in tensors.iter().zip(rhs.iter()) {
             out.push(max_tensor_delta_vec2(lhs.tensor(), rhs_item)?);
+        }
+        Ok(out)
+    }
+
+    fn tensor_to_vec3(tensor: &Tensor) -> Result<Vec<Vec<Vec<f32>>>> {
+        let dims = tensor.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor to vec3",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let d0 = dims[0];
+        let d1 = dims[1];
+        let d2 = dims[2];
+        let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let mut out = vec![vec![vec![0.0f32; d2]; d1]; d0];
+        let mut idx = 0usize;
+        for outer in &mut out {
+            for inner in outer {
+                for value in inner {
+                    *value = flat[idx];
+                    idx += 1;
+                }
+            }
         }
         Ok(out)
     }
@@ -984,6 +1010,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_step_max_deltas,
         pytorch_first_layer_linear_focus_state_step_max_deltas,
         pytorch_first_layer_linear_focus_output_step_max_deltas,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1144,6 +1171,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &pytorch_oracle.first_layer_linear_focus_output_steps,
             )?,
         );
+        let pytorch_first_layer_linear_chunk_vs_torch_like_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_output.tensor(),
+            &tensor_to_vec3(linear_core_trace.torch_like_pre_gated_norm_output.tensor())?,
+        )?);
         let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
             &pytorch_oracle.first_layer_linear_direct_conv_output,
@@ -1316,6 +1347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_focus_delta_step_max_deltas,
             pytorch_first_layer_linear_focus_state_step_max_deltas,
             pytorch_first_layer_linear_focus_output_step_max_deltas,
+            pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
             pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1350,7 +1382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1700,6 +1732,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_step_max_deltas,
         pytorch_first_layer_linear_focus_state_step_max_deltas,
         pytorch_first_layer_linear_focus_output_step_max_deltas,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,

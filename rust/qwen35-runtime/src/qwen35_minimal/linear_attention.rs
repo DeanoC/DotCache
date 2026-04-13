@@ -2630,6 +2630,20 @@ impl GatedDeltaNet {
             };
         profile.add_assign(&linear_profile);
 
+        let torch_like_pre_gated_norm_output = if seq_len > 1 && !use_short_recurrent_prefill {
+            let (torch_like_attn_out, _torch_like_state, _torch_like_profile) =
+                self.chunk_gated_delta_rule_torch_like(&query, &key, &value, &g, &beta, seq_len)?;
+            backend.reshape_tensor_to_buffer(
+                &torch_like_attn_out,
+                &[batch_size, seq_len, self.value_dim],
+            )?
+        } else {
+            backend.reshape_tensor_to_buffer(
+                &core_attn_out,
+                &[batch_size, seq_len, self.value_dim],
+            )?
+        };
+
         let pre_gated_norm_output = backend.reshape_tensor_to_buffer(
             &core_attn_out,
             &[batch_size, seq_len, self.value_dim],
@@ -2730,6 +2744,7 @@ impl GatedDeltaNet {
                 focused_recurrent_delta,
                 focused_recurrent_state,
                 focused_recurrent_output,
+                torch_like_pre_gated_norm_output,
                 post_conv_value_focus_head,
                 explicit_post_conv_value_focus_head,
                 explicit_post_conv_reversed_taps_value_focus_head,

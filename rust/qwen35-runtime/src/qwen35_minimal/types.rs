@@ -371,6 +371,7 @@ pub struct LinearAttentionCoreTrace {
     pub focused_recurrent_delta: StateBuffer,
     pub focused_recurrent_state: StateBuffer,
     pub focused_recurrent_output: StateBuffer,
+    pub torch_like_pre_gated_norm_output: StateBuffer,
     pub post_conv_value_focus_head: StateBuffer,
     pub explicit_post_conv_value_focus_head: StateBuffer,
     pub explicit_post_conv_reversed_taps_value_focus_head: StateBuffer,
