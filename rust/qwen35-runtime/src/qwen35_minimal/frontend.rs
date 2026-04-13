@@ -546,6 +546,19 @@ impl LinearSource {
         }
     }
 
+    pub(super) fn forward_buffer_into_scratch(
+        &self,
+        xs: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        match self {
+            Self::Materialized(linear) => linear.forward_buffer_into_scratch(xs, scratch),
+            Self::Deferred(linear) => linear
+                .ensure_materialized()?
+                .forward_buffer_into_scratch(xs, scratch),
+        }
+    }
+
     pub(super) fn is_deferred(&self) -> bool {
         matches!(self, Self::Deferred(_))
     }

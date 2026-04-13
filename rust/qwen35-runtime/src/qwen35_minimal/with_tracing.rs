@@ -41,6 +41,19 @@ impl Linear {
             self.bias.as_ref(),
         )
     }
+
+    pub fn forward_buffer_into_scratch(
+        &self,
+        x: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backend_buffer_api::for_device(x.device()).linear_forward_into_scratch(
+            x,
+            &self.weight,
+            self.bias.as_ref(),
+            scratch,
+        )
+    }
 }
 
 #[cfg(any(feature = "hf", test))]

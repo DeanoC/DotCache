@@ -176,6 +176,16 @@ pub(crate) fn linear_forward(
     transport::linear_forward(x, weight, bias)
 }
 
+pub(crate) fn linear_forward_into_scratch(
+    x: &StateBuffer,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    let output = linear_forward(x, weight, bias)?;
+    copy_state_into_scratch(&output, scratch)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_full_attention_inputs(
     q_and_gate: &StateBuffer,

@@ -2114,11 +2114,29 @@ impl GatedDeltaNet {
         a_scratch: &StateBuffer,
     ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer, RuntimeProfile)> {
         let backend = backend_buffer_api::for_device(hidden_states.device());
-        let (mixed_qkv, z, beta_raw, a, profile) = self.project_direct_decode_inputs(hidden_states)?;
+        let device = hidden_states.device();
+        let total_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        profile.layout_prepare_millis += profile_elapsed(total_start, device)?;
+
+        let qkv_start = profile_start(device)?;
+        let mixed_qkv = self
+            .in_proj_qkv
+            .forward_buffer(hidden_states)?;
+        let mixed_qkv = backend.tensor_to_buffer(mixed_qkv.tensor().transpose(1, 2)?)?;
         let mixed_qkv = backend.copy_state_into_scratch(&mixed_qkv, mixed_qkv_scratch)?;
+        let z = self.in_proj_z.forward_buffer(hidden_states)?;
+        let z = backend.reshape_tensor_to_buffer(
+            z.tensor(),
+            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+        )?;
         let z = backend.copy_state_into_scratch(&z, z_scratch)?;
-        let beta_raw = backend.copy_state_into_scratch(&beta_raw, beta_raw_scratch)?;
-        let a = backend.copy_state_into_scratch(&a, a_scratch)?;
+        let beta_raw = self
+            .in_proj_b
+            .forward_buffer_into_scratch(hidden_states, beta_raw_scratch)?;
+        let a = self.in_proj_a.forward_buffer_into_scratch(hidden_states, a_scratch)?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
         Ok((mixed_qkv, z, beta_raw, a, profile))
     }
 

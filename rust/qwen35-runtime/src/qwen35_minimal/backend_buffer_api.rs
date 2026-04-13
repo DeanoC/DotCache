@@ -114,6 +114,13 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         weight: &Tensor,
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer>;
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     #[allow(clippy::too_many_arguments)]
     fn prepare_full_attention_inputs(
         &self,
@@ -745,6 +752,16 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer> {
         StateBuffer::from_tensor(backend_ops::linear_forward(x.tensor(), weight, bias)?)
+    }
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.linear_forward(x, weight, bias)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn prepare_full_attention_inputs(
         &self,
@@ -1600,6 +1617,15 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer> {
         backends::hip::linear_forward(x, weight, bias)
+    }
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::linear_forward_into_scratch(x, weight, bias, scratch)
     }
     fn prepare_full_attention_inputs(
         &self,
