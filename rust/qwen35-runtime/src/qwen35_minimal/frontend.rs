@@ -1371,6 +1371,26 @@ impl Mlp {
         };
         self.down_proj.forward_buffer(&hidden)
     }
+
+    pub(super) fn trace_buffer(&self, xs: &StateBuffer) -> Result<super::types::MlpTrace> {
+        let backend = backend_buffer_api::for_device(xs.device());
+        let gate_proj_output = self.gate_proj.forward_buffer(xs)?;
+        let up_proj_output = self.up_proj.forward_buffer(xs)?;
+        let activated_hidden = if matches!(self.act_fn, Activation::Silu) {
+            backend.swiglu_mul(&gate_proj_output, &up_proj_output)?
+        } else {
+            backend.tensor_to_buffer(
+                (gate_proj_output.tensor().apply(&self.act_fn)? * up_proj_output.tensor())?,
+            )?
+        };
+        let down_proj_output = self.down_proj.forward_buffer(&activated_hidden)?;
+        Ok(super::types::MlpTrace {
+            gate_proj_output,
+            up_proj_output,
+            activated_hidden,
+            down_proj_output,
+        })
+    }
 }
 
 pub(super) fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {

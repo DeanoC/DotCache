@@ -342,8 +342,17 @@ pub struct DecoderLayerTrace {
     pub token_mixer_output: StateBuffer,
     pub post_attention_layernorm_trace: Option<RmsNormTrace>,
     pub post_attention_layernorm_output: StateBuffer,
+    pub mlp_trace: Option<MlpTrace>,
     pub mlp_output: StateBuffer,
     pub layer_output: StateBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct MlpTrace {
+    pub gate_proj_output: StateBuffer,
+    pub up_proj_output: StateBuffer,
+    pub activated_hidden: StateBuffer,
+    pub down_proj_output: StateBuffer,
 }
 
 #[derive(Debug, Clone)]

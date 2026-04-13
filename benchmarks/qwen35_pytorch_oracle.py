@@ -139,6 +139,10 @@ def main() -> None:
     decode_layer23_input_layernorm_weighted_hidden = None
     decode_layer23_token_mixer_output = None
     decode_layer23_post_attention_layernorm_output = None
+    decode_layer23_mlp_gate_proj_output = None
+    decode_layer23_mlp_up_proj_output = None
+    decode_layer23_mlp_activated_hidden = None
+    decode_layer23_mlp_down_proj_output = None
     decode_layer23_mlp_output = None
     decode_layer23_output = None
     layer4_input_layernorm_output = None
@@ -803,6 +807,26 @@ def main() -> None:
         if capture_phase == "decode":
             decode_layer23_post_attention_layernorm_output = capture_tensor(output)
 
+    def layer23_mlp_gate_proj_hook(_module, _inputs, output):
+        nonlocal decode_layer23_mlp_gate_proj_output
+        if capture_phase == "decode":
+            decode_layer23_mlp_gate_proj_output = capture_tensor(output)
+
+    def layer23_mlp_up_proj_hook(_module, _inputs, output):
+        nonlocal decode_layer23_mlp_up_proj_output
+        if capture_phase == "decode":
+            decode_layer23_mlp_up_proj_output = capture_tensor(output)
+
+    def layer23_mlp_down_proj_pre_hook(_module, inputs):
+        nonlocal decode_layer23_mlp_activated_hidden
+        if capture_phase == "decode":
+            decode_layer23_mlp_activated_hidden = capture_tensor(inputs[0])
+
+    def layer23_mlp_down_proj_hook(_module, _inputs, output):
+        nonlocal decode_layer23_mlp_down_proj_output
+        if capture_phase == "decode":
+            decode_layer23_mlp_down_proj_output = capture_tensor(output)
+
     def layer23_mlp_hook(_module, _inputs, output):
         nonlocal decode_layer23_mlp_output
         if capture_phase == "decode":
@@ -923,6 +947,19 @@ def main() -> None:
         model.model.layers[23]
         .post_attention_layernorm.register_forward_hook(layer23_post_attention_layernorm_hook)
     )
+    layer23_mlp_gate_proj_handle = model.model.layers[23].mlp.gate_proj.register_forward_hook(
+        layer23_mlp_gate_proj_hook
+    )
+    layer23_mlp_up_proj_handle = model.model.layers[23].mlp.up_proj.register_forward_hook(
+        layer23_mlp_up_proj_hook
+    )
+    layer23_mlp_down_proj_pre_handle = (
+        model.model.layers[23]
+        .mlp.down_proj.register_forward_pre_hook(layer23_mlp_down_proj_pre_hook)
+    )
+    layer23_mlp_down_proj_handle = model.model.layers[23].mlp.down_proj.register_forward_hook(
+        layer23_mlp_down_proj_hook
+    )
     layer23_mlp_handle = model.model.layers[23].mlp.register_forward_hook(layer23_mlp_hook)
     layer23_handle = model.model.layers[23].register_forward_hook(layer23_hook)
     try:
@@ -995,6 +1032,10 @@ def main() -> None:
         layer23_input_layernorm_handle.remove()
         layer23_token_mixer_handle.remove()
         layer23_post_attention_layernorm_handle.remove()
+        layer23_mlp_gate_proj_handle.remove()
+        layer23_mlp_up_proj_handle.remove()
+        layer23_mlp_down_proj_pre_handle.remove()
+        layer23_mlp_down_proj_handle.remove()
         layer23_mlp_handle.remove()
         layer23_handle.remove()
         for handle in decoder_layer_handles:
@@ -1101,6 +1142,10 @@ def main() -> None:
         "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden,
         "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output,
         "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output,
+        "decode_layer23_mlp_gate_proj_output": decode_layer23_mlp_gate_proj_output,
+        "decode_layer23_mlp_up_proj_output": decode_layer23_mlp_up_proj_output,
+        "decode_layer23_mlp_activated_hidden": decode_layer23_mlp_activated_hidden,
+        "decode_layer23_mlp_down_proj_output": decode_layer23_mlp_down_proj_output,
         "decode_layer23_mlp_output": decode_layer23_mlp_output,
         "decode_layer23_output": decode_layer23_output,
     }
@@ -1144,6 +1189,10 @@ def main() -> None:
             "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden,
             "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output,
             "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output,
+            "decode_layer23_mlp_gate_proj_output": decode_layer23_mlp_gate_proj_output,
+            "decode_layer23_mlp_up_proj_output": decode_layer23_mlp_up_proj_output,
+            "decode_layer23_mlp_activated_hidden": decode_layer23_mlp_activated_hidden,
+            "decode_layer23_mlp_down_proj_output": decode_layer23_mlp_down_proj_output,
             "decode_layer23_mlp_output": decode_layer23_mlp_output,
             "decode_layer23_output": decode_layer23_output,
         }
@@ -1289,6 +1338,10 @@ def main() -> None:
         "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden.tolist() if decode_layer23_input_layernorm_weighted_hidden is not None else None,
         "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output.tolist() if decode_layer23_token_mixer_output is not None else None,
         "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output.tolist() if decode_layer23_post_attention_layernorm_output is not None else None,
+        "decode_layer23_mlp_gate_proj_output": decode_layer23_mlp_gate_proj_output.tolist() if decode_layer23_mlp_gate_proj_output is not None else None,
+        "decode_layer23_mlp_up_proj_output": decode_layer23_mlp_up_proj_output.tolist() if decode_layer23_mlp_up_proj_output is not None else None,
+        "decode_layer23_mlp_activated_hidden": decode_layer23_mlp_activated_hidden.tolist() if decode_layer23_mlp_activated_hidden is not None else None,
+        "decode_layer23_mlp_down_proj_output": decode_layer23_mlp_down_proj_output.tolist() if decode_layer23_mlp_down_proj_output is not None else None,
         "decode_layer23_mlp_output": decode_layer23_mlp_output.tolist() if decode_layer23_mlp_output is not None else None,
         "decode_layer23_output": decode_layer23_output.tolist() if decode_layer23_output is not None else None,
         "prefill_last_token_logits": prefill_last_token_logits,

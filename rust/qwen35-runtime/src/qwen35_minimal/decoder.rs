@@ -667,7 +667,12 @@ impl TextModel {
             .expect("just created post-attention rmsnorm trace")
             .output
             .clone();
-        let mlp_output = target.mlp.forward_buffer(&post_attention_layernorm_output)?;
+        let mlp_trace = Some(target.mlp.trace_buffer(&post_attention_layernorm_output)?);
+        let mlp_output = mlp_trace
+            .as_ref()
+            .expect("just created mlp trace")
+            .down_proj_output
+            .clone();
         let layer_output = backend.add(&attention_residual, &mlp_output)?;
         self.clear_kv_cache();
         Ok(DecoderLayerTrace {
@@ -681,6 +686,7 @@ impl TextModel {
             token_mixer_output,
             post_attention_layernorm_trace,
             post_attention_layernorm_output,
+            mlp_trace,
             mlp_output,
             layer_output,
         })
@@ -778,7 +784,12 @@ impl TextModel {
             .expect("just created post-attention rmsnorm trace")
             .output
             .clone();
-        let mlp_output = target.mlp.forward_buffer(&post_attention_layernorm_output)?;
+        let mlp_trace = Some(target.mlp.trace_buffer(&post_attention_layernorm_output)?);
+        let mlp_output = mlp_trace
+            .as_ref()
+            .expect("just created mlp trace")
+            .down_proj_output
+            .clone();
         let layer_output = backend.add(&attention_residual, &mlp_output)?;
         Ok(DecoderLayerTrace {
             layer_id: target_layer,
@@ -791,6 +802,7 @@ impl TextModel {
             token_mixer_output,
             post_attention_layernorm_trace,
             post_attention_layernorm_output,
+            mlp_trace,
             mlp_output,
             layer_output,
         })
