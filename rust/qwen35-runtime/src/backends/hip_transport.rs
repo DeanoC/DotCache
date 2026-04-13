@@ -7330,14 +7330,14 @@ fn mapped_l2norm_hip_host_buffer(xs: &HipMappedHostBuffer, eps: f64) -> Result<O
     if status != 0 {
         return Err(hip::hip_error("dotcache-hip-l2norm-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: xs.buffer.dtype,
             device: xs.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -8265,14 +8265,14 @@ fn mapped_linear_prefill_conv_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: mixed_qkv.buffer.dtype,
             device: mixed_qkv.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -8432,14 +8432,14 @@ fn mapped_linear_stateful_conv_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: mixed_qkv.buffer.dtype,
             device: mixed_qkv.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -8640,14 +8640,14 @@ fn mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: mixed_qkv.buffer.dtype,
             device: mixed_qkv.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9349,14 +9349,14 @@ fn embedding_lookup_hip_host_buffer(
     let Some((bytes, shape)) = hip_embedding_lookup_host_buffer(embeddings, indexes)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: embeddings.dtype(),
             device: embeddings.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -9469,14 +9469,14 @@ fn mapped_embedding_lookup_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("embedding-lookup-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: embeddings.buffer.dtype,
             device: embeddings.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9496,14 +9496,14 @@ fn immutable_embedding_lookup_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: embedding.dtype(),
             device: indexes.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -9606,14 +9606,14 @@ fn mapped_immutable_embedding_lookup_hip_host_buffer(
             status,
         ));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: embedding.dtype(),
             device: indexes.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -9920,14 +9920,14 @@ fn delta_full_scan_pack_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: query_scan.dtype(),
             device: query_scan.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -10112,14 +10112,14 @@ fn mapped_delta_full_scan_pack_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-full-scan-pack-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: query_scan.buffer.dtype,
             device: query_scan.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -10147,14 +10147,14 @@ fn delta_full_scan_packed_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -10342,14 +10342,14 @@ fn mapped_delta_full_scan_packed_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-full-scan-packed-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -10384,14 +10384,14 @@ fn delta_full_scan_hip_host_buffer(
     )? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -10665,14 +10665,14 @@ fn mapped_delta_full_scan_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-full-scan-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -10707,14 +10707,14 @@ fn delta_local_attn_scan_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: query_scan.dtype(),
             device: query_scan.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -10865,14 +10865,14 @@ fn mapped_delta_local_attn_scan_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-local-attn-scan-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: query_scan.buffer.dtype,
             device: query_scan.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -10895,14 +10895,14 @@ fn delta_base_attn_scan_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: k_beta_scan.dtype(),
             device: k_beta_scan.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -11053,14 +11053,14 @@ fn mapped_delta_base_attn_scan_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-base-attn-scan-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: k_beta_scan.buffer.dtype,
             device: k_beta_scan.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -11083,14 +11083,14 @@ fn delta_attn_solve_from_inputs_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: k_beta_scan.dtype(),
             device: k_beta_scan.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -11241,14 +11241,14 @@ fn mapped_delta_attn_solve_from_inputs_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-attn-solve-from-inputs-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: k_beta_scan.buffer.dtype,
             device: k_beta_scan.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -11265,14 +11265,14 @@ fn delta_attn_solve_scan_hip_host_buffer(base_attn_scan: &Tensor) -> Result<Opti
     let Some((bytes, shape)) = delta_attn_solve_scan_host_buffer(base_attn_scan)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: base_attn_scan.dtype(),
             device: base_attn_scan.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -11363,14 +11363,14 @@ fn mapped_delta_attn_solve_scan_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-attn-solve-scan-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: base_attn_scan.buffer.dtype,
             device: base_attn_scan.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -11394,14 +11394,14 @@ fn delta_recurrent_prefill_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -11626,14 +11626,14 @@ fn mapped_delta_recurrent_prefill_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-recurrent-prefill-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -11662,14 +11662,14 @@ fn delta_chunk_scan_raw_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -11905,14 +11905,14 @@ fn mapped_delta_chunk_scan_raw_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-chunk-scan-raw-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -11941,14 +11941,14 @@ fn delta_chunk_single_prefill_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -12172,14 +12172,14 @@ fn mapped_delta_chunk_single_prefill_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-chunk-single-prefill-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -12204,14 +12204,14 @@ fn delta_state_scan_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: initial_state.dtype(),
             device: initial_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -12363,14 +12363,14 @@ fn mapped_delta_state_scan_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-state-scan-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: initial_state.buffer.dtype,
             device: initial_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -12392,14 +12392,14 @@ fn delta_chunk_fused_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: prev_state.dtype(),
             device: prev_state.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -12546,14 +12546,14 @@ fn mapped_delta_chunk_fused_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("delta-chunk-fused-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: prev_state.buffer.dtype,
             device: prev_state.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
