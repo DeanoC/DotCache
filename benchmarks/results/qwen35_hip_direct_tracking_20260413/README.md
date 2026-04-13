@@ -1,6 +1,6 @@
 # Qwen35 HIP Direct Tracking 2026-04-13
 
-Status: `hip-direct` is runnable on `hip:0` and the harness now distinguishes oracle choice.
+Status: `hip-direct` is runnable on `hip:0`, the harness distinguishes oracle choice, and the same-device correctness drift is fixed.
 
 Native-device oracle short checkpoint:
 - generated_text: `Hello from DotCache!`
@@ -9,7 +9,23 @@ Native-device oracle short checkpoint:
 - oracle: `native-device`
 - oracle_device: `hip`
 - prefill_max_delta: `0.000000`
-- decode_max_delta: `0.437500`
+- decode_max_delta: `0.000000`
+- device_load_ms: `1002.80`
+- device_prefill_ms: `1799.17`
+- device_decode_ms: `893.48`
+
+Native-device oracle longer checkpoint:
+- generated_text: `The direct HIP lane should stay correct while we keep specializing the decode path.
+? (FAST) straight to the`
+- prompt_token_count: 15
+- generated_token_count: 8
+- oracle: `native-device`
+- oracle_device: `hip`
+- prefill_max_delta: `0.000000`
+- decode_max_delta: `0.000000`
+- device_load_ms: `1020.97`
+- device_prefill_ms: `4596.90`
+- device_decode_ms: `7605.35`
 
 CPU oracle short checkpoint:
 - generated_text: `Hello from DotCache!`
@@ -20,25 +36,16 @@ CPU oracle short checkpoint:
 - prefill_max_delta: `4.710938`
 - decode_max_delta: `5.808594`
 
-Legacy longer CPU-oracle checkpoint:
-- generated_text: `Hello from DotCache!
-
-I!
-
-I'm from`
-- prompt_token_count: 4
-- generated_token_count: 8
-- device_load_ms: 3766.14
-- device_prefill_ms: 1792.66
-- device_decode_ms: 3178.06
-- prefill_max_delta: 4.710938
-- decode_max_delta: 6.414062
-
 Current notes:
 - CPU oracle still measures cross-device/backend drift and should not be used to judge direct-HIP correctness.
-- Same-device tracing shows:
+- Same-device tracing proved:
   - direct prefill logits match native HIP exactly
   - prefill cache tensors match native HIP exactly
   - decode input hidden state matches native HIP exactly
   - per-layer direct decode matches native HIP exactly when run from the same state
-- the remaining same-device decode gap is smaller (`0.4375`) and is now narrowed to decode-step orchestration outside those traced subcomponents.
+  - whole-step direct decode matches native HIP exactly when run from the same state
+- The remaining correctness bug was not direct-executor math. It was the old direct-runner env override bundle.
+- Current baseline for `hip-direct` correctness work is:
+  - `prefill_max_delta = 0.0`
+  - `decode_max_delta = 0.0`
+  - short and longer native-device checkpoints both green
