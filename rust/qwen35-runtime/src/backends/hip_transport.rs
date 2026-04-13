@@ -3708,9 +3708,13 @@ impl HipNativeBuffer {
                 }
             }
             HipNativeExpr::L2Norm { source, eps } => {
-                let source = source.materialize()?;
-                let norm = source.sqr()?.sum_keepdim(candle_core::D::Minus1)?;
-                source.broadcast_div(&(norm + *eps)?.sqrt()?)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.l2norm(*eps)?.into_tensor())
+                } else {
+                    let source = source.materialize()?;
+                    let norm = source.sqr()?.sum_keepdim(candle_core::D::Minus1)?;
+                    source.broadcast_div(&(norm + *eps)?.sqrt()?)
+                }
             }
         }
     }
