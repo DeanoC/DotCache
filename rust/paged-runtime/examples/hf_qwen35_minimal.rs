@@ -390,6 +390,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer23_mlp_down_proj_max_delta: Option<f32>,
         pytorch_decode_layer23_mlp_max_delta: Option<f32>,
         pytorch_decode_layer23_max_delta: Option<f32>,
+        pytorch_decode_decoder_layer_input_max_deltas: Option<Vec<f32>>,
+        pytorch_decode_decoder_layer_residual_growths: Option<Vec<f32>>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
         decode_step_cache_max_delta: Option<f32>,
@@ -3506,6 +3508,26 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let generated_text = tokenizer.decode(&generated_ids, true)?;
+    let (
+        pytorch_decode_decoder_layer_input_max_deltas,
+        pytorch_decode_decoder_layer_residual_growths,
+    ) = match (
+        pytorch_decode_decoder_layer_max_deltas.as_ref(),
+        max_decode_input_hidden_delta,
+    ) {
+        (Some(layer_deltas), Some(input_delta)) => {
+            let mut inputs = Vec::with_capacity(layer_deltas.len());
+            let mut growths = Vec::with_capacity(layer_deltas.len());
+            let mut prev = input_delta;
+            for &cur in layer_deltas {
+                inputs.push(prev);
+                growths.push(cur - prev);
+                prev = cur;
+            }
+            (Some(inputs), Some(growths))
+        }
+        _ => (None, None),
+    };
     let record = RunRecord {
         model_id: model_id.clone(),
         prompt: prompt.clone(),
@@ -3710,6 +3732,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer23_mlp_down_proj_max_delta,
         pytorch_decode_layer23_mlp_max_delta,
         pytorch_decode_layer23_max_delta,
+        pytorch_decode_decoder_layer_input_max_deltas,
+        pytorch_decode_decoder_layer_residual_growths,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,
         decode_step_cache_max_delta: max_decode_step_cache_delta,
