@@ -4246,7 +4246,13 @@ impl HipNativeBuffer {
                 dim,
                 left,
                 right,
-            } => source.materialize()?.pad_with_zeros(*dim, *left, *right),
+            } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.pad_with_zeros(*dim, *left, *right)?.into_tensor())
+                } else {
+                    source.materialize()?.pad_with_zeros(*dim, *left, *right)
+                }
+            }
             HipNativeExpr::Narrow {
                 source,
                 dim,
@@ -4257,12 +4263,24 @@ impl HipNativeBuffer {
                 source.materialize()?.narrow(*dim, *index, 1)?.squeeze(*dim)
             }
             HipNativeExpr::Concat { sources, dim } => {
-                let tensors = sources
+                let device_buffers = sources
                     .iter()
-                    .map(|s| s.materialize())
-                    .collect::<Result<Vec<_>>>()?;
-                let refs = tensors.iter().collect::<Vec<_>>();
-                Tensor::cat(&refs, *dim)
+                    .map(|s| match &s.expr {
+                        HipNativeExpr::DeviceBuffer(buffer) => Some(buffer),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if device_buffers.iter().all(|buffer| buffer.is_some()) {
+                    let refs = device_buffers.into_iter().flatten().collect::<Vec<_>>();
+                    Ok(HipDeviceBuffer::cat(refs.as_slice(), *dim)?.into_tensor())
+                } else {
+                    let tensors = sources
+                        .iter()
+                        .map(|s| s.materialize())
+                        .collect::<Result<Vec<_>>>()?;
+                    let refs = tensors.iter().collect::<Vec<_>>();
+                    Tensor::cat(&refs, *dim)
+                }
             }
             HipNativeExpr::Reshape { source, shape } => {
                 source.materialize()?.reshape(shape.clone())
