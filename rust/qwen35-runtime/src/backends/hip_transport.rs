@@ -5302,7 +5302,7 @@ pub(crate) fn state_buffer_from_host_bytes(
     dtype: DType,
     device: &Device,
 ) -> Result<StateBuffer> {
-    HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    HipTensor::from_device_buffer(host_result_device_buffer(HipHostBuffer {
         bytes: bytes.into(),
         shape,
         dtype,
@@ -6220,28 +6220,28 @@ fn causal_mask_hip_host_buffer(
     else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype,
             device: device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn cumsum_last_dim_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_cumsum_last_dim_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn pad_with_zeros_hip_owned_device(
@@ -6359,14 +6359,14 @@ fn exp_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_exp_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn exp_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
@@ -6407,14 +6407,14 @@ fn recip_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_recip_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn recip_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
@@ -6489,14 +6489,14 @@ fn sigmoid_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_sigmoid_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn sigmoid_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
@@ -6537,14 +6537,14 @@ fn cast_hip_host_buffer(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> 
     let Some((bytes, shape)) = hip_cast_host_buffer(xs, dtype)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype,
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn cast_hip_owned_device(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> {
@@ -6694,14 +6694,14 @@ fn binary_broadcast_hip_host_buffer(
     let Some((bytes, shape)) = helper(lhs, rhs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: lhs.dtype(),
             device: lhs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn binary_broadcast_hip_owned_device(
@@ -6961,28 +6961,28 @@ fn matmul_hip_host_buffer(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor
     let Some((bytes, shape)) = hip_matmul_host_buffer(lhs, rhs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: lhs.dtype(),
             device: lhs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn mul_scalar_hip_host_buffer(xs: &Tensor, value: f64) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_mul_scalar_host_buffer(xs, value)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn reduce_keepdim_hip_host_buffer(
@@ -6993,70 +6993,70 @@ fn reduce_keepdim_hip_host_buffer(
     let Some((bytes, shape)) = helper(xs, dim)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn add_scalar_hip_host_buffer(xs: &Tensor, value: f64) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_add_scalar_host_buffer(xs, value)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn log_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_log_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn sqrt_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_sqrt_host_buffer(xs)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_l2norm_host_buffer(xs, eps)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
