@@ -7,7 +7,7 @@ use crate::qwen35_minimal_impl::model::{
     delta_full_scan_host_buffer, delta_full_scan_pack, delta_full_scan_pack_host_buffer,
     delta_full_scan_packed, delta_full_scan_packed_host_buffer, delta_local_attn_scan,
     delta_local_attn_scan_host_buffer, delta_recurrent_prefill, delta_recurrent_prefill_host_buffer,
-    delta_state_scan, delta_state_scan_host_buffer, delta_state_update, full_attention_decode_megakernel,
+    delta_state_scan, delta_state_scan_host_buffer, full_attention_decode_megakernel,
     full_attention_prefill_megakernel, full_attention_prefill_host_buffer,
     hip_causal_mask, hip_causal_mask_host_buffer, hip_cumsum_last_dim,
     hip_cumsum_last_dim_host_buffer, hip_embedding_lookup, hip_embedding_lookup_host_buffer,
@@ -17075,14 +17075,7 @@ fn delta_state_update_tensors_hip(
     value: &HipTensor,
     use_kernel: bool,
 ) -> Result<HipTensor> {
-    if use_kernel {
-        return Ok(from_kernel_tensor(delta_state_update(
-            &prev_state_scaled.clone().into_tensor(),
-            &weighted_key.clone().into_tensor(),
-            &value.clone().into_tensor(),
-            true,
-        )?));
-    }
+    let _ = use_kernel;
     weighted_key
         .transpose(2, 1)?
         .matmul(value)?
