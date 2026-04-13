@@ -57,6 +57,10 @@ def main() -> None:
     first_layer_linear_prepared_beta_output = None
     first_layer_linear_prepared_g_output = None
     first_layer_linear_direct_recurrent_output = None
+    first_layer_linear_focus_kv_mem_output = None
+    first_layer_linear_focus_delta_output = None
+    first_layer_linear_focus_state_output = None
+    first_layer_linear_focus_output = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
@@ -127,6 +131,10 @@ def main() -> None:
         nonlocal first_layer_linear_prepared_beta_output
         nonlocal first_layer_linear_prepared_g_output
         nonlocal first_layer_linear_direct_recurrent_output
+        nonlocal first_layer_linear_focus_kv_mem_output
+        nonlocal first_layer_linear_focus_delta_output
+        nonlocal first_layer_linear_focus_state_output
+        nonlocal first_layer_linear_focus_output
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
@@ -200,6 +208,8 @@ def main() -> None:
             (batch_size, num_v_heads, head_k_dim, head_v_dim), dtype=torch.float32
         )
         outputs = []
+        focus_step = min(2, seq_len - 1)
+        focus_head = min(6, num_v_heads - 1)
         for step in range(seq_len):
             q_step = q[:, :, step, :]
             k_step = k[:, :, step, :]
@@ -211,6 +221,11 @@ def main() -> None:
             delta = (v_step - kv_mem) * beta_step
             state = state + k_step.unsqueeze(-1) * delta.unsqueeze(2)
             out_step = (state * q_step.unsqueeze(-1)).sum(dim=2)
+            if step == focus_step:
+                first_layer_linear_focus_kv_mem_output = kv_mem[0, focus_head].cpu()
+                first_layer_linear_focus_delta_output = delta[0, focus_head].cpu()
+                first_layer_linear_focus_state_output = state[0, focus_head].cpu()
+                first_layer_linear_focus_output = out_step[0, focus_head].cpu()
             outputs.append(out_step.unsqueeze(2))
         first_layer_linear_direct_recurrent_output = (
             torch.cat(outputs, dim=2).transpose(1, 2).contiguous().reshape(batch_size, seq_len, -1).cpu()
@@ -338,6 +353,10 @@ def main() -> None:
         or first_layer_linear_prepared_beta_output is None
         or first_layer_linear_prepared_g_output is None
         or first_layer_linear_direct_recurrent_output is None
+        or first_layer_linear_focus_kv_mem_output is None
+        or first_layer_linear_focus_delta_output is None
+        or first_layer_linear_focus_state_output is None
+        or first_layer_linear_focus_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
@@ -399,6 +418,10 @@ def main() -> None:
         "first_layer_linear_prepared_beta_output": first_layer_linear_prepared_beta_output.tolist(),
         "first_layer_linear_prepared_g_output": first_layer_linear_prepared_g_output.tolist(),
         "first_layer_linear_direct_recurrent_output": first_layer_linear_direct_recurrent_output.tolist(),
+        "first_layer_linear_focus_kv_mem_output": first_layer_linear_focus_kv_mem_output.tolist(),
+        "first_layer_linear_focus_delta_output": first_layer_linear_focus_delta_output.tolist(),
+        "first_layer_linear_focus_state_output": first_layer_linear_focus_state_output.tolist(),
+        "first_layer_linear_focus_output": first_layer_linear_focus_output.tolist(),
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
