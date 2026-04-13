@@ -7196,14 +7196,14 @@ fn mapped_cumsum_last_dim_hip_host_buffer(xs: &HipMappedHostBuffer) -> Result<Op
     if status != 0 {
         return Err(hip::hip_error("hip-cumsum-last-dim-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: xs.buffer.dtype,
             device: xs.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -7358,14 +7358,14 @@ fn rms_norm_hip_host_buffer(
     let Some((bytes, shape)) = hip_rms_norm_host_buffer(xs, weight, eps, add_unit_offset)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: xs.dtype(),
             device: xs.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -7553,14 +7553,14 @@ fn mapped_rms_norm_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("dotcache-hip-rms-norm-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: xs.buffer.dtype,
             device: xs.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -7583,14 +7583,14 @@ fn rms_norm_gated_hip_host_buffer(
     let Some((bytes, shape)) = hip_rms_norm_gated_host_buffer(hidden, gate, weight, eps)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: hidden.dtype(),
             device: hidden.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -7797,14 +7797,14 @@ fn mapped_rms_norm_gated_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("dotcache-hip-rms-norm-gated-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: hidden.buffer.dtype,
             device: hidden.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -7822,14 +7822,14 @@ fn swiglu_mul_hip_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<HipTe
     let Some((bytes, shape)) = hip_swiglu_mul_host_buffer(gate, up)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: gate.dtype(),
             device: gate.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -7963,14 +7963,14 @@ fn mapped_swiglu_mul_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("dotcache-hip-swiglu-mul-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: gate.buffer.dtype,
             device: gate.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
@@ -7990,14 +7990,14 @@ fn value_decay_hip_host_buffer(
     let Some((bytes, shape)) = hip_value_decay_host_buffer(a, dt_bias, a_log_exp)? else {
         return Ok(None);
     };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype: a.dtype(),
             device: a.device().clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -8179,14 +8179,14 @@ fn mapped_value_decay_hip_host_buffer(
     if status != 0 {
         return Err(hip::hip_error("dotcache-hip-value-decay-mapped-host-buffer", status));
     }
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+    Ok(Some(HipTensor::from_device_buffer(host_result_device_buffer(
+        HipHostBuffer {
             bytes: out.into(),
             shape,
             dtype: a.buffer.dtype,
             device: a.buffer.device.clone(),
-        }),
-    )))
+        },
+    ))))
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
