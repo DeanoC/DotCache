@@ -9798,9 +9798,11 @@ fn delta_chunk_step_windowed_raw_host_buffer(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct DeltaChunkReadoutRaw;
 
+#[cfg(test)]
 impl candle::CustomOp6 for DeltaChunkReadoutRaw {
     fn name(&self) -> &'static str {
         "delta-chunk-readout-raw"
@@ -9944,7 +9946,7 @@ impl candle::CustomOp6 for DeltaChunkReadoutRaw {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn delta_chunk_readout_raw(
     prev_state: &Tensor,
     query: &Tensor,
@@ -9956,10 +9958,11 @@ fn delta_chunk_readout_raw(
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkReadoutRaw)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct DeltaChunkStateUpdateRaw;
 
+#[cfg(test)]
 impl candle::CustomOp4 for DeltaChunkStateUpdateRaw {
     fn name(&self) -> &'static str {
         "delta-chunk-state-update-raw"
@@ -10078,7 +10081,7 @@ impl candle::CustomOp4 for DeltaChunkStateUpdateRaw {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn delta_chunk_state_update_raw(
     prev_state: &Tensor,
     key: &Tensor,
