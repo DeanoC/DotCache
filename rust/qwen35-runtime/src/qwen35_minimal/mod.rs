@@ -100,11 +100,25 @@ impl MinimalQwen35DirectRuntimeProfile {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectHipDecodePhaseKind {
+    LinearAttention,
+    FullAttention,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectHipDecodePhaseSpec {
+    pub(crate) kind: DirectHipDecodePhaseKind,
+    pub(crate) start_layer_idx: usize,
+    pub(crate) end_layer_idx: usize,
+}
+
 #[derive(Debug)]
 pub struct MinimalQwen35DirectRuntime {
     profile: MinimalQwen35DirectRuntimeProfile,
     target: TargetSpec,
     metadata: PreparedQwen35DirectMetadata,
+    decode_phase_specs: Vec<DirectHipDecodePhaseSpec>,
     decode_hidden_ping: MinimalQwen35StateBuffer,
     decode_hidden_pong: MinimalQwen35StateBuffer,
     decode_logits: MinimalQwen35StateBuffer,
@@ -124,6 +138,10 @@ impl MinimalQwen35DirectRuntime {
 
     pub fn metadata(&self) -> &PreparedQwen35DirectMetadata {
         &self.metadata
+    }
+
+    pub(crate) fn decode_phase_specs(&self) -> &[DirectHipDecodePhaseSpec] {
+        &self.decode_phase_specs
     }
 
     pub fn decode_hidden_ping(&self) -> &MinimalQwen35StateBuffer {
@@ -270,6 +288,29 @@ impl MinimalQwen35Runner {
                 message: "direct HIP runtime requires at least one decode phase".to_string(),
             });
         }
+        let decode_phase_specs: Vec<DirectHipDecodePhaseSpec> = metadata
+            .decode_phases
+            .iter()
+            .map(|phase| {
+                let kind = match phase.layer_type.as_str() {
+                    "linear_attention" => DirectHipDecodePhaseKind::LinearAttention,
+                    "full_attention" => DirectHipDecodePhaseKind::FullAttention,
+                    other => {
+                        return Err(RuntimeError::External {
+                            context: "qwen35-hip-direct",
+                            message: format!(
+                                "direct HIP runtime does not support decode phase type `{other}`"
+                            ),
+                        })
+                    }
+                };
+                Ok(DirectHipDecodePhaseSpec {
+                    kind,
+                    start_layer_idx: phase.start_layer_idx,
+                    end_layer_idx: phase.end_layer_idx,
+                })
+            })
+            .collect::<Result<_>>()?;
         for binding in metadata.global_tensors.iter() {
             if !package.contains_tensor(&binding.tensor_name) {
                 return Err(RuntimeError::External {
@@ -338,6 +379,7 @@ impl MinimalQwen35Runner {
             profile,
             target,
             metadata,
+            decode_phase_specs,
             decode_hidden_ping,
             decode_hidden_pong,
             decode_logits,
