@@ -131,6 +131,26 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         k_norm_eps: f64,
     ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)>;
     #[allow(clippy::too_many_arguments)]
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)>;
+    #[allow(clippy::too_many_arguments)]
     fn prepare_linear_attention_inputs(
         &self,
         mixed_qkv: &Tensor,
@@ -777,6 +797,46 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             StateBuffer::from_tensor(gate)?,
             StateBuffer::from_tensor(key_states)?,
             StateBuffer::from_tensor(value_states)?,
+        ))
+    }
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        let (query_states, gate, key_states, value_states) = self.prepare_full_attention_inputs(
+            q_and_gate,
+            k_proj,
+            v_proj,
+            b_sz,
+            q_len,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            q_norm_weight,
+            q_norm_eps,
+            k_norm_weight,
+            k_norm_eps,
+        )?;
+        Ok((
+            self.copy_state_into_scratch(&query_states, query_scratch)?,
+            self.copy_state_into_scratch(&gate, gate_scratch)?,
+            self.copy_state_into_scratch(&key_states, key_scratch)?,
+            self.copy_state_into_scratch(&value_states, value_scratch)?,
         ))
     }
     fn prepare_linear_attention_inputs(
@@ -1555,7 +1615,7 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         q_norm_eps: f64,
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
-    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
         backends::hip::prepare_full_attention_inputs(
             q_and_gate,
             k_proj,
@@ -1570,6 +1630,46 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
             k_norm_weight,
             k_norm_eps,
         )
+    }
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        let (query_states, gate, key_states, value_states) = backends::hip::prepare_full_attention_inputs(
+            q_and_gate,
+            k_proj,
+            v_proj,
+            b_sz,
+            q_len,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            q_norm_weight,
+            q_norm_eps,
+            k_norm_weight,
+            k_norm_eps,
+        )?;
+        Ok((
+            backends::hip::copy_state_into_scratch(&query_states, query_scratch)?,
+            backends::hip::copy_state_into_scratch(&gate, gate_scratch)?,
+            backends::hip::copy_state_into_scratch(&key_states, key_scratch)?,
+            backends::hip::copy_state_into_scratch(&value_states, value_scratch)?,
+        ))
     }
     fn prepare_linear_attention_inputs(
         &self,

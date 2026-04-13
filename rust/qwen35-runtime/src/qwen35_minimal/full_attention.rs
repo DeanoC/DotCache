@@ -1316,23 +1316,26 @@ impl FullAttention {
         let q_and_gate = self.q_proj.forward_buffer(xs)?;
         let k_proj = self.k_proj.forward_buffer(xs)?;
         let v_proj = self.v_proj.forward_buffer(xs)?;
-        let (query_states, gate, key_states, value_states) = context.backend.prepare_full_attention_inputs(
-            &q_and_gate,
-            &k_proj,
-            &v_proj,
-            context.b_sz,
-            context.q_len,
-            self.num_heads,
-            self.num_kv_heads,
-            self.head_dim,
-            context.q_norm_weight,
-            context.q_norm_eps,
-            context.k_norm_weight,
-            context.k_norm_eps,
-        )?;
-        let gate = context.backend.copy_state_into_scratch(&gate, context.gate_workspace)?;
-        let value_states =
-            context.backend.copy_state_into_scratch(&value_states, context.value_workspace)?;
+        let (query_states, gate, key_states, value_states) = context
+            .backend
+            .prepare_full_attention_inputs_into_scratch(
+                &q_and_gate,
+                &k_proj,
+                &v_proj,
+                context.gate_workspace,
+                context.query_workspace,
+                context.key_workspace,
+                context.value_workspace,
+                context.b_sz,
+                context.q_len,
+                self.num_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                context.q_norm_weight,
+                context.q_norm_eps,
+                context.k_norm_weight,
+                context.k_norm_eps,
+            )?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let layout_start = profile_start(device)?;
