@@ -17,7 +17,7 @@ use super::with_tracing::Linear;
 use crate::backends;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_core::backend::BackendDevice;
+use candle_core::backend::{BackendDevice, BackendStorage};
 use crate::{BufferMutability, BufferViewDesc, ImmutableBufferView, ImmutableWeightHandle, ScalarType, TargetSpec};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1644,6 +1644,10 @@ pub(crate) fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offs
     } else {
         weight.to_dtype(xs.dtype())?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_rms_norm_mapped_host_buffer(&xs, &weight, eps, add_unit_offset)? {
+        return Ok(output);
+    }
     let xs_dims = xs.dims();
     let n_cols = *xs_dims.last().ok_or_else(|| {
         candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
@@ -1658,6 +1662,89 @@ pub(crate) fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offs
             add_unit_offset,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_rms_norm_mapped_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weight.device().same_device(xs.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    if xs.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (xs_storage, xs_layout) = xs.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (Storage::Hip(xs_storage), Storage::Hip(weight_storage)) = (&*xs_storage, &*weight_storage) else {
+        return Ok(None);
+    };
+    if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let out_shape = xs_layout.shape().clone();
+    let n_cols = *out_shape
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = out_shape.elem_count() / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            if add_unit_offset { 1 } else { 0 },
+            xs_storage.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-rms-norm-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(xs.dtype(), output)?,
+        xs_storage.device().clone(),
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_rms_norm_mapped_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<Tensor>> {
+    let _ = (xs, weight, eps, add_unit_offset);
+    Ok(None)
 }
 
 pub(crate) fn hip_rms_norm_gated(
@@ -1679,6 +1766,15 @@ pub(crate) fn hip_rms_norm_gated(
     } else {
         weight.to_dtype(hidden_states.dtype())?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_rms_norm_gated_mapped_host_buffer(
+        &hidden_states,
+        &gate,
+        &weight,
+        eps,
+    )? {
+        return Ok(output);
+    }
     let hidden_dims = hidden_states.dims();
     let n_cols = *hidden_dims.last().ok_or_else(|| {
         candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
@@ -1693,6 +1789,96 @@ pub(crate) fn hip_rms_norm_gated(
             eps: eps as f32,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_rms_norm_gated_mapped_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match hidden.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(gate.device().same_device(hidden.device()) && weight.device().same_device(hidden.device())) {
+        return Ok(None);
+    }
+    if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (hidden_storage, hidden_layout) = hidden.storage_and_layout();
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (
+        Storage::Hip(hidden_storage),
+        Storage::Hip(gate_storage),
+        Storage::Hip(weight_storage),
+    ) = (&*hidden_storage, &*gate_storage, &*weight_storage)
+    else {
+        return Ok(None);
+    };
+    if !(hidden_layout.is_contiguous() && gate_layout.is_contiguous() && weight_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let out_shape = hidden_layout.shape().clone();
+    let n_cols = *out_shape
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into()))?;
+    let n_rows = out_shape.elem_count() / n_cols;
+    if gate_layout.shape().elem_count() != out_shape.elem_count()
+        || weight_layout.shape().elem_count() != n_cols
+    {
+        return Ok(None);
+    }
+    let mut output =
+        vec![0u8; out_shape.elem_count().saturating_mul(hidden.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+            hip::dtype_code(hidden.dtype())?,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            hidden_storage.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-rms-norm-gated-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(hidden.dtype(), output)?,
+        hidden_storage.device().clone(),
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_rms_norm_gated_mapped_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<Tensor>> {
+    let _ = (hidden, gate, weight, eps);
+    Ok(None)
 }
 
 impl Qwen35RmsNorm {
@@ -1946,7 +2132,79 @@ impl candle::CustomOp2 for HipSwigluMul {
 }
 
 pub(crate) fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_swiglu_mul_mapped_host_buffer(gate, up)? {
+        return Ok(output);
+    }
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_swiglu_mul_mapped_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let gate = gate.contiguous()?;
+    let up = up.contiguous()?;
+    let ordinal = match gate.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !up.device().same_device(gate.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(gate.dtype()) else {
+        return Ok(None);
+    };
+    if gate.dtype() != up.dtype() {
+        return Ok(None);
+    }
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (up_storage, up_layout) = up.storage_and_layout();
+    let (Storage::Hip(gate_storage), Storage::Hip(up_storage)) = (&*gate_storage, &*up_storage) else {
+        return Ok(None);
+    };
+    if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    if gate_layout.shape() != up_layout.shape() {
+        return Ok(None);
+    }
+    let out_shape = gate_layout.shape().clone();
+    let elem_count = out_shape.elem_count();
+    let mut output = vec![0u8; elem_count.saturating_mul(gate.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+            dtype_code,
+            ordinal,
+            elem_count,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            up_storage.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-swiglu-mul-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(gate.dtype(), output)?,
+        gate_storage.device().clone(),
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_swiglu_mul_mapped_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<Tensor>> {
+    let _ = (gate, up);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -2560,12 +2818,81 @@ impl candle::CustomOp1 for HipCausalMask {
 }
 
 pub(crate) fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, tgt_len: usize, seqlen_offset: usize) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) =
+        hip_causal_mask_mapped_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    {
+        return Ok(output);
+    }
     let seed = Tensor::zeros(1usize, dtype, device)?;
     seed.apply_op1_no_bwd(&HipCausalMask {
         batch_size,
         tgt_len,
         seqlen_offset,
     })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_causal_mask_mapped_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    use std::ffi::c_void;
+
+    let ordinal = match device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(dtype) else {
+        return Ok(None);
+    };
+    let kv_len = tgt_len + seqlen_offset;
+    let out_shape = candle::Shape::from((batch_size, 1usize, tgt_len, kv_len));
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(dtype.size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_causal_mask(
+            dtype_code,
+            ordinal,
+            batch_size,
+            tgt_len,
+            seqlen_offset,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-causal-mask-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(dtype, output)?,
+        match device {
+            Device::Hip(device) => device.clone(),
+            _ => unreachable!("validated hip device"),
+        },
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_causal_mask_mapped_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (device, dtype, batch_size, tgt_len, seqlen_offset);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -2695,12 +3022,76 @@ impl candle::CustomOp1 for HipCumsumLastDim {
 
 pub(crate) fn hip_cumsum_last_dim(xs: &Tensor) -> Result<Tensor> {
     let xs = xs.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_cumsum_last_dim_mapped_host_buffer(&xs)? {
+        return Ok(output);
+    }
     let dims = xs.dims();
     let cols = *dims.last().ok_or_else(|| {
         candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
     })?;
     let rows = xs.elem_count() / cols;
     xs.apply_op1_no_bwd(&HipCumsumLastDim { rows, cols })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_cumsum_last_dim_mapped_host_buffer(xs: &Tensor) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let dims = layout.shape().dims();
+    let cols = *dims.last().ok_or_else(|| {
+        candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+    })?;
+    let rows = layout.shape().elem_count() / cols;
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = layout.shape().clone();
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
+            dtype_code,
+            ordinal,
+            rows,
+            cols,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-cumsum-last-dim-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(xs.dtype(), output)?,
+        storage.device().clone(),
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_cumsum_last_dim_mapped_host_buffer(xs: &Tensor) -> Result<Option<Tensor>> {
+    let _ = xs;
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -3792,6 +4183,10 @@ pub(crate) fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) 
     } else {
         a_log_exp.to_dtype(target_dtype)?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_value_decay_mapped_host_buffer(&a, &dt_bias, &a_log_exp)? {
+        return Ok(output);
+    }
     let total_elems = a.elem_count();
     let num_heads = dt_bias.elem_count();
     a.apply_op3_no_bwd(
@@ -3802,6 +4197,91 @@ pub(crate) fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) 
             num_heads,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_value_decay_mapped_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match a.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(dt_bias.device().same_device(a.device()) && a_log_exp.device().same_device(a.device())) {
+        return Ok(None);
+    }
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (&*a_storage, &*dt_bias_storage, &*a_log_exp_storage)
+    else {
+        return Ok(None);
+    };
+    if !(a_layout.is_contiguous() && dt_bias_layout.is_contiguous() && a_log_exp_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    if a.dtype() != dt_bias.dtype() || a.dtype() != a_log_exp.dtype() {
+        return Ok(None);
+    }
+    let total_elems = a_layout.shape().elem_count();
+    let num_heads = dt_bias_layout.shape().elem_count();
+    if a_log_exp_layout.shape().elem_count() != num_heads {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(a.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = a_layout.shape().clone();
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(a.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_value_decay(
+            dtype_code,
+            ordinal,
+            total_elems,
+            num_heads,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-value-decay-mapped-host-buffer", status));
+    }
+    let storage = candle::Storage::Hip(candle::HipStorage::wrap_cpu_storage(
+        hip_output_bytes_to_cpu_storage(a.dtype(), output)?,
+        a_storage.device().clone(),
+    ));
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_value_decay_mapped_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<Tensor>> {
+    let _ = (a, dt_bias, a_log_exp);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
