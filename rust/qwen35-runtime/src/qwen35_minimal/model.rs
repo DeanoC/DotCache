@@ -18,7 +18,10 @@ use crate::backends;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_core::backend::{BackendDevice, BackendStorage};
-use crate::{BufferMutability, BufferViewDesc, ImmutableBufferView, ImmutableWeightHandle, ScalarType, TargetSpec};
+use crate::{
+    BufferMutability, BufferViewDesc, ImmutableBufferView, ImmutableWeightHandle,
+    PreparedQwen35DirectMetadata, ScalarType, TargetSpec,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -16661,6 +16664,70 @@ impl TextModel {
         Ok((self.norm.forward_buffer(&xs)?, profile))
     }
 
+    pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        hidden_states: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        if self.layers.len() != metadata.num_hidden_layers {
+            candle::bail!(
+                "direct-hip-v1 layer count mismatch: model={} metadata={}",
+                self.layers.len(),
+                metadata.num_hidden_layers
+            );
+        }
+        if metadata.layers.len() != self.layers.len() {
+            candle::bail!(
+                "direct-hip-v1 metadata layer schedule mismatch: metadata={} model={}",
+                metadata.layers.len(),
+                self.layers.len()
+            );
+        }
+        let device = hidden_states.device();
+        let (b_size, seq_len, _) = hidden_states.dims3()?;
+        let mut profile = RuntimeProfile::default();
+        let scheduler_start = profile_start(device)?;
+        let attention_mask = if seq_len > 1 {
+            Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
+        } else {
+            None
+        };
+        profile.scheduler_planning_millis += profile_elapsed(scheduler_start, device)?;
+        let mut xs = hidden_states.clone();
+        for (layer_idx, (layer, layer_meta)) in self
+            .layers
+            .iter_mut()
+            .zip(metadata.layers.iter())
+            .enumerate()
+        {
+            if layer_meta.layer_idx != layer_idx {
+                candle::bail!(
+                    "direct-hip-v1 metadata index mismatch at layer {}: got {}",
+                    layer_idx,
+                    layer_meta.layer_idx
+                );
+            }
+            if layer.layer_type() != layer_meta.layer_type {
+                candle::bail!(
+                    "direct-hip-v1 layer type mismatch at layer {}: model={} metadata={}",
+                    layer_idx,
+                    layer.layer_type(),
+                    layer_meta.layer_type
+                );
+            }
+            let mask = if layer.layer_type() == "full_attention" {
+                attention_mask.as_ref()
+            } else {
+                None
+            };
+            let (next_xs, layer_profile) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((self.norm.forward_buffer(&xs)?, profile))
+    }
+
     pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         self.forward_profiled(input_ids, seqlen_offset)
             .map(|(output, _)| output)
@@ -16835,6 +16902,28 @@ impl ModelForCausalLM {
         let (hidden_states, mut profile) =
             self.language_model
                 .forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
+        let output_start = profile_start(device)?;
+        let logits = backend.slice_last_token(&hidden_states)?;
+        let logits = self.lm_head.forward_buffer(&logits)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        Ok((logits, profile))
+    }
+
+    pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        hidden_states: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let backend = backend_buffer_api::for_device(device);
+        let (hidden_states, mut profile) = self
+            .language_model
+            .forward_hidden_states_profiled_direct_hip_v1(
+                metadata,
+                hidden_states,
+                seqlen_offset,
+            )?;
         let output_start = profile_start(device)?;
         let logits = backend.slice_last_token(&hidden_states)?;
         let logits = self.lm_head.forward_buffer(&logits)?;

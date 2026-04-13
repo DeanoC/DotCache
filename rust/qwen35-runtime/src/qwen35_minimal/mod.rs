@@ -3,6 +3,7 @@ mod backend_buffer_api;
 pub(crate) mod backend_ops;
 #[cfg(any(feature = "hf", test))]
 mod builder;
+mod direct_hip;
 pub(crate) mod hip;
 pub(crate) mod model;
 mod ops;
@@ -38,6 +39,7 @@ use crate::{
 };
 #[cfg(any(feature = "hf", test))]
 use builder::WeightBuilder;
+use direct_hip::DirectHipQwen35V1Executor;
 use prepared::PreparedTensorSource;
 
 #[derive(Debug, Clone)]
@@ -284,10 +286,6 @@ impl MinimalQwen35Runner {
         })
     }
 
-    fn direct_runtime_mut(&mut self) -> Option<&mut MinimalQwen35DirectRuntime> {
-        self.direct_runtime.as_mut()
-    }
-
     fn validate_direct_input_ids_v1(&self, input_ids: &Tensor) -> Result<()> {
         let direct = self.direct_runtime.as_ref().ok_or_else(|| RuntimeError::External {
             context: "qwen35-hip-direct",
@@ -390,32 +388,6 @@ impl MinimalQwen35Runner {
             });
         }
         Ok(())
-    }
-
-    fn stage_direct_decode_hidden(
-        direct: &mut MinimalQwen35DirectRuntime,
-        hidden_state_t: &MinimalQwen35StateBuffer,
-    ) {
-        if direct.next_hidden_slot_is_ping {
-            direct.decode_hidden_ping = hidden_state_t.clone();
-        } else {
-            direct.decode_hidden_pong = hidden_state_t.clone();
-        }
-        direct.next_hidden_slot_is_ping = !direct.next_hidden_slot_is_ping;
-    }
-
-    fn stage_direct_logits(
-        direct: &mut MinimalQwen35DirectRuntime,
-        logits: &MinimalQwen35StateBuffer,
-        sequence_length: usize,
-        is_prefill: bool,
-    ) {
-        direct.decode_logits = logits.clone();
-        if is_prefill {
-            direct.last_prefill_sequence_length = sequence_length;
-        } else {
-            direct.last_decode_sequence_length = sequence_length;
-        }
     }
 
     fn hidden_states_on_runner_device(
@@ -677,12 +649,12 @@ impl MinimalQwen35Runner {
         Self::with_direct_hip_execution_env(true, || {
             let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
             let hidden_states = MinimalQwen35StateBuffer::from_tensor(hidden_states)?;
-            let (_, seq_len, _) = hidden_states.dims3()?;
-            let logits = self.model.forward_hidden_states(&hidden_states, 0)?;
-            let cache = self.model.cache_state();
-            if let Some(direct) = self.direct_runtime_mut() {
-                Self::stage_direct_logits(direct, &logits, seq_len, true);
-            }
+            let direct = self.direct_runtime.as_mut().ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct runtime requested without direct runtime state".to_string(),
+            })?;
+            let mut executor = DirectHipQwen35V1Executor::new(&mut self.model, direct);
+            let (logits, cache, _profile) = executor.prefill_from_hidden_states(&hidden_states)?;
             Ok((logits, cache))
         })
     }
@@ -699,13 +671,12 @@ impl MinimalQwen35Runner {
         Self::with_direct_hip_execution_env(true, || {
             let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
             let hidden_states = MinimalQwen35StateBuffer::from_tensor(hidden_states)?;
-            let (_, seq_len, _) = hidden_states.dims3()?;
-            let (logits, profile) = self.model.forward_hidden_states_profiled(&hidden_states, 0)?;
-            let cache = self.model.cache_state();
-            if let Some(direct) = self.direct_runtime_mut() {
-                Self::stage_direct_logits(direct, &logits, seq_len, true);
-            }
-            Ok((logits, cache, profile))
+            let direct = self.direct_runtime.as_mut().ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct runtime requested without direct runtime state".to_string(),
+            })?;
+            let mut executor = DirectHipQwen35V1Executor::new(&mut self.model, direct);
+            executor.prefill_from_hidden_states(&hidden_states)
         })
     }
 
@@ -718,14 +689,12 @@ impl MinimalQwen35Runner {
         Self::with_direct_hip_execution_env(true, || {
             let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
             let hidden_state_t = MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?;
-            self.model.restore_cache_state(cache)?;
-            let seqlen_offset = cache.sequence_length();
-            let logits = self.model.forward_hidden_states(&hidden_state_t, seqlen_offset)?;
-            *cache = self.model.cache_state();
-            if let Some(direct) = self.direct_runtime_mut() {
-                Self::stage_direct_decode_hidden(direct, &hidden_state_t);
-                Self::stage_direct_logits(direct, &logits, seqlen_offset + 1, false);
-            }
+            let direct = self.direct_runtime.as_mut().ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct runtime requested without direct runtime state".to_string(),
+            })?;
+            let mut executor = DirectHipQwen35V1Executor::new(&mut self.model, direct);
+            let (logits, _profile) = executor.decode_from_hidden_state(&hidden_state_t, cache)?;
             Ok(logits)
         })
     }
@@ -739,17 +708,12 @@ impl MinimalQwen35Runner {
         Self::with_direct_hip_execution_env(true, || {
             let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
             let hidden_state_t = MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?;
-            self.model.restore_cache_state(cache)?;
-            let seqlen_offset = cache.sequence_length();
-            let (logits, profile) = self
-                .model
-                .forward_hidden_states_profiled(&hidden_state_t, seqlen_offset)?;
-            *cache = self.model.cache_state();
-            if let Some(direct) = self.direct_runtime_mut() {
-                Self::stage_direct_decode_hidden(direct, &hidden_state_t);
-                Self::stage_direct_logits(direct, &logits, seqlen_offset + 1, false);
-            }
-            Ok((logits, profile))
+            let direct = self.direct_runtime.as_mut().ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct runtime requested without direct runtime state".to_string(),
+            })?;
+            let mut executor = DirectHipQwen35V1Executor::new(&mut self.model, direct);
+            executor.decode_from_hidden_state(&hidden_state_t, cache)
         })
     }
 
