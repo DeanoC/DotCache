@@ -15686,93 +15686,16 @@ impl GatedDeltaNet {
         let mut profile = RuntimeProfile::default();
 
         if use_hip_combined_linear_decode(device, seq_len) {
-            let kv_append_start = profile_start(device)?;
-            let target_dtype = mixed_qkv.tensor().dtype();
-            let weights = self.conv1d_weight_squeezed()?.contiguous()?;
-            let state_len = self.conv_kernel_size.saturating_sub(1);
-            let prev_conv_state = match &self.conv_state {
-                Some(prev_state) => prev_state.clone_tensor_as(target_dtype)?,
-                None => backend
-                    .zeros_tensor(
-                        mixed_qkv.device(),
-                        target_dtype,
-                        &[mixed_qkv.tensor().dim(0)?, mixed_qkv.tensor().dim(1)?, state_len],
-                    )?,
-            };
-            let a = if a.tensor().dtype() == target_dtype {
-                a.clone_tensor()
-            } else {
-                a.tensor().to_dtype(target_dtype)?
-            };
-            let beta_raw = if beta_raw.tensor().dtype() == target_dtype {
-                beta_raw.clone_tensor()
-            } else {
-                beta_raw.tensor().to_dtype(target_dtype)?
-            };
-            let a_beta_raw = backend.concat_last_dim(
-                &backend.tensor_to_buffer(a)?,
-                &backend.tensor_to_buffer(beta_raw)?,
-            )?;
-            let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
-            let initial_state = match &self.recurrent_state {
-                Some(state) => {
-                    let state = state.clone_tensor();
-                    let state = if state.rank() == 3 {
-                        state.reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
-                    } else {
-                        state
-                    };
-                    if state.dtype() == DType::F32 {
-                        state
-                    } else {
-                        state.to_dtype(DType::F32)?
-                    }
-                }
-                None => backend.zeros_tensor(
-                    device,
-                    DType::F32,
-                    &[batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim],
-                )?,
-            };
-            let head_repeat = self.num_v_heads / self.num_k_heads;
-            let fused = backend.linear_decode_step(
-                &mixed_qkv.contiguous()?,
-                &prev_conv_state,
-                &weights,
-                &a_beta_raw,
-                &dt_bias,
-                &a_log_exp,
-                &initial_state,
-                self.num_v_heads,
-                self.head_k_dim,
-                self.head_v_dim,
-                self.conv_kernel_size,
-                head_repeat,
-            )?;
-            self.update_depthwise_conv_state_from_raw(mixed_qkv.tensor())?;
-            let (core_attn_out, recurrent_state) = backend.unpack_linear_decode_output(
-                &fused,
-                batch_size,
-                seq_len,
-                self.value_dim,
-                self.num_v_heads,
-                self.head_k_dim,
-                self.head_v_dim,
-            )?;
-            let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
-            profile.linear_conv_millis += kv_append_elapsed;
-            profile.kv_append_write_millis += kv_append_elapsed;
-            profile.linear_recurrent_loop_millis += kv_append_elapsed;
-
-            let output_start = profile_start(device)?;
-            let output = self.finalize_linear_output_buffer(
+            let (output, recurrent_state, decode_profile) = self.linear_decode_projected(
                 hidden_dtype,
                 batch_size,
                 seq_len,
+                mixed_qkv,
                 z,
-                &core_attn_out,
+                beta_raw,
+                a,
             )?;
-            profile.output_projection_millis += profile_elapsed(output_start, device)?;
+            profile.add_assign(&decode_profile);
             profile.linear_attention_millis += profile_elapsed(total_start, device)?;
             return Ok((output, recurrent_state, profile));
         }
@@ -15899,6 +15822,108 @@ impl GatedDeltaNet {
         Ok((output, backend.tensor_to_buffer(recurrent_state)?, profile))
     }
 
+    fn linear_decode_projected(
+        &mut self,
+        hidden_dtype: DType,
+        batch_size: usize,
+        seq_len: usize,
+        mixed_qkv: &StateBuffer,
+        z: &StateBuffer,
+        beta_raw: &StateBuffer,
+        a: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, RuntimeProfile)> {
+        let device = mixed_qkv.device();
+        let backend = backend_buffer_api::for_device(device);
+        let mut profile = RuntimeProfile::default();
+        let kv_append_start = profile_start(device)?;
+        let target_dtype = mixed_qkv.tensor().dtype();
+        let weights = self.conv1d_weight_squeezed()?.contiguous()?;
+        let state_len = self.conv_kernel_size.saturating_sub(1);
+        let prev_conv_state = match &self.conv_state {
+            Some(prev_state) => prev_state.clone_tensor_as(target_dtype)?,
+            None => backend.zeros_tensor(
+                mixed_qkv.device(),
+                target_dtype,
+                &[mixed_qkv.tensor().dim(0)?, mixed_qkv.tensor().dim(1)?, state_len],
+            )?,
+        };
+        let a = if a.tensor().dtype() == target_dtype {
+            a.clone_tensor()
+        } else {
+            a.tensor().to_dtype(target_dtype)?
+        };
+        let beta_raw = if beta_raw.tensor().dtype() == target_dtype {
+            beta_raw.clone_tensor()
+        } else {
+            beta_raw.tensor().to_dtype(target_dtype)?
+        };
+        let a_beta_raw = backend.concat_last_dim(
+            &backend.tensor_to_buffer(a)?,
+            &backend.tensor_to_buffer(beta_raw)?,
+        )?;
+        let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+        let initial_state = match &self.recurrent_state {
+            Some(state) => {
+                let state = state.clone_tensor();
+                let state = if state.rank() == 3 {
+                    state.reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                } else {
+                    state
+                };
+                if state.dtype() == DType::F32 {
+                    state
+                } else {
+                    state.to_dtype(DType::F32)?
+                }
+            }
+            None => backend.zeros_tensor(
+                device,
+                DType::F32,
+                &[batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim],
+            )?,
+        };
+        let head_repeat = self.num_v_heads / self.num_k_heads;
+        let fused = backend.linear_decode_step(
+            &mixed_qkv.contiguous()?,
+            &prev_conv_state,
+            &weights,
+            &a_beta_raw,
+            &dt_bias,
+            &a_log_exp,
+            &initial_state,
+            self.num_v_heads,
+            self.head_k_dim,
+            self.head_v_dim,
+            self.conv_kernel_size,
+            head_repeat,
+        )?;
+        self.update_depthwise_conv_state_from_raw(mixed_qkv.tensor())?;
+        let (core_attn_out, recurrent_state) = backend.unpack_linear_decode_output(
+            &fused,
+            batch_size,
+            seq_len,
+            self.value_dim,
+            self.num_v_heads,
+            self.head_k_dim,
+            self.head_v_dim,
+        )?;
+        let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
+        profile.linear_conv_millis += kv_append_elapsed;
+        profile.kv_append_write_millis += kv_append_elapsed;
+        profile.linear_recurrent_loop_millis += kv_append_elapsed;
+
+        let output_start = profile_start(device)?;
+        let output = self.finalize_linear_output_buffer(
+            hidden_dtype,
+            batch_size,
+            seq_len,
+            z,
+            &core_attn_out,
+        )?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        Ok((output, recurrent_state, profile))
+    }
+
     fn forward_profiled(
         &mut self,
         hidden_states: &Tensor,
@@ -15935,8 +15960,6 @@ impl GatedDeltaNet {
         }
         let total_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
-        let compute_dtype =
-            linear_attention_compute_dtype(hidden_states.device(), hidden_states.tensor().dtype());
         let (batch_size, seq_len, _) = hidden_states.dims3()?;
 
         let qkv_start = profile_start(device)?;
@@ -15955,20 +15978,20 @@ impl GatedDeltaNet {
         let a = self.in_proj_a.forward_buffer(hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
-        let (output, recurrent_state, linear_profile) =
-            self.forward_profiled_with_state_projected(
-                hidden_states.tensor().dtype(),
-                batch_size,
-                seq_len,
-                &mixed_qkv,
-                &z,
-                &beta_raw,
-                &a,
-                compute_dtype,
-            )?;
+        if !use_hip_combined_linear_decode(device, seq_len) {
+            candle::bail!("direct-hip-v1 linear decode currently requires the HIP combined decode path");
+        }
+        let (output, recurrent_state, linear_profile) = self.linear_decode_projected(
+            hidden_states.tensor().dtype(),
+            batch_size,
+            seq_len,
+            &mixed_qkv,
+            &z,
+            &beta_raw,
+            &a,
+        )?;
         profile.add_assign(&linear_profile);
-        profile.linear_attention_millis +=
-            profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
+        profile.linear_attention_millis += profile_elapsed(total_start, device)?;
         self.recurrent_state = Some(recurrent_state);
         Ok((output, profile))
     }
