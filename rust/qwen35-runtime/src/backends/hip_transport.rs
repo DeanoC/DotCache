@@ -154,6 +154,7 @@ pub(crate) struct HipDeviceBuffer {
 #[derive(Debug, Clone)]
 enum HipDeviceStorage {
     CandleTensor(Tensor),
+    OwnedDeviceBuffer(HipOwnedDeviceBuffer),
     MappedHostBuffer(HipMappedHostBuffer),
     HostBuffer(HipHostBuffer),
     PendingHostUpload(HipHostBuffer),
@@ -191,6 +192,7 @@ impl HipDeviceStorage {
     fn is_contiguous(&self) -> bool {
         match self {
             Self::CandleTensor(tensor) => tensor.is_contiguous(),
+            Self::OwnedDeviceBuffer(_) => true,
             Self::MappedHostBuffer(_) => true,
             Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => true,
@@ -201,6 +203,7 @@ impl HipDeviceStorage {
         match self {
             Self::MappedHostBuffer(buffer) => Some(&buffer.buffer),
             Self::HostBuffer(buffer) | Self::PendingHostUpload(buffer) => Some(buffer),
+            Self::OwnedDeviceBuffer(_) => None,
             Self::CandleTensor(_) => None,
         }
     }
@@ -208,6 +211,7 @@ impl HipDeviceStorage {
     fn is_materialized(&self) -> bool {
         match self {
             Self::CandleTensor(_) => true,
+            Self::OwnedDeviceBuffer(_) => true,
             Self::MappedHostBuffer(_) => true,
             Self::HostBuffer(_) => true,
             Self::PendingHostUpload(_) => false,
@@ -217,6 +221,7 @@ impl HipDeviceStorage {
     fn materialize_tensor(&self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor.clone()),
+            Self::OwnedDeviceBuffer(buffer) => buffer.download_to_host_buffer()?.upload_to_tensor(),
             Self::MappedHostBuffer(buffer) => buffer.clone().into_host_buffer().upload_to_tensor(),
             Self::HostBuffer(buffer) => buffer.clone().upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.clone().upload_to_tensor(),
@@ -226,10 +231,89 @@ impl HipDeviceStorage {
     fn into_tensor(self) -> Result<Tensor> {
         match self {
             Self::CandleTensor(tensor) => Ok(tensor),
+            Self::OwnedDeviceBuffer(buffer) => buffer.download_to_host_buffer()?.upload_to_tensor(),
             Self::MappedHostBuffer(buffer) => buffer.into_host_buffer().upload_to_tensor(),
             Self::HostBuffer(buffer) => buffer.upload_to_tensor(),
             Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct RegisteredHipDeviceAllocation {
+    device_ordinal: usize,
+    device_ptr: usize,
+}
+
+impl RegisteredHipDeviceAllocation {
+    fn device_ptr(&self) -> *const c_void {
+        self.device_ptr as *const c_void
+    }
+}
+
+impl Drop for RegisteredHipDeviceAllocation {
+    fn drop(&mut self) {
+        hip::free_device_bytes(self.device_ordinal, self.device_ptr as *mut c_void);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HipOwnedDeviceBuffer {
+    len_bytes: usize,
+    shape: Vec<usize>,
+    dtype: DType,
+    device: Device,
+    allocation: Arc<RegisteredHipDeviceAllocation>,
+}
+
+impl HipOwnedDeviceBuffer {
+    fn allocate(shape: Vec<usize>, dtype: DType, device: &Device) -> Result<Self> {
+        if !device.is_hip() {
+            candle_core::bail!("owned HIP device buffer requires HIP device");
+        }
+        let len_bytes = HipNativeBuffer::byte_len(&shape, dtype);
+        let ptr = hip::alloc_device_bytes(device.as_hip_device()?.ordinal(), len_bytes)?;
+        Ok(Self {
+            len_bytes,
+            shape,
+            dtype,
+            device: device.clone(),
+            allocation: Arc::new(RegisteredHipDeviceAllocation {
+                device_ordinal: device.as_hip_device()?.ordinal(),
+                device_ptr: ptr as usize,
+            }),
+        })
+    }
+
+    fn from_host_buffer(buffer: HipHostBuffer) -> Result<Self> {
+        let out = Self::allocate(buffer.shape.clone(), buffer.dtype, &buffer.device)?;
+        hip::copy_host_to_device(
+            out.device.as_hip_device()?.ordinal(),
+            out.raw_device_ptr() as *mut c_void,
+            buffer.bytes.as_ptr() as *const c_void,
+            out.len_bytes,
+        )?;
+        Ok(out)
+    }
+
+    fn raw_device_ptr(&self) -> *const c_void {
+        self.allocation.device_ptr()
+    }
+
+    fn download_to_host_buffer(&self) -> Result<HipHostBuffer> {
+        let mut bytes = vec![0u8; self.len_bytes];
+        hip::copy_device_to_host(
+            self.device.as_hip_device()?.ordinal(),
+            bytes.as_mut_ptr() as *mut c_void,
+            self.raw_device_ptr(),
+            self.len_bytes,
+        )?;
+        Ok(HipHostBuffer {
+            bytes: bytes.into(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            device: self.device.clone(),
+        })
     }
 }
 
@@ -1152,6 +1236,16 @@ impl HipDeviceBuffer {
         }
     }
 
+    fn from_owned_device_buffer(buffer: HipOwnedDeviceBuffer) -> Self {
+        Self {
+            shape: buffer.shape.clone(),
+            dtype: buffer.dtype,
+            device: buffer.device.clone(),
+            storage: HipDeviceStorage::OwnedDeviceBuffer(buffer),
+            view_ops: Vec::new(),
+        }
+    }
+
     fn preserves_pending_upload(&self) -> bool {
         matches!(self.storage, HipDeviceStorage::PendingHostUpload(_))
     }
@@ -1214,6 +1308,7 @@ impl HipDeviceBuffer {
         let buffer = match &self.storage {
             HipDeviceStorage::MappedHostBuffer(buffer) => &buffer.buffer,
             HipDeviceStorage::HostBuffer(buffer) | HipDeviceStorage::PendingHostUpload(buffer) => buffer,
+            HipDeviceStorage::OwnedDeviceBuffer(_) => return Ok(None),
             HipDeviceStorage::CandleTensor(_) => return Ok(None),
         };
         let mut native = HipNativeBuffer {
@@ -1315,26 +1410,38 @@ impl HipDeviceBuffer {
     ) -> Result<Option<(usize, DType, Vec<usize>, Vec<i32>, *const c_void)>> {
         use candle_core::Storage;
 
-        let HipDeviceStorage::CandleTensor(tensor) = &self.storage else {
-            return Ok(None);
-        };
-        let ordinal = match tensor.device().location() {
-            DeviceLocation::Hip { gpu_id } => gpu_id,
+        let (ordinal, dtype, mut offset, mut shape, mut strides, base_ptr) = match &self.storage {
+            HipDeviceStorage::CandleTensor(tensor) => {
+                let ordinal = match tensor.device().location() {
+                    DeviceLocation::Hip { gpu_id } => gpu_id,
+                    _ => return Ok(None),
+                };
+                let (storage, layout) = tensor.storage_and_layout();
+                let Storage::Hip(storage) = &*storage else {
+                    return Ok(None);
+                };
+                if !layout.is_contiguous() {
+                    return Ok(None);
+                }
+                (
+                    ordinal,
+                    self.dtype,
+                    layout.start_offset(),
+                    layout.shape().dims().to_vec(),
+                    Self::standard_contiguous_strides(layout.shape().dims()),
+                    storage.raw_device_ptr_with_offset(0)? as *const c_void,
+                )
+            }
+            HipDeviceStorage::OwnedDeviceBuffer(buffer) => (
+                buffer.device.as_hip_device()?.ordinal(),
+                buffer.dtype,
+                0usize,
+                buffer.shape.clone(),
+                Self::standard_contiguous_strides(&buffer.shape),
+                buffer.raw_device_ptr(),
+            ),
             _ => return Ok(None),
         };
-        let (storage, layout) = tensor.storage_and_layout();
-        let Storage::Hip(storage) = &*storage else {
-            return Ok(None);
-        };
-        if !layout.is_contiguous() {
-            return Ok(None);
-        }
-        if !layout.is_contiguous() {
-            return Ok(None);
-        }
-        let mut offset = layout.start_offset();
-        let mut shape = layout.shape().dims().to_vec();
-        let mut strides = Self::standard_contiguous_strides(&shape);
         for op in &self.view_ops {
             match op {
                 HipDeviceViewOp::Narrow { dim, start, len } => {
@@ -1401,10 +1508,10 @@ impl HipDeviceBuffer {
             .collect::<Result<Vec<_>>>()?;
         Ok(Some((
             ordinal,
-            self.dtype,
+            dtype,
             shape,
             strides,
-            storage.raw_device_ptr_with_offset(offset)? as *const c_void,
+            (base_ptr as usize + offset.saturating_mul(dtype.size_in_bytes())) as *const c_void,
         )))
     }
 
@@ -1420,6 +1527,91 @@ impl HipDeviceBuffer {
             dtype,
             device: device.clone(),
         })
+    }
+
+    fn from_raw_hip_device_output(
+        shape: Vec<usize>,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        Ok(Self::from_owned_device_buffer(HipOwnedDeviceBuffer::allocate(
+            shape, dtype, device,
+        )?))
+    }
+
+    fn unary_candle_view_device_output(
+        &self,
+        output_dtype: DType,
+        op: i32,
+        scalar: f32,
+    ) -> Result<Option<Self>> {
+        let Some((ordinal, input_dtype, shape, in_strides, input_ptr)) = self.candle_view_launch_spec()? else {
+            return Ok(None);
+        };
+        let total_elems = HipNativeBuffer::elem_count(&shape);
+        let out_dims = shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let out = Self::from_raw_hip_device_output(shape.clone(), output_dtype, &self.device)?;
+        let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+            return Ok(None);
+        };
+        let dtype_code = hip::dtype_code(input_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_unary_view(
+                op,
+                dtype_code,
+                ordinal,
+                i32::try_from(shape.len()).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                total_elems,
+                scalar,
+                input_ptr,
+                in_strides.as_ptr(),
+                out_dims.as_ptr(),
+                buffer.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error("hip-unary-view", status));
+        }
+        Ok(Some(out))
+    }
+
+    fn cast_candle_view_device_output(&self, output_dtype: DType) -> Result<Option<Self>> {
+        let Some((ordinal, input_dtype, shape, in_strides, input_ptr)) = self.candle_view_launch_spec()? else {
+            return Ok(None);
+        };
+        let total_elems = HipNativeBuffer::elem_count(&shape);
+        let out_dims = shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let out = Self::from_raw_hip_device_output(shape.clone(), output_dtype, &self.device)?;
+        let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+            return Ok(None);
+        };
+        let input_dtype_code = hip::dtype_code(input_dtype)?;
+        let output_dtype_code = hip::dtype_code(output_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_cast_view(
+                input_dtype_code,
+                output_dtype_code,
+                ordinal,
+                i32::try_from(shape.len()).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                total_elems,
+                input_ptr,
+                in_strides.as_ptr(),
+                out_dims.as_ptr(),
+                buffer.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error("hip-cast-view", status));
+        }
+        Ok(Some(out))
     }
 
     fn unary_candle_view_host_output(
@@ -1882,6 +2074,9 @@ impl HipDeviceBuffer {
         if self.dtype() == dtype {
             return Ok(self.clone());
         }
+        if let Some(out) = self.cast_candle_view_device_output(dtype)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.cast(dtype)?));
         }
@@ -1898,6 +2093,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn exp(&self) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 0, 0.0)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.exp()?));
         }
@@ -1914,6 +2112,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn log(&self) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 3, 0.0)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.log()?));
         }
@@ -1930,6 +2131,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn sigmoid(&self) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 2, 0.0)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.sigmoid()?));
         }
@@ -2060,6 +2264,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn mul_scalar(&self, value: f64) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 5, value as f32)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(
                 self,
@@ -2079,6 +2286,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn add_scalar(&self, value: f64) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 6, value as f32)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(
                 self,
@@ -2098,6 +2308,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn recip(&self) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 1, 0.0)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.recip()?));
         }
@@ -2114,6 +2327,9 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn sqrt(&self) -> Result<Self> {
+        if let Some(out) = self.unary_candle_view_device_output(self.dtype, 4, 0.0)? {
+            return Ok(out);
+        }
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.sqrt()?));
         }

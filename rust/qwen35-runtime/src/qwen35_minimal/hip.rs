@@ -29,16 +29,7 @@ pub fn hip_error(op: &str, status: c_int) -> Error {
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
-pub fn register_host_mapping_for_device(
-    device_ordinal: usize,
-    ptr: *const c_void,
-    len_bytes: usize,
-) -> Result<*const c_void> {
-    if ptr.is_null() || len_bytes == 0 {
-        return Err(Error::Hip(
-            "hip host registration requires a non-null pointer and non-zero length".into(),
-        ));
-    }
+fn with_device<T>(device_ordinal: usize, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let device_ordinal = c_int::try_from(device_ordinal).map_err(|_| {
         Error::Hip(format!("hip device ordinal {device_ordinal} does not fit c_int").into())
     })?;
@@ -55,33 +46,43 @@ pub fn register_host_mapping_for_device(
         }
         restore_device = Some(previous_device);
     }
-    let status = unsafe { hipHostRegister(ptr as *mut c_void, len_bytes, HIP_HOST_REGISTER_MAPPED) };
-    if status != 0 {
-        if let Some(previous_device) = restore_device {
-            unsafe {
-                let _ = hipSetDevice(previous_device);
-            }
-        }
-        return Err(hip_error("hipHostRegister", status));
-    }
-    let mut device_ptr = std::ptr::null_mut();
-    let status = unsafe { hipHostGetDevicePointer(&mut device_ptr, ptr as *mut c_void, 0) };
-    if status != 0 {
-        unsafe {
-            let _ = hipHostUnregister(ptr as *mut c_void);
-        }
-        return Err(hip_error("hipHostGetDevicePointer", status));
-    }
+    let result = f();
     if let Some(previous_device) = restore_device {
         let status = unsafe { hipSetDevice(previous_device) };
+        if status != 0 {
+            return Err(hip_error("hipSetDevice", status));
+        }
+    }
+    result
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub fn register_host_mapping_for_device(
+    device_ordinal: usize,
+    ptr: *const c_void,
+    len_bytes: usize,
+) -> Result<*const c_void> {
+    if ptr.is_null() || len_bytes == 0 {
+        return Err(Error::Hip(
+            "hip host registration requires a non-null pointer and non-zero length".into(),
+        ));
+    }
+    with_device(device_ordinal, || {
+        let status =
+            unsafe { hipHostRegister(ptr as *mut c_void, len_bytes, HIP_HOST_REGISTER_MAPPED) };
+        if status != 0 {
+            return Err(hip_error("hipHostRegister", status));
+        }
+        let mut device_ptr = std::ptr::null_mut();
+        let status = unsafe { hipHostGetDevicePointer(&mut device_ptr, ptr as *mut c_void, 0) };
         if status != 0 {
             unsafe {
                 let _ = hipHostUnregister(ptr as *mut c_void);
             }
-            return Err(hip_error("hipSetDevice", status));
+            return Err(hip_error("hipHostGetDevicePointer", status));
         }
-    }
-    Ok(device_ptr as *const c_void)
+        Ok(device_ptr as *const c_void)
+    })
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -95,7 +96,78 @@ pub fn unregister_host_mapping(ptr: *const c_void) {
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+pub fn alloc_device_bytes(device_ordinal: usize, len_bytes: usize) -> Result<*mut c_void> {
+    if len_bytes == 0 {
+        return Err(Error::Hip("hip device allocation requires non-zero length".into()));
+    }
+    with_device(device_ordinal, || {
+        let mut ptr = std::ptr::null_mut();
+        let status = unsafe { hipMalloc(&mut ptr, len_bytes) };
+        if status != 0 {
+            return Err(hip_error("hipMalloc", status));
+        }
+        Ok(ptr)
+    })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub fn free_device_bytes(device_ordinal: usize, ptr: *mut c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    let _ = with_device(device_ordinal, || {
+        let status = unsafe { hipFree(ptr) };
+        if status != 0 {
+            return Err(hip_error("hipFree", status));
+        }
+        Ok(())
+    });
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub fn copy_host_to_device(
+    device_ordinal: usize,
+    dst: *mut c_void,
+    src: *const c_void,
+    len_bytes: usize,
+) -> Result<()> {
+    if dst.is_null() || src.is_null() || len_bytes == 0 {
+        return Err(Error::Hip("hipMemcpy H2D requires valid pointers and non-zero length".into()));
+    }
+    with_device(device_ordinal, || {
+        let status = unsafe { hipMemcpy(dst, src, len_bytes, HIP_MEMCPY_HOST_TO_DEVICE) };
+        if status != 0 {
+            return Err(hip_error("hipMemcpyHostToDevice", status));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+pub fn copy_device_to_host(
+    device_ordinal: usize,
+    dst: *mut c_void,
+    src: *const c_void,
+    len_bytes: usize,
+) -> Result<()> {
+    if dst.is_null() || src.is_null() || len_bytes == 0 {
+        return Err(Error::Hip("hipMemcpy D2H requires valid pointers and non-zero length".into()));
+    }
+    with_device(device_ordinal, || {
+        let status = unsafe { hipMemcpy(dst, src, len_bytes, HIP_MEMCPY_DEVICE_TO_HOST) };
+        if status != 0 {
+            return Err(hip_error("hipMemcpyDeviceToHost", status));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 const HIP_HOST_REGISTER_MAPPED: c_uint = 0x2;
+#[cfg(feature = "qwen35-minimal-hip")]
+const HIP_MEMCPY_HOST_TO_DEVICE: c_int = 1;
+#[cfg(feature = "qwen35-minimal-hip")]
+const HIP_MEMCPY_DEVICE_TO_HOST: c_int = 2;
 
 #[cfg(feature = "qwen35-minimal-hip")]
 #[link(name = "amdhip64")]
@@ -109,6 +181,9 @@ unsafe extern "C" {
     ) -> c_int;
     fn hipGetDevice(device: *mut c_int) -> c_int;
     fn hipSetDevice(device: c_int) -> c_int;
+    fn hipMalloc(ptr: *mut *mut c_void, size: usize) -> c_int;
+    fn hipFree(ptr: *mut c_void) -> c_int;
+    fn hipMemcpy(dst: *mut c_void, src: *const c_void, size: usize, kind: c_int) -> c_int;
 }
 
 pub mod ffi {
