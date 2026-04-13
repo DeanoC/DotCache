@@ -340,7 +340,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_pre_norm_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax: Option<[usize; 3]>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle: Option<f32>,
         pytorch_decode_first_layer_linear_normalized_hidden_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_norm_max_delta: Option<f32>,
         pytorch_decode_first_layer_token_mixer_max_delta: Option<f32>,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta: Option<f32>,
@@ -649,6 +660,61 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn max_vec3_delta_with_argmax(
+        lhs: &[Vec<Vec<f32>>],
+        rhs: &[Vec<Vec<f32>>],
+    ) -> Result<(f32, [usize; 3], f32, f32)> {
+        if lhs.len() != rhs.len()
+            || lhs
+                .iter()
+                .zip(rhs.iter())
+                .any(|(a, b)| a.len() != b.len()
+                    || a.iter().zip(b.iter()).any(|(x, y)| x.len() != y.len()))
+        {
+            return Err(RuntimeError::External {
+                context: "vec3 delta",
+                message: "lhs/rhs shape mismatch".to_string(),
+            });
+        }
+        let mut best = (-1.0f32, [0usize, 0usize, 0usize], 0.0f32, 0.0f32);
+        for (i, (lhs_outer, rhs_outer)) in lhs.iter().zip(rhs.iter()).enumerate() {
+            for (j, (lhs_inner, rhs_inner)) in lhs_outer.iter().zip(rhs_outer.iter()).enumerate() {
+                for (k, (lhs_value, rhs_value)) in lhs_inner.iter().zip(rhs_inner.iter()).enumerate()
+                {
+                    let delta = (*lhs_value - *rhs_value).abs();
+                    if delta > best.0 {
+                        best = (delta, [i, j, k], *lhs_value, *rhs_value);
+                    }
+                }
+            }
+        }
+        Ok(best)
+    }
+
+    fn flattened_decode_focus_head(
+        hidden: &[Vec<Vec<f32>>],
+        argmax: [usize; 3],
+        head_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let [_batch_idx, _token_idx, head_idx] = argmax;
+        let flat = hidden
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        let start = head_idx * head_dim;
+        let end = start + head_dim;
+        if end > flat.len() {
+            return Err(RuntimeError::External {
+                context: "decode focus head",
+                message: format!(
+                    "head slice [{start}:{end}) out of bounds for flattened hidden width {}",
+                    flat.len()
+                ),
+            });
+        }
+        Ok(flat[start..end].to_vec())
     }
 
     fn hidden_vec3_stats(
@@ -1980,7 +2046,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_pre_norm_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
         pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta,
         pytorch_decode_first_layer_linear_norm_max_delta,
         pytorch_decode_first_layer_token_mixer_max_delta,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
@@ -2242,6 +2319,383 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             layer0_linear_core_trace.pre_gated_norm_output.tensor(),
                             oracle,
                         )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(argmax)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, _argmax, runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(runtime)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, _argmax, _runtime, oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let delta = runtime_focus_head
+                            .iter()
+                            .zip(oracle_focus_head.iter())
+                            .map(|(lhs, rhs)| (lhs - rhs).abs())
+                            .fold(0.0f32, f32::max);
+                        Ok(delta)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (mean_square, _min_abs, _max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(mean_square)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (mean_square, _min_abs, _max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(mean_square)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (_mean_square, min_abs, _max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(min_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (_mean_square, min_abs, _max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(min_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (_mean_square, _min_abs, max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(max_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (_mean_square, _min_abs, max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(max_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
                         let (_, _, runtime_normalized) = hidden_vec3_stats_flattened_decode(
                             &runtime_hidden,
                             num_heads,
@@ -2265,6 +2719,61 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             layer0_linear_core_trace.post_gated_norm_output.tensor(),
                             oracle,
                         )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let pre_norm_oracle = pytorch_oracle
+                            .decode_first_layer_linear_pre_norm_output
+                            .as_ref()
+                            .ok_or_else(|| RuntimeError::External {
+                                context: "decode linear pre norm oracle",
+                                message: "missing decode pre-norm oracle tensor".to_string(),
+                            })?;
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            pre_norm_oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            pre_norm_oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_norm = tensor_to_vec3_like(
+                            layer0_linear_core_trace.post_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_norm, argmax, head_dim)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let delta = runtime_focus_head
+                            .iter()
+                            .zip(oracle_focus_head.iter())
+                            .map(|(lhs, rhs)| (lhs - rhs).abs())
+                            .fold(0.0f32, f32::max);
+                        Ok(delta)
                     })
                     .transpose()?,
                 pytorch_oracle
@@ -2296,10 +2805,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .transpose()?,
             )
         } else {
-            (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None,
+            )
         }
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None,
+        )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
         trace_cpu_oracle_cache_delta("prefill", oracle_cache, &device_cache)?;
@@ -2655,7 +3172,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_pre_norm_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
         pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta,
         pytorch_decode_first_layer_linear_norm_max_delta,
         pytorch_decode_first_layer_token_mixer_max_delta,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
