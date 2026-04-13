@@ -2275,6 +2275,27 @@ impl GatedDeltaNet {
             &core_attn_out,
             &[batch_size, seq_len, self.value_dim],
         )?;
+        let pre_gated_norm_heads = backend.reshape_tensor_to_buffer(
+            &core_attn_out,
+            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+        )?;
+        let pre_gated_norm_mean_square = backend.tensor_to_buffer(
+            (pre_gated_norm_heads
+                .tensor()
+                .to_dtype(DType::F32)?
+                .sqr()?
+                .sum_keepdim(D::Minus1)?
+                / self.head_v_dim as f64)?
+            .reshape((batch_size, seq_len, self.num_v_heads))?,
+        )?;
+        let pre_gated_norm_rsqrt = backend.tensor_to_buffer(
+            pre_gated_norm_mean_square
+                .tensor()
+                .broadcast_add(&Tensor::new(self.norm.eps() as f32, device)?)?
+                .sqrt()?
+                .recip()?
+                .reshape((batch_size, seq_len, self.num_v_heads))?,
+        )?;
         let gated_norm_gate_input = backend.reshape_tensor_to_buffer(
             z.tensor(),
             &[batch_size, seq_len, self.value_dim],
@@ -2334,6 +2355,8 @@ impl GatedDeltaNet {
             LinearAttentionCoreTrace {
                 post_conv_mixed_qkv,
                 pre_gated_norm_output,
+                pre_gated_norm_mean_square,
+                pre_gated_norm_rsqrt,
                 gated_norm_gate_input,
                 gated_norm_weight,
                 gated_norm_weighted_hidden,

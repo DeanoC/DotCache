@@ -355,6 +355,8 @@ pub struct LinearAttentionProjectionTrace {
 pub struct LinearAttentionCoreTrace {
     pub post_conv_mixed_qkv: StateBuffer,
     pub pre_gated_norm_output: StateBuffer,
+    pub pre_gated_norm_mean_square: StateBuffer,
+    pub pre_gated_norm_rsqrt: StateBuffer,
     pub gated_norm_gate_input: StateBuffer,
     pub gated_norm_weight: StateBuffer,
     pub gated_norm_weighted_hidden: StateBuffer,
