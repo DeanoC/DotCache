@@ -2250,6 +2250,7 @@ impl GatedDeltaNet {
             compute_dtype,
             seq_len == 1 || use_short_recurrent_prefill,
         )?;
+        let prepared_value_focus_head = backend.tensor_to_buffer(value.i((0, 2, 6))?)?;
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let (core_attn_out, recurrent_state, linear_profile) =
@@ -2354,6 +2355,7 @@ impl GatedDeltaNet {
         Ok((
             LinearAttentionCoreTrace {
                 post_conv_mixed_qkv,
+                prepared_value_focus_head,
                 pre_gated_norm_output,
                 pre_gated_norm_mean_square,
                 pre_gated_norm_rsqrt,

@@ -229,6 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_b_max_delta: Option<f32>,
         pytorch_first_layer_linear_a_max_delta: Option<f32>,
         pytorch_first_layer_linear_post_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
@@ -274,6 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_b_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_post_conv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_prepared_value_focus_head_output: Vec<f32>,
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_rsqrt: Vec<Vec<Vec<f32>>>,
@@ -811,6 +813,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
@@ -874,6 +877,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_core_trace.post_conv_mixed_qkv.tensor(),
             &pytorch_oracle.first_layer_linear_post_conv_output,
         )?);
+        let pytorch_first_layer_linear_prepared_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                linear_core_trace.prepared_value_focus_head.tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?,
+        );
         let pytorch_first_layer_linear_pre_norm_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.pre_gated_norm_output.tensor(),
             &pytorch_oracle.first_layer_linear_pre_norm_output,
@@ -976,6 +985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_b_max_delta,
             pytorch_first_layer_linear_a_max_delta,
             pytorch_first_layer_linear_post_conv_max_delta,
+            pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
             pytorch_first_layer_linear_pre_norm_max_delta,
             pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
             pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
@@ -1001,7 +1011,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1333,6 +1343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,

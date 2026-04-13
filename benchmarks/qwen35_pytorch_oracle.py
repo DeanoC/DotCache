@@ -47,6 +47,7 @@ def main() -> None:
     first_layer_linear_b_output = None
     first_layer_linear_a_output = None
     first_layer_linear_post_conv_output = None
+    first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
     first_layer_linear_pre_norm_rsqrt = None
@@ -99,11 +100,21 @@ def main() -> None:
 
     def linear_conv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_post_conv_output
+        nonlocal first_layer_linear_prepared_value_focus_head_output
         tensor = capture_tensor(output)
         seq_len = input_ids.shape[1]
-        first_layer_linear_post_conv_output = (
-            tensor.transpose(1, 2)[:, -seq_len:, :].contiguous()
+        post_conv = tensor.transpose(1, 2)[:, -seq_len:, :].contiguous()
+        first_layer_linear_post_conv_output = post_conv
+        if first_layer_linear_z_output is None:
+            raise RuntimeError("linear_z hook must run before linear_conv hook")
+        value_dim = first_layer_linear_z_output.shape[-1]
+        key_dim = (post_conv.shape[-1] - value_dim) // 2
+        num_v_heads = 16
+        head_v_dim = value_dim // num_v_heads
+        value = post_conv[..., key_dim * 2 : key_dim * 2 + value_dim].reshape(
+            input_ids.shape[0], input_ids.shape[1], num_v_heads, head_v_dim
         )
+        first_layer_linear_prepared_value_focus_head_output = value[0, 2, 6].cpu()
 
     def linear_norm_hook(_module, _inputs, output):
         nonlocal first_layer_linear_norm_output
@@ -217,6 +228,7 @@ def main() -> None:
         or first_layer_linear_b_output is None
         or first_layer_linear_a_output is None
         or first_layer_linear_post_conv_output is None
+        or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
         or first_layer_linear_pre_norm_rsqrt is None
@@ -268,6 +280,7 @@ def main() -> None:
         "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
+        "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
         "first_layer_linear_pre_norm_rsqrt": first_layer_linear_pre_norm_rsqrt.tolist(),
