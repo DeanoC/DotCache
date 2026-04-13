@@ -5256,6 +5256,10 @@ pub(crate) fn linear_prefill_conv_pack(
     seq_len: usize,
     kernel_size: usize,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = linear_prefill_conv_pack_host_buffer(mixed_qkv, weights, seq_len, kernel_size)? {
+        return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
+    }
     let (batch_size, conv_dim, total_len) = mixed_qkv.dims3()?;
     mixed_qkv.apply_op2_no_bwd(
         weights,
@@ -5483,6 +5487,12 @@ pub(crate) fn linear_stateful_conv_hip(
     let mixed_qkv = mixed_qkv.contiguous()?;
     let prev_state = prev_state.contiguous()?;
     let weights = weights.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        linear_stateful_conv_host_buffer(&mixed_qkv, &prev_state, &weights, kernel_size)?
+    {
+        return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
+    }
     let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
     if state_batch != batch_size || state_conv_dim != conv_dim {
@@ -6956,6 +6966,12 @@ pub(crate) fn full_attention_prefill_megakernel(
             value_head_dim
         )
     }
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        full_attention_prefill_host_buffer(query, key, value, num_kv_groups, scale, seqlen_offset)?
+    {
+        return hip_tensor_from_host_bytes(query.device(), DType::F32, shape, output);
+    }
     query.apply_op3_no_bwd(
         key,
         value,
@@ -7561,6 +7577,10 @@ pub(crate) fn delta_state_scan(
     packed_scan: &Tensor,
     value: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = delta_state_scan_host_buffer(initial_state, packed_scan, value)? {
+        return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
+    }
     initial_state.apply_op3_no_bwd(packed_scan, value, &DeltaStateScan)
 }
 
@@ -7927,6 +7947,10 @@ pub(crate) fn delta_chunk_fused(
     packed_chunk: &Tensor,
     value: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = delta_chunk_fused_host_buffer(prev_state, packed_chunk, value)? {
+        return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
+    }
     prev_state.apply_op3_no_bwd(packed_chunk, value, &DeltaChunkFused)
 }
 
@@ -8397,6 +8421,12 @@ pub(crate) fn delta_recurrent_prefill(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_recurrent_prefill_host_buffer(initial_state, query, key, value, beta, g)?
+    {
+        return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
+    }
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaRecurrentPrefill)
 }
 
@@ -8672,6 +8702,12 @@ pub(crate) fn delta_chunk_single_prefill(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_chunk_single_prefill_host_buffer(initial_state, query, key, value, beta, g)?
+    {
+        return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
+    }
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkSinglePrefill)
 }
 
