@@ -5,6 +5,68 @@ use crate::PreparedQwen35DirectMetadata;
 use candle::Result;
 use candle_core as candle;
 
+fn execute_direct_decode_phase(
+    model: &mut TextModel,
+    metadata: &PreparedQwen35DirectMetadata,
+    expected_layer_type: &str,
+    start_layer_idx: usize,
+    end_layer_idx: usize,
+    xs: &StateBuffer,
+    seqlen_offset: usize,
+) -> Result<(StateBuffer, RuntimeProfile)> {
+    validate_text_model_direct_hip_metadata(model, metadata)?;
+    let mut profile = RuntimeProfile::default();
+    let mut xs = xs.clone();
+    let layer_count = model.layers.len();
+    for layer_idx in start_layer_idx..end_layer_idx {
+        let layer_meta = metadata.layers.get(layer_idx).ok_or_else(|| {
+            candle::Error::Msg(format!(
+                "direct-hip-v1 decode metadata missing {} layer {}",
+                expected_layer_type, layer_idx
+            ))
+        })?;
+        if layer_meta.layer_idx != layer_idx {
+            candle::bail!(
+                "direct-hip-v1 decode metadata index mismatch at {} layer {}: got {}",
+                expected_layer_type,
+                layer_idx,
+                layer_meta.layer_idx
+            );
+        }
+        if layer_meta.layer_type != expected_layer_type {
+            candle::bail!(
+                "direct-hip-v1 {} decode phase expected {} at layer {}, got {}",
+                expected_layer_type,
+                expected_layer_type,
+                layer_idx,
+                layer_meta.layer_type
+            );
+        }
+        let layer = model.layers.get_mut(layer_idx).ok_or_else(|| {
+            candle::Error::Msg(format!(
+                "direct-hip-v1 {} decode layer index {} out of range for {} layers",
+                expected_layer_type,
+                layer_idx,
+                layer_count
+            ))
+        })?;
+        if layer.layer_type() != layer_meta.layer_type {
+            candle::bail!(
+                "direct-hip-v1 {} decode layer type mismatch at layer {}: model={} metadata={}",
+                expected_layer_type,
+                layer_idx,
+                layer.layer_type(),
+                layer_meta.layer_type
+            );
+        }
+        let (next_xs, layer_profile) =
+            layer.forward_profiled_direct_decode_v1(layer_idx, &xs, seqlen_offset)?;
+        profile.add_assign(&layer_profile);
+        xs = next_xs;
+    }
+    Ok((xs, profile))
+}
+
 pub(super) fn text_model_forward_hidden_states_profiled_direct_hip_v1(
     model: &mut TextModel,
     metadata: &PreparedQwen35DirectMetadata,
@@ -80,51 +142,15 @@ pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1(
     xs: &StateBuffer,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
-    validate_text_model_direct_hip_metadata(model, metadata)?;
-    let mut profile = RuntimeProfile::default();
-    let mut xs = xs.clone();
-    let layer_count = model.layers.len();
-    for layer_idx in start_layer_idx..end_layer_idx {
-        let layer_meta = metadata.layers.get(layer_idx).ok_or_else(|| {
-            candle::Error::Msg(format!(
-                "direct-hip-v1 decode metadata missing linear layer {}",
-                layer_idx
-            ))
-        })?;
-        if layer_meta.layer_idx != layer_idx {
-            candle::bail!(
-                "direct-hip-v1 decode metadata index mismatch at linear layer {}: got {}",
-                layer_idx,
-                layer_meta.layer_idx
-            );
-        }
-        if layer_meta.layer_type != "linear_attention" {
-            candle::bail!(
-                "direct-hip-v1 linear decode phase expected linear_attention at layer {}, got {}",
-                layer_idx,
-                layer_meta.layer_type
-            );
-        }
-        let layer = model.layers.get_mut(layer_idx).ok_or_else(|| {
-            candle::Error::Msg(format!(
-                "direct-hip-v1 linear decode layer index {} out of range for {} layers",
-                layer_idx,
-                layer_count
-            ))
-        })?;
-        if layer.layer_type() != layer_meta.layer_type {
-            candle::bail!(
-                "direct-hip-v1 linear decode layer type mismatch at layer {}: model={} metadata={}",
-                layer_idx,
-                layer.layer_type(),
-                layer_meta.layer_type
-            );
-        }
-        let (next_xs, layer_profile) = layer.forward_profiled_direct_decode_v1(layer_idx, &xs, seqlen_offset)?;
-        profile.add_assign(&layer_profile);
-        xs = next_xs;
-    }
-    Ok((xs, profile))
+    execute_direct_decode_phase(
+        model,
+        metadata,
+        "linear_attention",
+        start_layer_idx,
+        end_layer_idx,
+        xs,
+        seqlen_offset,
+    )
 }
 
 pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1(
@@ -135,51 +161,15 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1(
     xs: &StateBuffer,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
-    validate_text_model_direct_hip_metadata(model, metadata)?;
-    let mut profile = RuntimeProfile::default();
-    let mut xs = xs.clone();
-    let layer_count = model.layers.len();
-    for layer_idx in start_layer_idx..end_layer_idx {
-        let layer_meta = metadata.layers.get(layer_idx).ok_or_else(|| {
-            candle::Error::Msg(format!(
-                "direct-hip-v1 decode metadata missing full-attention layer {}",
-                layer_idx
-            ))
-        })?;
-        if layer_meta.layer_idx != layer_idx {
-            candle::bail!(
-                "direct-hip-v1 decode metadata index mismatch at full-attention layer {}: got {}",
-                layer_idx,
-                layer_meta.layer_idx
-            );
-        }
-        if layer_meta.layer_type != "full_attention" {
-            candle::bail!(
-                "direct-hip-v1 full decode phase expected full_attention at layer {}, got {}",
-                layer_idx,
-                layer_meta.layer_type
-            );
-        }
-        let layer = model.layers.get_mut(layer_idx).ok_or_else(|| {
-            candle::Error::Msg(format!(
-                "direct-hip-v1 full decode layer index {} out of range for {} layers",
-                layer_idx,
-                layer_count
-            ))
-        })?;
-        if layer.layer_type() != layer_meta.layer_type {
-            candle::bail!(
-                "direct-hip-v1 full decode layer type mismatch at layer {}: model={} metadata={}",
-                layer_idx,
-                layer.layer_type(),
-                layer_meta.layer_type
-            );
-        }
-        let (next_xs, layer_profile) = layer.forward_profiled_direct_decode_v1(layer_idx, &xs, seqlen_offset)?;
-        profile.add_assign(&layer_profile);
-        xs = next_xs;
-    }
-    Ok((xs, profile))
+    execute_direct_decode_phase(
+        model,
+        metadata,
+        "full_attention",
+        start_layer_idx,
+        end_layer_idx,
+        xs,
+        seqlen_offset,
+    )
 }
 
 pub(super) fn text_model_finalize_direct_decode_hidden_hip_v1(
