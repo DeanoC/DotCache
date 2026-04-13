@@ -12,6 +12,21 @@ Short checkpoint:
 - prefill_max_delta: 4.710938
 - decode_max_delta: 5.808594
 
+Longer checkpoint:
+- generated_text: `Hello from DotCache!
+
+I!
+
+I'm from`
+- prompt_token_count: 4
+- generated_token_count: 8
+- device_load_ms: 3766.14
+- device_prefill_ms: 1792.66
+- device_decode_ms: 3178.06
+- prefill_max_delta: 4.710938
+- decode_max_delta: 6.414062
+
 Current notes:
 - native HIP runs still degrade the CPU reference path when CPU BF16 matmul is unsupported, but the example now continues instead of aborting.
 - direct package profiles were revved to invalidate stale cached manifests while the direct metadata contract was evolving.
+- current direct correctness gap is stable but non-trivial: prefill delta is ~4.71 and decode delta grew from ~5.81 to ~6.41 over 8 generated tokens.

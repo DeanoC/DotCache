@@ -1,0 +1,23 @@
+{
+  "model_id": "Qwen/Qwen3.5-0.8B",
+  "prompt": "Hello from DotCache",
+  "device": "hip:0",
+  "load_mode": "hip-direct",
+  "device_only": false,
+  "prompt_token_count": 4,
+  "generated_token_count": 8,
+  "max_new_tokens": 8,
+  "cpu_load_ms": 24262.221073,
+  "device_load_ms": 3766.1428,
+  "cpu_prefill_ms": 22133.409081,
+  "device_prefill_ms": 1792.664397,
+  "cpu_decode_ms": 121679.102631,
+  "device_decode_ms": 3178.05934,
+  "prefill_max_delta": 4.7109375,
+  "decode_max_delta": 6.4140625,
+  "generated_text": "Hello from DotCache!\n\nI!\n\nI'm from",
+  "hip_trace_candle_fallback": false,
+  "hip_print_transfers": false,
+  "full_prefill_megakernel_requested": false,
+  "hip_persistent_full_prefill_requested": false
+}
