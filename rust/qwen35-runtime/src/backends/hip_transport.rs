@@ -287,7 +287,7 @@ fn import_non_hip_tensor_bytes(tensor: &Tensor) -> Result<Option<Arc<[u8]>>> {
             candle_core::Storage::Cpu(storage) => {
                 HipNativeBuffer::cpu_storage_to_bytes(storage, tensor.dtype())
             }
-            _ => HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())?,
+            _ => HipNativeBuffer::tensor_to_host_bytes(tensor, tensor.dtype())?,
         })
     };
     if let Some(bytes) = try_extract(tensor)? {
