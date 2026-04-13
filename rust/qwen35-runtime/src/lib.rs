@@ -1,3 +1,4 @@
+#[cfg(feature = "qwen35-minimal")]
 mod backends;
 #[cfg(feature = "hf")]
 mod hf;
@@ -123,21 +124,25 @@ pub mod model_package {
 
 pub use model_package::ModelPackage;
 
+#[cfg(feature = "qwen35-minimal")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Qwen35BackendDescriptor {
     pub target: TargetSpec,
     pub optimized: bool,
 }
 
+#[cfg(feature = "qwen35-minimal")]
 pub trait Qwen35BackendOps {
     fn descriptor(&self) -> &Qwen35BackendDescriptor;
 }
 
+#[cfg(feature = "qwen35-minimal")]
 #[derive(Debug, Clone)]
 pub struct Qwen35Backend {
     descriptor: Qwen35BackendDescriptor,
 }
 
+#[cfg(feature = "qwen35-minimal")]
 impl Qwen35Backend {
     pub fn for_device(device: &candle_core::Device) -> Self {
         let target = TargetSpec::detect(device);
@@ -150,6 +155,7 @@ impl Qwen35Backend {
     }
 }
 
+#[cfg(feature = "qwen35-minimal")]
 impl Qwen35BackendOps for Qwen35Backend {
     fn descriptor(&self) -> &Qwen35BackendDescriptor {
         &self.descriptor
