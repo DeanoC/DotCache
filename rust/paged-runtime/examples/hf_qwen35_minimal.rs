@@ -1,10 +1,11 @@
 #[cfg(feature = "qwen35-minimal")]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::process::Command;
     use std::time::Instant;
 
     use candle_core::{DType, Device, IndexOp, Tensor};
     use dotcache_paged_runtime::{MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError};
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
 
     #[derive(Clone, Debug)]
@@ -231,6 +232,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         hip_persistent_full_prefill_requested: bool,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct PytorchOracleRecord {
+        load_ms: f64,
+        prefill_ms: f64,
+        decode_ms: f64,
+        prefill_last_token_logits: Vec<f32>,
+        decode_last_token_logits: Vec<Vec<f32>>,
+        generated_token_ids: Vec<u32>,
+    }
+
     fn env_flag_truthy(key: &str) -> bool {
         matches!(
             std::env::var(key).as_deref(),
@@ -311,6 +322,111 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn max_last_token_delta_vec(logits: &Tensor, rhs: &[f32]) -> Result<f32> {
+        let last_token = match logits.dims() {
+            [1, vocab] => {
+                if *vocab != rhs.len() {
+                    return Err(RuntimeError::DimensionMismatch {
+                        context: "last-token logit delta",
+                        expected: rhs.len(),
+                        got: *vocab,
+                    });
+                }
+                logits.clone()
+            }
+            [1, seq, vocab] => {
+                if *vocab != rhs.len() {
+                    return Err(RuntimeError::DimensionMismatch {
+                        context: "last-token logit delta",
+                        expected: rhs.len(),
+                        got: *vocab,
+                    });
+                }
+                logits.i((0, seq - 1))?
+            }
+            dims => {
+                return Err(RuntimeError::External {
+                    context: "last-token logit delta",
+                    message: format!("unexpected logits shape {dims:?}"),
+                });
+            }
+        };
+        let lhs = last_token.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn nan_count_slice(values: &[f32]) -> usize {
+        values.iter().filter(|value| value.is_nan()).count()
+    }
+
+    fn argmax_slice(values: &[f32]) -> Result<u32> {
+        let mut best: Option<(usize, f32)> = None;
+        let mut nan_count = 0usize;
+        for (index, value) in values.iter().copied().enumerate() {
+            if value.is_nan() {
+                nan_count += 1;
+                continue;
+            }
+            match best {
+                Some((_, best_value)) if value <= best_value => {}
+                _ => best = Some((index, value)),
+            }
+        }
+        let (index, _) = best.ok_or_else(|| RuntimeError::External {
+            context: "last-token logits",
+            message: format!("all oracle logits were NaN ({} values)", nan_count),
+        })?;
+        Ok(index as u32)
+    }
+
+    fn run_pytorch_oracle(
+        model_id: &str,
+        prompt_ids: &[u32],
+        max_new_tokens: usize,
+    ) -> Result<PytorchOracleRecord> {
+        let prompt_ids = prompt_ids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let output = Command::new("python3")
+            .arg("benchmarks/qwen35_pytorch_oracle.py")
+            .arg("--model-id")
+            .arg(model_id)
+            .arg("--prompt-ids")
+            .arg(prompt_ids)
+            .arg("--max-new-tokens")
+            .arg(max_new_tokens.to_string())
+            .output()
+            .map_err(|err| RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!("failed to launch Python oracle: {err}"),
+            })?;
+        if !output.status.success() {
+            return Err(RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!(
+                    "python oracle failed with status {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+        serde_json::from_slice::<PytorchOracleRecord>(&output.stdout).map_err(|err| {
+            RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!(
+                    "failed to parse oracle output: {err}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            }
+        })
     }
 
     fn cache_max_delta(
@@ -484,15 +600,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(MinimalQwen35LoadMode::NativeStore),
         ),
         OracleMode::None => (cpu_device.clone(), None),
-        OracleMode::Pytorch => {
-            return Err(RuntimeError::External {
-                context: "oracle",
-                message: "pytorch oracle requested but Python torch/transformers integration is not implemented in this harness yet".to_string(),
-            }
-            .into())
-        }
+        OracleMode::Pytorch => (cpu_device.clone(), None),
     };
-    let (mut oracle_runner, oracle_load_elapsed) = if device_only || matches!(oracle_mode, OracleMode::None) {
+    let (mut oracle_runner, oracle_load_elapsed) = if device_only
+        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch)
+    {
         (None, std::time::Duration::ZERO)
     } else {
         let oracle_load_started = Instant::now();
@@ -514,6 +626,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if prompt_ids.is_empty() {
         return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
     }
+    let pytorch_oracle = if device_only || !matches!(oracle_mode, OracleMode::Pytorch) {
+        None
+    } else {
+        Some(run_pytorch_oracle(&model_id, &prompt_ids, max_new_tokens)?)
+    };
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
@@ -522,7 +639,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         input_ids.to_device(&oracle_device)?
     };
     let (mut oracle_logits, mut oracle_cache, oracle_prefill_elapsed) =
-        if let Some(oracle_runner) = oracle_runner.as_mut() {
+        if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+            (
+                None,
+                None,
+                std::time::Duration::from_secs_f64(pytorch_oracle.prefill_ms / 1000.0),
+            )
+        } else if let Some(oracle_runner) = oracle_runner.as_mut() {
             let oracle_hidden_states = oracle_runner.hidden_states_from_input_ids(&oracle_input_ids)?;
             let oracle_prefill_started = Instant::now();
             match oracle_runner.prefill_from_hidden_states(&oracle_hidden_states) {
@@ -558,9 +681,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         print_hip_counters("prefill");
     }
-    let oracle_prefill_nans = match oracle_logits.as_ref() {
-        Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
-        None => 0,
+    let oracle_prefill_nans = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => nan_count_slice(&pytorch_oracle.prefill_last_token_logits),
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
+            None => 0,
+        },
     };
     let device_prefill_nans = logit_nan_count(device_logits.tensor())?;
     if oracle_prefill_nans > 0 || device_prefill_nans > 0 {
@@ -573,13 +699,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let prefill_delta = match oracle_logits.as_ref() {
-        Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
-        None => f32::NAN,
+    let prefill_delta = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => {
+            max_last_token_delta_vec(device_logits.tensor(), &pytorch_oracle.prefill_last_token_logits)?
+        }
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
+            None => f32::NAN,
+        },
     };
-    let prefill_cache_max_delta = match oracle_cache.as_ref() {
-        Some(oracle_cache) => cache_max_delta(oracle_cache, &device_cache)?,
-        None => None,
+    let prefill_cache_max_delta = match pytorch_oracle.as_ref() {
+        Some(_) => None,
+        None => match oracle_cache.as_ref() {
+            Some(oracle_cache) => cache_max_delta(oracle_cache, &device_cache)?,
+            None => None,
+        },
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
         trace_cpu_oracle_cache_delta("prefill", oracle_cache, &device_cache)?;
@@ -591,14 +725,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
     let mut max_decode_input_hidden_delta: Option<f32> = None;
     let mut max_decode_step_cache_delta: Option<f32> = None;
-    let mut oracle_decode_elapsed = std::time::Duration::ZERO;
-    let mut device_decode_elapsed = std::time::Duration::ZERO;
-    let mut oracle_reference_enabled = oracle_logits.is_some() && oracle_cache.is_some();
-    let mut next_token = match oracle_logits.as_ref() {
-        Some(oracle_logits) => argmax_last_token(oracle_logits.tensor())?,
-        None => argmax_last_token(device_logits.tensor())?,
+    let mut oracle_decode_elapsed = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => std::time::Duration::from_secs_f64(pytorch_oracle.decode_ms / 1000.0),
+        None => std::time::Duration::ZERO,
     };
-    for _ in 0..max_new_tokens {
+    let mut device_decode_elapsed = std::time::Duration::ZERO;
+    let mut oracle_reference_enabled = pytorch_oracle.is_none() && oracle_logits.is_some() && oracle_cache.is_some();
+    let mut next_token = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => argmax_slice(&pytorch_oracle.prefill_last_token_logits)?,
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => argmax_last_token(oracle_logits.tensor())?,
+            None => argmax_last_token(device_logits.tensor())?,
+        },
+    };
+    for step_index in 0..max_new_tokens {
         generated_ids.push(next_token);
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
@@ -608,7 +748,26 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else {
             None
         };
-        if oracle_reference_enabled {
+        if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+            let oracle_logits_ref = pytorch_oracle
+                .decode_last_token_logits
+                .get(step_index)
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: format!("missing decode logits for step {step_index}"),
+                })?;
+            max_decode_delta = max_decode_delta.max(max_last_token_delta_vec(
+                device_logits.tensor(),
+                oracle_logits_ref,
+            )?);
+            next_token = *pytorch_oracle
+                .generated_token_ids
+                .get(step_index)
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: format!("missing generated token for step {step_index}"),
+                })?;
+        } else if oracle_reference_enabled {
             if let (Some(oracle_runner), Some(oracle_cache_ref)) = (oracle_runner.as_mut(), oracle_cache.as_mut()) {
             let oracle_decode_input = if oracle_device.location() == cpu_device.location() {
                 decode_input.clone()
@@ -725,9 +884,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             print_hip_counters("decode-step");
         }
-        let oracle_decode_nans = match oracle_logits.as_ref() {
-            Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
-            None => 0,
+        let oracle_decode_nans = match pytorch_oracle.as_ref() {
+            Some(pytorch_oracle) => pytorch_oracle
+                .decode_last_token_logits
+                .get(step_index)
+                .map_or(0, |values| nan_count_slice(values)),
+            None => match oracle_logits.as_ref() {
+                Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
+                None => 0,
+            },
         };
         let device_decode_nans = logit_nan_count(device_logits.tensor())?;
         if oracle_decode_nans > 0 || device_decode_nans > 0 {
@@ -737,7 +902,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             );
         }
 
-        if let Some(oracle_logits) = oracle_logits.as_ref() {
+        if pytorch_oracle.is_some() {
+        } else if let Some(oracle_logits) = oracle_logits.as_ref() {
             max_decode_delta = max_decode_delta.max(max_logit_delta(
                 oracle_logits.tensor(),
                 device_logits.tensor(),
@@ -757,6 +923,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle: oracle_mode.to_string(),
         oracle_device: match oracle_mode {
             OracleMode::None => "none".to_string(),
+            OracleMode::Pytorch => "pytorch-cpu".to_string(),
             _ => device_label(&oracle_device).to_string(),
         },
         device_only,
@@ -781,7 +948,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             f64::NAN
         },
         device_decode_ms: device_decode_elapsed.as_secs_f64() * 1000.0,
-        oracle_load_ms: oracle_load_elapsed.as_secs_f64() * 1000.0,
+        oracle_load_ms: match pytorch_oracle.as_ref() {
+            Some(pytorch_oracle) => pytorch_oracle.load_ms,
+            None => oracle_load_elapsed.as_secs_f64() * 1000.0,
+        },
         oracle_prefill_ms: oracle_prefill_elapsed.as_secs_f64() * 1000.0,
         oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_max_delta: prefill_delta,
