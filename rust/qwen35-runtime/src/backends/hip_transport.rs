@@ -4292,11 +4292,38 @@ impl HipTensor {
 }
 
 fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
+    if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
+        return host;
+    }
     HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
 fn from_device_tensor(tensor: Tensor) -> HipTensor {
+    if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
+        return host;
+    }
     HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
+}
+
+fn import_kernel_tensor_as_host_leaf(tensor: &Tensor) -> Result<Option<HipTensor>> {
+    if !tensor.device().is_hip() {
+        return Ok(None);
+    }
+    let (_storage, layout) = tensor.storage_and_layout();
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let Some(bytes) = HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())? else {
+        return Ok(None);
+    };
+    Ok(Some(HipTensor::from_device_buffer(
+        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
+            bytes,
+            shape: tensor.dims().to_vec(),
+            dtype: tensor.dtype(),
+            device: tensor.device().clone(),
+        }),
+    )))
 }
 
 pub(crate) fn state_buffer_from_host_bytes(
