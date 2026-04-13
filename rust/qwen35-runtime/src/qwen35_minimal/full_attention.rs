@@ -1096,6 +1096,29 @@ impl FullAttention {
         )
     }
 
+    fn full_attention_decode_projected_buffer(
+        &self,
+        output_dtype: DType,
+        b_sz: usize,
+        q_len: usize,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+        gate: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        self.full_attention_decode_projected(
+            output_dtype,
+            b_sz,
+            q_len,
+            query_states.tensor(),
+            key_states.tensor(),
+            value_states.tensor(),
+            gate,
+            seqlen_offset,
+        )
+    }
+
     pub(super) fn direct_decode_context<'a>(
         &'a self,
         xs: &StateBuffer,
@@ -1250,9 +1273,9 @@ impl FullAttention {
         key_workspace: &StateBuffer,
         value_workspace: &StateBuffer,
     ) -> Result<(
-        Tensor,
-        Tensor,
-        Tensor,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
         StateBuffer,
         StateBuffer,
         StateBuffer,
@@ -1274,9 +1297,9 @@ impl FullAttention {
         xs: &StateBuffer,
         context: &DirectFullAttentionDecodeContext<'_>,
     ) -> Result<(
-        Tensor,
-        Tensor,
-        Tensor,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
         StateBuffer,
         StateBuffer,
         StateBuffer,
@@ -1333,7 +1356,9 @@ impl FullAttention {
 
         let input_layout_start = profile_start(device)?;
         let (query_states, key_states, value_states) =
-            context.backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+            context
+                .backend
+                .prepare_full_attention_kernel_input_buffers_with_buffer_kv(
                 &query_states,
                 &appended_kv.0,
                 &appended_kv.1,
@@ -1358,13 +1383,13 @@ impl FullAttention {
         output_dtype: DType,
         b_sz: usize,
         q_len: usize,
-        query_states: &Tensor,
-        key_states: &Tensor,
-        value_states: &Tensor,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
         gate: &StateBuffer,
         seqlen_offset: usize,
     ) -> Result<StateBuffer> {
-        self.full_attention_decode_projected(
+        self.full_attention_decode_projected_buffer(
             output_dtype,
             b_sz,
             q_len,
@@ -1379,12 +1404,12 @@ impl FullAttention {
     pub(super) fn run_direct_decode_core_with_context(
         &self,
         context: &DirectFullAttentionDecodeContext<'_>,
-        query_states: &Tensor,
-        key_states: &Tensor,
-        value_states: &Tensor,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
         gate: &StateBuffer,
     ) -> Result<StateBuffer> {
-        self.full_attention_decode_projected(
+        self.full_attention_decode_projected_buffer(
             context.output_dtype,
             context.b_sz,
             context.q_len,

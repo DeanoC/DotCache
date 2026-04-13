@@ -13739,6 +13739,42 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
     ))
 }
 
+pub(crate) fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+    query_states: &StateBuffer,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+    let query_states = HipTensor::from_state_buffer(query_states);
+    let key_states = HipTensor::from_state_buffer(key_states);
+    let value_states = HipTensor::from_state_buffer(value_states);
+    let (query_states, key_states, value_states) = if let (
+        Some(query_device),
+        Some(key_device),
+        Some(value_device),
+    ) = (
+        query_states.0 .0.direct_materialized_device_buffer(),
+        key_states.0 .0.direct_materialized_device_buffer(),
+        value_states.0 .0.direct_materialized_device_buffer(),
+    ) {
+        (
+            HipTensor::from_device_buffer(query_device.contiguous()?),
+            HipTensor::from_device_buffer(key_device.contiguous()?),
+            HipTensor::from_device_buffer(value_device.contiguous()?),
+        )
+    } else {
+        (
+            query_states.contiguous()?,
+            key_states.contiguous()?,
+            value_states.contiguous()?,
+        )
+    };
+    Ok((
+        query_states.into_state_buffer()?,
+        key_states.into_state_buffer()?,
+        value_states.into_state_buffer()?,
+    ))
+}
+
 pub(crate) fn rope_buffer(xs: &StateBuffer, cos: &Tensor, sin: &Tensor) -> Result<StateBuffer> {
     rope_hip(&HipTensor::from_state_buffer(xs), cos, sin)?.into_state_buffer()
 }

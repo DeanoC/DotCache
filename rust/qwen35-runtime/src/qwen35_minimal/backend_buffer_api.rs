@@ -242,6 +242,12 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         key_states: &StateBuffer,
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)>;
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)>;
     fn materialize_full_attention_dense_inputs(
         &self,
         query_states: &Tensor,
@@ -1019,6 +1025,24 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             value_states.tensor(),
         )
     }
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+        let (query_states, key_states, value_states) =
+            self.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                query_states,
+                key_states,
+                value_states,
+            )?;
+        Ok((
+            StateBuffer::from_tensor(query_states)?,
+            StateBuffer::from_tensor(key_states)?,
+            StateBuffer::from_tensor(value_states)?,
+        ))
+    }
     fn materialize_full_attention_dense_inputs(
         &self,
         query_states: &Tensor,
@@ -1719,6 +1743,18 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)> {
         backends::hip::prepare_full_attention_kernel_inputs_with_buffer_kv(
+            query_states,
+            key_states,
+            value_states,
+        )
+    }
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+        backends::hip::prepare_full_attention_kernel_input_buffers_with_buffer_kv(
             query_states,
             key_states,
             value_states,

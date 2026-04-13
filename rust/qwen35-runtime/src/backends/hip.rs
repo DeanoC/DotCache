@@ -394,6 +394,18 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
     )
 }
 
+pub(crate) fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+    query_states: &StateBuffer,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+    transport::prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        query_states,
+        key_states,
+        value_states,
+    )
+}
+
 pub(crate) fn rope_buffer(xs: &StateBuffer, cos: &Tensor, sin: &Tensor) -> Result<StateBuffer> {
     transport::rope_buffer(xs, cos, sin)
 }
