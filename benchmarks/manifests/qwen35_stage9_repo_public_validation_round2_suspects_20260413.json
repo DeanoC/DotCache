@@ -1,0 +1,14 @@
+{
+  "records": [
+    {
+      "case_tag": "performance_journal",
+      "prompt_file_path": "../../docs/performance_journal.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "state_cache_roadmap",
+      "prompt_file_path": "../../docs/state_cache_roadmap.md",
+      "prompt_length": 1536
+    }
+  ]
+}
