@@ -1603,6 +1603,42 @@ fn maybe_qwen35_direct_metadata(
             ],
             layout: TensorLayoutTag::StandardContiguous,
         },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_mixed_qkv".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim
+                    * 2
+                    + config.text_config.linear_num_value_heads
+                        * config.text_config.linear_value_head_dim,
+                1,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_z".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                1,
+                config.text_config.linear_num_value_heads,
+                config.text_config.linear_value_head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_beta_raw".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.linear_num_value_heads],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_a".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.linear_num_value_heads],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
     ];
     let linear_conv_dim = config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim
         * 2
@@ -2231,12 +2267,16 @@ mod tests {
             .tensors
             .iter()
             .any(|entry| entry.tensor_name.ends_with("token_mixer.q_proj.weight")));
-        assert_eq!(metadata.workspace.len(), 7);
+        assert_eq!(metadata.workspace.len(), 11);
         assert_eq!(metadata.workspace[0].name, "decode_hidden_ping");
         assert_eq!(metadata.workspace[3].name, "full_attention_gate");
         assert_eq!(metadata.workspace[4].name, "full_attention_qkv");
         assert_eq!(metadata.workspace[5].name, "full_attention_key");
         assert_eq!(metadata.workspace[6].name, "full_attention_value");
+        assert_eq!(metadata.workspace[7].name, "linear_mixed_qkv");
+        assert_eq!(metadata.workspace[8].name, "linear_z");
+        assert_eq!(metadata.workspace[9].name, "linear_beta_raw");
+        assert_eq!(metadata.workspace[10].name, "linear_a");
         assert_eq!(metadata.state_layouts.len(), 48);
         assert_eq!(
             metadata.full_attention_layer_ids,

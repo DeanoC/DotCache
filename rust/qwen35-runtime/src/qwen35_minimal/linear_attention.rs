@@ -2105,6 +2105,23 @@ impl GatedDeltaNet {
         Ok((mixed_qkv, z, beta_raw, a, profile))
     }
 
+    pub(super) fn project_direct_decode_inputs_into_scratch(
+        &self,
+        hidden_states: &StateBuffer,
+        mixed_qkv_scratch: &StateBuffer,
+        z_scratch: &StateBuffer,
+        beta_raw_scratch: &StateBuffer,
+        a_scratch: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer, RuntimeProfile)> {
+        let backend = backend_buffer_api::for_device(hidden_states.device());
+        let (mixed_qkv, z, beta_raw, a, profile) = self.project_direct_decode_inputs(hidden_states)?;
+        let mixed_qkv = backend.copy_state_into_scratch(&mixed_qkv, mixed_qkv_scratch)?;
+        let z = backend.copy_state_into_scratch(&z, z_scratch)?;
+        let beta_raw = backend.copy_state_into_scratch(&beta_raw, beta_raw_scratch)?;
+        let a = backend.copy_state_into_scratch(&a, a_scratch)?;
+        Ok((mixed_qkv, z, beta_raw, a, profile))
+    }
+
     pub(super) fn run_direct_decode_core(
         &mut self,
         hidden_dtype: DType,

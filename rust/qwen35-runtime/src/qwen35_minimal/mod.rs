@@ -126,6 +126,10 @@ pub struct MinimalQwen35DirectRuntime {
     full_attention_qkv: MinimalQwen35StateBuffer,
     full_attention_key: MinimalQwen35StateBuffer,
     full_attention_value: MinimalQwen35StateBuffer,
+    linear_mixed_qkv: MinimalQwen35StateBuffer,
+    linear_z: MinimalQwen35StateBuffer,
+    linear_beta_raw: MinimalQwen35StateBuffer,
+    linear_a: MinimalQwen35StateBuffer,
     next_hidden_slot_is_ping: bool,
     last_prefill_sequence_length: usize,
     last_decode_sequence_length: usize,
@@ -422,6 +426,38 @@ impl MinimalQwen35Runner {
                 context: "qwen35-hip-direct",
                 message: "direct HIP metadata missing full_attention_value workspace".to_string(),
             })?;
+        let linear_mixed_qkv_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "linear_mixed_qkv")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing linear_mixed_qkv workspace".to_string(),
+            })?;
+        let linear_z_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "linear_z")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing linear_z workspace".to_string(),
+            })?;
+        let linear_beta_raw_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "linear_beta_raw")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing linear_beta_raw workspace".to_string(),
+            })?;
+        let linear_a_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "linear_a")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing linear_a workspace".to_string(),
+            })?;
         let decode_hidden_ping =
             backend.zeros_state(device, scratch_dtype, &decode_hidden_ping_entry.dims)?;
         let decode_hidden_pong =
@@ -435,6 +471,12 @@ impl MinimalQwen35Runner {
             backend.zeros_state(device, scratch_dtype, &full_attention_key_entry.dims)?;
         let full_attention_value =
             backend.zeros_state(device, scratch_dtype, &full_attention_value_entry.dims)?;
+        let linear_mixed_qkv =
+            backend.zeros_state(device, scratch_dtype, &linear_mixed_qkv_entry.dims)?;
+        let linear_z = backend.zeros_state(device, scratch_dtype, &linear_z_entry.dims)?;
+        let linear_beta_raw =
+            backend.zeros_state(device, scratch_dtype, &linear_beta_raw_entry.dims)?;
+        let linear_a = backend.zeros_state(device, scratch_dtype, &linear_a_entry.dims)?;
         Ok(MinimalQwen35DirectRuntime {
             profile,
             target,
@@ -447,6 +489,10 @@ impl MinimalQwen35Runner {
             full_attention_qkv,
             full_attention_key,
             full_attention_value,
+            linear_mixed_qkv,
+            linear_z,
+            linear_beta_raw,
+            linear_a,
             next_hidden_slot_is_ping: true,
             last_prefill_sequence_length: 0,
             last_decode_sequence_length: 0,

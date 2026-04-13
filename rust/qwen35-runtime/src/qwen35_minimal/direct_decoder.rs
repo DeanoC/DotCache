@@ -30,6 +30,10 @@ fn execute_linear_decode_layer(
     xs: &StateBuffer,
     phase_context: &DirectDecodePhaseContext,
     phase_output_scratch: &StateBuffer,
+    linear_mixed_qkv: &StateBuffer,
+    linear_z: &StateBuffer,
+    linear_beta_raw: &StateBuffer,
+    linear_a: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
@@ -42,7 +46,13 @@ fn execute_linear_decode_layer(
         }
     };
     let (mixed_qkv, z, beta_raw, a, projection_profile) =
-        linear_attn.project_direct_decode_inputs(&xs_norm)?;
+        linear_attn.project_direct_decode_inputs_into_scratch(
+            &xs_norm,
+            linear_mixed_qkv,
+            linear_z,
+            linear_beta_raw,
+            linear_a,
+        )?;
     profile.add_assign(&projection_profile);
     let (xs, recurrent_state, linear_profile) = linear_attn.run_direct_decode_core(
         phase_context.output_dtype,
@@ -137,6 +147,10 @@ fn execute_direct_decode_linear_phase_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     phase_output_scratch: &StateBuffer,
+    linear_mixed_qkv: &StateBuffer,
+    linear_z: &StateBuffer,
+    linear_beta_raw: &StateBuffer,
+    linear_a: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
@@ -158,7 +172,16 @@ fn execute_direct_decode_linear_phase_unchecked(
             );
         }
         let (next_xs, layer_profile) =
-            execute_linear_decode_layer(layer, &xs, &phase_context, phase_output_scratch)?;
+            execute_linear_decode_layer(
+                layer,
+                &xs,
+                &phase_context,
+                phase_output_scratch,
+                linear_mixed_qkv,
+                linear_z,
+                linear_beta_raw,
+                linear_a,
+            )?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
@@ -287,6 +310,10 @@ pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     phase_output_scratch: &StateBuffer,
+    linear_mixed_qkv: &StateBuffer,
+    linear_z: &StateBuffer,
+    linear_beta_raw: &StateBuffer,
+    linear_a: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     execute_direct_decode_linear_phase_unchecked(
         model,
@@ -294,6 +321,10 @@ pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
         end_layer_idx,
         xs,
         phase_output_scratch,
+        linear_mixed_qkv,
+        linear_z,
+        linear_beta_raw,
+        linear_a,
     )
 }
 
@@ -364,6 +395,10 @@ pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     phase_output_scratch: &StateBuffer,
+    linear_mixed_qkv: &StateBuffer,
+    linear_z: &StateBuffer,
+    linear_beta_raw: &StateBuffer,
+    linear_a: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
         &mut model.language_model,
@@ -371,6 +406,10 @@ pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
         end_layer_idx,
         xs,
         phase_output_scratch,
+        linear_mixed_qkv,
+        linear_z,
+        linear_beta_raw,
+        linear_a,
     )
 }
 

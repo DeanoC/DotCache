@@ -16,6 +16,10 @@ fn decode_phase_from_hidden_state(
     full_attention_value: &MinimalQwen35StateBuffer,
     full_attention_output_scratch: &MinimalQwen35StateBuffer,
     phase_output_scratch: &MinimalQwen35StateBuffer,
+    linear_mixed_qkv: &MinimalQwen35StateBuffer,
+    linear_z: &MinimalQwen35StateBuffer,
+    linear_beta_raw: &MinimalQwen35StateBuffer,
+    linear_a: &MinimalQwen35StateBuffer,
 ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
     match phase_kind {
         DirectHipDecodePhaseKind::LinearAttention => Ok(
@@ -25,6 +29,10 @@ fn decode_phase_from_hidden_state(
                 end_layer_idx,
                 xs,
                 phase_output_scratch,
+                linear_mixed_qkv,
+                linear_z,
+                linear_beta_raw,
+                linear_a,
             )?,
         ),
         DirectHipDecodePhaseKind::FullAttention => Ok(
@@ -162,6 +170,10 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         let full_attention_qkv = &runtime.full_attention_qkv;
         let full_attention_key = &runtime.full_attention_key;
         let full_attention_value = &runtime.full_attention_value;
+        let linear_mixed_qkv = &runtime.linear_mixed_qkv;
+        let linear_z = &runtime.linear_z;
+        let linear_beta_raw = &runtime.linear_beta_raw;
+        let linear_a = &runtime.linear_a;
         let mut workspace = DirectHipDecodeWorkspace::new(
             &mut runtime.decode_hidden_ping,
             &mut runtime.decode_hidden_pong,
@@ -182,6 +194,10 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
                 full_attention_value,
                 workspace.inactive(),
                 workspace.inactive(),
+                linear_mixed_qkv,
+                linear_z,
+                linear_beta_raw,
+                linear_a,
             )?;
             profile.add_assign(&phase_profile);
             workspace.store_next(next_xs);
