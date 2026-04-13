@@ -228,6 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_decode_ms: f64,
         prefill_max_delta: f32,
         prefill_cache_max_delta: Option<f32>,
+        pytorch_first_layer_linear_chunk_scan_mode: Option<String>,
+        pytorch_first_layer_linear_chunk_execution_branch: Option<String>,
         pytorch_embedding_max_delta: Option<f32>,
         pytorch_first_layer_input_layernorm_max_delta: Option<f32>,
         pytorch_first_layer_linear_qkv_max_delta: Option<f32>,
@@ -987,6 +989,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
     let (
+        pytorch_first_layer_linear_chunk_scan_mode,
+        pytorch_first_layer_linear_chunk_execution_branch,
         pytorch_first_layer_input_layernorm_max_delta,
         pytorch_first_layer_linear_qkv_max_delta,
         pytorch_first_layer_linear_conv_weight_max_delta,
@@ -1045,6 +1049,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_max_delta,
     ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
         let first_layer_trace = device_runner.trace_decoder_layer(&target_input_ids, 0, 0)?;
+        let pytorch_first_layer_linear_chunk_scan_mode = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .and_then(|trace| trace.chunk_scan_mode.clone());
+        let pytorch_first_layer_linear_chunk_execution_branch = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .and_then(|trace| trace.chunk_execution_branch.clone());
         let pytorch_first_layer_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
             first_layer_trace.input_layernorm_output.tensor(),
             &pytorch_oracle.first_layer_input_layernorm_output,
@@ -1324,6 +1336,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &pytorch_oracle.first_layer_output,
         )?);
         (
+            pytorch_first_layer_linear_chunk_scan_mode,
+            pytorch_first_layer_linear_chunk_execution_branch,
             pytorch_first_layer_input_layernorm_max_delta,
             pytorch_first_layer_linear_qkv_max_delta,
             pytorch_first_layer_linear_conv_weight_max_delta,
@@ -1382,7 +1396,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1708,6 +1722,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_max_delta: prefill_delta,
         prefill_cache_max_delta,
+        pytorch_first_layer_linear_chunk_scan_mode,
+        pytorch_first_layer_linear_chunk_execution_branch,
         pytorch_embedding_max_delta,
         pytorch_first_layer_input_layernorm_max_delta,
         pytorch_first_layer_linear_qkv_max_delta,

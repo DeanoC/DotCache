@@ -30,6 +30,13 @@ use super::with_tracing::Linear;
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 
+fn disable_hip_delta_base_attn_fast_path() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_DISABLE_HIP_DELTA_BASE_ATTN_FAST_PATH").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
+    )
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GatedDeltaNet {
     in_proj_qkv: LinearSource,
@@ -77,6 +84,86 @@ struct LinearValueCache {
 }
 
 impl GatedDeltaNet {
+    fn chunk_gated_delta_rule_trace_label(
+        &self,
+        device: &Device,
+        sequence_length: usize,
+    ) -> (Option<String>, Option<String>) {
+        if sequence_length <= 1 {
+            return (None, None);
+        }
+        let chunk_size = linear_attention_chunk_size(device, sequence_length);
+        let estimated_pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size;
+        let estimated_num_chunks = (sequence_length + estimated_pad_size) / chunk_size;
+        let scan_policy =
+            delta_net_execution_policy(device, sequence_length, estimated_num_chunks);
+        let scan_mode = Some(format!("{:?}", scan_policy.scan_mode));
+        let branch = if scan_policy.scan_mode == DeltaNetScanMode::TorchLike {
+            "torch-like"
+        } else if use_delta_recurrent_prefill_kernel(device, sequence_length) {
+            "delta-recurrent-prefill"
+        } else if use_hip_chunk_single_prefill_kernel(
+            device,
+            sequence_length,
+            estimated_num_chunks,
+            chunk_size,
+        ) {
+            "hip-chunk-single-prefill"
+        } else if use_delta_chunk_scan_kernel(
+            device,
+            scan_policy.scan_mode,
+            sequence_length,
+            chunk_size,
+        ) || use_hip_multi_chunk_scan_prefill_kernel(
+            device,
+            sequence_length,
+            estimated_num_chunks,
+            chunk_size,
+        ) {
+            "delta-chunk-scan-raw"
+        } else if use_delta_chunk_step_kernel(
+            device,
+            scan_policy.scan_mode,
+            sequence_length,
+            chunk_size,
+        ) {
+            if use_delta_chunk_windowed_kernel(
+                device,
+                scan_policy.scan_mode,
+                sequence_length,
+                chunk_size,
+            ) {
+                "delta-chunk-step-windowed"
+            } else {
+                "delta-chunk-step-loop"
+            }
+        } else {
+            let use_full_scan_kernel =
+                use_delta_full_scan_kernel(device, scan_policy.scan_mode, sequence_length)
+                    || use_hip_exact_multi_chunk_full_scan_prefill(
+                        device,
+                        scan_policy.scan_mode,
+                        sequence_length,
+                        estimated_num_chunks,
+                        chunk_size,
+                    );
+            let hip_full_scan_fast_path = device.is_hip() && use_full_scan_kernel;
+            let hip_base_attn_fast_path = device.is_hip()
+                && !hip_full_scan_fast_path
+                && !disable_hip_delta_base_attn_fast_path();
+            if hip_full_scan_fast_path {
+                "chunk-main-hip-full-scan"
+            } else if hip_base_attn_fast_path {
+                "chunk-main-hip-base-attn"
+            } else if scan_policy.use_flattened_solve {
+                "chunk-main-flattened-solve"
+            } else {
+                "chunk-main-rows-solve"
+            }
+        };
+        (scan_mode, Some(branch.to_string()))
+    }
+
     fn finalize_linear_output_buffer(
         &self,
         hidden_dtype: DType,
@@ -1344,7 +1431,9 @@ impl GatedDeltaNet {
                 chunk_size,
             );
         let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
-        let hip_base_attn_fast_path = query.device().is_hip() && !hip_full_scan_fast_path;
+        let hip_base_attn_fast_path = query.device().is_hip()
+            && !hip_full_scan_fast_path
+            && !disable_hip_delta_base_attn_fast_path();
         profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
 
         let solve_batch = batch_size * num_heads * num_chunks;
@@ -2459,6 +2548,11 @@ impl GatedDeltaNet {
 
         let layout_start = profile_start(device)?;
         let use_short_recurrent_prefill = use_hip_short_linear_prefill_recurrent(device, seq_len);
+        let (chunk_scan_mode, chunk_execution_branch) = if use_short_recurrent_prefill {
+            (None, None)
+        } else {
+            self.chunk_gated_delta_rule_trace_label(device, seq_len)
+        };
         let (query, key, value, beta, g) = backend.prepare_linear_attention_inputs(
             &mixed_qkv,
             &beta_raw,
@@ -2726,6 +2820,8 @@ impl GatedDeltaNet {
 
         Ok((
             LinearAttentionCoreTrace {
+                chunk_scan_mode,
+                chunk_execution_branch,
                 conv_weight_squeezed,
                 post_conv_mixed_qkv,
                 explicit_post_conv_mixed_qkv,
