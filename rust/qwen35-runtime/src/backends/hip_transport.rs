@@ -4888,16 +4888,6 @@ fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
     HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
-fn from_device_tensor(tensor: Tensor) -> HipTensor {
-    if let Some(device) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor).ok().flatten() {
-        return HipTensor::from_device_buffer(HipDeviceBuffer::from_owned_device_buffer(device));
-    }
-    if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
-        return host;
-    }
-    HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
-}
-
 fn import_kernel_tensor_as_host_leaf(tensor: &Tensor) -> Result<Option<HipTensor>> {
     if !tensor.device().is_hip() {
         return Ok(None);
@@ -15456,7 +15446,7 @@ pub(crate) fn causal_mask(
         return Ok(host);
     }
     if device.is_hip() {
-        return Ok(from_device_tensor(hip_causal_mask(
+        return Ok(from_kernel_tensor(hip_causal_mask(
             device,
             dtype,
             batch_size,
