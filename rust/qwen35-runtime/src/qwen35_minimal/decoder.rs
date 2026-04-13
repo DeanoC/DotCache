@@ -545,6 +545,52 @@ impl TextModel {
         })
     }
 
+    pub fn trace_decoder_layer_output(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        if target_layer >= self.layers.len() {
+            candle::bail!(
+                "decoder trace target layer {} is out of range for {} layers",
+                target_layer,
+                self.layers.len()
+            );
+        }
+
+        self.clear_kv_cache();
+        let (b_size, seq_len) = input_ids.dims2()?;
+        let attention_mask = if seq_len > 1 {
+            Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
+        } else {
+            None
+        };
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
+        for layer in self.layers.iter_mut().take(target_layer) {
+            let mask = if layer.layer_type() == "full_attention" {
+                attention_mask.as_ref()
+            } else {
+                None
+            };
+            let (next_xs, _) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            xs = next_xs;
+        }
+
+        let target = self
+            .layers
+            .get_mut(target_layer)
+            .expect("target layer index already validated");
+        let mask = if target.layer_type() == "full_attention" {
+            attention_mask.as_ref()
+        } else {
+            None
+        };
+        let (next_xs, _) = target.forward_profiled(&xs, mask, seqlen_offset)?;
+        self.clear_kv_cache();
+        Ok(next_xs)
+    }
+
     pub fn forward_profiled_with_linear_traces(
         &mut self,
         input_ids: &Tensor,
@@ -1018,6 +1064,16 @@ impl ModelForCausalLM {
     ) -> Result<LinearAttentionTrace> {
         self.language_model
             .trace_linear_attention_layer(input_ids, target_layer, seqlen_offset)
+    }
+
+    pub fn trace_decoder_layer_output(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        self.language_model
+            .trace_decoder_layer_output(input_ids, target_layer, seqlen_offset)
     }
 
     pub fn clear_kv_cache(&mut self) {

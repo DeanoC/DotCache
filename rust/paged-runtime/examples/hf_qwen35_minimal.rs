@@ -222,6 +222,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_decode_ms: f64,
         prefill_max_delta: f32,
         prefill_cache_max_delta: Option<f32>,
+        pytorch_embedding_max_delta: Option<f32>,
+        pytorch_first_layer_max_delta: Option<f32>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
         decode_step_cache_max_delta: Option<f32>,
@@ -237,6 +239,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         load_ms: f64,
         prefill_ms: f64,
         decode_ms: f64,
+        embedding_output: Vec<Vec<Vec<f32>>>,
+        first_layer_output: Vec<Vec<Vec<f32>>>,
         prefill_last_token_logits: Vec<f32>,
         decode_last_token_logits: Vec<Vec<f32>>,
         generated_token_ids: Vec<u32>,
@@ -356,6 +360,33 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let lhs = last_token.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
         let mut max_delta = 0.0f32;
         for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec3(logits: &Tensor, rhs: &[Vec<Vec<f32>>]) -> Result<f32> {
+        let dims = logits.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if lhs.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: rhs_flat.len(),
+                got: lhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
@@ -633,6 +664,30 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
+    let target_input_ids = if target_device.location() == cpu_device.location() {
+        input_ids.clone()
+    } else {
+        input_ids.to_device(&target_device)?
+    };
+    let pytorch_embedding_max_delta = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        let device_input_hidden = device_runner.hidden_states_from_input_ids(&target_input_ids)?;
+        Some(max_tensor_delta_vec3(
+            device_input_hidden.tensor(),
+            &pytorch_oracle.embedding_output,
+        )?)
+    } else {
+        None
+    };
+    let pytorch_first_layer_max_delta = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        let first_layer_output =
+            device_runner.trace_decoder_layer_output(&target_input_ids, 0, 0)?;
+        Some(max_tensor_delta_vec3(
+            first_layer_output.tensor(),
+            &pytorch_oracle.first_layer_output,
+        )?)
+    } else {
+        None
+    };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
     } else {
@@ -956,6 +1011,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_max_delta: prefill_delta,
         prefill_cache_max_delta,
+        pytorch_embedding_max_delta,
+        pytorch_first_layer_max_delta,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,
         decode_step_cache_max_delta: max_decode_step_cache_delta,

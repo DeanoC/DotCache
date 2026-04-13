@@ -1096,6 +1096,17 @@ impl MinimalQwen35Runner {
             .trace_linear_attention_layer(input_ids, target_layer, seqlen_offset)?)
     }
 
+    pub fn trace_decoder_layer_output(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        Ok(self
+            .model
+            .trace_decoder_layer_output(input_ids, target_layer, seqlen_offset)?)
+    }
+
     pub fn clear_kv_cache(&mut self) {
         self.model.clear_kv_cache();
     }

@@ -38,6 +38,30 @@ def main() -> None:
         outputs = model(input_ids=input_ids, use_cache=True)
     prefill_elapsed_ms = (time.perf_counter() - prefill_started) * 1000.0
 
+    embedding_output = None
+    first_layer_output = None
+
+    def embed_hook(_module, _inputs, output):
+        nonlocal embedding_output
+        embedding_output = output.detach().to(dtype=torch.float32).cpu()
+
+    def layer_hook(_module, _inputs, output):
+        nonlocal first_layer_output
+        layer_output = output[0] if isinstance(output, tuple) else output
+        first_layer_output = layer_output.detach().to(dtype=torch.float32).cpu()
+
+    embed_handle = model.model.embed_tokens.register_forward_hook(embed_hook)
+    layer_handle = model.model.layers[0].register_forward_hook(layer_hook)
+    try:
+        with torch.no_grad():
+            model(input_ids=input_ids, use_cache=True)
+    finally:
+        embed_handle.remove()
+        layer_handle.remove()
+
+    if embedding_output is None or first_layer_output is None:
+        raise RuntimeError("failed to capture embedding or first layer output from PyTorch model")
+
     prefill_last_token_logits = (
         outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
     )
@@ -66,6 +90,8 @@ def main() -> None:
         "load_ms": load_elapsed_ms,
         "prefill_ms": prefill_elapsed_ms,
         "decode_ms": decode_elapsed_ms,
+        "embedding_output": embedding_output.tolist(),
+        "first_layer_output": first_layer_output.tolist(),
         "prefill_last_token_logits": prefill_last_token_logits,
         "decode_last_token_logits": decode_logits,
         "generated_token_ids": generated_token_ids,
