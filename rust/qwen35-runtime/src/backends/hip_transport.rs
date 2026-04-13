@@ -2866,6 +2866,16 @@ impl HipDeviceBuffer {
             ));
         }
         let tensor = self.materialize_tensor()?;
+        if tensor.device().is_hip() {
+            let buffer = HipDeviceBuffer::from_tensor(tensor.clone());
+            if let Some(out) = owned_cumsum_last_dim_hip_device_buffer(&buffer)? {
+                return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                    candle_core::Error::Msg(
+                        "expected direct device buffer from cumsum_last_dim owned device".into(),
+                    )
+                })?);
+            }
+        }
         if let Some(out) = cumsum_last_dim_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg(
