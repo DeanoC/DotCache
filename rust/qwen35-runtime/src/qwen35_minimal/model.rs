@@ -5975,6 +5975,18 @@ fn linear_stateful_conv_value_decay_hip(
             a.dims()
         )
     }
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = linear_stateful_conv_value_decay_host_buffer(
+        &mixed_qkv,
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        kernel_size,
+    )? {
+        return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
+    }
     mixed_qkv.apply_op6_no_bwd(
         &prev_state,
         &weights,
@@ -5990,6 +6002,153 @@ fn linear_stateful_conv_value_decay_hip(
             num_heads,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_stateful_conv_value_decay_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a = a.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_state_storage,
+        &*weights_storage,
+        &*a_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    let (a_batch, a_seq_len, num_heads) = a_layout.shape().dims3()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || a_batch != batch_size
+        || a_seq_len != seq_len
+        || dt_bias_layout.shape().elem_count() != num_heads
+        || a_log_exp_layout.shape().elem_count() != num_heads
+    {
+        return Ok(None);
+    }
+    if mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+        || mixed_qkv.dtype() != a.dtype()
+        || mixed_qkv.dtype() != dt_bias.dtype()
+        || mixed_qkv.dtype() != a_log_exp.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let shape = vec![batch_size, seq_len, conv_dim + num_heads];
+    let mut out = vec![
+        0u8;
+        shape
+            .iter()
+            .product::<usize>()
+            .saturating_mul(mixed_qkv.dtype().size_in_bytes())
+    ];
+    let host_ptr = out.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, out.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-stateful-conv-value-decay-host-buffer",
+            status,
+        ));
+    }
+    Ok(Some((out, shape)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_stateful_conv_value_decay_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<(Vec<u8>, Vec<usize>)>> {
+    let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
+    Ok(None)
 }
 
 pub(crate) fn linear_stateful_conv_value_decay_with_state_hip(
