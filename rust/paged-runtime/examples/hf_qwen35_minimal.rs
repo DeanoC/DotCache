@@ -236,6 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
         pytorch_first_layer_linear_pre_norm_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle: Option<f32>,
         pytorch_first_layer_linear_norm_gate_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weight_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta: Option<f32>,
@@ -491,6 +497,25 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn slice_stats(values: &[f32]) -> (f32, f32, f32) {
+        let mean_square = if values.is_empty() {
+            0.0
+        } else {
+            values.iter().map(|v| v * v).sum::<f32>() / values.len() as f32
+        };
+        let mut min_abs = f32::INFINITY;
+        let mut max_abs = 0.0f32;
+        for value in values.iter().copied() {
+            let abs = value.abs();
+            min_abs = min_abs.min(abs);
+            max_abs = max_abs.max(abs);
+        }
+        if values.is_empty() {
+            min_abs = 0.0;
+        }
+        (mean_square, min_abs, max_abs)
     }
 
     fn nan_count_slice(values: &[f32]) -> usize {
@@ -793,6 +818,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
         pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -863,14 +894,37 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )?;
             (Some(delta), Some(argmax), Some(runtime), Some(oracle))
         };
-        let pytorch_first_layer_linear_pre_norm_focus_head_max_delta = Some(max_tensor_delta_vec1(
-            &linear_core_trace
-                .pre_gated_norm_output
-                .tensor()
-                .reshape((1, 4, 16, 128))?
-                .i((0, 2, 6))?,
-            &pytorch_oracle.first_layer_linear_pre_norm_focus_head_output,
-        )?);
+        let runtime_focus_head = linear_core_trace
+            .pre_gated_norm_output
+            .tensor()
+            .reshape((1, 4, 16, 128))?
+            .i((0, 2, 6))?;
+        let pytorch_first_layer_linear_pre_norm_focus_head_max_delta =
+            Some(max_tensor_delta_vec1(
+                &runtime_focus_head,
+                &pytorch_oracle.first_layer_linear_pre_norm_focus_head_output,
+            )?);
+        let runtime_focus_head_vec = runtime_focus_head
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let oracle_focus_head_vec = pytorch_oracle.first_layer_linear_pre_norm_focus_head_output.clone();
+        let (
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        ) = {
+            let (mean_square, min_abs, max_abs) = slice_stats(&runtime_focus_head_vec);
+            (Some(mean_square), Some(min_abs), Some(max_abs))
+        };
+        let (
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        ) = {
+            let (mean_square, min_abs, max_abs) = slice_stats(&oracle_focus_head_vec);
+            (Some(mean_square), Some(min_abs), Some(max_abs))
+        };
         let pytorch_first_layer_linear_norm_gate_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.gated_norm_gate_input.tensor(),
             &pytorch_oracle.first_layer_linear_norm_gate_input,
@@ -929,6 +983,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
             pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
             pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
             pytorch_first_layer_linear_norm_gate_max_delta,
             pytorch_first_layer_linear_norm_weight_max_delta,
             pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -941,7 +1001,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1280,6 +1340,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
         pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
