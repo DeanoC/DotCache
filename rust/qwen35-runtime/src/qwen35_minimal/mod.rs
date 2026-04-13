@@ -4,6 +4,7 @@ pub(crate) mod backend_ops;
 #[cfg(any(feature = "hf", test))]
 mod builder;
 mod direct_hip;
+mod decoder;
 mod frontend;
 mod full_attention;
 pub(crate) mod hip;
@@ -16,9 +17,7 @@ mod rotary;
 mod types;
 mod with_tracing;
 
-pub use model::{
-    ModelForCausalLM,
-};
+pub use decoder::ModelForCausalLM;
 pub use types::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
     LinearAttentionBenchResult as MinimalQwen35LinearAttentionBenchResult,
