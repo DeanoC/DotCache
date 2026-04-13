@@ -16248,7 +16248,7 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
 
     let cos = HipTensor::from_scaffold_tensor(cos.clone());
     let sin = HipTensor::from_scaffold_tensor(sin.clone());
-    if let Some(xs_buffer) = xs.0 .0.direct_device_buffer() {
+    if let Some(xs_buffer) = xs.try_materialized_device_buffer()? {
         if let (Some(xs_host), Some(cos_host), Some(sin_host)) = (
             xs_buffer.try_host_buffer()?,
             cos.try_host_buffer()?,
@@ -16261,9 +16261,9 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
         }
     }
     if let (Some(xs), Some(cos), Some(sin)) = (
-        xs.0 .0.direct_materialized_device_buffer(),
-        cos.0 .0.direct_materialized_device_buffer(),
-        sin.0 .0.direct_materialized_device_buffer(),
+        xs.try_materialized_device_buffer()?,
+        cos.try_materialized_device_buffer()?,
+        sin.try_materialized_device_buffer()?,
     ) {
         let cos = cos
             .narrow(0, 0, seq_len)?
