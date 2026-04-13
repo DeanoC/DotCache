@@ -94,8 +94,8 @@ impl MinimalQwen35DirectRuntimeProfile {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v1",
-            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v1",
+            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v5",
+            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v5",
         }
     }
 }
@@ -336,7 +336,10 @@ impl MinimalQwen35Runner {
             })
             .collect::<Result<_>>()?;
         for binding in metadata.global_tensors.iter() {
-            if !package.contains_tensor(&binding.tensor_name) {
+            let binding_present = package.contains_tensor(&binding.tensor_name)
+                || (binding.name == "lm_head"
+                    && package.contains_tensor("model.language_model.embed_tokens.weight"));
+            if !binding_present {
                 return Err(RuntimeError::External {
                     context: "qwen35-hip-direct",
                     message: format!(

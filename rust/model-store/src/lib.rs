@@ -90,8 +90,8 @@ impl PreparedPackageProfile {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StandardPrepared => "standard-prepared",
-            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v1",
-            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v1",
+            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v5",
+            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v5",
         }
     }
 
@@ -1402,90 +1402,92 @@ fn qwen35_direct_layer_bindings(
     ];
     match layer_type {
         "linear_attention" => {
+            let linear_prefix = format!("{layer_prefix}.linear_attn");
             tensors.extend([
                 PreparedQwen35DirectTensorBinding {
                     name: "in_proj_qkv".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_qkv.weight"),
+                    tensor_name: format!("{linear_prefix}.in_proj_qkv.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "in_proj_z".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_z.weight"),
+                    tensor_name: format!("{linear_prefix}.in_proj_z.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "in_proj_b".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_b.weight"),
+                    tensor_name: format!("{linear_prefix}.in_proj_b.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "in_proj_a".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.in_proj_a.weight"),
+                    tensor_name: format!("{linear_prefix}.in_proj_a.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "conv1d".to_string(),
                     tensor_name: format!(
-                        "{layer_prefix}.token_mixer.conv1d.weight.__dotcache_depthwise_squeezed"
+                        "{linear_prefix}.conv1d.weight.__dotcache_depthwise_squeezed"
                     ),
                     layout: TensorLayoutTag::DepthwiseConvSqueezed,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "dt_bias".to_string(),
                     tensor_name: format!(
-                        "{layer_prefix}.token_mixer.dt_bias.__dotcache_head_bias_reshaped"
+                        "{linear_prefix}.dt_bias.__dotcache_head_bias_reshaped"
                     ),
                     layout: TensorLayoutTag::HeadBiasReshaped,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "a_log".to_string(),
                     tensor_name: format!(
-                        "{layer_prefix}.token_mixer.A_log.__dotcache_head_exp_reshaped"
+                        "{linear_prefix}.A_log.__dotcache_head_exp_reshaped"
                     ),
                     layout: TensorLayoutTag::HeadExpReshaped,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "norm".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.norm.weight"),
+                    tensor_name: format!("{linear_prefix}.norm.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "out_proj".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.out_proj.weight"),
+                    tensor_name: format!("{linear_prefix}.out_proj.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
             ]);
         }
         "full_attention" => {
+            let attention_prefix = format!("{layer_prefix}.self_attn");
             tensors.extend([
                 PreparedQwen35DirectTensorBinding {
                     name: "q_proj".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.q_proj.weight"),
+                    tensor_name: format!("{attention_prefix}.q_proj.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "k_proj".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.k_proj.weight"),
+                    tensor_name: format!("{attention_prefix}.k_proj.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "v_proj".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.v_proj.weight"),
+                    tensor_name: format!("{attention_prefix}.v_proj.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "o_proj".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.o_proj.weight"),
+                    tensor_name: format!("{attention_prefix}.o_proj.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "q_norm".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.q_norm.weight"),
+                    tensor_name: format!("{attention_prefix}.q_norm.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
                 PreparedQwen35DirectTensorBinding {
                     name: "k_norm".to_string(),
-                    tensor_name: format!("{layer_prefix}.token_mixer.k_norm.weight"),
+                    tensor_name: format!("{attention_prefix}.k_norm.weight"),
                     layout: TensorLayoutTag::StandardContiguous,
                 },
             ]);
@@ -1565,8 +1567,7 @@ fn maybe_qwen35_direct_metadata(
             dims: vec![
                 1,
                 1,
-                config.text_config.num_attention_heads,
-                config.text_config.head_dim,
+                config.text_config.num_attention_heads * config.text_config.head_dim,
             ],
             layout: TensorLayoutTag::StandardContiguous,
         },

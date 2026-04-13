@@ -116,6 +116,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Self::HipDirect => Some(MinimalQwen35LoadMode::HipDirect),
             }
         }
+
+        fn cpu_reference_runner_mode(self) -> Option<MinimalQwen35LoadMode> {
+            match self {
+                Self::HipDirect => None,
+                _ => self.runner_mode(),
+            }
+        }
     }
 
     impl std::str::FromStr for LoadMode {
@@ -312,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         (None, std::time::Duration::ZERO)
     } else {
         let cpu_load_started = Instant::now();
-        let cpu_runner = match load_mode.runner_mode() {
+        let cpu_runner = match load_mode.cpu_reference_runner_mode() {
             Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &cpu_device, mode)?,
             None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &cpu_device)?,
         };
@@ -332,21 +339,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
-    let hidden_states = if let Some(cpu_runner) = cpu_runner.as_ref() {
-        cpu_runner.hidden_states_from_input_ids(&input_ids)?
-    } else {
-        device_runner.hidden_states_from_input_ids_direct(&input_ids)?
-    };
-
     let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) =
         if let Some(cpu_runner) = cpu_runner.as_mut() {
+            let cpu_hidden_states = cpu_runner.hidden_states_from_input_ids(&input_ids)?;
             let cpu_prefill_started = Instant::now();
-            let (cpu_logits, cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
-            (
-                Some(cpu_logits),
-                Some(cpu_cache),
-                cpu_prefill_started.elapsed(),
-            )
+            match cpu_runner.prefill_from_hidden_states(&cpu_hidden_states) {
+                Ok((cpu_logits, cpu_cache)) => (
+                    Some(cpu_logits),
+                    Some(cpu_cache),
+                    cpu_prefill_started.elapsed(),
+                ),
+                Err(err) => {
+                    eprintln!("warning: disabling cpu reference path after prefill failure: {err}");
+                    (None, None, std::time::Duration::ZERO)
+                }
+            }
         } else {
             (None, None, std::time::Duration::ZERO)
         };
@@ -355,9 +362,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if target_device.is_hip() {
         candle_core::hip::reset_transfer_counters();
     }
+    let device_hidden_states = device_runner.hidden_states_from_input_ids_direct(&input_ids)?;
     let device_prefill_started = Instant::now();
     let (mut device_logits, mut device_cache) =
-        device_runner.prefill_from_hidden_states(&hidden_states)?;
+        device_runner.prefill_from_hidden_states(&device_hidden_states)?;
     let device_prefill_elapsed = device_prefill_started.elapsed();
     #[cfg(feature = "qwen35-minimal-hip")]
     if target_device.is_hip()
@@ -391,6 +399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
     let mut cpu_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
+    let mut cpu_reference_enabled = cpu_logits.is_some() && cpu_cache.is_some();
     let mut next_token = match cpu_logits.as_ref() {
         Some(cpu_logits) => argmax_last_token(cpu_logits.tensor())?,
         None => argmax_last_token(device_logits.tensor())?,
@@ -400,11 +409,25 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
         let device_hidden_state = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
-        if let (Some(cpu_runner), Some(cpu_cache)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
+        if cpu_reference_enabled {
+            if let (Some(cpu_runner), Some(cpu_cache_ref)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
             let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
             let cpu_decode_started = Instant::now();
-            cpu_logits = Some(cpu_runner.decode_from_hidden_state(&cpu_hidden_state, cpu_cache)?);
-            cpu_decode_elapsed += cpu_decode_started.elapsed();
+            match cpu_runner.decode_from_hidden_state(&cpu_hidden_state, cpu_cache_ref) {
+                Ok(logits) => {
+                    cpu_logits = Some(logits);
+                    cpu_decode_elapsed += cpu_decode_started.elapsed();
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: disabling cpu reference path after decode failure: {err}"
+                    );
+                    cpu_logits = None;
+                    cpu_cache = None;
+                    cpu_reference_enabled = false;
+                }
+            }
+        }
         }
 
         #[cfg(feature = "qwen35-minimal-hip")]

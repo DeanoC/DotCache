@@ -116,13 +116,14 @@ fn execute_full_decode_layer(
         input_profile,
     ) = self_attn.project_direct_decode_inputs_with_context(&xs_norm, &context)?;
     profile.add_assign(&input_profile);
-    let xs = self_attn.run_direct_decode_core_with_context(
+    let attn_output = self_attn.run_direct_decode_core_with_context(
         &context,
         &query_states,
         &key_states,
         &value_states,
         &gate,
     )?;
+    let xs = self_attn.project_direct_decode_output(&attn_output)?;
     let xs = phase_context
         .backend
         .copy_state_into_scratch(&xs, full_attention_output_scratch)?;

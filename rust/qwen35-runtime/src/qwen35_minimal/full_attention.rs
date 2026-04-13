@@ -1136,7 +1136,7 @@ impl FullAttention {
         let query_dims = query_workspace.tensor().dims();
         let key_dims = key_workspace.tensor().dims();
         let value_dims = value_workspace.tensor().dims();
-        let expected_gate_dims = vec![1, 1, self.num_heads, self.head_dim];
+        let expected_gate_dims = vec![1, 1, self.num_heads * self.head_dim];
         let expected_query_dims = vec![1, self.num_heads, 1, self.head_dim];
         let expected_kv_dims = vec![1, self.num_kv_heads, 1, self.head_dim];
         if gate_workspace.device().location() != xs.device().location()
@@ -1422,6 +1422,13 @@ impl FullAttention {
             gate,
             context.seqlen_offset,
         )
+    }
+
+    pub(super) fn project_direct_decode_output(
+        &self,
+        attn_output: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        self.o_proj.forward_buffer(attn_output)
     }
 
     pub(super) fn commit_direct_decode_kv_cache(
