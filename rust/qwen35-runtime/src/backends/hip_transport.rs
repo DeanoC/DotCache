@@ -242,6 +242,34 @@ impl HipDeviceStorage {
             Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
     }
+
+    fn try_extract_host_buffer(&self) -> Result<Option<HipHostBuffer>> {
+        let Self::CandleTensor(tensor) = self else {
+            return Ok(None);
+        };
+        if !tensor.is_contiguous() {
+            return Ok(None);
+        }
+        let (storage, layout) = tensor.storage_and_layout();
+        if !layout.is_contiguous() {
+            return Ok(None);
+        }
+        let bytes = match &*storage {
+            candle_core::Storage::Cpu(storage) => {
+                HipNativeBuffer::cpu_storage_to_bytes(storage, tensor.dtype())
+            }
+            _ => HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())?,
+        };
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        Ok(Some(HipHostBuffer {
+            bytes,
+            shape: tensor.dims().to_vec(),
+            dtype: tensor.dtype(),
+            device: tensor.device().clone(),
+        }))
+    }
 }
 
 fn import_hip_tensor_storage(tensor: &Tensor) -> Result<Option<HipDeviceStorage>> {
@@ -1376,7 +1404,9 @@ impl HipDeviceBuffer {
             HipDeviceStorage::MappedHostBuffer(buffer) => &buffer.buffer,
             HipDeviceStorage::HostBuffer(buffer) | HipDeviceStorage::PendingHostUpload(buffer) => buffer,
             HipDeviceStorage::OwnedDeviceBuffer(_) => return Ok(None),
-            HipDeviceStorage::CandleTensor(_) => return Ok(None),
+            HipDeviceStorage::CandleTensor(_) => {
+                return self.storage.try_extract_host_buffer();
+            }
         };
         let mut native = HipNativeBuffer {
             expr: HipNativeExpr::HostBytes {
@@ -1441,7 +1471,10 @@ impl HipDeviceBuffer {
                 buffer.clone()
             }
             HipDeviceStorage::OwnedDeviceBuffer(buffer) => buffer.download_to_host_buffer()?,
-            HipDeviceStorage::CandleTensor(_) => return Ok(None),
+            HipDeviceStorage::CandleTensor(_) => match self.storage.try_extract_host_buffer()? {
+                Some(buffer) => buffer,
+                None => return Ok(None),
+            },
         };
         for op in &self.view_ops {
             buffer = match op {
