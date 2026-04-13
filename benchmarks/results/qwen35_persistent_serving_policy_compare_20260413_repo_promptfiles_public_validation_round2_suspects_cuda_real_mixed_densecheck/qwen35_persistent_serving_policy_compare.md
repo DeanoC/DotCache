@@ -3,19 +3,19 @@
 ## Summary
 
 - case count: 2
-- dense avg ms/step: 30.3532
-- hand-tuned avg ms/step: 335.5169
-- bias avg ms/step: 331.9961
-- hand-tuned vs dense exact match rate: 0.000
-- bias vs dense exact match rate: 0.000
+- dense avg ms/step: 29.9411
+- hand-tuned avg ms/step: 334.2413
+- bias avg ms/step: 328.8473
+- hand-tuned vs dense exact match rate: 0.500
+- bias vs dense exact match rate: 0.500
 - bias vs hand-tuned exact match rate: 1.000
 - bias faster than hand-tuned rate: 0.500
 - hand-tuned policy resolve ms/case: 0.0000
-- bias policy resolve ms/case: 20.1588
-- hand-tuned score ms/case: 159.7746
-- bias score ms/case: 151.5308
-- hand-tuned selection ms/case: 197.4094
-- bias selection ms/case: 168.6230
+- bias policy resolve ms/case: 19.7051
+- hand-tuned score ms/case: 160.2416
+- bias score ms/case: 151.3782
+- hand-tuned selection ms/case: 190.1030
+- bias selection ms/case: 168.5041
 - hand-tuned optional-selection ms/case: 0.0000
 - bias optional-selection ms/case: 0.0000
 - hand-tuned diverse-selection ms/case: 0.0000
@@ -43,8 +43,8 @@
 
 ## Cases
 
-- performance_journal: dense 36.7854 ms/step, hand 398.4876, bias 387.4659, hand=dense False, bias=dense False, bias=hand True, hand select 230.81 ms, bias select 172.94 ms
-- state_cache_roadmap: dense 23.9210 ms/step, hand 272.5461, bias 276.5262, hand=dense False, bias=dense False, bias=hand True, hand select 164.01 ms, bias select 164.31 ms
+- performance_journal: dense 36.0149 ms/step, hand 396.3810, bias 383.8854, hand=dense False, bias=dense False, bias=hand True, hand select 214.94 ms, bias select 174.03 ms
+- state_cache_roadmap: dense 23.8673 ms/step, hand 272.1017, bias 273.8092, hand=dense True, bias=dense True, bias=hand True, hand select 165.26 ms, bias select 162.98 ms
 
 ## Read
 

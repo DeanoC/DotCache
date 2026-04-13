@@ -2,20 +2,20 @@
 
 ## Summary
 
-- case count: 2
-- dense avg ms/step: 30.5291
-- hand-tuned avg ms/step: 344.1667
-- bias avg ms/step: 349.2539
+- case count: 4
+- dense avg ms/step: 28.7134
+- hand-tuned avg ms/step: 302.2015
+- bias avg ms/step: 308.2500
 - hand-tuned vs dense exact match rate: 1.000
 - bias vs dense exact match rate: 1.000
 - bias vs hand-tuned exact match rate: 1.000
-- bias faster than hand-tuned rate: 0.000
+- bias faster than hand-tuned rate: 0.500
 - hand-tuned policy resolve ms/case: 0.0000
-- bias policy resolve ms/case: 19.0970
-- hand-tuned score ms/case: 119.8257
-- bias score ms/case: 114.7124
-- hand-tuned selection ms/case: 148.5467
-- bias selection ms/case: 132.2453
+- bias policy resolve ms/case: 20.2479
+- hand-tuned score ms/case: 129.4564
+- bias score ms/case: 131.4251
+- hand-tuned selection ms/case: 155.3281
+- bias selection ms/case: 150.1414
 - hand-tuned optional-selection ms/case: 0.0000
 - bias optional-selection ms/case: 0.0000
 - hand-tuned diverse-selection ms/case: 0.0000
@@ -43,8 +43,10 @@
 
 ## Cases
 
-- performance_journal: dense 36.5900 ms/step, hand 405.7771, bias 413.9784, hand=dense True, bias=dense True, bias=hand True, hand select 165.27 ms, bias select 133.45 ms
-- state_cache_roadmap: dense 24.4682 ms/step, hand 282.5562, bias 284.5295, hand=dense True, bias=dense True, bias=hand True, hand select 131.83 ms, bias select 131.04 ms
+- gemma4_apple_compatibility: dense 37.2508 ms/step, hand 161.5253, bias 160.7561, hand=dense True, bias=dense True, bias=hand True, hand select 196.63 ms, bias select 141.04 ms
+- model_roadmap: dense 26.3120 ms/step, hand 378.2594, bias 342.9351, hand=dense True, bias=dense True, bias=hand True, hand select 150.75 ms, bias select 140.79 ms
+- statecache_showcase: dense 25.8876 ms/step, hand 333.0168, bias 336.2990, hand=dense True, bias=dense True, bias=hand True, hand select 135.72 ms, bias select 137.92 ms
+- submission_execution_plan: dense 25.4033 ms/step, hand 336.0046, bias 393.0097, hand=dense True, bias=dense True, bias=hand True, hand select 138.21 ms, bias select 180.81 ms
 
 ## Read
 

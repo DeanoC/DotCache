@@ -2,20 +2,20 @@
 
 ## Summary
 
-- case count: 2
-- dense avg ms/step: 30.5291
-- hand-tuned avg ms/step: 344.1667
-- bias avg ms/step: 349.2539
+- case count: 4
+- dense avg ms/step: 28.2191
+- hand-tuned avg ms/step: 290.7519
+- bias avg ms/step: 303.2387
 - hand-tuned vs dense exact match rate: 1.000
 - bias vs dense exact match rate: 1.000
 - bias vs hand-tuned exact match rate: 1.000
-- bias faster than hand-tuned rate: 0.000
+- bias faster than hand-tuned rate: 0.250
 - hand-tuned policy resolve ms/case: 0.0000
-- bias policy resolve ms/case: 19.0970
-- hand-tuned score ms/case: 119.8257
-- bias score ms/case: 114.7124
-- hand-tuned selection ms/case: 148.5467
-- bias selection ms/case: 132.2453
+- bias policy resolve ms/case: 19.9433
+- hand-tuned score ms/case: 155.1305
+- bias score ms/case: 160.2237
+- hand-tuned selection ms/case: 180.5745
+- bias selection ms/case: 179.1269
 - hand-tuned optional-selection ms/case: 0.0000
 - bias optional-selection ms/case: 0.0000
 - hand-tuned diverse-selection ms/case: 0.0000
@@ -32,10 +32,10 @@
 - bias direct-M0 gather ms/case: 0.0000
 - hand-tuned direct-M0 score ms/case: 0.0000
 - bias direct-M0 score ms/case: 0.0000
-- hand-tuned executed M0 blocks/case: 0.00
-- bias executed M0 blocks/case: 0.00
-- hand-tuned executed M3 blocks/case: 0.00
-- bias executed M3 blocks/case: 0.00
+- hand-tuned executed M0 blocks/case: 3828.00
+- bias executed M0 blocks/case: 3828.00
+- hand-tuned executed M3 blocks/case: 12.00
+- bias executed M3 blocks/case: 12.00
 - hand-tuned exact-M3 score ms/case: 0.0000
 - bias exact-M3 score ms/case: 0.0000
 - hand-tuned final-mix ms/case: 0.0000
@@ -43,8 +43,10 @@
 
 ## Cases
 
-- performance_journal: dense 36.5900 ms/step, hand 405.7771, bias 413.9784, hand=dense True, bias=dense True, bias=hand True, hand select 165.27 ms, bias select 133.45 ms
-- state_cache_roadmap: dense 24.4682 ms/step, hand 282.5562, bias 284.5295, hand=dense True, bias=dense True, bias=hand True, hand select 131.83 ms, bias select 131.04 ms
+- gemma4_apple_compatibility: dense 34.7249 ms/step, hand 154.1586, bias 143.7441, hand=dense True, bias=dense True, bias=hand True, hand select 190.17 ms, bias select 152.15 ms
+- model_roadmap: dense 24.5821 ms/step, hand 317.9874, bias 319.6849, hand=dense True, bias=dense True, bias=hand True, hand select 171.39 ms, bias select 170.45 ms
+- statecache_showcase: dense 24.7741 ms/step, hand 317.3150, bias 367.5569, hand=dense True, bias=dense True, bias=hand True, hand select 170.11 ms, bias select 194.30 ms
+- submission_execution_plan: dense 28.7952 ms/step, hand 373.5468, bias 381.9686, hand=dense True, bias=dense True, bias=hand True, hand select 190.63 ms, bias select 199.61 ms
 
 ## Read
 
