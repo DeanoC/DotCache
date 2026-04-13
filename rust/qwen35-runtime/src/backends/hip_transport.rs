@@ -32,10 +32,32 @@ use crate::qwen35_minimal_impl::hip;
 use half::{bf16, f16};
 use std::ffi::c_void;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use candle_core::shape::Dim;
 use candle_core::DeviceLocation;
 
 pub(crate) use candle_core::{DType, Device, Result, Shape, Tensor};
+
+fn hip_trace_candle_fallback_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("DOTCACHE_HIP_TRACE_CANDLE_FALLBACK")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
+}
+
+fn trace_candle_fallback(op: &str, tensor: &Tensor) {
+    if hip_trace_candle_fallback_enabled() {
+        eprintln!(
+            "hip-candle-fallback op={} dtype={:?} shape={:?} device={:?}",
+            op,
+            tensor.dtype(),
+            tensor.dims(),
+            tensor.device().location()
+        );
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum HipNativeExpr {
@@ -2472,6 +2494,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from cast host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.to_dtype.tensor", &tensor);
         Ok(Self::from_tensor(tensor.to_dtype(dtype)?))
     }
 
@@ -2496,6 +2519,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from exp host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.exp.tensor", &tensor);
         Ok(Self::from_tensor(tensor.exp()?))
     }
 
@@ -2520,6 +2544,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from log host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.log.tensor", &tensor);
         Ok(Self::from_tensor(tensor.log()?))
     }
 
@@ -2571,6 +2596,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_add host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.broadcast_add.tensor_lhs", &lhs);
         Ok(Self::from_tensor(lhs.broadcast_add(&rhs)?))
     }
 
@@ -2598,6 +2624,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_sub host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.broadcast_sub.tensor_lhs", &lhs);
         Ok(Self::from_tensor(lhs.broadcast_sub(&rhs)?))
     }
 
@@ -2625,6 +2652,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_div host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.broadcast_div.tensor_lhs", &lhs);
         Ok(Self::from_tensor(lhs.broadcast_div(&rhs)?))
     }
 
@@ -2652,6 +2680,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_mul host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.broadcast_mul.tensor_lhs", &lhs);
         Ok(Self::from_tensor(lhs.broadcast_mul(&rhs)?))
     }
 
@@ -2679,6 +2708,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from max_keepdim host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.max_keepdim.tensor", &tensor);
         Ok(Self::from_tensor(tensor.max_keepdim(dim)?))
     }
 
@@ -2706,6 +2736,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from sum_keepdim host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.sum_keepdim.tensor", &tensor);
         Ok(Self::from_tensor(tensor.sum_keepdim(dim)?))
     }
 
@@ -2733,6 +2764,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from mul_scalar host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.mul_scalar.tensor", &tensor);
         Ok(Self::from_tensor((tensor * value)?))
     }
 
@@ -2760,6 +2792,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from add_scalar host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.add_scalar.tensor", &tensor);
         Ok(Self::from_tensor((tensor + value)?))
     }
 
@@ -2784,6 +2817,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from recip host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.recip.tensor", &tensor);
         Ok(Self::from_tensor(tensor.recip()?))
     }
 
@@ -2808,6 +2842,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from sqrt host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.sqrt.tensor", &tensor);
         Ok(Self::from_tensor(tensor.sqrt()?))
     }
 
@@ -2837,6 +2872,7 @@ impl HipDeviceBuffer {
                 candle_core::Error::Msg("expected direct device buffer from matmul host buffer".into())
             })?);
         }
+        trace_candle_fallback("device_buffer.matmul.tensor_lhs", &lhs);
         Ok(Self::from_tensor(lhs.matmul(&rhs)?))
     }
 
