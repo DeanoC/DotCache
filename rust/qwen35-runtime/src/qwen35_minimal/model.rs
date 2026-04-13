@@ -9000,6 +9000,12 @@ fn delta_chunk_step_raw(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_chunk_step_raw_host_buffer(prev_state, query, key, value, beta, g)?
+    {
+        return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
+    }
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepRaw)
 }
 
@@ -9638,6 +9644,12 @@ fn delta_chunk_step_windowed_raw(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_chunk_step_windowed_raw_host_buffer(prev_state, query, key, value, beta, g)?
+    {
+        return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
+    }
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepWindowedRaw)
 }
 
