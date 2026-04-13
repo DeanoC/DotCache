@@ -157,6 +157,48 @@ The practical question is not only "does it win on one pack?" but:
 - does it keep winning on docs, code-heavy prompts, design docs, and harder long-context mixes
 - does `bias` stay the default winner
 
+New local read on a broader repo-local public-validation mix:
+
+- manifest:
+  - [benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_20260412.json)
+- result note:
+  - [docs/qwen35_stage9_public_validation_20260412.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/docs/qwen35_stage9_public_validation_20260412.md)
+
+That run mixed roadmap docs, planning docs, backend notes, and code-heavy benchmark source files.
+
+Current MPS `bias` results on that validation set:
+
+- real mixed: `552.24 ms/step`
+- conservative certified: `1434.78`
+- non-`M0` Stage 9: `2273.01`
+
+So on this broader public-validation corpus, the winner ordering still holds cleanly:
+
+- real mixed remains the serving winner
+- conservative certified remains the middle lane
+- non-`M0` Stage 9 remains the slowest of the three
+
+That materially strengthens the current confidence story on MPS, because the win is no longer resting only on the earlier large / broad / external manifest family.
+
+Quick repeatability read on the real-mixed public-validation lane:
+
+- bias ms/step values:
+  - `552.24`
+  - `591.98`
+  - `590.81`
+- mean: `578.34`
+- population stdev: `18.46`
+
+So even with some run-to-run spread, the public-validation winner ordering remains comfortably intact.
+
+Same-tree CUDA public-validation read on that same corpus is now also checked in:
+
+- real mixed `bias`: `327.70 ms/step`
+- conservative certified `333.35 ms/step`
+- non-`M0` Stage 9 `339.66 ms/step`
+- exact-match still `1.0`
+- real mixed remains the same-tree winner
+
 ### 3. Repeatability
 
 The current numbers are strong, but the thesis should rest on stable runs rather than one especially lucky point.
@@ -248,6 +290,26 @@ So the cross-corpus read is now a little richer:
   - helpful on `broad`
 
 That makes the next useful policy shape more likely to be cost-aware and context-sensitive rather than a single global threshold bump.
+
+Live policy compare result on the real mixed Stage 9 lane:
+
+- benchmark artifact:
+  - [benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md)
+
+Across the portable `external`, `broad`, `large`, and the newer public-validation manifest, the current baseline policy still ranked best in the live runtime:
+
+- baseline: `683.99 ms/step`
+- layer15_always_024: `694.62`
+- layer15_len_ge_1800_024: `723.10`
+- layer15_code_or_len_ge_1800_024: `756.63`
+
+All of those alternatives preserved exact-match vs baseline, but none improved runtime.
+
+That is a useful negative result:
+
+- the cheap layer-15 heuristics are not good enough to promote into the runtime
+- the offline frontier signal was directionally interesting but not sufficient for live policy choice
+- if we revisit this frontier, it should be with a stronger cost model or richer runtime features, not a simple threshold heuristic
 
 Third focused portable-large study:
 

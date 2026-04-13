@@ -82,6 +82,27 @@ Current CUDA real-mixed bundles:
   - bias `240.84 ms/step`
   - exact-match `1.0`
 
+### CUDA public-validation reference
+
+- real-mixed:
+  - [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_public_validation/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_public_validation/qwen35_persistent_real_mixed_probe.md)
+  - bias `327.70 ms/step`
+  - exact-match `1.0`
+- non-`M0`:
+  - [benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_stage9_non_m0/qwen35_persistent_serving_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_stage9_non_m0/qwen35_persistent_serving_policy_compare.md)
+  - bias `339.66 ms/step`
+- conservative certified:
+  - [benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.md)
+  - bias `333.35 ms/step`
+
+CUDA public-validation main read:
+
+- real mixed `327.70 ms/step`
+- conservative `333.35 ms/step`
+- non-`M0` `339.66 ms/step`
+- real mixed still wins (`1.69%` and `3.52%` margins vs conservative and non-`M0`)
+- exact-match stays `1.0`
+
 Important CUDA observation:
 
 - the updated real-mixed CUDA path is no longer just a research lane on every corpus
@@ -123,6 +144,7 @@ Portable-corpus bias winners at the current checkpoints:
 | large | real mixed `1407.44` | real mixed `374.06` |
 | broad | real mixed `1627.72` | real mixed `443.30` |
 | external | real mixed `843.77` | real mixed `240.84` |
+| public_validation | N/A | real mixed `327.70` |
 
 This is the main backend-dependent result.
 
@@ -135,6 +157,7 @@ Portable-corpus `bias` comparison at the current checked-in checkpoints:
 | large | `1407.44` | `3784.86` | `2054.42` | `374.06` | `388.78` | `652.91` |
 | broad | `1627.72` | `4234.40` | `2828.78` | `443.30` | `465.40` | `792.60` |
 | external | `843.77` | `1700.51` | `1340.05` | `240.84` | `244.02` | `380.85` |
+| public_validation | N/A | N/A | N/A | `327.70` | `339.66` | `333.35` |
 
 Across this matrix:
 
