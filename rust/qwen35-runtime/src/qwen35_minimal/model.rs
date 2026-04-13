@@ -6850,9 +6850,11 @@ pub fn paged_attention_decode_megakernel(
     .reshape((batch_queries, head_dim))?)
 }
 
+#[cfg(feature = "metal")]
 #[derive(Debug, Clone, Copy)]
 struct DeltaStateUpdate;
 
+#[cfg(feature = "metal")]
 impl candle::CustomOp3 for DeltaStateUpdate {
     fn name(&self) -> &'static str {
         "delta-state-update"
@@ -6957,16 +6959,16 @@ pub(crate) fn delta_state_update(
     prev_state_scaled: &Tensor,
     weighted_key: &Tensor,
     value: &Tensor,
-    use_kernel: bool,
+    _use_kernel: bool,
 ) -> Result<Tensor> {
-    if use_kernel && matches!(prev_state_scaled.device().location(), DeviceLocation::Metal { .. }) {
+    #[cfg(feature = "metal")]
+    if _use_kernel && matches!(prev_state_scaled.device().location(), DeviceLocation::Metal { .. }) {
         prev_state_scaled.apply_op3_no_bwd(weighted_key, value, &DeltaStateUpdate)
-    } else {
-        weighted_key
-            .transpose(2, 1)?
-            .matmul(value)?
-            .broadcast_add(prev_state_scaled)
     }
+    weighted_key
+        .transpose(2, 1)?
+        .matmul(value)?
+        .broadcast_add(prev_state_scaled)
 }
 
 #[derive(Debug, Clone, Copy)]
