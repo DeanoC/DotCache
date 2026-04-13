@@ -124,6 +124,8 @@ pub struct MinimalQwen35DirectRuntime {
     decode_logits: MinimalQwen35StateBuffer,
     full_attention_gate: MinimalQwen35StateBuffer,
     full_attention_qkv: MinimalQwen35StateBuffer,
+    full_attention_key: MinimalQwen35StateBuffer,
+    full_attention_value: MinimalQwen35StateBuffer,
     next_hidden_slot_is_ping: bool,
     last_prefill_sequence_length: usize,
     last_decode_sequence_length: usize,
@@ -164,6 +166,14 @@ impl MinimalQwen35DirectRuntime {
 
     pub(crate) fn full_attention_qkv(&self) -> &MinimalQwen35StateBuffer {
         &self.full_attention_qkv
+    }
+
+    pub(crate) fn full_attention_key(&self) -> &MinimalQwen35StateBuffer {
+        &self.full_attention_key
+    }
+
+    pub(crate) fn full_attention_value(&self) -> &MinimalQwen35StateBuffer {
+        &self.full_attention_value
     }
 
     pub fn last_prefill_sequence_length(&self) -> usize {
@@ -396,6 +406,22 @@ impl MinimalQwen35Runner {
                 context: "qwen35-hip-direct",
                 message: "direct HIP metadata missing full_attention_qkv workspace".to_string(),
             })?;
+        let full_attention_key_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "full_attention_key")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing full_attention_key workspace".to_string(),
+            })?;
+        let full_attention_value_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "full_attention_value")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing full_attention_value workspace".to_string(),
+            })?;
         let decode_hidden_ping =
             backend.zeros_state(device, scratch_dtype, &decode_hidden_ping_entry.dims)?;
         let decode_hidden_pong =
@@ -405,6 +431,10 @@ impl MinimalQwen35Runner {
             backend.zeros_state(device, scratch_dtype, &full_attention_gate_entry.dims)?;
         let full_attention_qkv =
             backend.zeros_state(device, scratch_dtype, &full_attention_qkv_entry.dims)?;
+        let full_attention_key =
+            backend.zeros_state(device, scratch_dtype, &full_attention_key_entry.dims)?;
+        let full_attention_value =
+            backend.zeros_state(device, scratch_dtype, &full_attention_value_entry.dims)?;
         Ok(MinimalQwen35DirectRuntime {
             profile,
             target,
@@ -415,6 +445,8 @@ impl MinimalQwen35Runner {
             decode_logits,
             full_attention_gate,
             full_attention_qkv,
+            full_attention_key,
+            full_attention_value,
             next_hidden_slot_is_ping: true,
             last_prefill_sequence_length: 0,
             last_decode_sequence_length: 0,

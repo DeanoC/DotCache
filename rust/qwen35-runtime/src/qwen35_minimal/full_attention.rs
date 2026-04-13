@@ -51,7 +51,9 @@ pub(super) struct DirectFullAttentionDecodeContext<'a> {
     k_norm_weight: &'a Tensor,
     k_norm_eps: f64,
     gate_workspace: &'a StateBuffer,
-    qkv_workspace: &'a StateBuffer,
+    query_workspace: &'a StateBuffer,
+    key_workspace: &'a StateBuffer,
+    value_workspace: &'a StateBuffer,
 }
 
 impl FullAttention {
@@ -1099,27 +1101,40 @@ impl FullAttention {
         xs: &StateBuffer,
         seqlen_offset: usize,
         gate_workspace: &'a StateBuffer,
-        qkv_workspace: &'a StateBuffer,
+        query_workspace: &'a StateBuffer,
+        key_workspace: &'a StateBuffer,
+        value_workspace: &'a StateBuffer,
     ) -> Result<DirectFullAttentionDecodeContext<'a>> {
         let backend = backend_buffer_api::for_device(xs.device());
         let output_dtype = xs.dtype();
         let (b_sz, q_len, _) = xs.dims3()?;
         let prev_kv = self.kv_cache.as_ref();
         let gate_dims = gate_workspace.tensor().dims();
-        let qkv_dims = qkv_workspace.tensor().dims();
+        let query_dims = query_workspace.tensor().dims();
+        let key_dims = key_workspace.tensor().dims();
+        let value_dims = value_workspace.tensor().dims();
         let expected_gate_dims = vec![1, 1, self.num_heads, self.head_dim];
-        let expected_qkv_dims = vec![1, self.num_heads, 1, self.head_dim];
+        let expected_query_dims = vec![1, self.num_heads, 1, self.head_dim];
+        let expected_kv_dims = vec![1, self.num_kv_heads, 1, self.head_dim];
         if gate_workspace.device().location() != xs.device().location()
-            || qkv_workspace.device().location() != xs.device().location()
+            || query_workspace.device().location() != xs.device().location()
+            || key_workspace.device().location() != xs.device().location()
+            || value_workspace.device().location() != xs.device().location()
         {
             candle::bail!("direct-hip-v1 full-attention scratch must live on the hidden-state device");
         }
-        if gate_workspace.dtype() != output_dtype || qkv_workspace.dtype() != output_dtype {
+        if gate_workspace.dtype() != output_dtype
+            || query_workspace.dtype() != output_dtype
+            || key_workspace.dtype() != output_dtype
+            || value_workspace.dtype() != output_dtype
+        {
             candle::bail!(
-                "direct-hip-v1 full-attention scratch dtype mismatch: hidden={:?} gate={:?} qkv={:?}",
+                "direct-hip-v1 full-attention scratch dtype mismatch: hidden={:?} gate={:?} query={:?} key={:?} value={:?}",
                 output_dtype,
                 gate_workspace.dtype(),
-                qkv_workspace.dtype(),
+                query_workspace.dtype(),
+                key_workspace.dtype(),
+                value_workspace.dtype(),
             );
         }
         if gate_dims != expected_gate_dims {
@@ -1129,11 +1144,25 @@ impl FullAttention {
                 expected_gate_dims,
             );
         }
-        if qkv_dims != expected_qkv_dims {
+        if query_dims != expected_query_dims {
             candle::bail!(
-                "direct-hip-v1 full-attention qkv scratch dims mismatch: got {:?} expected {:?}",
-                qkv_dims,
-                expected_qkv_dims,
+                "direct-hip-v1 full-attention query scratch dims mismatch: got {:?} expected {:?}",
+                query_dims,
+                expected_query_dims,
+            );
+        }
+        if key_dims != expected_kv_dims {
+            candle::bail!(
+                "direct-hip-v1 full-attention key scratch dims mismatch: got {:?} expected {:?}",
+                key_dims,
+                expected_kv_dims,
+            );
+        }
+        if value_dims != expected_kv_dims {
+            candle::bail!(
+                "direct-hip-v1 full-attention value scratch dims mismatch: got {:?} expected {:?}",
+                value_dims,
+                expected_kv_dims,
             );
         }
         Ok(DirectFullAttentionDecodeContext {
@@ -1149,7 +1178,9 @@ impl FullAttention {
             k_norm_weight: self.k_norm.weight(),
             k_norm_eps: self.k_norm.eps(),
             gate_workspace,
-            qkv_workspace,
+            query_workspace,
+            key_workspace,
+            value_workspace,
         })
     }
 
@@ -1158,12 +1189,20 @@ impl FullAttention {
         xs: &StateBuffer,
         seqlen_offset: usize,
         gate_workspace: &StateBuffer,
-        qkv_workspace: &StateBuffer,
+        query_workspace: &StateBuffer,
+        key_workspace: &StateBuffer,
+        value_workspace: &StateBuffer,
         _layer_id: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let device = xs.device();
-        let context =
-            self.direct_decode_context(xs, seqlen_offset, gate_workspace, qkv_workspace)?;
+        let context = self.direct_decode_context(
+            xs,
+            seqlen_offset,
+            gate_workspace,
+            query_workspace,
+            key_workspace,
+            value_workspace,
+        )?;
         if context.q_len != 1 {
             candle::bail!(
                 "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={}",
@@ -1207,7 +1246,9 @@ impl FullAttention {
         xs: &StateBuffer,
         seqlen_offset: usize,
         gate_workspace: &StateBuffer,
-        qkv_workspace: &StateBuffer,
+        query_workspace: &StateBuffer,
+        key_workspace: &StateBuffer,
+        value_workspace: &StateBuffer,
     ) -> Result<(
         Tensor,
         Tensor,
@@ -1217,8 +1258,14 @@ impl FullAttention {
         StateBuffer,
         RuntimeProfile,
     )> {
-        let context =
-            self.direct_decode_context(xs, seqlen_offset, gate_workspace, qkv_workspace)?;
+        let context = self.direct_decode_context(
+            xs,
+            seqlen_offset,
+            gate_workspace,
+            query_workspace,
+            key_workspace,
+            value_workspace,
+        )?;
         self.project_direct_decode_inputs_with_context(xs, &context)
     }
 
@@ -1240,7 +1287,9 @@ impl FullAttention {
 
         let qkv_start = profile_start(device)?;
         let _ = context.gate_workspace.tensor();
-        let _ = context.qkv_workspace.tensor();
+        let _ = context.query_workspace.tensor();
+        let _ = context.key_workspace.tensor();
+        let _ = context.value_workspace.tensor();
         let q_and_gate = self.q_proj.forward_buffer(xs)?;
         let k_proj = self.k_proj.forward_buffer(xs)?;
         let v_proj = self.v_proj.forward_buffer(xs)?;
@@ -1259,8 +1308,12 @@ impl FullAttention {
             context.k_norm_eps,
         )?;
         let query_states =
-            context.backend.copy_state_into_scratch(&query_states, context.qkv_workspace)?;
+            context.backend.copy_state_into_scratch(&query_states, context.query_workspace)?;
         let gate = context.backend.copy_state_into_scratch(&gate, context.gate_workspace)?;
+        let key_states =
+            context.backend.copy_state_into_scratch(&key_states, context.key_workspace)?;
+        let value_states =
+            context.backend.copy_state_into_scratch(&value_states, context.value_workspace)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let layout_start = profile_start(device)?;

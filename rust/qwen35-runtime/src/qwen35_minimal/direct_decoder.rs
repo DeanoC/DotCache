@@ -69,6 +69,8 @@ fn execute_full_decode_layer(
     seqlen_offset: usize,
     full_attention_gate: &StateBuffer,
     full_attention_qkv: &StateBuffer,
+    full_attention_key: &StateBuffer,
+    full_attention_value: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
@@ -85,6 +87,8 @@ fn execute_full_decode_layer(
         seqlen_offset,
         full_attention_gate,
         full_attention_qkv,
+        full_attention_key,
+        full_attention_value,
     )?;
     let (
         query_states,
@@ -154,6 +158,8 @@ fn execute_direct_decode_full_phase_unchecked(
     seqlen_offset: usize,
     full_attention_gate: &StateBuffer,
     full_attention_qkv: &StateBuffer,
+    full_attention_key: &StateBuffer,
+    full_attention_value: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
@@ -182,6 +188,8 @@ fn execute_direct_decode_full_phase_unchecked(
                 seqlen_offset,
                 full_attention_gate,
                 full_attention_qkv,
+                full_attention_key,
+                full_attention_value,
             )?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
@@ -273,6 +281,8 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     seqlen_offset: usize,
     full_attention_gate: &StateBuffer,
     full_attention_qkv: &StateBuffer,
+    full_attention_key: &StateBuffer,
+    full_attention_value: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     execute_direct_decode_full_phase_unchecked(
         model,
@@ -282,6 +292,8 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         seqlen_offset,
         full_attention_gate,
         full_attention_qkv,
+        full_attention_key,
+        full_attention_value,
     )
 }
 
@@ -342,6 +354,8 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     seqlen_offset: usize,
     full_attention_gate: &StateBuffer,
     full_attention_qkv: &StateBuffer,
+    full_attention_key: &StateBuffer,
+    full_attention_value: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         &mut model.language_model,
@@ -351,6 +365,8 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         seqlen_offset,
         full_attention_gate,
         full_attention_qkv,
+        full_attention_key,
+        full_attention_value,
     )
 }
 
