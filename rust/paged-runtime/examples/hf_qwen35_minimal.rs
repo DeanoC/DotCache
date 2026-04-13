@@ -3,9 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Instant;
 
     use candle_core::{DType, Device, IndexOp, Tensor};
-    use dotcache_paged_runtime::{
-        MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
-    };
+    use dotcache_paged_runtime::{MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError};
     use serde::Serialize;
     use tokenizers::Tokenizer;
 
@@ -327,6 +325,41 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     }
 
+    fn trace_cross_runner_cache_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_CACHE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_generic_decode_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_GENERIC_DECODE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_model_only_decode_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_MODEL_ONLY_DECODE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_cache_delta(
+        label: &str,
+        oracle: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        device: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<()> {
+        if !trace_cross_runner_cache_delta_enabled() {
+            return Ok(());
+        }
+        for line in oracle.layer_max_abs_deltas(device)? {
+            eprintln!("cross-runner-cache-delta[{label}] {line}");
+        }
+        Ok(())
+    }
+
     fn report_linear_nan_trace(runner: &mut MinimalQwen35Runner, input_ids: &Tensor) -> Result<()> {
         for layer_id in runner.linear_attention_layer_ids() {
             let trace = runner.trace_linear_attention_layer(input_ids, layer_id, 0)?;
@@ -496,6 +529,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
         None => f32::NAN,
     };
+    if let (Some(oracle_cache), true) = (oracle_cache.as_ref(), oracle_device.location() == target_device.location()) {
+        trace_cross_runner_cache_delta("prefill", oracle_cache, &device_cache)?;
+    }
     let mut generated_ids = prompt_ids.clone();
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
     let mut oracle_decode_elapsed = std::time::Duration::ZERO;
@@ -510,6 +546,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
         let device_hidden_state = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
+        let device_pre_decode_cache = if trace_cross_runner_generic_decode_delta_enabled() {
+            Some(device_cache.clone())
+        } else {
+            None
+        };
         if oracle_reference_enabled {
             if let (Some(oracle_runner), Some(oracle_cache_ref)) = (oracle_runner.as_mut(), oracle_cache.as_mut()) {
             let oracle_decode_input = if oracle_device.location() == cpu_device.location() {
@@ -554,6 +595,59 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device_logits =
             device_runner.decode_from_hidden_state(&device_hidden_state, &mut device_cache)?;
         device_decode_elapsed += device_decode_started.elapsed();
+        if trace_cross_runner_generic_decode_delta_enabled()
+            && oracle_device.location() == target_device.location()
+        {
+            if let (Some(oracle_logits_ref), Some(oracle_cache_ref)) =
+                (oracle_logits.as_ref(), oracle_cache.as_ref())
+            {
+                let mut generic_cache = device_pre_decode_cache
+                    .clone()
+                    .unwrap_or_else(|| device_cache.clone());
+                let generic_logits = device_runner
+                    .decode_from_hidden_state_generic_only(&device_hidden_state, &mut generic_cache)?;
+                let generic_logit_delta =
+                    max_logit_delta(oracle_logits_ref.tensor(), generic_logits.tensor())?;
+                eprintln!(
+                    "cross-runner-generic-decode-delta logits_max_abs_delta={:.6}",
+                    generic_logit_delta
+                );
+                trace_cross_runner_cache_delta(
+                    "generic-decode-step",
+                    oracle_cache_ref,
+                    &generic_cache,
+                )?;
+            }
+        }
+        if trace_cross_runner_model_only_decode_delta_enabled()
+            && oracle_device.location() == target_device.location()
+        {
+            if let (Some(oracle_logits_ref), Some(oracle_cache_ref)) =
+                (oracle_logits.as_ref(), oracle_cache.as_ref())
+            {
+                let mut model_only_cache = device_pre_decode_cache
+                    .clone()
+                    .unwrap_or_else(|| device_cache.clone());
+                let model_only_logits = device_runner
+                    .decode_from_hidden_state_model_only(&device_hidden_state, &mut model_only_cache)?;
+                let model_only_logit_delta =
+                    max_logit_delta(oracle_logits_ref.tensor(), model_only_logits.tensor())?;
+                eprintln!(
+                    "cross-runner-model-only-decode-delta logits_max_abs_delta={:.6}",
+                    model_only_logit_delta
+                );
+                trace_cross_runner_cache_delta(
+                    "model-only-decode-step",
+                    oracle_cache_ref,
+                    &model_only_cache,
+                )?;
+            }
+        }
+        if oracle_device.location() == target_device.location() {
+            if let Some(oracle_cache_ref) = oracle_cache.as_ref() {
+                trace_cross_runner_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
+            }
+        }
         #[cfg(feature = "qwen35-minimal-hip")]
         if target_device.is_hip()
             && matches!(

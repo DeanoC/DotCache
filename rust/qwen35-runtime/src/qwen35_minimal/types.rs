@@ -1,4 +1,5 @@
 use super::activation::Activation;
+use super::frontend::max_abs_delta;
 use crate::{BufferMutability, BufferViewDesc, ScalarType};
 use candle_core as candle;
 use candle_core::{DType, Device, Result, Tensor};
@@ -472,6 +473,81 @@ impl StateBuffer {
 }
 
 impl CacheState {
+    pub fn layer_max_abs_deltas(&self, other: &Self) -> Result<Vec<String>> {
+        if self.layers.len() != other.layers.len() {
+            candle::bail!(
+                "cache delta layer count mismatch: {} vs {}",
+                self.layers.len(),
+                other.layers.len()
+            );
+        }
+        let mut lines = Vec::with_capacity(self.layers.len());
+        for (layer_id, (lhs, rhs)) in self.layers.iter().zip(other.layers.iter()).enumerate() {
+            match (lhs, rhs) {
+                (LayerCacheState::Linear(lhs), LayerCacheState::Linear(rhs)) => {
+                    let conv_delta = match (&lhs.conv_state, &rhs.conv_state) {
+                        (Some(lhs), Some(rhs)) => {
+                            Some(max_abs_delta(lhs.tensor(), rhs.tensor())?)
+                        }
+                        (None, None) => None,
+                        _ => {
+                            lines.push(format!(
+                                "layer={layer_id} kind=linear conv_state_presence_mismatch"
+                            ));
+                            None
+                        }
+                    };
+                    let recurrent_delta = match (&lhs.recurrent_state, &rhs.recurrent_state) {
+                        (Some(lhs), Some(rhs)) => {
+                            Some(max_abs_delta(lhs.tensor(), rhs.tensor())?)
+                        }
+                        (None, None) => None,
+                        _ => {
+                            lines.push(format!(
+                                "layer={layer_id} kind=linear recurrent_state_presence_mismatch"
+                            ));
+                            None
+                        }
+                    };
+                    if conv_delta.is_some() || recurrent_delta.is_some() {
+                        lines.push(format!(
+                            "layer={layer_id} kind=linear conv_state_max_abs_delta={:.6} recurrent_state_max_abs_delta={:.6}",
+                            conv_delta.unwrap_or(0.0),
+                            recurrent_delta.unwrap_or(0.0)
+                        ));
+                    }
+                }
+                (LayerCacheState::Full(lhs), LayerCacheState::Full(rhs)) => {
+                    let (key_delta, value_delta) = match (&lhs.kv_cache, &rhs.kv_cache) {
+                        (Some((lhs_key, lhs_value)), Some((rhs_key, rhs_value))) => (
+                            Some(max_abs_delta(lhs_key.tensor(), rhs_key.tensor())?),
+                            Some(max_abs_delta(lhs_value.tensor(), rhs_value.tensor())?),
+                        ),
+                        (None, None) => (None, None),
+                        _ => {
+                            lines.push(format!(
+                                "layer={layer_id} kind=full kv_presence_mismatch"
+                            ));
+                            (None, None)
+                        }
+                    };
+                    if key_delta.is_some() || value_delta.is_some() {
+                        lines.push(format!(
+                            "layer={layer_id} kind=full key_max_abs_delta={:.6} value_max_abs_delta={:.6}",
+                            key_delta.unwrap_or(0.0),
+                            value_delta.unwrap_or(0.0)
+                        ));
+                    }
+                }
+                (LayerCacheState::Linear(_), LayerCacheState::Full(_))
+                | (LayerCacheState::Full(_), LayerCacheState::Linear(_)) => {
+                    lines.push(format!("layer={layer_id} kind_mismatch"));
+                }
+            }
+        }
+        Ok(lines)
+    }
+
     pub fn sequence_length(&self) -> usize {
         for layer in &self.layers {
             if let LayerCacheState::Full(FullAttentionCacheState {

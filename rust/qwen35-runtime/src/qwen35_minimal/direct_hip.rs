@@ -2,6 +2,59 @@ use super::{
     direct_decoder, DirectHipDecodePhaseKind, MinimalQwen35DirectRuntime, MinimalQwen35KvCache,
     MinimalQwen35RuntimeProfile, MinimalQwen35StateBuffer, ModelForCausalLM, Result,
 };
+use super::frontend::max_abs_delta;
+use super::types::{CacheState, LayerCacheState};
+
+fn trace_direct_whole_decode_enabled() -> bool {
+    std::env::var("DOTCACHE_QWEN35_TRACE_DIRECT_WHOLE_DECODE")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn trace_cache_delta(reference: &CacheState, direct: &CacheState) -> Result<()> {
+    for (layer_idx, (reference_layer, direct_layer)) in
+        reference.layers.iter().zip(direct.layers.iter()).enumerate()
+    {
+        match (reference_layer, direct_layer) {
+            (LayerCacheState::Linear(reference), LayerCacheState::Linear(direct)) => {
+                if let (Some(reference), Some(direct)) = (&reference.conv_state, &direct.conv_state)
+                {
+                    let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+                    eprintln!(
+                        "direct-whole-decode-cache-delta layer={} kind=linear conv_state_max_abs_delta={:.6}",
+                        layer_idx, delta
+                    );
+                }
+                if let (Some(reference), Some(direct)) =
+                    (&reference.recurrent_state, &direct.recurrent_state)
+                {
+                    let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+                    eprintln!(
+                        "direct-whole-decode-cache-delta layer={} kind=linear recurrent_state_max_abs_delta={:.6}",
+                        layer_idx, delta
+                    );
+                }
+            }
+            (LayerCacheState::Full(reference), LayerCacheState::Full(direct)) => {
+                if let (Some((reference_k, reference_v)), Some((direct_k, direct_v))) =
+                    (&reference.kv_cache, &direct.kv_cache)
+                {
+                    let key_delta = max_abs_delta(reference_k.tensor(), direct_k.tensor())?;
+                    let value_delta = max_abs_delta(reference_v.tensor(), direct_v.tensor())?;
+                    eprintln!(
+                        "direct-whole-decode-cache-delta layer={} kind=full key_max_abs_delta={:.6} value_max_abs_delta={:.6}",
+                        layer_idx, key_delta, value_delta
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 fn decode_phase_from_hidden_state(
     model: &mut ModelForCausalLM,
@@ -150,6 +203,11 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         hidden_state_t: &MinimalQwen35StateBuffer,
         cache: &mut MinimalQwen35KvCache,
     ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
+        let reference_cache_state = if trace_direct_whole_decode_enabled() {
+            Some(cache.clone())
+        } else {
+            None
+        };
         self.model.restore_cache_state(cache)?;
         let seqlen_offset = cache.sequence_length();
         self.model.validate_direct_hip_metadata(self.runtime.metadata())?;
@@ -212,6 +270,21 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         runtime.next_hidden_slot_is_ping = workspace.active_slot_is_ping();
         runtime.decode_logits = logits;
         runtime.last_decode_sequence_length = seqlen_offset + 1;
+        if let Some(reference_cache_state) = reference_cache_state {
+            let direct_cache_state = cache.clone();
+            self.model.restore_cache_state(&reference_cache_state)?;
+            let (reference_logits, _) =
+                self.model.forward_hidden_states_profiled(hidden_state_t, seqlen_offset)?;
+            let reference_post_decode_cache = self.model.cache_state();
+            self.model.restore_cache_state(&direct_cache_state)?;
+            let logits_delta =
+                max_abs_delta(reference_logits.tensor(), runtime.decode_logits.tensor())?;
+            eprintln!(
+                "direct-whole-decode-delta logits_max_abs_delta={:.6}",
+                logits_delta
+            );
+            trace_cache_delta(&reference_post_decode_cache, &direct_cache_state)?;
+        }
         Ok((runtime.decode_logits.clone(), profile))
     }
 

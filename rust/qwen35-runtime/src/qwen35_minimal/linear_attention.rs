@@ -2132,14 +2132,10 @@ impl GatedDeltaNet {
         a: &StateBuffer,
     ) -> Result<(StateBuffer, StateBuffer, RuntimeProfile)> {
         let device = hidden_states.device();
-        let (_, seq_len, _) = hidden_states.dims3()?;
-        if !use_hip_combined_linear_decode(device, seq_len) {
-            candle::bail!(
-                "direct-hip-v1 linear decode currently requires the HIP combined decode path"
-            );
-        }
         let (batch_size, _, _) = hidden_states.dims3()?;
-        self.linear_decode_projected(
+        let seq_len = 1;
+        let compute_dtype = linear_attention_compute_dtype(device, hidden_dtype);
+        self.forward_profiled_with_state_projected(
             hidden_dtype,
             batch_size,
             seq_len,
@@ -2147,6 +2143,7 @@ impl GatedDeltaNet {
             z,
             beta_raw,
             a,
+            compute_dtype,
         )
     }
 
