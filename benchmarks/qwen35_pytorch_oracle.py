@@ -49,6 +49,7 @@ def main() -> None:
     first_layer_linear_conv_weight = None
     first_layer_linear_pre_conv_value_focus_head_output = None
     first_layer_linear_post_conv_output = None
+    first_layer_linear_direct_conv_output = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
@@ -112,6 +113,7 @@ def main() -> None:
 
     def linear_conv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_post_conv_output
+        nonlocal first_layer_linear_direct_conv_output
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
@@ -119,6 +121,20 @@ def main() -> None:
         seq_len = input_ids.shape[1]
         post_conv = tensor.transpose(1, 2)[:, -seq_len:, :].contiguous()
         first_layer_linear_post_conv_output = post_conv
+        if first_layer_linear_qkv_output is None:
+            raise RuntimeError("linear_qkv hook must run before linear_conv hook")
+        qkv = first_layer_linear_qkv_output.transpose(1, 2).contiguous()
+        direct_conv = F.conv1d(
+            qkv,
+            _module.weight.detach().to(dtype=torch.float32),
+            bias=_module.bias.detach().to(dtype=torch.float32) if _module.bias is not None else None,
+            stride=_module.stride[0],
+            padding=_module.padding[0],
+            dilation=_module.dilation[0],
+            groups=_module.groups,
+        )
+        direct_conv = F.silu(direct_conv[:, :, :seq_len]).transpose(1, 2).contiguous().cpu()
+        first_layer_linear_direct_conv_output = direct_conv
         if first_layer_linear_z_output is None:
             raise RuntimeError("linear_z hook must run before linear_conv hook")
         value_dim = first_layer_linear_z_output.shape[-1]
@@ -244,6 +260,7 @@ def main() -> None:
         or first_layer_linear_conv_weight is None
         or first_layer_linear_pre_conv_value_focus_head_output is None
         or first_layer_linear_post_conv_output is None
+        or first_layer_linear_direct_conv_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
@@ -298,6 +315,7 @@ def main() -> None:
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
         "first_layer_linear_conv_weight": first_layer_linear_conv_weight.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
+        "first_layer_linear_direct_conv_output": first_layer_linear_direct_conv_output.tolist(),
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
