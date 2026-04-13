@@ -16139,6 +16139,45 @@ impl DecoderLayer {
             .map(|(output, _)| output)
     }
 
+    fn forward_profiled_direct_decode_v1(
+        &mut self,
+        layer_id: usize,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = xs.device();
+        let backend = backend_buffer_api::for_device(device);
+        let mut profile = RuntimeProfile::default();
+        let residual = xs.clone();
+        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
+        let xs = match &mut self.token_mixer {
+            LayerKind::Linear(linear_attn) => {
+                let (xs, layer_profile) = linear_attn.forward_profiled_buffer(&xs_norm, None)?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+            LayerKind::Full(self_attn) => {
+                let mut no_external = None;
+                let (xs, layer_profile) = self_attn.forward_profiled_with_external_buffer(
+                    &xs_norm,
+                    None,
+                    seqlen_offset,
+                    layer_id,
+                    &mut no_external,
+                )?;
+                profile.add_assign(&layer_profile);
+                xs
+            }
+        };
+        let xs = backend.add(&residual, &xs)?;
+        let residual = xs.clone();
+        let xs = self.post_attention_layernorm.forward_buffer(&xs)?;
+        let mlp_start = profile_start(device)?;
+        let xs = self.mlp.forward_buffer(&xs)?;
+        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
+        Ok((backend.add(&residual, &xs)?, profile))
+    }
+
     fn clear_kv_cache(&mut self) {
         match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => linear_attn.clear_kv_cache(),
@@ -16777,7 +16816,8 @@ impl TextModel {
                     layer_meta.layer_type
                 );
             }
-            let (next_xs, layer_profile) = layer.forward_profiled(&xs, None, seqlen_offset)?;
+            let (next_xs, layer_profile) =
+                layer.forward_profiled_direct_decode_v1(layer_idx, &xs, seqlen_offset)?;
             profile.add_assign(&layer_profile);
             xs = next_xs;
         }
