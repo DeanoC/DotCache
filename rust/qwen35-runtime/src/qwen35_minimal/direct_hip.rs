@@ -43,13 +43,30 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
     ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
         self.model.restore_cache_state(cache)?;
         let seqlen_offset = cache.sequence_length();
-        let (logits, profile) = self
-            .model
-            .decode_hidden_state_profiled_direct_hip_v1(
+        self.model.validate_direct_hip_metadata(self.runtime.metadata())?;
+        let (_, seq_len, _) = hidden_state_t.dims3()?;
+        if seq_len != 1 {
+            return Err(crate::RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct-hip-v1 decode expects a single-token hidden state, got seq_len={seq_len}"
+                ),
+            });
+        }
+        let mut profile = MinimalQwen35RuntimeProfile::default();
+        let mut xs = hidden_state_t.clone();
+        for layer_idx in 0..self.runtime.metadata().num_hidden_layers {
+            let (next_xs, layer_profile) = self.model.direct_decode_layer_profiled_hip_v1(
                 self.runtime.metadata(),
-                hidden_state_t,
+                layer_idx,
+                &xs,
                 seqlen_offset,
             )?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        let (logits, finalize_profile) = self.model.finalize_direct_decode_logits_hip_v1(&xs)?;
+        profile.add_assign(&finalize_profile);
         *cache = self.model.cache_state();
         if self.runtime.next_hidden_slot_is_ping {
             self.runtime.decode_hidden_ping = hidden_state_t.clone();
