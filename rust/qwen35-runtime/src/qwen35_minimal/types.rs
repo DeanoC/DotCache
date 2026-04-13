@@ -356,6 +356,10 @@ pub struct LinearAttentionCoreTrace {
     pub post_conv_mixed_qkv: StateBuffer,
     pub pre_gated_norm_output: StateBuffer,
     pub gated_norm_gate_input: StateBuffer,
+    pub gated_norm_weight: StateBuffer,
+    pub gated_norm_weighted_hidden: StateBuffer,
+    pub gated_norm_weighted_hidden_fallback: StateBuffer,
+    pub gated_norm_silu_gate: StateBuffer,
     pub post_gated_norm_output: StateBuffer,
 }
 

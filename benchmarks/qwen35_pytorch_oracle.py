@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM
 
 
@@ -48,6 +49,9 @@ def main() -> None:
     first_layer_linear_post_conv_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_norm_gate_input = None
+    first_layer_linear_norm_weight = None
+    first_layer_linear_norm_weighted_hidden = None
+    first_layer_linear_norm_silu_gate = None
     first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
@@ -112,6 +116,22 @@ def main() -> None:
         first_layer_linear_norm_gate_input = gate_tensor.reshape(
             input_ids.shape[0], input_ids.shape[1], -1
         )
+        nonlocal first_layer_linear_norm_weight
+        first_layer_linear_norm_weight = _module.weight.detach().to(dtype=torch.float32).cpu()
+        hidden = inputs[0].detach().to(dtype=torch.float32)
+        gate = inputs[1].detach().to(dtype=torch.float32)
+        variance = hidden.pow(2).mean(dim=-1, keepdim=True)
+        weighted_hidden = hidden * torch.rsqrt(variance + _module.variance_epsilon)
+        weighted_hidden = weighted_hidden * _module.weight.detach().to(dtype=torch.float32)
+        silu_gate = F.silu(gate)
+        nonlocal first_layer_linear_norm_weighted_hidden
+        nonlocal first_layer_linear_norm_silu_gate
+        first_layer_linear_norm_weighted_hidden = weighted_hidden.reshape(
+            input_ids.shape[0], input_ids.shape[1], -1
+        ).cpu()
+        first_layer_linear_norm_silu_gate = silu_gate.reshape(
+            input_ids.shape[0], input_ids.shape[1], -1
+        ).cpu()
 
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
@@ -184,6 +204,9 @@ def main() -> None:
         or first_layer_linear_post_conv_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_norm_gate_input is None
+        or first_layer_linear_norm_weight is None
+        or first_layer_linear_norm_weighted_hidden is None
+        or first_layer_linear_norm_silu_gate is None
         or first_layer_linear_norm_output is None
         or first_layer_token_mixer_output is None
         or first_layer_post_attention_layernorm_output is None
@@ -229,6 +252,9 @@ def main() -> None:
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_norm_gate_input": first_layer_linear_norm_gate_input.tolist(),
+        "first_layer_linear_norm_weight": first_layer_linear_norm_weight.tolist(),
+        "first_layer_linear_norm_weighted_hidden": first_layer_linear_norm_weighted_hidden.tolist(),
+        "first_layer_linear_norm_silu_gate": first_layer_linear_norm_silu_gate.tolist(),
         "first_layer_linear_norm_output": first_layer_linear_norm_output.tolist(),
         "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),

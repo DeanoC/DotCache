@@ -1251,6 +1251,14 @@ impl Qwen35RmsNormGated {
         backend_buffer_api::for_device(hidden_states.device())
             .rms_norm_gated(hidden_states, gate, &self.weight, self.eps)
     }
+
+    pub(super) fn weight(&self) -> &Tensor {
+        &self.weight
+    }
+
+    pub(super) fn eps(&self) -> f64 {
+        self.eps
+    }
 }
 
 #[derive(Debug, Clone)]

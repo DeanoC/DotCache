@@ -2279,6 +2279,35 @@ impl GatedDeltaNet {
             z.tensor(),
             &[batch_size, seq_len, self.value_dim],
         )?;
+        let gated_norm_weight = backend.tensor_to_buffer(self.norm.weight().clone())?;
+        let norm_input = backend.reshape_tensor_to_buffer(
+            &core_attn_out,
+            &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
+        )?;
+        let gated_norm_weighted_hidden = backend.reshape_tensor_to_buffer(
+            &super::backend_ops::rms_norm(
+                norm_input.tensor(),
+                self.norm.weight(),
+                self.norm.eps(),
+                false,
+            )?,
+            &[batch_size, seq_len, self.value_dim],
+        )?;
+        let gated_norm_weighted_hidden_fallback = {
+            let xs_dtype = norm_input.tensor().dtype();
+            let xs = norm_input.tensor().to_dtype(DType::F32)?;
+            let variance = (xs.sqr()?.sum_keepdim(D::Minus1)? / self.head_v_dim as f64)?;
+            let xs = xs.broadcast_div(&(variance + self.norm.eps())?.sqrt()?)?;
+            let xs = xs.broadcast_mul(&self.norm.weight().to_dtype(DType::F32)?)?;
+            backend.reshape_tensor_to_buffer(
+                &xs.to_dtype(xs_dtype)?,
+                &[batch_size, seq_len, self.value_dim],
+            )?
+        };
+        let gated_norm_silu_gate = backend.reshape_tensor_to_buffer(
+            &super::ops::silu(gated_norm_gate_input.tensor())?,
+            &[batch_size, seq_len, self.value_dim],
+        )?;
         let gated_norm = self
             .norm
             .forward_buffer(
@@ -2306,6 +2335,10 @@ impl GatedDeltaNet {
                 post_conv_mixed_qkv,
                 pre_gated_norm_output,
                 gated_norm_gate_input,
+                gated_norm_weight,
+                gated_norm_weighted_hidden,
+                gated_norm_weighted_hidden_fallback,
+                gated_norm_silu_gate,
                 post_gated_norm_output,
             },
             output,

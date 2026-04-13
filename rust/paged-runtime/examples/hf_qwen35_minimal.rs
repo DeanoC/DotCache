@@ -231,6 +231,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_gate_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weight_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_max_delta: Option<f32>,
         pytorch_first_layer_token_mixer_max_delta: Option<f32>,
         pytorch_first_layer_post_attention_layernorm_max_delta: Option<f32>,
@@ -260,6 +264,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_post_conv_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_norm_gate_input: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_weight: Vec<f32>,
+        first_layer_linear_norm_weighted_hidden: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_silu_gate: Vec<Vec<Vec<f32>>>,
         first_layer_linear_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_token_mixer_output: Vec<Vec<Vec<f32>>>,
         first_layer_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
@@ -411,6 +418,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         let mut max_delta = 0.0f32;
         for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec1(tensor: &Tensor, rhs: &[f32]) -> Result<f32> {
+        let lhs = tensor.flatten_all()?.to_vec1::<f32>()?;
+        if lhs.len() != rhs.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: lhs.len(),
+                got: rhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.into_iter().zip(rhs.iter().copied()) {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
@@ -711,6 +734,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_post_conv_max_delta,
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_norm_gate_max_delta,
+        pytorch_first_layer_linear_norm_weight_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta,
         pytorch_first_layer_linear_norm_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
@@ -764,6 +791,26 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_core_trace.gated_norm_gate_input.tensor(),
             &pytorch_oracle.first_layer_linear_norm_gate_input,
         )?);
+        let pytorch_first_layer_linear_norm_weight_max_delta = Some(max_tensor_delta_vec1(
+            linear_core_trace.gated_norm_weight.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_weight,
+        )?);
+        let pytorch_first_layer_linear_norm_weighted_hidden_max_delta = Some(
+            max_tensor_delta_vec3(
+                linear_core_trace.gated_norm_weighted_hidden.tensor(),
+                &pytorch_oracle.first_layer_linear_norm_weighted_hidden,
+            )?,
+        );
+        let pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta = Some(
+            max_tensor_delta_vec3(
+                linear_core_trace.gated_norm_weighted_hidden_fallback.tensor(),
+                &pytorch_oracle.first_layer_linear_norm_weighted_hidden,
+            )?,
+        );
+        let pytorch_first_layer_linear_norm_silu_gate_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.gated_norm_silu_gate.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_silu_gate,
+        )?);
         let pytorch_first_layer_linear_norm_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.post_gated_norm_output.tensor(),
             &pytorch_oracle.first_layer_linear_norm_output,
@@ -793,6 +840,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_post_conv_max_delta,
             pytorch_first_layer_linear_pre_norm_max_delta,
             pytorch_first_layer_linear_norm_gate_max_delta,
+            pytorch_first_layer_linear_norm_weight_max_delta,
+            pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+            pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+            pytorch_first_layer_linear_norm_silu_gate_max_delta,
             pytorch_first_layer_linear_norm_max_delta,
             pytorch_first_layer_token_mixer_max_delta,
             pytorch_first_layer_post_attention_layernorm_max_delta,
@@ -800,7 +851,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1134,6 +1185,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_post_conv_max_delta,
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_norm_gate_max_delta,
+        pytorch_first_layer_linear_norm_weight_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta,
         pytorch_first_layer_linear_norm_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
