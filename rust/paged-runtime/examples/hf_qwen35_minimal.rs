@@ -240,6 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta: Option<f32>,
         pytorch_first_layer_linear_prepared_beta_max_delta: Option<f32>,
         pytorch_first_layer_linear_prepared_g_max_delta: Option<f32>,
+        pytorch_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta: Option<f32>,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta: Option<f32>,
@@ -302,6 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_prepared_value_output: Vec<Vec<Vec<Vec<f32>>>>,
         first_layer_linear_prepared_beta_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_prepared_g_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_direct_recurrent_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_prepared_value_focus_head_output: Vec<f32>,
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
@@ -938,6 +940,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta,
         pytorch_first_layer_linear_prepared_beta_max_delta,
         pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_direct_recurrent_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1053,6 +1056,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pytorch_first_layer_linear_prepared_g_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.prepared_g.tensor(),
             &pytorch_oracle.first_layer_linear_prepared_g_output,
+        )?);
+        let pytorch_first_layer_linear_direct_recurrent_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_output.tensor(),
+            &pytorch_oracle.first_layer_linear_direct_recurrent_output,
         )?);
         let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
@@ -1217,6 +1224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_prepared_value_max_delta,
             pytorch_first_layer_linear_prepared_beta_max_delta,
             pytorch_first_layer_linear_prepared_g_max_delta,
+            pytorch_first_layer_linear_direct_recurrent_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
             pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1251,7 +1259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1592,6 +1600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta,
         pytorch_first_layer_linear_prepared_beta_max_delta,
         pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_direct_recurrent_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,

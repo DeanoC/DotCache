@@ -56,6 +56,7 @@ def main() -> None:
     first_layer_linear_prepared_value_output = None
     first_layer_linear_prepared_beta_output = None
     first_layer_linear_prepared_g_output = None
+    first_layer_linear_direct_recurrent_output = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
@@ -125,6 +126,7 @@ def main() -> None:
         nonlocal first_layer_linear_prepared_value_output
         nonlocal first_layer_linear_prepared_beta_output
         nonlocal first_layer_linear_prepared_g_output
+        nonlocal first_layer_linear_direct_recurrent_output
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
@@ -173,17 +175,46 @@ def main() -> None:
         first_layer_linear_prepared_query_output = query.cpu()
         first_layer_linear_prepared_key_output = key.cpu()
         first_layer_linear_prepared_value_output = value.cpu()
-        first_layer_linear_prepared_beta_output = torch.sigmoid(
+        beta = torch.sigmoid(
             first_layer_linear_b_output
-        ).to(dtype=torch.float32).cpu()
+        ).to(dtype=torch.float32)
+        first_layer_linear_prepared_beta_output = beta.cpu()
         dt_bias = linear_attn.dt_bias.detach().to(dtype=torch.float32).reshape(1, 1, num_v_heads)
         a_log_exp = linear_attn.A_log.detach().to(dtype=torch.float32).exp().reshape(
             1, 1, num_v_heads
         )
         a_input = first_layer_linear_a_output.to(dtype=torch.float32)
-        first_layer_linear_prepared_g_output = (
+        g = (
             -torch.log1p(torch.exp(a_input + dt_bias)) * a_log_exp
-        ).cpu()
+        )
+        first_layer_linear_prepared_g_output = g.cpu()
+        batch_size = input_ids.shape[0]
+        seq_len = input_ids.shape[1]
+        q = query.transpose(1, 2).contiguous()
+        k = key.transpose(1, 2).contiguous()
+        v = value.transpose(1, 2).contiguous()
+        beta_t = beta.transpose(1, 2).contiguous()
+        g_t = g.transpose(1, 2).contiguous()
+        q = q * (1.0 / (head_k_dim ** 0.5))
+        state = torch.zeros(
+            (batch_size, num_v_heads, head_k_dim, head_v_dim), dtype=torch.float32
+        )
+        outputs = []
+        for step in range(seq_len):
+            q_step = q[:, :, step, :]
+            k_step = k[:, :, step, :]
+            v_step = v[:, :, step, :]
+            beta_step = beta_t[:, :, step].unsqueeze(-1)
+            g_step = g_t[:, :, step].exp().unsqueeze(-1).unsqueeze(-1)
+            state = state * g_step
+            kv_mem = (state * k_step.unsqueeze(-1)).sum(dim=2)
+            delta = (v_step - kv_mem) * beta_step
+            state = state + k_step.unsqueeze(-1) * delta.unsqueeze(2)
+            out_step = (state * q_step.unsqueeze(-1)).sum(dim=2)
+            outputs.append(out_step.unsqueeze(2))
+        first_layer_linear_direct_recurrent_output = (
+            torch.cat(outputs, dim=2).transpose(1, 2).contiguous().reshape(batch_size, seq_len, -1).cpu()
+        )
         first_layer_linear_prepared_value_focus_head_output = value[0, 2, 6].cpu()
 
     def linear_norm_hook(_module, _inputs, output):
@@ -306,6 +337,7 @@ def main() -> None:
         or first_layer_linear_prepared_value_output is None
         or first_layer_linear_prepared_beta_output is None
         or first_layer_linear_prepared_g_output is None
+        or first_layer_linear_direct_recurrent_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
@@ -366,6 +398,7 @@ def main() -> None:
         "first_layer_linear_prepared_value_output": first_layer_linear_prepared_value_output.tolist(),
         "first_layer_linear_prepared_beta_output": first_layer_linear_prepared_beta_output.tolist(),
         "first_layer_linear_prepared_g_output": first_layer_linear_prepared_g_output.tolist(),
+        "first_layer_linear_direct_recurrent_output": first_layer_linear_direct_recurrent_output.tolist(),
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
