@@ -2397,11 +2397,12 @@ impl HipDeviceBuffer {
             .collect::<Result<Vec<_>>>()?;
         if host_buffers.iter().all(|buffer| buffer.is_some()) {
             let refs = host_buffers.iter().flatten().collect::<Vec<_>>();
+            let host_cat = HipHostBuffer::cat(refs.as_slice(), dim)?;
             let pending = buffers.iter().any(|buffer| buffer.preserves_pending_upload());
             return Ok(if pending {
-                Self::from_pending_host_upload(HipHostBuffer::cat(refs.as_slice(), dim)?)
+                Self::from_pending_host_upload(host_cat)
             } else {
-                Self::from_materialized_host_buffer(HipHostBuffer::cat(refs.as_slice(), dim)?)
+                host_result_device_buffer(host_cat)
             });
         }
         if let Some(out) = cat_hip_owned_device(buffers, dim)? {
