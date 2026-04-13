@@ -11887,10 +11887,10 @@ fn prepare_full_attention_inputs_tensors_hip(
                     k_norm_eps,
                 )?;
             return Ok((
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(query_states)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(gate)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(key_states)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(value_states)),
+                HipTensor::from_device_buffer(host_result_device_buffer(query_states)),
+                HipTensor::from_device_buffer(host_result_device_buffer(gate)),
+                HipTensor::from_device_buffer(host_result_device_buffer(key_states)),
+                HipTensor::from_device_buffer(host_result_device_buffer(value_states)),
             ));
         }
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
@@ -12323,11 +12323,11 @@ fn prepare_linear_attention_inputs_tensors_hip(
                 repeat_kv_heads,
             )?;
             return Ok((
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(query)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(key)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(value)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(beta)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(g)),
+                HipTensor::from_device_buffer(host_result_device_buffer(query)),
+                HipTensor::from_device_buffer(host_result_device_buffer(key)),
+                HipTensor::from_device_buffer(host_result_device_buffer(value)),
+                HipTensor::from_device_buffer(host_result_device_buffer(beta)),
+                HipTensor::from_device_buffer(host_result_device_buffer(g)),
             ));
         }
         let last_dim = mixed_qkv.dims().len() - 1;
@@ -12518,18 +12518,16 @@ fn prepare_full_attention_output_hip(
             gate.storage.as_host_buffer(),
         )
         {
-            return Ok(HipTensor::from_device_buffer(
-                HipDeviceBuffer::from_materialized_host_buffer(
-                    prepare_full_attention_output_host_buffer(
-                        attn_host,
-                        gate_host,
-                        b_sz,
-                        q_len,
-                        attention_size,
-                        hidden_dtype,
-                    )?,
-                ),
-            ));
+            return Ok(HipTensor::from_device_buffer(host_result_device_buffer(
+                prepare_full_attention_output_host_buffer(
+                    attn_host,
+                    gate_host,
+                    b_sz,
+                    q_len,
+                    attention_size,
+                    hidden_dtype,
+                )?,
+            )));
         }
         return Ok(HipTensor::from_device_buffer(
             attn_output
@@ -12800,17 +12798,15 @@ fn dense_full_attention_fallback_tensors_hip(
             .map(|mask| mask.try_host_buffer())
             .transpose()?
             .flatten();
-        return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::from_materialized_host_buffer(
-                dense_full_attention_fallback_host_buffers(
-                    &query_host,
-                    &key_host,
-                    &value_host,
-                    mask_host.as_ref(),
-                    scale,
-                )?,
-            ),
-        ));
+        return Ok(HipTensor::from_device_buffer(host_result_device_buffer(
+            dense_full_attention_fallback_host_buffers(
+                &query_host,
+                &key_host,
+                &value_host,
+                mask_host.as_ref(),
+                scale,
+            )?,
+        )));
     }
     if let (Some(query_states_f), Some(key_states_f), Some(value_states_f), mask_device) = (
         query_states_hip.0 .0.direct_materialized_device_buffer(),
@@ -15702,11 +15698,9 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
             sin.try_host_buffer()?,
         ) {
             let out = rope_host_buffer(&xs_host, &cos_host, &sin_host, b_sz, n_head, seq_len, n_embd)?;
-            return Ok(HipTensor::from_device_buffer(if xs_buffer.preserves_pending_upload() {
-                HipDeviceBuffer::from_pending_host_upload(out)
-            } else {
-                HipDeviceBuffer::from_materialized_host_buffer(out)
-            }));
+            return Ok(HipTensor::from_device_buffer(
+                xs_buffer.from_host_computed_buffer_like(out),
+            ));
         }
     }
     if let (Some(xs), Some(cos), Some(sin)) = (
