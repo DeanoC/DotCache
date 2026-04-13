@@ -245,6 +245,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta: Option<f32>,
         pytorch_first_layer_linear_prepared_beta_max_delta: Option<f32>,
         pytorch_first_layer_linear_prepared_g_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta: Option<f32>,
         pytorch_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
         pytorch_first_layer_linear_focus_kv_mem_max_delta: Option<f32>,
         pytorch_first_layer_linear_focus_delta_max_delta: Option<f32>,
@@ -1005,6 +1010,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta,
         pytorch_first_layer_linear_prepared_beta_max_delta,
         pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
         pytorch_first_layer_linear_direct_recurrent_max_delta,
         pytorch_first_layer_linear_focus_kv_mem_max_delta,
         pytorch_first_layer_linear_focus_delta_max_delta,
@@ -1139,6 +1149,30 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_core_trace.prepared_g.tensor(),
             &pytorch_oracle.first_layer_linear_prepared_g_output,
         )?);
+        let pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_weighted_k.tensor(),
+                linear_core_trace.torch_like_weighted_k.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta = Some(max_logit_delta(
+            linear_core_trace.flat3d_attn.tensor(),
+            linear_core_trace.torch_like_attn.tensor(),
+        )?);
+        let pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_k_cumdecay.tensor(),
+                linear_core_trace.torch_like_k_cumdecay.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_single_chunk_v_new.tensor(),
+                linear_core_trace.torch_like_single_chunk_v_new.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_single_chunk_output.tensor(),
+                linear_core_trace.torch_like_single_chunk_output.tensor(),
+            )?);
         let pytorch_first_layer_linear_direct_recurrent_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.pre_gated_norm_output.tensor(),
             &pytorch_oracle.first_layer_linear_direct_recurrent_output,
@@ -1352,6 +1386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_prepared_value_max_delta,
             pytorch_first_layer_linear_prepared_beta_max_delta,
             pytorch_first_layer_linear_prepared_g_max_delta,
+            pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
             pytorch_first_layer_linear_direct_recurrent_max_delta,
             pytorch_first_layer_linear_focus_kv_mem_max_delta,
             pytorch_first_layer_linear_focus_delta_max_delta,
@@ -1396,7 +1435,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1739,6 +1778,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_prepared_value_max_delta,
         pytorch_first_layer_linear_prepared_beta_max_delta,
         pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
         pytorch_first_layer_linear_direct_recurrent_max_delta,
         pytorch_first_layer_linear_focus_kv_mem_max_delta,
         pytorch_first_layer_linear_focus_delta_max_delta,

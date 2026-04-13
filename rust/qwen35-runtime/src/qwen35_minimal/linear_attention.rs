@@ -670,6 +670,285 @@ impl GatedDeltaNet {
         Ok((output, last_recurrent_state, profile))
     }
 
+    fn trace_chunk_intermediates(
+        &mut self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        g: &Tensor,
+        beta: &Tensor,
+        sequence_length: usize,
+    ) -> Result<(
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+    )> {
+        let device = query.device();
+        let compute_dtype = query.dtype();
+        let chunk_size = linear_attention_chunk_size(device, sequence_length);
+        let pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size;
+        let total_sequence_length = sequence_length + pad_size;
+        let num_chunks = total_sequence_length / chunk_size;
+        let backend = backend_buffer_api::for_device(device);
+
+        let query_heads = query.dim(2)?;
+        let key_heads = key.dim(2)?;
+        let value_heads = value.dim(2)?;
+        if query_heads != key_heads {
+            candle::bail!(
+                "trace_chunk_intermediates expected matching query/key head counts, got query_heads={query_heads} key_heads={key_heads}"
+            );
+        }
+        if value_heads % query_heads != 0 {
+            candle::bail!(
+                "trace_chunk_intermediates expected value heads to be a multiple of query heads, got query_heads={query_heads} value_heads={value_heads}"
+            );
+        }
+        let head_repeat = value_heads / query_heads;
+        let query = if head_repeat > 1 {
+            repeat_heads(query, head_repeat)?
+        } else {
+            query.clone()
+        };
+        let key = if head_repeat > 1 {
+            repeat_heads(key, head_repeat)?
+        } else {
+            key.clone()
+        };
+
+        let mut query = query
+            .transpose(1, 2)?
+            .contiguous()?
+            .to_dtype(compute_dtype)?;
+        let mut key = key.transpose(1, 2)?.contiguous()?.to_dtype(compute_dtype)?;
+        let mut value = value
+            .transpose(1, 2)?
+            .contiguous()?
+            .to_dtype(compute_dtype)?;
+        let mut beta = beta
+            .transpose(1, 2)?
+            .contiguous()?
+            .to_dtype(compute_dtype)?;
+        let mut g_raw = g.transpose(1, 2)?.contiguous()?.to_dtype(compute_dtype)?;
+
+        let (batch_size, num_heads, _seq_len, k_head_dim) = query.dims4()?;
+        let v_head_dim = value.dim(D::Minus1)?;
+        if pad_size > 0 {
+            query = query.pad_with_zeros(2, 0, pad_size)?;
+            key = key.pad_with_zeros(2, 0, pad_size)?;
+            value = value.pad_with_zeros(2, 0, pad_size)?;
+            beta = beta.pad_with_zeros(2, 0, pad_size)?;
+            g_raw = g_raw.pad_with_zeros(2, 0, pad_size)?;
+        }
+        query = (query * (1f64 / f64::sqrt(k_head_dim as f64)))?;
+
+        let query = query.reshape((batch_size, num_heads, num_chunks, chunk_size, k_head_dim))?;
+        let key = key.reshape((batch_size, num_heads, num_chunks, chunk_size, k_head_dim))?;
+        let value = value.reshape((batch_size, num_heads, num_chunks, chunk_size, v_head_dim))?;
+        let beta = beta.reshape((batch_size, num_heads, num_chunks, chunk_size))?;
+        let g = g_raw.reshape((batch_size, num_heads, num_chunks, chunk_size))?;
+
+        let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
+        let g_cumsum = backend
+            .cumsum_last_dim(&backend.tensor_to_buffer(g.clone())?)?
+            .clone_tensor();
+        let exp_g = g_cumsum.exp()?;
+        let weighted_k = k_beta.broadcast_mul(&exp_g.unsqueeze(D::Minus1)?)?;
+        let v_beta = value.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
+
+        let solve_batch = batch_size * num_heads * num_chunks;
+        let cache = self.chunk_cache(device, compute_dtype, chunk_size)?;
+        let lower = cache.lower;
+        let eye = cache.eye;
+        let strict_lower = cache.strict_lower;
+        let lower_2d = cache.lower_2d.reshape((1, chunk_size, chunk_size))?;
+        let eye_2d = Tensor::eye(chunk_size, compute_dtype, device)?.reshape((1, chunk_size, chunk_size))?;
+        let strict_lower_2d = lower_2d.broadcast_sub(&eye_2d)?;
+
+        let decay_deltas_torch = g_cumsum
+            .unsqueeze(4)?
+            .broadcast_sub(&g_cumsum.unsqueeze(3)?)?
+            .broadcast_mul(&lower)?;
+        let decay_mask_torch = decay_deltas_torch.exp()?.broadcast_mul(&lower)?;
+        let key_t_torch = key.transpose(4, 3)?.contiguous()?;
+        let base_attn_torch = k_beta
+            .reshape((solve_batch, chunk_size, k_head_dim))?
+            .contiguous()?
+            .matmul(
+                &key_t_torch
+                    .reshape((solve_batch, k_head_dim, chunk_size))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
+            .broadcast_mul(&decay_mask_torch)?
+            .neg()?
+            .broadcast_mul(&strict_lower)?;
+        let mut rows = Vec::with_capacity(chunk_size);
+        rows.push(Tensor::zeros(
+            (solve_batch, 1, chunk_size),
+            compute_dtype,
+            device,
+        )?);
+        let base_attn_torch_flat = base_attn_torch.reshape((solve_batch, chunk_size, chunk_size))?;
+        for i in 1..chunk_size {
+            let row = base_attn_torch_flat
+                .narrow(1, i, 1)?
+                .narrow(2, 0, i)?
+                .reshape((solve_batch, i))?;
+            let sub = Tensor::cat(&rows[..i].iter().collect::<Vec<_>>(), 1)?.narrow(2, 0, i)?;
+            let correction = row
+                .unsqueeze(1)?
+                .broadcast_mul(&sub)?
+                .sum(1)?
+                .reshape((solve_batch, i))?;
+            let row = row.broadcast_add(&correction)?;
+            let row = row.pad_with_zeros(1, 0, chunk_size - i)?.reshape((solve_batch, 1, chunk_size))?;
+            rows.push(row);
+        }
+        let torch_like_attn = Tensor::cat(&rows.iter().collect::<Vec<_>>(), 1)?
+            .broadcast_add(&eye_2d)?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?;
+        let torch_like_k_cumdecay = torch_like_attn
+            .reshape((solve_batch, chunk_size, chunk_size))?
+            .contiguous()?
+            .matmul(
+                &weighted_k
+                    .reshape((solve_batch, chunk_size, k_head_dim))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, k_head_dim))?;
+        let torch_like_solved_value = torch_like_attn
+            .reshape((solve_batch, chunk_size, chunk_size))?
+            .contiguous()?
+            .matmul(
+                &v_beta
+                    .reshape((solve_batch, chunk_size, v_head_dim))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, v_head_dim))?;
+
+        let decay_deltas_flat = g_cumsum
+            .unsqueeze(4)?
+            .broadcast_sub(&g_cumsum.unsqueeze(3)?)?
+            .broadcast_mul(&lower)?;
+        let decay_mask_flat = decay_deltas_flat.exp()?.broadcast_mul(&lower)?;
+        let key_t_flat = key.transpose(4, 3)?.contiguous()?;
+        let k_beta_flat = k_beta
+            .reshape((solve_batch, chunk_size, k_head_dim))?
+            .contiguous()?;
+        let key_t_flat = key_t_flat
+            .reshape((solve_batch, k_head_dim, chunk_size))?
+            .contiguous()?;
+        let decay_mask_flat = decay_mask_flat.reshape((solve_batch, chunk_size, chunk_size))?;
+        let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
+        let base_attn_flat = raw_attn
+            .broadcast_mul(&decay_mask_flat)?
+            .neg()?
+            .broadcast_mul(&strict_lower_2d.reshape((1, chunk_size, chunk_size))?)?;
+        let mut rows = Vec::with_capacity(chunk_size);
+        rows.push(Tensor::zeros(
+            (solve_batch, 1, chunk_size),
+            compute_dtype,
+            device,
+        )?);
+        for i in 1..chunk_size {
+            let row = base_attn_flat
+                .narrow(1, i, 1)?
+                .narrow(2, 0, i)?
+                .reshape((solve_batch, i))?;
+            let sub = Tensor::cat(&rows[..i].iter().collect::<Vec<_>>(), 1)?.narrow(2, 0, i)?;
+            let correction = row
+                .unsqueeze(1)?
+                .broadcast_mul(&sub)?
+                .sum(1)?
+                .reshape((solve_batch, i))?;
+            let row = row.broadcast_add(&correction)?;
+            let row = row.pad_with_zeros(1, 0, chunk_size - i)?.reshape((solve_batch, 1, chunk_size))?;
+            rows.push(row);
+        }
+        let flat3d_attn = Tensor::cat(&rows.iter().collect::<Vec<_>>(), 1)?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
+            .broadcast_add(&eye)?;
+        let flat3d_k_cumdecay = flat3d_attn
+            .reshape((solve_batch, chunk_size, chunk_size))?
+            .contiguous()?
+            .matmul(
+                &weighted_k
+                    .reshape((solve_batch, chunk_size, k_head_dim))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, k_head_dim))?;
+        let exp_g_scan = exp_g.reshape((batch_size * num_heads, num_chunks, chunk_size))?;
+        let query_scan = query.reshape((batch_size * num_heads, num_chunks, chunk_size, k_head_dim))?;
+        let value_scan = value.reshape((batch_size * num_heads, num_chunks, chunk_size, v_head_dim))?;
+        let q_state_scan = query_scan.broadcast_mul(&exp_g_scan.unsqueeze(D::Minus1)?)?;
+        let initial_state = backend.zeros_state(
+            device,
+            compute_dtype,
+            &[batch_size * num_heads, k_head_dim, v_head_dim],
+        )?;
+        let flat3d_attn_chunk0 = flat3d_attn
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, chunk_size))?
+            .i((.., 0, .., ..))?;
+        let flat3d_k_cumdecay_chunk0 = flat3d_k_cumdecay
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, k_head_dim))?
+            .i((.., 0, .., ..))?;
+        let q_state_chunk0 = q_state_scan.i((.., 0, .., ..))?;
+        let value_chunk0 = torch_like_solved_value
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, v_head_dim))?
+            .i((.., 0, .., ..))?;
+        let (flat3d_v_new_chunk0, flat3d_attn_inter_chunk0) = backend.delta_chunk_recurrent_read(
+            &initial_state,
+            &flat3d_k_cumdecay_chunk0,
+            &q_state_chunk0,
+            &value_chunk0,
+        )?;
+        let flat3d_output_chunk0 = backend
+            .mix_chunk_attention(
+                &flat3d_attn_chunk0,
+                &flat3d_attn_inter_chunk0,
+                &flat3d_v_new_chunk0,
+            )?
+            .clone_tensor();
+        let torch_like_v_new_chunk0 = torch_like_solved_value
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, v_head_dim))?
+            .i((.., 0, .., ..))?;
+        let key_chunk0_t = key
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, k_head_dim))?
+            .i((.., 0, .., ..))?
+            .transpose(2, 1)?
+            .contiguous()?;
+        let decay_chunk0 = decay_mask_torch
+            .reshape((batch_size * num_heads, num_chunks, chunk_size, chunk_size))?
+            .i((.., 0, .., ..))?;
+        let torch_like_output_chunk0 = query_scan
+            .i((.., 0, .., ..))?
+            .matmul(&key_chunk0_t)?
+            .broadcast_mul(&decay_chunk0)?
+            .broadcast_mul(&lower_2d)?
+            .matmul(&torch_like_v_new_chunk0)?;
+
+        Ok((
+            backend.tensor_to_buffer(weighted_k.clone())?,
+            backend.tensor_to_buffer(weighted_k)?,
+            backend.tensor_to_buffer(flat3d_attn)?,
+            backend.tensor_to_buffer(torch_like_attn)?,
+            backend.tensor_to_buffer(flat3d_k_cumdecay)?,
+            backend.tensor_to_buffer(torch_like_k_cumdecay)?,
+            flat3d_v_new_chunk0,
+            backend.tensor_to_buffer(torch_like_v_new_chunk0)?,
+            backend.tensor_to_buffer(flat3d_output_chunk0)?,
+            backend.tensor_to_buffer(torch_like_output_chunk0)?,
+        ))
+    }
+
     fn apply_mask_to_padding_states(
         &self,
         hidden_states: &Tensor,
@@ -1588,6 +1867,7 @@ impl GatedDeltaNet {
 
             Tensor::cat(&rows.iter().collect::<Vec<_>>(), 3)?.broadcast_add(&eye)?
         };
+        let v_beta = value.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let weighted_k = k_beta.broadcast_mul(&exp_g.unsqueeze(D::Minus1)?)?;
         let attn_flat = attn
             .reshape((solve_batch, chunk_size, chunk_size))?
@@ -1595,6 +1875,13 @@ impl GatedDeltaNet {
         let weighted_k_flat = weighted_k
             .reshape((solve_batch, chunk_size, k_head_dim))?
             .contiguous()?;
+        let solved_value = attn_flat
+            .matmul(
+                &v_beta
+                    .reshape((solve_batch, chunk_size, v_head_dim))?
+                    .contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, v_head_dim))?;
         let k_cumdecay = attn_flat
             .matmul(&weighted_k_flat)?
             .reshape((batch_size, num_heads, num_chunks, chunk_size, k_head_dim))?;
@@ -1603,6 +1890,8 @@ impl GatedDeltaNet {
         let lower_2d = cache.lower_2d;
         let k_cumdecay_scan =
             k_cumdecay.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
+        let solved_value_scan =
+            solved_value.reshape((batch_heads, num_chunks, chunk_size, v_head_dim))?;
         let lower_2d_scan = lower_2d.reshape((1, 1, chunk_size, chunk_size))?;
         let local_attn_scan = match scan_mode {
             DeltaNetScanMode::PrebatchedLocal => Some({
@@ -1782,7 +2071,7 @@ impl GatedDeltaNet {
             let index_start = profile_start(device)?;
             let q_i = query_scan.i((.., chunk_idx, .., ..))?;
             let k_i = key_scan.i((.., chunk_idx, .., ..))?;
-            let v_i = value_scan.i((.., chunk_idx, .., ..))?;
+            let v_i = solved_value_scan.i((.., chunk_idx, .., ..))?;
             let g_i = g_scan.i((.., chunk_idx, ..))?;
             let prev_state_i = if let Some(state_scan) = &state_scan {
                 backend.state_scan_chunk(state_scan, chunk_idx)?
@@ -2574,6 +2863,38 @@ impl GatedDeltaNet {
         let prepared_beta = backend.tensor_to_buffer(beta.clone())?;
         let prepared_g = backend.tensor_to_buffer(g.clone())?;
         let prepared_value_focus_head = backend.tensor_to_buffer(value.i((0, 2, 6))?)?;
+        let (
+            flat3d_weighted_k,
+            torch_like_weighted_k,
+            flat3d_attn,
+            torch_like_attn,
+            flat3d_k_cumdecay,
+            torch_like_k_cumdecay,
+            flat3d_single_chunk_v_new,
+            torch_like_single_chunk_v_new,
+            flat3d_single_chunk_output,
+            torch_like_single_chunk_output,
+        ) = if seq_len > 1 && !use_short_recurrent_prefill {
+            self.trace_chunk_intermediates(&query, &key, &value, &g, &beta, seq_len)?
+        } else {
+            let zeros = backend_buffer_api::for_device(query.device()).zeros_tensor(
+                query.device(),
+                compute_dtype,
+                &[1],
+            )?;
+            (
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros.clone())?,
+                backend.tensor_to_buffer(zeros)?,
+            )
+        };
         let focus_step = usize::min(2, seq_len.saturating_sub(1));
         let focus_head = usize::min(6, self.num_v_heads.saturating_sub(1));
         let (
@@ -2832,6 +3153,16 @@ impl GatedDeltaNet {
                 prepared_value,
                 prepared_beta,
                 prepared_g,
+                flat3d_weighted_k,
+                torch_like_weighted_k,
+                flat3d_attn,
+                torch_like_attn,
+                flat3d_k_cumdecay,
+                torch_like_k_cumdecay,
+                flat3d_single_chunk_v_new,
+                torch_like_single_chunk_v_new,
+                flat3d_single_chunk_output,
+                torch_like_single_chunk_output,
                 focused_recurrent_kv_mem_steps,
                 focused_recurrent_delta_steps,
                 focused_recurrent_state_steps,

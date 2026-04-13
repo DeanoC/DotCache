@@ -276,9 +276,9 @@ pub(super) fn use_hip_chunk_single_prefill_kernel(
         && sequence_length > 1
         && sequence_length <= chunk_size
         && chunk_size <= 64
-        && !matches!(
+        && matches!(
             std::env::var("DOTCACHE_QWEN35_HIP_CHUNK_SINGLE_PREFILL").as_deref(),
-            Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO")
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         )
 }
 
