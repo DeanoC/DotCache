@@ -2421,6 +2421,11 @@ impl HipDeviceBuffer {
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_owned_device(&lhs, &rhs, 0)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_add owned device".into())
+            })?);
+        }
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_add_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_add host buffer".into())
@@ -2443,6 +2448,11 @@ impl HipDeviceBuffer {
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_owned_device(&lhs, &rhs, 1)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_sub owned device".into())
+            })?);
+        }
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_sub_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_sub host buffer".into())
@@ -2465,6 +2475,11 @@ impl HipDeviceBuffer {
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_owned_device(&lhs, &rhs, 3)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_div owned device".into())
+            })?);
+        }
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_div_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_div host buffer".into())
@@ -2487,6 +2502,11 @@ impl HipDeviceBuffer {
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = binary_broadcast_hip_owned_device(&lhs, &rhs, 2)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from broadcast_mul owned device".into())
+            })?);
+        }
         if let Some(out) = binary_broadcast_hip_host_buffer(&lhs, &rhs, hip_broadcast_mul_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from broadcast_mul host buffer".into())
@@ -2509,6 +2529,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = reduce_keepdim_hip_owned_device(&tensor, dim, false)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from max_keepdim owned device".into())
+            })?);
+        }
         if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_max_keepdim_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from max_keepdim host buffer".into())
@@ -2531,6 +2556,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = reduce_keepdim_hip_owned_device(&tensor, dim, true)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from sum_keepdim owned device".into())
+            })?);
+        }
         if let Some(out) = reduce_keepdim_hip_host_buffer(&tensor, dim, hip_sum_keepdim_host_buffer)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from sum_keepdim host buffer".into())
@@ -2642,6 +2672,11 @@ impl HipDeviceBuffer {
         }
         let lhs = self.materialize_tensor()?;
         let rhs = rhs.materialize_tensor()?;
+        if let Some(out) = matmul_hip_owned_device(&lhs, &rhs)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from matmul owned device".into())
+            })?);
+        }
         if let Some(out) = matmul_hip_host_buffer(&lhs, &rhs)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from matmul host buffer".into())
@@ -6042,6 +6077,259 @@ fn binary_broadcast_hip_host_buffer(
             device: lhs.device().clone(),
         }),
     )))
+}
+
+fn binary_broadcast_hip_owned_device(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    op: i32,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let lhs = lhs.contiguous()?;
+    let rhs = rhs.contiguous()?;
+    if !lhs.device().is_hip() || !rhs.device().is_hip() {
+        return Ok(None);
+    }
+    let (lhs_storage, lhs_layout) = lhs.storage_and_layout();
+    let (rhs_storage, rhs_layout) = rhs.storage_and_layout();
+    let (Storage::Hip(lhs_storage), Storage::Hip(rhs_storage)) = (&*lhs_storage, &*rhs_storage) else {
+        return Ok(None);
+    };
+    if !lhs_layout.is_contiguous() || !rhs_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let lhs_shape = lhs_layout.shape().dims().to_vec();
+    let rhs_shape = rhs_layout.shape().dims().to_vec();
+    let rank = lhs_shape.len().max(rhs_shape.len());
+    let lhs_pad = rank.saturating_sub(lhs_shape.len());
+    let rhs_pad = rank.saturating_sub(rhs_shape.len());
+    let lhs_strides = HipDeviceBuffer::standard_contiguous_strides(&lhs_shape);
+    let rhs_strides = HipDeviceBuffer::standard_contiguous_strides(&rhs_shape);
+    let mut out_shape = vec![0usize; rank];
+    let mut lhs_broadcast_strides = vec![0i32; rank];
+    let mut rhs_broadcast_strides = vec![0i32; rank];
+    let mut total_elems = 1usize;
+    for dim in 0..rank {
+        let lhs_dim = if dim < lhs_pad { 1 } else { lhs_shape[dim - lhs_pad] };
+        let rhs_dim = if dim < rhs_pad { 1 } else { rhs_shape[dim - rhs_pad] };
+        if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+            return Ok(None);
+        }
+        let out_dim = lhs_dim.max(rhs_dim);
+        out_shape[dim] = out_dim;
+        total_elems = total_elems.saturating_mul(out_dim);
+        lhs_broadcast_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(lhs_strides[dim - lhs_pad])
+                .map_err(|_| candle_core::Error::Msg("lhs stride overflow".into()))?
+        };
+        rhs_broadcast_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(rhs_strides[dim - rhs_pad])
+                .map_err(|_| candle_core::Error::Msg("rhs stride overflow".into()))?
+        };
+    }
+    let out_dims = out_shape
+        .iter()
+        .copied()
+        .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+        .collect::<Result<Vec<_>>>()?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape, lhs.dtype(), lhs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let ordinal = lhs.device().as_hip_device()?.ordinal();
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_binary_broadcast(
+            op,
+            hip::dtype_code(lhs.dtype())?,
+            ordinal,
+            i32::try_from(rank).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+            total_elems,
+            lhs_storage.raw_device_ptr_with_offset(lhs_layout.start_offset())? as *const c_void,
+            rhs_storage.raw_device_ptr_with_offset(rhs_layout.start_offset())? as *const c_void,
+            lhs_broadcast_strides.as_ptr(),
+            rhs_broadcast_strides.as_ptr(),
+            out_dims.as_ptr(),
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-binary-broadcast-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+fn reduce_keepdim_hip_owned_device(
+    xs: &Tensor,
+    dim: usize,
+    sum: bool,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    if !xs.device().is_hip() {
+        return Ok(None);
+    }
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() || dim >= layout.shape().rank() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let mut out_shape = shape.clone();
+    let reduce_len = out_shape[dim];
+    out_shape[dim] = 1;
+    let total_out_elems = HipNativeBuffer::elem_count(&out_shape);
+    let out_dims = out_shape
+        .iter()
+        .copied()
+        .map(|d| i32::try_from(d).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+        .collect::<Result<Vec<_>>>()?;
+    let in_strides = HipDeviceBuffer::standard_contiguous_strides(&shape)
+        .into_iter()
+        .map(|s| i32::try_from(s).map_err(|_| candle_core::Error::Msg("stride overflow".into())))
+        .collect::<Result<Vec<_>>>()?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape, xs.dtype(), xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let ordinal = xs.device().as_hip_device()?.ordinal();
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_reduce_keepdim_view(
+            hip::dtype_code(xs.dtype())?,
+            ordinal,
+            i32::try_from(shape.len()).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+            i32::try_from(dim).map_err(|_| candle_core::Error::Msg("dim overflow".into()))?,
+            reduce_len,
+            total_out_elems,
+            if sum { 1 } else { 0 },
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            in_strides.as_ptr(),
+            out_dims.as_ptr(),
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-reduce-keepdim-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+fn matmul_hip_owned_device(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let lhs = lhs.contiguous()?;
+    let rhs = rhs.contiguous()?;
+    if !lhs.device().is_hip() || !rhs.device().is_hip() {
+        return Ok(None);
+    }
+    let (lhs_storage, lhs_layout) = lhs.storage_and_layout();
+    let (rhs_storage, rhs_layout) = rhs.storage_and_layout();
+    let (Storage::Hip(lhs_storage), Storage::Hip(rhs_storage)) = (&*lhs_storage, &*rhs_storage) else {
+        return Ok(None);
+    };
+    if !lhs_layout.is_contiguous() || !rhs_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let lhs_shape = lhs_layout.shape().dims().to_vec();
+    let rhs_shape = rhs_layout.shape().dims().to_vec();
+    if lhs_shape.is_empty() || rhs_shape.is_empty() {
+        return Ok(None);
+    }
+    let lhs_rank = lhs_shape.len();
+    let rhs_rank = rhs_shape.len();
+    let lhs_k = lhs_shape[lhs_rank - 1];
+    let rhs_k = rhs_shape[rhs_rank.saturating_sub(2)];
+    if lhs_k != rhs_k {
+        return Ok(None);
+    }
+    let m = if lhs_rank >= 2 { lhs_shape[lhs_rank - 2] } else { 1 };
+    let n = rhs_shape[rhs_rank - 1];
+    let lhs_batch = &lhs_shape[..lhs_rank.saturating_sub(2)];
+    let rhs_batch = &rhs_shape[..rhs_rank.saturating_sub(2)];
+    let batch_rank = lhs_batch.len().max(rhs_batch.len());
+    if batch_rank > 8 {
+        return Ok(None);
+    }
+    let lhs_strides = HipDeviceBuffer::standard_contiguous_strides(&lhs_shape);
+    let rhs_strides = HipDeviceBuffer::standard_contiguous_strides(&rhs_shape);
+    let lhs_matrix_rank = lhs_rank.min(2);
+    let rhs_matrix_rank = rhs_rank.min(2);
+    let lhs_row_stride = if lhs_matrix_rank == 2 {
+        i32::try_from(lhs_strides[lhs_rank - 2]).map_err(|_| candle_core::Error::Msg("lhs row stride overflow".into()))?
+    } else { 0 };
+    let lhs_k_stride = i32::try_from(lhs_strides[lhs_rank - 1]).map_err(|_| candle_core::Error::Msg("lhs k stride overflow".into()))?;
+    let rhs_k_stride = if rhs_matrix_rank == 2 {
+        i32::try_from(rhs_strides[rhs_rank - 2]).map_err(|_| candle_core::Error::Msg("rhs k stride overflow".into()))?
+    } else { 0 };
+    let rhs_col_stride = i32::try_from(rhs_strides[rhs_rank - 1]).map_err(|_| candle_core::Error::Msg("rhs col stride overflow".into()))?;
+    let lhs_pad = batch_rank.saturating_sub(lhs_batch.len());
+    let rhs_pad = batch_rank.saturating_sub(rhs_batch.len());
+    let mut out_batch_dims = vec![1i32; batch_rank];
+    let mut lhs_batch_strides = vec![0i32; batch_rank];
+    let mut rhs_batch_strides = vec![0i32; batch_rank];
+    let mut batch_elems = 1usize;
+    for dim in 0..batch_rank {
+        let lhs_dim = if dim < lhs_pad { 1 } else { lhs_batch[dim - lhs_pad] };
+        let rhs_dim = if dim < rhs_pad { 1 } else { rhs_batch[dim - rhs_pad] };
+        if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+            return Ok(None);
+        }
+        let out_dim = lhs_dim.max(rhs_dim);
+        out_batch_dims[dim] = i32::try_from(out_dim)
+            .map_err(|_| candle_core::Error::Msg("matmul batch dim overflow".into()))?;
+        lhs_batch_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(lhs_strides[dim - lhs_pad])
+                .map_err(|_| candle_core::Error::Msg("lhs batch stride overflow".into()))?
+        };
+        rhs_batch_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+            0
+        } else {
+            i32::try_from(rhs_strides[dim - rhs_pad])
+                .map_err(|_| candle_core::Error::Msg("rhs batch stride overflow".into()))?
+        };
+        batch_elems = batch_elems.saturating_mul(out_dim);
+    }
+    let mut out_shape = out_batch_dims.iter().map(|&d| d as usize).collect::<Vec<_>>();
+    if lhs_rank >= 2 {
+        out_shape.push(m);
+    }
+    out_shape.push(n);
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape, lhs.dtype(), lhs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let ordinal = lhs.device().as_hip_device()?.ordinal();
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_batched_matmul_view(
+            hip::dtype_code(lhs.dtype())?,
+            ordinal,
+            i32::try_from(batch_rank).map_err(|_| candle_core::Error::Msg("batch rank overflow".into()))?,
+            batch_elems,
+            i32::try_from(m).map_err(|_| candle_core::Error::Msg("m overflow".into()))?,
+            i32::try_from(n).map_err(|_| candle_core::Error::Msg("n overflow".into()))?,
+            i32::try_from(lhs_k).map_err(|_| candle_core::Error::Msg("k overflow".into()))?,
+            lhs_batch_strides.as_ptr(),
+            rhs_batch_strides.as_ptr(),
+            out_batch_dims.as_ptr(),
+            lhs_row_stride,
+            lhs_k_stride,
+            rhs_k_stride,
+            rhs_col_stride,
+            lhs_storage.raw_device_ptr_with_offset(lhs_layout.start_offset())? as *const c_void,
+            rhs_storage.raw_device_ptr_with_offset(rhs_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-matmul-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
 }
 
 fn matmul_hip_host_buffer(lhs: &Tensor, rhs: &Tensor) -> Result<Option<HipTensor>> {
