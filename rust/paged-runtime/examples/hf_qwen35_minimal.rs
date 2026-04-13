@@ -3513,7 +3513,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_decoder_layer_residual_growths,
     ) = match (
         pytorch_decode_decoder_layer_max_deltas.as_ref(),
-        max_decode_input_hidden_delta,
+        max_decode_input_hidden_delta.or(Some(0.0)),
     ) {
         (Some(layer_deltas), Some(input_delta)) => {
             let mut inputs = Vec::with_capacity(layer_deltas.len());
