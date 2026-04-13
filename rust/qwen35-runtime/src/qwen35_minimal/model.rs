@@ -1667,8 +1667,8 @@ pub(crate) fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offs
         weight.to_dtype(xs.dtype())?
     };
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_rms_norm_mapped_host_buffer(&xs, &weight, eps, add_unit_offset)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_rms_norm_host_buffer(&xs, &weight, eps, add_unit_offset)? {
+        return hip_tensor_from_host_bytes(xs.device(), xs.dtype(), shape, output);
     }
     let xs_dims = xs.dims();
     let n_cols = *xs_dims.last().ok_or_else(|| {
@@ -1789,13 +1789,13 @@ pub(crate) fn hip_rms_norm_gated(
         weight.to_dtype(hidden_states.dtype())?
     };
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_rms_norm_gated_mapped_host_buffer(
+    if let Some((output, shape)) = hip_rms_norm_gated_host_buffer(
         &hidden_states,
         &gate,
         &weight,
         eps,
     )? {
-        return Ok(output);
+        return hip_tensor_from_host_bytes(hidden_states.device(), hidden_states.dtype(), shape, output);
     }
     let hidden_dims = hidden_states.dims();
     let n_cols = *hidden_dims.last().ok_or_else(|| {
@@ -2155,8 +2155,8 @@ impl candle::CustomOp2 for HipSwigluMul {
 
 pub(crate) fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_swiglu_mul_mapped_host_buffer(gate, up)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_swiglu_mul_host_buffer(gate, up)? {
+        return hip_tensor_from_host_bytes(gate.device(), gate.dtype(), shape, output);
     }
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
 }
@@ -2927,10 +2927,10 @@ impl candle::CustomOp1 for HipCausalMask {
 
 pub(crate) fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, tgt_len: usize, seqlen_offset: usize) -> Result<Tensor> {
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) =
-        hip_causal_mask_mapped_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    if let Some((output, shape)) =
+        hip_causal_mask_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
     {
-        return Ok(output);
+        return hip_tensor_from_host_bytes(device, dtype, shape, output);
     }
     let seed = Tensor::zeros(1usize, dtype, device)?;
     seed.apply_op1_no_bwd(&HipCausalMask {
@@ -3131,8 +3131,8 @@ impl candle::CustomOp1 for HipCumsumLastDim {
 pub(crate) fn hip_cumsum_last_dim(xs: &Tensor) -> Result<Tensor> {
     let xs = xs.contiguous()?;
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_cumsum_last_dim_mapped_host_buffer(&xs)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_cumsum_last_dim_host_buffer(&xs)? {
+        return hip_tensor_from_host_bytes(xs.device(), xs.dtype(), shape, output);
     }
     let dims = xs.dims();
     let cols = *dims.last().ok_or_else(|| {
@@ -4292,8 +4292,8 @@ pub(crate) fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) 
         a_log_exp.to_dtype(target_dtype)?
     };
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_value_decay_mapped_host_buffer(&a, &dt_bias, &a_log_exp)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_value_decay_host_buffer(&a, &dt_bias, &a_log_exp)? {
+        return hip_tensor_from_host_bytes(a.device(), a.dtype(), shape, output);
     }
     let total_elems = a.elem_count();
     let num_heads = dt_bias.elem_count();
