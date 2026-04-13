@@ -1407,8 +1407,13 @@ impl HipDeviceBuffer {
     }
 
     fn materialize_host_buffer_with_views(&self) -> Result<Option<HipHostBuffer>> {
-        let Some(mut buffer) = self.storage.as_host_buffer().cloned() else {
-            return Ok(None);
+        let mut buffer = match &self.storage {
+            HipDeviceStorage::MappedHostBuffer(buffer) => buffer.buffer.clone(),
+            HipDeviceStorage::HostBuffer(buffer) | HipDeviceStorage::PendingHostUpload(buffer) => {
+                buffer.clone()
+            }
+            HipDeviceStorage::OwnedDeviceBuffer(buffer) => buffer.download_to_host_buffer()?,
+            HipDeviceStorage::CandleTensor(_) => return Ok(None),
         };
         for op in &self.view_ops {
             buffer = match op {
@@ -3750,6 +3755,9 @@ impl HipNativeBuffer {
             HipNativeExpr::HostBytes { bytes } => Ok(Some(bytes.clone())),
             HipNativeExpr::DeviceBuffer(buffer) => {
                 if let Some(buffer) = buffer.try_host_buffer()? {
+                    return Ok(Some(buffer.bytes));
+                }
+                if let Some(buffer) = buffer.materialize_host_buffer_with_views()? {
                     return Ok(Some(buffer.bytes));
                 }
                 Self::tensor_to_host_float_bytes(&buffer.materialize_tensor()?, self.dtype)
