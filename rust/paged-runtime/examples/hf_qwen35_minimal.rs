@@ -983,7 +983,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )?);
         let pytorch_first_layer_linear_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.post_conv_mixed_qkv.tensor(),
-            &pytorch_oracle.first_layer_linear_post_conv_output,
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
         )?);
         let pytorch_first_layer_linear_hook_vs_direct_conv_max_delta = Some(max_vec3_delta(
             &pytorch_oracle.first_layer_linear_post_conv_output,
@@ -991,19 +991,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )?);
         let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
-            &pytorch_oracle.first_layer_linear_post_conv_output,
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
         )?);
         let pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta =
             Some(max_tensor_delta_vec3(
                 linear_core_trace
                     .explicit_post_conv_reversed_taps_mixed_qkv
                     .tensor(),
-                &pytorch_oracle.first_layer_linear_post_conv_output,
+                &pytorch_oracle.first_layer_linear_direct_conv_output,
             )?);
         let pytorch_first_layer_linear_fp32_reference_post_conv_max_delta = Some(
             max_tensor_delta_vec3(
                 linear_core_trace.fp32_reference_post_conv_mixed_qkv.tensor(),
-                &pytorch_oracle.first_layer_linear_post_conv_output,
+                &pytorch_oracle.first_layer_linear_direct_conv_output,
             )?,
         );
         let pytorch_first_layer_linear_direct_conv_max_delta = Some(max_tensor_delta_vec3(
