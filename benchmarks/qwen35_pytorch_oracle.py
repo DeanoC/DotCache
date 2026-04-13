@@ -103,10 +103,14 @@ def main() -> None:
     layer3_input_layernorm_output = None
     decode_layer3_input_layernorm_output = None
     layer3_input_layernorm_input = None
+    decode_layer3_input_layernorm_input = None
     layer3_input_layernorm_mean_square = None
+    decode_layer3_input_layernorm_mean_square = None
     layer3_input_layernorm_rsqrt = None
+    decode_layer3_input_layernorm_rsqrt = None
     layer3_input_layernorm_weight = None
     layer3_input_layernorm_weighted_hidden = None
+    decode_layer3_input_layernorm_weighted_hidden = None
     layer3_q_and_gate_output = None
     layer3_k_proj_output = None
     layer3_v_proj_output = None
@@ -565,15 +569,16 @@ def main() -> None:
 
     def layer3_input_layernorm_pre_hook(_module, inputs):
         nonlocal layer3_input_layernorm_input
+        nonlocal decode_layer3_input_layernorm_input
         nonlocal layer3_input_layernorm_mean_square
+        nonlocal decode_layer3_input_layernorm_mean_square
         nonlocal layer3_input_layernorm_rsqrt
+        nonlocal decode_layer3_input_layernorm_rsqrt
         nonlocal layer3_input_layernorm_weight
         nonlocal layer3_input_layernorm_weighted_hidden
-        if capture_phase != "prefill":
-            return
+        nonlocal decode_layer3_input_layernorm_weighted_hidden
         eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
         hidden = capture_tensor(inputs[0])
-        layer3_input_layernorm_input = hidden
         hidden_f32 = inputs[0].detach().to(dtype=torch.float32)
         mean_square = hidden_f32.pow(2).mean(dim=-1, keepdim=True)
         rsqrt = torch.rsqrt(mean_square + eps)
@@ -581,10 +586,18 @@ def main() -> None:
         weighted_hidden = weighted_hidden * (
             _module.weight.detach().to(dtype=torch.float32) + 1.0
         )
-        layer3_input_layernorm_mean_square = mean_square.cpu()
-        layer3_input_layernorm_rsqrt = rsqrt.cpu()
-        layer3_input_layernorm_weight = _module.weight.detach().to(dtype=torch.float32).cpu()
-        layer3_input_layernorm_weighted_hidden = weighted_hidden.cpu()
+        if capture_phase == "decode":
+            decode_layer3_input_layernorm_input = hidden
+            decode_layer3_input_layernorm_mean_square = mean_square.cpu()
+            decode_layer3_input_layernorm_rsqrt = rsqrt.cpu()
+            decode_layer3_input_layernorm_weighted_hidden = weighted_hidden.cpu()
+            return
+        if capture_phase == "prefill":
+            layer3_input_layernorm_input = hidden
+            layer3_input_layernorm_mean_square = mean_square.cpu()
+            layer3_input_layernorm_rsqrt = rsqrt.cpu()
+            layer3_input_layernorm_weight = _module.weight.detach().to(dtype=torch.float32).cpu()
+            layer3_input_layernorm_weighted_hidden = weighted_hidden.cpu()
 
     def layer3_token_mixer_hook(_module, _inputs, output):
         nonlocal layer3_token_mixer_output
@@ -992,6 +1005,10 @@ def main() -> None:
             "decode_first_layer_output": decode_first_layer_output,
             "decode_final_hidden_output": decode_final_hidden_output,
             "decode_layer3_input_layernorm_output": decode_layer3_input_layernorm_output,
+            "decode_layer3_input_layernorm_input": decode_layer3_input_layernorm_input,
+            "decode_layer3_input_layernorm_mean_square": decode_layer3_input_layernorm_mean_square,
+            "decode_layer3_input_layernorm_rsqrt": decode_layer3_input_layernorm_rsqrt,
+            "decode_layer3_input_layernorm_weighted_hidden": decode_layer3_input_layernorm_weighted_hidden,
             "decode_layer3_token_mixer_output": decode_layer3_token_mixer_output,
             "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output,
             "decode_layer3_mlp_output": decode_layer3_mlp_output,
@@ -1119,6 +1136,10 @@ def main() -> None:
         "decode_first_layer_output": decode_first_layer_output.tolist() if decode_first_layer_output is not None else None,
         "decode_final_hidden_output": decode_final_hidden_output.tolist() if decode_final_hidden_output is not None else None,
         "decode_layer3_input_layernorm_output": decode_layer3_input_layernorm_output.tolist() if decode_layer3_input_layernorm_output is not None else None,
+        "decode_layer3_input_layernorm_input": decode_layer3_input_layernorm_input.tolist() if decode_layer3_input_layernorm_input is not None else None,
+        "decode_layer3_input_layernorm_mean_square": decode_layer3_input_layernorm_mean_square.tolist() if decode_layer3_input_layernorm_mean_square is not None else None,
+        "decode_layer3_input_layernorm_rsqrt": decode_layer3_input_layernorm_rsqrt.tolist() if decode_layer3_input_layernorm_rsqrt is not None else None,
+        "decode_layer3_input_layernorm_weighted_hidden": decode_layer3_input_layernorm_weighted_hidden.tolist() if decode_layer3_input_layernorm_weighted_hidden is not None else None,
         "decode_layer3_token_mixer_output": decode_layer3_token_mixer_output.tolist() if decode_layer3_token_mixer_output is not None else None,
         "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output.tolist() if decode_layer3_post_attention_layernorm_output is not None else None,
         "decode_layer3_mlp_output": decode_layer3_mlp_output.tolist() if decode_layer3_mlp_output is not None else None,

@@ -364,6 +364,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_final_hidden_max_delta: Option<f32>,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta: Option<f32>,
         pytorch_decode_layer3_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta: Option<f32>,
         pytorch_decode_layer3_token_mixer_max_delta: Option<f32>,
         pytorch_decode_layer3_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_decode_layer3_mlp_max_delta: Option<f32>,
@@ -472,6 +476,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_first_layer_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_final_hidden_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
@@ -2089,6 +2097,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_final_hidden_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
         pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_input_layernorm_input_max_delta,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta,
         pytorch_decode_layer3_token_mixer_max_delta,
         pytorch_decode_layer3_post_attention_layernorm_max_delta,
         pytorch_decode_layer3_mlp_max_delta,
@@ -2151,6 +2163,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 prompt_ids.len(),
                 &device_cache,
             )?;
+            let layer3_input_norm_trace = layer3_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 3 input rmsnorm trace missing".to_string(),
+                })?;
             let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
                 &decode_input_hidden,
                 &device_cache,
@@ -2988,6 +3007,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     })
                     .transpose()?,
                 pytorch_oracle
+                    .decode_layer3_input_layernorm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.input_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.mean_square.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.weighted_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
                     .decode_layer3_token_mixer_output
                     .as_ref()
                     .map(|oracle| {
@@ -3020,7 +3067,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None,
             )
         }
     } else {
@@ -3028,7 +3075,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3409,6 +3456,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_final_hidden_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
         pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_input_layernorm_input_max_delta,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta,
         pytorch_decode_layer3_token_mixer_max_delta,
         pytorch_decode_layer3_post_attention_layernorm_max_delta,
         pytorch_decode_layer3_mlp_max_delta,
