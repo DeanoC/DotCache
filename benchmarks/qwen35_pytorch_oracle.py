@@ -132,6 +132,15 @@ def main() -> None:
     decode_layer3_mlp_output = None
     layer3_output = None
     decode_layer3_output = None
+    decode_layer23_input_layernorm_output = None
+    decode_layer23_input_layernorm_input = None
+    decode_layer23_input_layernorm_mean_square = None
+    decode_layer23_input_layernorm_rsqrt = None
+    decode_layer23_input_layernorm_weighted_hidden = None
+    decode_layer23_token_mixer_output = None
+    decode_layer23_post_attention_layernorm_output = None
+    decode_layer23_mlp_output = None
+    decode_layer23_output = None
     layer4_input_layernorm_output = None
     layer4_input_layernorm_input = None
     layer4_input_layernorm_mean_square = None
@@ -760,6 +769,51 @@ def main() -> None:
         tensor = output[0] if isinstance(output, tuple) else output
         layer4_output = tensor.detach().to(dtype=torch.float32).cpu()
 
+    def layer23_input_layernorm_hook(_module, _inputs, output):
+        nonlocal decode_layer23_input_layernorm_output
+        if capture_phase == "decode":
+            decode_layer23_input_layernorm_output = capture_tensor(output)
+
+    def layer23_input_layernorm_pre_hook(_module, inputs):
+        nonlocal decode_layer23_input_layernorm_input
+        nonlocal decode_layer23_input_layernorm_mean_square
+        nonlocal decode_layer23_input_layernorm_rsqrt
+        nonlocal decode_layer23_input_layernorm_weighted_hidden
+        if capture_phase != "decode":
+            return
+        eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
+        hidden = capture_tensor(inputs[0])
+        hidden_f32 = inputs[0].detach().to(dtype=torch.float32)
+        mean_square = hidden_f32.pow(2).mean(dim=-1, keepdim=True)
+        rsqrt = torch.rsqrt(mean_square + eps)
+        weight = (1.0 + _module.weight.detach().to(dtype=torch.float32)).view(1, 1, -1)
+        weighted_hidden = (hidden_f32 * rsqrt) * weight
+        decode_layer23_input_layernorm_input = hidden
+        decode_layer23_input_layernorm_mean_square = mean_square.cpu()
+        decode_layer23_input_layernorm_rsqrt = rsqrt.cpu()
+        decode_layer23_input_layernorm_weighted_hidden = weighted_hidden.cpu()
+
+    def layer23_token_mixer_hook(_module, _inputs, output):
+        nonlocal decode_layer23_token_mixer_output
+        if capture_phase == "decode":
+            decode_layer23_token_mixer_output = capture_tensor(output)
+
+    def layer23_post_attention_layernorm_hook(_module, _inputs, output):
+        nonlocal decode_layer23_post_attention_layernorm_output
+        if capture_phase == "decode":
+            decode_layer23_post_attention_layernorm_output = capture_tensor(output)
+
+    def layer23_mlp_hook(_module, _inputs, output):
+        nonlocal decode_layer23_mlp_output
+        if capture_phase == "decode":
+            decode_layer23_mlp_output = capture_tensor(output)
+
+    def layer23_hook(_module, _inputs, output):
+        nonlocal decode_layer23_output
+        if capture_phase == "decode":
+            tensor = output[0] if isinstance(output, tuple) else output
+            decode_layer23_output = tensor.detach().to(dtype=torch.float32).cpu()
+
     decoder_layer_outputs = [None] * len(model.model.layers)
     decode_decoder_layer_outputs = [None] * len(model.model.layers)
 
@@ -849,6 +903,28 @@ def main() -> None:
     )
     layer4_mlp_handle = model.model.layers[4].mlp.register_forward_hook(layer4_mlp_hook)
     layer4_handle = model.model.layers[4].register_forward_hook(layer4_hook)
+    layer23_input_layernorm_handle = (
+        model.model.layers[23]
+        .input_layernorm.register_forward_hook(layer23_input_layernorm_hook)
+    )
+    layer23_input_layernorm_pre_handle = (
+        model.model.layers[23]
+        .input_layernorm.register_forward_pre_hook(layer23_input_layernorm_pre_hook)
+    )
+    layer23_token_mixer_module = (
+        model.model.layers[23].linear_attn
+        if hasattr(model.model.layers[23], "linear_attn")
+        else model.model.layers[23].self_attn
+    )
+    layer23_token_mixer_handle = layer23_token_mixer_module.register_forward_hook(
+        layer23_token_mixer_hook
+    )
+    layer23_post_attention_layernorm_handle = (
+        model.model.layers[23]
+        .post_attention_layernorm.register_forward_hook(layer23_post_attention_layernorm_hook)
+    )
+    layer23_mlp_handle = model.model.layers[23].mlp.register_forward_hook(layer23_mlp_hook)
+    layer23_handle = model.model.layers[23].register_forward_hook(layer23_hook)
     try:
         with torch.no_grad():
             outputs = model(input_ids=input_ids, use_cache=True, output_hidden_states=True)
@@ -915,6 +991,12 @@ def main() -> None:
         layer4_post_attention_layernorm_handle.remove()
         layer4_mlp_handle.remove()
         layer4_handle.remove()
+        layer23_input_layernorm_pre_handle.remove()
+        layer23_input_layernorm_handle.remove()
+        layer23_token_mixer_handle.remove()
+        layer23_post_attention_layernorm_handle.remove()
+        layer23_mlp_handle.remove()
+        layer23_handle.remove()
         for handle in decoder_layer_handles:
             handle.remove()
 
@@ -1012,6 +1094,15 @@ def main() -> None:
         "layer4_post_attention_layernorm_output": layer4_post_attention_layernorm_output,
         "layer4_mlp_output": layer4_mlp_output,
         "layer4_output": layer4_output,
+        "decode_layer23_input_layernorm_output": decode_layer23_input_layernorm_output,
+        "decode_layer23_input_layernorm_input": decode_layer23_input_layernorm_input,
+        "decode_layer23_input_layernorm_mean_square": decode_layer23_input_layernorm_mean_square,
+        "decode_layer23_input_layernorm_rsqrt": decode_layer23_input_layernorm_rsqrt,
+        "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden,
+        "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output,
+        "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output,
+        "decode_layer23_mlp_output": decode_layer23_mlp_output,
+        "decode_layer23_output": decode_layer23_output,
     }
     missing.extend(name for name, value in required_scalars.items() if value is None)
     if any(layer_output is None for layer_output in decoder_layer_outputs):
@@ -1046,6 +1137,15 @@ def main() -> None:
             "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output,
             "decode_layer3_mlp_output": decode_layer3_mlp_output,
             "decode_layer3_output": decode_layer3_output,
+            "decode_layer23_input_layernorm_output": decode_layer23_input_layernorm_output,
+            "decode_layer23_input_layernorm_input": decode_layer23_input_layernorm_input,
+            "decode_layer23_input_layernorm_mean_square": decode_layer23_input_layernorm_mean_square,
+            "decode_layer23_input_layernorm_rsqrt": decode_layer23_input_layernorm_rsqrt,
+            "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden,
+            "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output,
+            "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output,
+            "decode_layer23_mlp_output": decode_layer23_mlp_output,
+            "decode_layer23_output": decode_layer23_output,
         }
         missing.extend(name for name, value in required_decode.items() if value is None)
     if missing:
@@ -1182,6 +1282,15 @@ def main() -> None:
         "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output.tolist() if decode_layer3_post_attention_layernorm_output is not None else None,
         "decode_layer3_mlp_output": decode_layer3_mlp_output.tolist() if decode_layer3_mlp_output is not None else None,
         "decode_layer3_output": decode_layer3_output.tolist() if decode_layer3_output is not None else None,
+        "decode_layer23_input_layernorm_output": decode_layer23_input_layernorm_output.tolist() if decode_layer23_input_layernorm_output is not None else None,
+        "decode_layer23_input_layernorm_input": decode_layer23_input_layernorm_input.tolist() if decode_layer23_input_layernorm_input is not None else None,
+        "decode_layer23_input_layernorm_mean_square": decode_layer23_input_layernorm_mean_square.tolist() if decode_layer23_input_layernorm_mean_square is not None else None,
+        "decode_layer23_input_layernorm_rsqrt": decode_layer23_input_layernorm_rsqrt.tolist() if decode_layer23_input_layernorm_rsqrt is not None else None,
+        "decode_layer23_input_layernorm_weighted_hidden": decode_layer23_input_layernorm_weighted_hidden.tolist() if decode_layer23_input_layernorm_weighted_hidden is not None else None,
+        "decode_layer23_token_mixer_output": decode_layer23_token_mixer_output.tolist() if decode_layer23_token_mixer_output is not None else None,
+        "decode_layer23_post_attention_layernorm_output": decode_layer23_post_attention_layernorm_output.tolist() if decode_layer23_post_attention_layernorm_output is not None else None,
+        "decode_layer23_mlp_output": decode_layer23_mlp_output.tolist() if decode_layer23_mlp_output is not None else None,
+        "decode_layer23_output": decode_layer23_output.tolist() if decode_layer23_output is not None else None,
         "prefill_last_token_logits": prefill_last_token_logits,
         "first_decode_step_last_token_logits": first_decode_step_logits,
         "decode_last_token_logits": decode_logits,

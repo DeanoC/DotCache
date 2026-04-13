@@ -377,6 +377,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer3_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_decode_layer3_mlp_max_delta: Option<f32>,
         pytorch_decode_layer3_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer23_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer23_max_delta: Option<f32>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
         decode_step_cache_max_delta: Option<f32>,
@@ -494,6 +503,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_layer3_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_output: Option<Vec<Vec<Vec<f32>>>>,
         prefill_last_token_logits: Vec<f32>,
         first_decode_step_last_token_logits: Option<Vec<f32>>,
         decode_last_token_logits: Vec<Vec<f32>>,
@@ -2120,6 +2138,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer3_post_attention_layernorm_max_delta,
         pytorch_decode_layer3_mlp_max_delta,
         pytorch_decode_layer3_max_delta,
+        pytorch_decode_layer23_input_layernorm_max_delta,
+        pytorch_decode_layer23_input_layernorm_input_max_delta,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer23_token_mixer_max_delta,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta,
+        pytorch_decode_layer23_mlp_max_delta,
+        pytorch_decode_layer23_max_delta,
     ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
         if !pytorch_oracle.decode_decoder_layer_outputs.is_empty() {
             let decode_input_token = *pytorch_oracle.generated_token_ids.first().ok_or_else(|| {
@@ -2184,6 +2211,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .ok_or_else(|| RuntimeError::External {
                     context: "pytorch oracle",
                     message: "decode layer 3 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer23_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input,
+                23,
+                prompt_ids.len(),
+                &device_cache,
+            )?;
+            let layer23_input_norm_trace = layer23_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 23 input rmsnorm trace missing".to_string(),
                 })?;
             let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
                 &decode_input_hidden,
@@ -3124,6 +3164,71 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .as_ref()
                     .map(|oracle| max_tensor_delta_vec3(layer3_trace.layer_output.tensor(), oracle))
                     .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.input_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.mean_square.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_input_norm_trace.weighted_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_token_mixer_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_trace.token_mixer_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_post_attention_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_trace.post_attention_layernorm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer23_trace.mlp_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer23_trace.layer_output.tensor(), oracle))
+                    .transpose()?,
             )
         } else {
             (
@@ -3131,7 +3236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None,
+                None, None, None, None, None, None, None, None, None, None, None,
             )
         }
     } else {
@@ -3140,7 +3245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None,
+            None, None, None, None, None, None, None, None, None, None, None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3534,6 +3639,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer3_post_attention_layernorm_max_delta,
         pytorch_decode_layer3_mlp_max_delta,
         pytorch_decode_layer3_max_delta,
+        pytorch_decode_layer23_input_layernorm_max_delta,
+        pytorch_decode_layer23_input_layernorm_input_max_delta,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer23_token_mixer_max_delta,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta,
+        pytorch_decode_layer23_mlp_max_delta,
+        pytorch_decode_layer23_max_delta,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,
         decode_step_cache_max_delta: max_decode_step_cache_delta,
