@@ -1776,6 +1776,78 @@ impl HipDeviceBuffer {
         )))
     }
 
+    fn binary_candle_view_device_output(&self, rhs: &Self, op: i32) -> Result<Option<Self>> {
+        let Some((lhs_ordinal, lhs_dtype, lhs_shape, lhs_strides, lhs_ptr)) =
+            self.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_ordinal, rhs_dtype, rhs_shape, rhs_strides, rhs_ptr)) =
+            rhs.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        if lhs_ordinal != rhs_ordinal || lhs_dtype != rhs_dtype {
+            return Ok(None);
+        }
+        let rank = lhs_shape.len().max(rhs_shape.len());
+        let lhs_pad = rank.saturating_sub(lhs_shape.len());
+        let rhs_pad = rank.saturating_sub(rhs_shape.len());
+        let mut out_shape = vec![0usize; rank];
+        let mut lhs_broadcast_strides = vec![0i32; rank];
+        let mut rhs_broadcast_strides = vec![0i32; rank];
+        let mut total_elems = 1usize;
+        for dim in 0..rank {
+            let lhs_dim = if dim < lhs_pad { 1 } else { lhs_shape[dim - lhs_pad] };
+            let rhs_dim = if dim < rhs_pad { 1 } else { rhs_shape[dim - rhs_pad] };
+            if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+                return Ok(None);
+            }
+            let out_dim = lhs_dim.max(rhs_dim);
+            out_shape[dim] = out_dim;
+            total_elems = total_elems.saturating_mul(out_dim);
+            lhs_broadcast_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+                0
+            } else {
+                lhs_strides[dim - lhs_pad]
+            };
+            rhs_broadcast_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+                0
+            } else {
+                rhs_strides[dim - rhs_pad]
+            };
+        }
+        let out_dims = out_shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let out = Self::from_raw_hip_device_output(out_shape.clone(), lhs_dtype, &self.device)?;
+        let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+            return Ok(None);
+        };
+        let dtype_code = hip::dtype_code(lhs_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_binary_broadcast(
+                op,
+                dtype_code,
+                lhs_ordinal,
+                i32::try_from(rank).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                total_elems,
+                lhs_ptr,
+                rhs_ptr,
+                lhs_broadcast_strides.as_ptr(),
+                rhs_broadcast_strides.as_ptr(),
+                out_dims.as_ptr(),
+                buffer.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error("hip-binary-view", status));
+        }
+        Ok(Some(out))
+    }
+
     fn reduce_candle_view_host_output(&self, dim: usize, sum: bool) -> Result<Option<Self>> {
         let Some((ordinal, dtype, shape, in_strides, input_ptr)) = self.candle_view_launch_spec()? else {
             return Ok(None);
@@ -1821,6 +1893,48 @@ impl HipDeviceBuffer {
             dtype,
             &self.device,
         )))
+    }
+
+    fn reduce_candle_view_device_output(&self, dim: usize, sum: bool) -> Result<Option<Self>> {
+        let Some((ordinal, dtype, shape, in_strides, input_ptr)) = self.candle_view_launch_spec()? else {
+            return Ok(None);
+        };
+        if dim >= shape.len() {
+            return Ok(None);
+        }
+        let mut out_shape = shape.clone();
+        let reduce_len = out_shape[dim];
+        out_shape[dim] = 1;
+        let total_out_elems = HipNativeBuffer::elem_count(&out_shape);
+        let out_dims = out_shape
+            .iter()
+            .copied()
+            .map(|dim| i32::try_from(dim).map_err(|_| candle_core::Error::Msg("shape overflow".into())))
+            .collect::<Result<Vec<_>>>()?;
+        let out = Self::from_raw_hip_device_output(out_shape.clone(), dtype, &self.device)?;
+        let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+            return Ok(None);
+        };
+        let dtype_code = hip::dtype_code(dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_reduce_keepdim_view(
+                dtype_code,
+                ordinal,
+                i32::try_from(shape.len()).map_err(|_| candle_core::Error::Msg("rank overflow".into()))?,
+                i32::try_from(dim).map_err(|_| candle_core::Error::Msg("dim overflow".into()))?,
+                reduce_len,
+                total_out_elems,
+                if sum { 1 } else { 0 },
+                input_ptr,
+                in_strides.as_ptr(),
+                out_dims.as_ptr(),
+                buffer.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error("hip-reduce-keepdim-view", status));
+        }
+        Ok(Some(out))
     }
 
     fn matmul_candle_view_host_output(&self, rhs: &Self) -> Result<Option<Self>> {
@@ -1937,6 +2051,108 @@ impl HipDeviceBuffer {
             lhs_dtype,
             &self.device,
         )))
+    }
+
+    fn matmul_candle_view_device_output(&self, rhs: &Self) -> Result<Option<Self>> {
+        let Some((lhs_ordinal, lhs_dtype, lhs_shape, lhs_strides, lhs_ptr)) =
+            self.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_ordinal, rhs_dtype, rhs_shape, rhs_strides, rhs_ptr)) =
+            rhs.candle_view_launch_spec()?
+        else {
+            return Ok(None);
+        };
+        if lhs_ordinal != rhs_ordinal || lhs_dtype != rhs_dtype {
+            return Ok(None);
+        }
+        if lhs_shape.is_empty() || rhs_shape.is_empty() {
+            return Ok(None);
+        }
+        let lhs_rank = lhs_shape.len();
+        let rhs_rank = rhs_shape.len();
+        let lhs_k = lhs_shape[lhs_rank - 1];
+        let rhs_k = rhs_shape[rhs_rank.saturating_sub(2)];
+        if lhs_k != rhs_k {
+            return Ok(None);
+        }
+        let m = if lhs_rank >= 2 { lhs_shape[lhs_rank - 2] } else { 1 };
+        let n = rhs_shape[rhs_rank - 1];
+        let lhs_batch = &lhs_shape[..lhs_rank.saturating_sub(2)];
+        let rhs_batch = &rhs_shape[..rhs_rank.saturating_sub(2)];
+        let batch_rank = lhs_batch.len().max(rhs_batch.len());
+        if batch_rank > 8 {
+            return Ok(None);
+        }
+        let lhs_matrix_rank = lhs_rank.min(2);
+        let rhs_matrix_rank = rhs_rank.min(2);
+        let lhs_row_stride = if lhs_matrix_rank == 2 { lhs_strides[lhs_rank - 2] } else { 0 };
+        let lhs_k_stride = lhs_strides[lhs_rank - 1];
+        let rhs_k_stride = if rhs_matrix_rank == 2 { rhs_strides[rhs_rank - 2] } else { 0 };
+        let rhs_col_stride = rhs_strides[rhs_rank - 1];
+        let lhs_pad = batch_rank.saturating_sub(lhs_batch.len());
+        let rhs_pad = batch_rank.saturating_sub(rhs_batch.len());
+        let mut out_batch_dims = vec![1i32; batch_rank];
+        let mut lhs_batch_strides = vec![0i32; batch_rank];
+        let mut rhs_batch_strides = vec![0i32; batch_rank];
+        let mut batch_elems = 1usize;
+        for dim in 0..batch_rank {
+            let lhs_dim = if dim < lhs_pad { 1 } else { lhs_batch[dim - lhs_pad] };
+            let rhs_dim = if dim < rhs_pad { 1 } else { rhs_batch[dim - rhs_pad] };
+            if lhs_dim != rhs_dim && lhs_dim != 1 && rhs_dim != 1 {
+                return Ok(None);
+            }
+            let out_dim = lhs_dim.max(rhs_dim);
+            out_batch_dims[dim] = i32::try_from(out_dim)
+                .map_err(|_| candle_core::Error::Msg("matmul batch dim overflow".into()))?;
+            lhs_batch_strides[dim] = if dim < lhs_pad || lhs_dim == 1 {
+                0
+            } else {
+                lhs_strides[dim - lhs_pad]
+            };
+            rhs_batch_strides[dim] = if dim < rhs_pad || rhs_dim == 1 {
+                0
+            } else {
+                rhs_strides[dim - rhs_pad]
+            };
+            batch_elems = batch_elems.saturating_mul(out_dim);
+        }
+        let mut out_shape = out_batch_dims.iter().map(|&d| d as usize).collect::<Vec<_>>();
+        if lhs_rank >= 2 {
+            out_shape.push(m);
+        }
+        out_shape.push(n);
+        let out = Self::from_raw_hip_device_output(out_shape, lhs_dtype, &self.device)?;
+        let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+            return Ok(None);
+        };
+        let dtype_code = hip::dtype_code(lhs_dtype)?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_batched_matmul_view(
+                dtype_code,
+                lhs_ordinal,
+                i32::try_from(batch_rank).map_err(|_| candle_core::Error::Msg("batch rank overflow".into()))?,
+                batch_elems,
+                i32::try_from(m).map_err(|_| candle_core::Error::Msg("m overflow".into()))?,
+                i32::try_from(n).map_err(|_| candle_core::Error::Msg("n overflow".into()))?,
+                i32::try_from(lhs_k).map_err(|_| candle_core::Error::Msg("k overflow".into()))?,
+                lhs_batch_strides.as_ptr(),
+                rhs_batch_strides.as_ptr(),
+                out_batch_dims.as_ptr(),
+                lhs_row_stride,
+                lhs_k_stride,
+                rhs_k_stride,
+                rhs_col_stride,
+                lhs_ptr,
+                rhs_ptr,
+                buffer.raw_device_ptr() as *mut c_void,
+            )
+        };
+        if status != 0 {
+            return Err(hip::hip_error("hip-batched-matmul-view", status));
+        }
+        Ok(Some(out))
     }
 
     pub(crate) fn materialize_tensor(&self) -> Result<Tensor> {
@@ -2155,6 +2371,9 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
+        if let Some(out) = self.binary_candle_view_device_output(rhs, 0)? {
+            return Ok(out);
+        }
         if let Some(out) = self.binary_candle_view_host_output(rhs, 0)? {
             return Ok(out);
         }
@@ -2173,6 +2392,9 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_sub(
                 &lhs_buffer, &rhs_buffer,
             )?));
+        }
+        if let Some(out) = self.binary_candle_view_device_output(rhs, 1)? {
+            return Ok(out);
         }
         if let Some(out) = self.binary_candle_view_host_output(rhs, 1)? {
             return Ok(out);
@@ -2193,6 +2415,9 @@ impl HipDeviceBuffer {
                 &lhs_buffer, &rhs_buffer,
             )?));
         }
+        if let Some(out) = self.binary_candle_view_device_output(rhs, 3)? {
+            return Ok(out);
+        }
         if let Some(out) = self.binary_candle_view_host_output(rhs, 3)? {
             return Ok(out);
         }
@@ -2211,6 +2436,9 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like_either(self, rhs, HipHostBuffer::broadcast_mul(
                 &lhs_buffer, &rhs_buffer,
             )?));
+        }
+        if let Some(out) = self.binary_candle_view_device_output(rhs, 2)? {
+            return Ok(out);
         }
         if let Some(out) = self.binary_candle_view_host_output(rhs, 2)? {
             return Ok(out);
@@ -2232,6 +2460,9 @@ impl HipDeviceBuffer {
                 buffer.max_keepdim(dim)?,
             ));
         }
+        if let Some(out) = self.reduce_candle_view_device_output(dim, false)? {
+            return Ok(out);
+        }
         if let Some(out) = self.reduce_candle_view_host_output(dim, false)? {
             return Ok(out);
         }
@@ -2250,6 +2481,9 @@ impl HipDeviceBuffer {
                 self,
                 buffer.sum_keepdim(dim)?,
             ));
+        }
+        if let Some(out) = self.reduce_candle_view_device_output(dim, true)? {
+            return Ok(out);
         }
         if let Some(out) = self.reduce_candle_view_host_output(dim, true)? {
             return Ok(out);
@@ -2352,6 +2586,9 @@ impl HipDeviceBuffer {
                 rhs,
                 lhs_buffer.matmul(&rhs_buffer)?,
             ));
+        }
+        if let Some(out) = self.matmul_candle_view_device_output(rhs)? {
+            return Ok(out);
         }
         if let Some(out) = self.matmul_candle_view_host_output(rhs)? {
             return Ok(out);
