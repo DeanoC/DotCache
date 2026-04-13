@@ -1,17 +1,40 @@
 use super::backend_buffer_api;
+use super::backend_buffer_api::Qwen35BackendBufferApi;
 use super::decoder::{DecoderLayer, LayerKind, ModelForCausalLM, TextModel};
 use super::frontend::{profile_elapsed, profile_start};
 use super::types::{RuntimeProfile, StateBuffer};
 use crate::PreparedQwen35DirectMetadata;
 use candle::Result;
 use candle_core as candle;
+use candle_core::DType;
+
+struct DirectDecodePhaseContext {
+    backend: &'static dyn Qwen35BackendBufferApi,
+    output_dtype: DType,
+    batch_size: usize,
+    seq_len: usize,
+}
+
+impl DirectDecodePhaseContext {
+    fn from_hidden_state(xs: &StateBuffer) -> Result<Self> {
+        let backend = backend_buffer_api::for_device(xs.device());
+        let output_dtype = xs.dtype();
+        let (batch_size, seq_len, _) = xs.dims3()?;
+        Ok(Self {
+            backend,
+            output_dtype,
+            batch_size,
+            seq_len,
+        })
+    }
+}
 
 fn execute_linear_decode_layer(
     layer: &mut DecoderLayer,
     xs: &StateBuffer,
+    phase_context: &DirectDecodePhaseContext,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
-    let backend = backend_buffer_api::for_device(device);
     let mut profile = RuntimeProfile::default();
     let residual = xs.clone();
     let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
@@ -25,7 +48,7 @@ fn execute_linear_decode_layer(
         linear_attn.project_direct_decode_inputs(&xs_norm)?;
     profile.add_assign(&projection_profile);
     let (xs, recurrent_state, linear_profile) = linear_attn.run_direct_decode_core(
-        xs.tensor().dtype(),
+        phase_context.output_dtype,
         &xs_norm,
         &mixed_qkv,
         &z,
@@ -34,22 +57,22 @@ fn execute_linear_decode_layer(
     )?;
     linear_attn.commit_direct_decode_recurrent_state(recurrent_state);
     profile.add_assign(&linear_profile);
-    let xs = backend.add(&residual, &xs)?;
+    let xs = phase_context.backend.add(&residual, &xs)?;
     let residual = xs.clone();
     let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
     let mlp_start = profile_start(device)?;
     let xs = layer.mlp.forward_buffer(&xs)?;
     profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-    Ok((backend.add(&residual, &xs)?, profile))
+    Ok((phase_context.backend.add(&residual, &xs)?, profile))
 }
 
 fn execute_full_decode_layer(
     layer: &mut DecoderLayer,
     xs: &StateBuffer,
+    phase_context: &DirectDecodePhaseContext,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
-    let backend = backend_buffer_api::for_device(device);
     let mut profile = RuntimeProfile::default();
     let residual = xs.clone();
     let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
@@ -59,7 +82,6 @@ fn execute_full_decode_layer(
             candle::bail!("direct-hip-v1 full decode expected full-attention layer")
         }
     };
-    let (b_sz, q_len, _) = xs_norm.dims3()?;
     let (
         query_states,
         key_states,
@@ -71,9 +93,9 @@ fn execute_full_decode_layer(
     ) = self_attn.project_direct_decode_inputs(&xs_norm, seqlen_offset)?;
     profile.add_assign(&input_profile);
     let xs = self_attn.run_direct_decode_core(
-        xs.dtype(),
-        b_sz,
-        q_len,
+        phase_context.output_dtype,
+        phase_context.batch_size,
+        phase_context.seq_len,
         &query_states,
         &key_states,
         &value_states,
@@ -81,13 +103,13 @@ fn execute_full_decode_layer(
         seqlen_offset,
     )?;
     self_attn.commit_direct_decode_kv_cache(appended_k, appended_v);
-    let xs = backend.add(&residual, &xs)?;
+    let xs = phase_context.backend.add(&residual, &xs)?;
     let residual = xs.clone();
     let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
     let mlp_start = profile_start(device)?;
     let xs = layer.mlp.forward_buffer(&xs)?;
     profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-    Ok((backend.add(&residual, &xs)?, profile))
+    Ok((phase_context.backend.add(&residual, &xs)?, profile))
 }
 
 fn execute_direct_decode_linear_phase_unchecked(
@@ -98,6 +120,7 @@ fn execute_direct_decode_linear_phase_unchecked(
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
+    let phase_context = DirectDecodePhaseContext::from_hidden_state(&xs)?;
     let layer_count = model.layers.len();
     for layer_idx in start_layer_idx..end_layer_idx {
         let layer = model.layers.get_mut(layer_idx).ok_or_else(|| {
@@ -114,7 +137,7 @@ fn execute_direct_decode_linear_phase_unchecked(
                 layer.layer_type(),
             );
         }
-        let (next_xs, layer_profile) = execute_linear_decode_layer(layer, &xs)?;
+        let (next_xs, layer_profile) = execute_linear_decode_layer(layer, &xs, &phase_context)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
@@ -130,6 +153,7 @@ fn execute_direct_decode_full_phase_unchecked(
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
+    let phase_context = DirectDecodePhaseContext::from_hidden_state(&xs)?;
     let layer_count = model.layers.len();
     for layer_idx in start_layer_idx..end_layer_idx {
         let layer = model.layers.get_mut(layer_idx).ok_or_else(|| {
@@ -146,7 +170,8 @@ fn execute_direct_decode_full_phase_unchecked(
                 layer.layer_type(),
             );
         }
-        let (next_xs, layer_profile) = execute_full_decode_layer(layer, &xs, seqlen_offset)?;
+        let (next_xs, layer_profile) =
+            execute_full_decode_layer(layer, &xs, &phase_context, seqlen_offset)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
