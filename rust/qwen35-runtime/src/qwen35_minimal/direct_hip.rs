@@ -156,15 +156,16 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         }
         self.validate_decode_phases()?;
         let phase_specs = self.runtime.decode_phase_specs().to_vec();
-        let full_attention_gate = self.runtime.full_attention_gate().clone();
-        let full_attention_qkv = self.runtime.full_attention_qkv().clone();
-        let full_attention_key = self.runtime.full_attention_key().clone();
-        let full_attention_value = self.runtime.full_attention_value().clone();
         let mut profile = MinimalQwen35RuntimeProfile::default();
+        let runtime = &mut self.runtime;
+        let full_attention_gate = &runtime.full_attention_gate;
+        let full_attention_qkv = &runtime.full_attention_qkv;
+        let full_attention_key = &runtime.full_attention_key;
+        let full_attention_value = &runtime.full_attention_value;
         let mut workspace = DirectHipDecodeWorkspace::new(
-            &mut self.runtime.decode_hidden_ping,
-            &mut self.runtime.decode_hidden_pong,
-            self.runtime.next_hidden_slot_is_ping,
+            &mut runtime.decode_hidden_ping,
+            &mut runtime.decode_hidden_pong,
+            runtime.next_hidden_slot_is_ping,
         );
         workspace.seed_input(hidden_state_t);
         for phase in phase_specs.iter().copied() {
@@ -175,10 +176,10 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
                 phase.kind,
                 phase.start_layer_idx,
                 phase.end_layer_idx,
-                &full_attention_gate,
-                &full_attention_qkv,
-                &full_attention_key,
-                &full_attention_value,
+                full_attention_gate,
+                full_attention_qkv,
+                full_attention_key,
+                full_attention_value,
                 workspace.inactive(),
                 workspace.inactive(),
             )?;
@@ -191,9 +192,9 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
             self.model.finalize_direct_decode_logits_hip_v1(active_hidden)?;
         profile.add_assign(&finalize_profile);
         *cache = self.model.cache_state();
-        self.runtime.next_hidden_slot_is_ping = workspace.active_slot_is_ping();
-        self.runtime.decode_logits = logits.clone();
-        self.runtime.last_decode_sequence_length = seqlen_offset + 1;
+        runtime.next_hidden_slot_is_ping = workspace.active_slot_is_ping();
+        runtime.decode_logits = logits.clone();
+        runtime.last_decode_sequence_length = seqlen_offset + 1;
         Ok((logits, profile))
     }
 
