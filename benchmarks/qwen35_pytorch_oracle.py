@@ -46,6 +46,7 @@ def main() -> None:
     first_layer_linear_z_output = None
     first_layer_linear_b_output = None
     first_layer_linear_a_output = None
+    first_layer_linear_conv_weight = None
     first_layer_linear_pre_conv_value_focus_head_output = None
     first_layer_linear_post_conv_output = None
     first_layer_linear_prepared_value_focus_head_output = None
@@ -112,7 +113,9 @@ def main() -> None:
     def linear_conv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_post_conv_output
         nonlocal first_layer_linear_prepared_value_focus_head_output
+        nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
+        first_layer_linear_conv_weight = _module.weight.detach().squeeze(1).to(dtype=torch.float32).cpu()
         seq_len = input_ids.shape[1]
         post_conv = tensor.transpose(1, 2)[:, -seq_len:, :].contiguous()
         first_layer_linear_post_conv_output = post_conv
@@ -238,6 +241,7 @@ def main() -> None:
         or first_layer_linear_z_output is None
         or first_layer_linear_b_output is None
         or first_layer_linear_a_output is None
+        or first_layer_linear_conv_weight is None
         or first_layer_linear_pre_conv_value_focus_head_output is None
         or first_layer_linear_post_conv_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
@@ -292,6 +296,7 @@ def main() -> None:
         "first_layer_linear_z_output": first_layer_linear_z_output.tolist(),
         "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
+        "first_layer_linear_conv_weight": first_layer_linear_conv_weight.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),

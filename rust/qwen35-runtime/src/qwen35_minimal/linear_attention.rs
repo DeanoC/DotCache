@@ -631,6 +631,28 @@ impl GatedDeltaNet {
             .silu()
     }
 
+    fn depthwise_conv_from_state_reversed_taps(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
+        let kernel = self.conv_kernel_size;
+        let seq_len = mixed_qkv.dim(2)?;
+        let mixed_qkv = self.prepare_depthwise_conv_input(mixed_qkv)?;
+        let weights = self.conv1d_weight_squeezed()?;
+        let mut output: Option<Tensor> = None;
+        for tap in 0..kernel {
+            let xs = mixed_qkv.narrow(2, tap, seq_len)?;
+            let w = weights
+                .i((.., kernel - 1 - tap))?
+                .reshape((1, self.conv_dim(), 1))?;
+            let contrib = xs.broadcast_mul(&w)?;
+            output = Some(match output {
+                Some(acc) => acc.broadcast_add(&contrib)?,
+                None => contrib,
+            });
+        }
+        output
+            .expect("depthwise conv produced at least one tap")
+            .silu()
+    }
+
     fn run_depthwise_conv(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         if mixed_qkv.device().is_hip() {
             return self
@@ -2149,6 +2171,7 @@ impl GatedDeltaNet {
 
         let qkv_start = profile_start(device)?;
         let backend = backend_buffer_api::for_device(device);
+        let conv_weight_squeezed = backend.tensor_to_buffer(self.conv1d_weight_squeezed()?)?;
         let mixed_qkv = backend.tensor_to_buffer(
             self.in_proj_qkv
                 .forward_buffer(&hidden_states)?
@@ -2239,11 +2262,20 @@ impl GatedDeltaNet {
                 .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
                 .i((0, 2, 6))?,
         )?;
-        let (explicit_post_conv_mixed_qkv, explicit_post_conv_value_focus_head) =
+        let (
+            explicit_post_conv_mixed_qkv,
+            explicit_post_conv_value_focus_head,
+            explicit_post_conv_reversed_taps_mixed_qkv,
+            explicit_post_conv_reversed_taps_value_focus_head,
+        ) =
             if device.is_hip() && seq_len > 1 {
                 let saved_conv_state = self.conv_state.clone();
                 self.conv_state = None;
                 let explicit = self.depthwise_conv_from_state(&input_mixed_qkv)?.transpose(1, 2)?;
+                self.conv_state = None;
+                let explicit_reversed = self
+                    .depthwise_conv_from_state_reversed_taps(&input_mixed_qkv)?
+                    .transpose(1, 2)?;
                 self.conv_state = saved_conv_state;
                 let explicit_post_conv_mixed_qkv = backend.tensor_to_buffer(explicit.clone())?;
                 let explicit_post_conv_value_focus_head = backend.tensor_to_buffer(
@@ -2252,9 +2284,27 @@ impl GatedDeltaNet {
                         .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
                         .i((0, 2, 6))?,
                 )?;
-                (explicit_post_conv_mixed_qkv, explicit_post_conv_value_focus_head)
+                let explicit_post_conv_reversed_taps_mixed_qkv =
+                    backend.tensor_to_buffer(explicit_reversed.clone())?;
+                let explicit_post_conv_reversed_taps_value_focus_head = backend.tensor_to_buffer(
+                    explicit_reversed
+                        .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
+                        .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
+                        .i((0, 2, 6))?,
+                )?;
+                (
+                    explicit_post_conv_mixed_qkv,
+                    explicit_post_conv_value_focus_head,
+                    explicit_post_conv_reversed_taps_mixed_qkv,
+                    explicit_post_conv_reversed_taps_value_focus_head,
+                )
             } else {
-                (post_conv_mixed_qkv.clone(), post_conv_value_focus_head.clone())
+                (
+                    post_conv_mixed_qkv.clone(),
+                    post_conv_value_focus_head.clone(),
+                    post_conv_mixed_qkv.clone(),
+                    post_conv_value_focus_head.clone(),
+                )
             };
 
         let layout_start = profile_start(device)?;
@@ -2378,10 +2428,13 @@ impl GatedDeltaNet {
 
         Ok((
             LinearAttentionCoreTrace {
+                conv_weight_squeezed,
                 post_conv_mixed_qkv,
                 explicit_post_conv_mixed_qkv,
+                explicit_post_conv_reversed_taps_mixed_qkv,
                 post_conv_value_focus_head,
                 explicit_post_conv_value_focus_head,
+                explicit_post_conv_reversed_taps_value_focus_head,
                 prepared_value_focus_head,
                 pre_gated_norm_output,
                 pre_gated_norm_mean_square,

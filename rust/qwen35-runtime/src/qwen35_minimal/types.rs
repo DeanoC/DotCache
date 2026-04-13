@@ -353,10 +353,13 @@ pub struct LinearAttentionProjectionTrace {
 
 #[derive(Debug, Clone)]
 pub struct LinearAttentionCoreTrace {
+    pub conv_weight_squeezed: StateBuffer,
     pub post_conv_mixed_qkv: StateBuffer,
     pub explicit_post_conv_mixed_qkv: StateBuffer,
+    pub explicit_post_conv_reversed_taps_mixed_qkv: StateBuffer,
     pub post_conv_value_focus_head: StateBuffer,
     pub explicit_post_conv_value_focus_head: StateBuffer,
+    pub explicit_post_conv_reversed_taps_value_focus_head: StateBuffer,
     pub prepared_value_focus_head: StateBuffer,
     pub pre_gated_norm_output: StateBuffer,
     pub pre_gated_norm_mean_square: StateBuffer,
