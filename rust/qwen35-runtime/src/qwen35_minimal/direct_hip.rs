@@ -5,7 +5,6 @@ use super::{
 
 fn decode_phase_from_hidden_state(
     model: &mut ModelForCausalLM,
-    metadata: &crate::PreparedQwen35DirectMetadata,
     xs: &MinimalQwen35StateBuffer,
     seqlen_offset: usize,
     phase_kind: DirectHipDecodePhaseKind,
@@ -16,7 +15,6 @@ fn decode_phase_from_hidden_state(
         DirectHipDecodePhaseKind::LinearAttention => Ok(
             direct_decoder::model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
                 model,
-                metadata,
                 start_layer_idx,
                 end_layer_idx,
                 xs,
@@ -25,7 +23,6 @@ fn decode_phase_from_hidden_state(
         DirectHipDecodePhaseKind::FullAttention => Ok(
             direct_decoder::model_direct_decode_full_phase_profiled_hip_v1_unchecked(
                 model,
-                metadata,
                 start_layer_idx,
                 end_layer_idx,
                 xs,
@@ -138,7 +135,6 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
             });
         }
         self.validate_decode_phases()?;
-        let metadata = self.runtime.metadata().clone();
         let phase_specs = self.runtime.decode_phase_specs().to_vec();
         let mut profile = MinimalQwen35RuntimeProfile::default();
         let mut workspace = DirectHipDecodeWorkspace::new(
@@ -150,7 +146,6 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         for phase in phase_specs.iter().copied() {
             let (next_xs, phase_profile) = decode_phase_from_hidden_state(
                 self.model,
-                &metadata,
                 workspace.active(),
                 seqlen_offset,
                 phase.kind,
