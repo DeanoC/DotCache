@@ -97,6 +97,16 @@ def main() -> None:
     layer3_post_attention_layernorm_output = None
     layer3_mlp_output = None
     layer3_output = None
+    layer4_input_layernorm_output = None
+    layer4_input_layernorm_input = None
+    layer4_input_layernorm_mean_square = None
+    layer4_input_layernorm_rsqrt = None
+    layer4_input_layernorm_weight = None
+    layer4_input_layernorm_weighted_hidden = None
+    layer4_token_mixer_output = None
+    layer4_post_attention_layernorm_output = None
+    layer4_mlp_output = None
+    layer4_output = None
 
     def embed_hook(_module, _inputs, output):
         nonlocal embedding_output
@@ -406,6 +416,48 @@ def main() -> None:
         tensor = output[0] if isinstance(output, tuple) else output
         layer3_output = tensor.detach().to(dtype=torch.float32).cpu()
 
+    def layer4_input_layernorm_hook(_module, _inputs, output):
+        nonlocal layer4_input_layernorm_output
+        layer4_input_layernorm_output = capture_tensor(output)
+
+    def layer4_input_layernorm_pre_hook(_module, inputs):
+        nonlocal layer4_input_layernorm_input
+        nonlocal layer4_input_layernorm_mean_square
+        nonlocal layer4_input_layernorm_rsqrt
+        nonlocal layer4_input_layernorm_weight
+        nonlocal layer4_input_layernorm_weighted_hidden
+        eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
+        hidden = capture_tensor(inputs[0])
+        layer4_input_layernorm_input = hidden
+        hidden_f32 = inputs[0].detach().to(dtype=torch.float32)
+        mean_square = hidden_f32.pow(2).mean(dim=-1, keepdim=True)
+        rsqrt = torch.rsqrt(mean_square + eps)
+        weighted_hidden = hidden_f32 * rsqrt
+        weighted_hidden = weighted_hidden * (
+            _module.weight.detach().to(dtype=torch.float32) + 1.0
+        )
+        layer4_input_layernorm_mean_square = mean_square.cpu()
+        layer4_input_layernorm_rsqrt = rsqrt.cpu()
+        layer4_input_layernorm_weight = _module.weight.detach().to(dtype=torch.float32).cpu()
+        layer4_input_layernorm_weighted_hidden = weighted_hidden.cpu()
+
+    def layer4_token_mixer_hook(_module, _inputs, output):
+        nonlocal layer4_token_mixer_output
+        layer4_token_mixer_output = capture_tensor(output)
+
+    def layer4_post_attention_layernorm_hook(_module, _inputs, output):
+        nonlocal layer4_post_attention_layernorm_output
+        layer4_post_attention_layernorm_output = capture_tensor(output)
+
+    def layer4_mlp_hook(_module, _inputs, output):
+        nonlocal layer4_mlp_output
+        layer4_mlp_output = capture_tensor(output)
+
+    def layer4_hook(_module, _inputs, output):
+        nonlocal layer4_output
+        tensor = output[0] if isinstance(output, tuple) else output
+        layer4_output = tensor.detach().to(dtype=torch.float32).cpu()
+
     decoder_layer_outputs = [None] * len(model.model.layers)
 
     embed_handle = model.model.embed_tokens.register_forward_hook(embed_hook)
@@ -475,6 +527,23 @@ def main() -> None:
     )
     layer3_mlp_handle = model.model.layers[3].mlp.register_forward_hook(layer3_mlp_hook)
     layer3_handle = model.model.layers[3].register_forward_hook(layer3_hook)
+    layer4_input_layernorm_handle = (
+        model.model.layers[4]
+        .input_layernorm.register_forward_hook(layer4_input_layernorm_hook)
+    )
+    layer4_input_layernorm_pre_handle = (
+        model.model.layers[4]
+        .input_layernorm.register_forward_pre_hook(layer4_input_layernorm_pre_hook)
+    )
+    layer4_token_mixer_handle = model.model.layers[4].linear_attn.register_forward_hook(
+        layer4_token_mixer_hook
+    )
+    layer4_post_attention_layernorm_handle = (
+        model.model.layers[4]
+        .post_attention_layernorm.register_forward_hook(layer4_post_attention_layernorm_hook)
+    )
+    layer4_mlp_handle = model.model.layers[4].mlp.register_forward_hook(layer4_mlp_hook)
+    layer4_handle = model.model.layers[4].register_forward_hook(layer4_hook)
     try:
         with torch.no_grad():
             model(input_ids=input_ids, use_cache=True)
@@ -502,6 +571,12 @@ def main() -> None:
         layer3_post_attention_layernorm_handle.remove()
         layer3_mlp_handle.remove()
         layer3_handle.remove()
+        layer4_input_layernorm_handle.remove()
+        layer4_input_layernorm_pre_handle.remove()
+        layer4_token_mixer_handle.remove()
+        layer4_post_attention_layernorm_handle.remove()
+        layer4_mlp_handle.remove()
+        layer4_handle.remove()
         for handle in decoder_layer_handles:
             handle.remove()
 
@@ -588,6 +663,16 @@ def main() -> None:
         or layer3_post_attention_layernorm_output is None
         or layer3_mlp_output is None
         or layer3_output is None
+        or layer4_input_layernorm_output is None
+        or layer4_input_layernorm_input is None
+        or layer4_input_layernorm_mean_square is None
+        or layer4_input_layernorm_rsqrt is None
+        or layer4_input_layernorm_weight is None
+        or layer4_input_layernorm_weighted_hidden is None
+        or layer4_token_mixer_output is None
+        or layer4_post_attention_layernorm_output is None
+        or layer4_mlp_output is None
+        or layer4_output is None
         or any(layer_output is None for layer_output in decoder_layer_outputs)
     ):
         raise RuntimeError("failed to capture staged first-layer outputs from PyTorch model")
@@ -676,6 +761,16 @@ def main() -> None:
         "layer3_post_attention_layernorm_output": layer3_post_attention_layernorm_output.tolist(),
         "layer3_mlp_output": layer3_mlp_output.tolist(),
         "layer3_output": layer3_output.tolist(),
+        "layer4_input_layernorm_output": layer4_input_layernorm_output.tolist(),
+        "layer4_input_layernorm_input": layer4_input_layernorm_input.tolist(),
+        "layer4_input_layernorm_mean_square": layer4_input_layernorm_mean_square.tolist(),
+        "layer4_input_layernorm_rsqrt": layer4_input_layernorm_rsqrt.tolist(),
+        "layer4_input_layernorm_weight": layer4_input_layernorm_weight.tolist(),
+        "layer4_input_layernorm_weighted_hidden": layer4_input_layernorm_weighted_hidden.tolist(),
+        "layer4_token_mixer_output": layer4_token_mixer_output.tolist(),
+        "layer4_post_attention_layernorm_output": layer4_post_attention_layernorm_output.tolist(),
+        "layer4_mlp_output": layer4_mlp_output.tolist(),
+        "layer4_output": layer4_output.tolist(),
         "decoder_layer_outputs": [layer_output.tolist() for layer_output in decoder_layer_outputs],
         "prefill_last_token_logits": prefill_last_token_logits,
         "decode_last_token_logits": decode_logits,
