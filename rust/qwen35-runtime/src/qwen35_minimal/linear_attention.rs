@@ -2164,6 +2164,7 @@ impl GatedDeltaNet {
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let kv_append_start = profile_start(device)?;
+        let input_mixed_qkv = mixed_qkv.clone_tensor();
         let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
             let target_dtype = mixed_qkv.tensor().dtype();
             let a_tensor = if a.tensor().dtype() == target_dtype {
@@ -2238,6 +2239,23 @@ impl GatedDeltaNet {
                 .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
                 .i((0, 2, 6))?,
         )?;
+        let (explicit_post_conv_mixed_qkv, explicit_post_conv_value_focus_head) =
+            if device.is_hip() && seq_len > 1 {
+                let saved_conv_state = self.conv_state.clone();
+                self.conv_state = None;
+                let explicit = self.depthwise_conv_from_state(&input_mixed_qkv)?.transpose(1, 2)?;
+                self.conv_state = saved_conv_state;
+                let explicit_post_conv_mixed_qkv = backend.tensor_to_buffer(explicit.clone())?;
+                let explicit_post_conv_value_focus_head = backend.tensor_to_buffer(
+                    explicit
+                        .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
+                        .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
+                        .i((0, 2, 6))?,
+                )?;
+                (explicit_post_conv_mixed_qkv, explicit_post_conv_value_focus_head)
+            } else {
+                (post_conv_mixed_qkv.clone(), post_conv_value_focus_head.clone())
+            };
 
         let layout_start = profile_start(device)?;
         let use_short_recurrent_prefill = use_hip_short_linear_prefill_recurrent(device, seq_len);
@@ -2361,7 +2379,9 @@ impl GatedDeltaNet {
         Ok((
             LinearAttentionCoreTrace {
                 post_conv_mixed_qkv,
+                explicit_post_conv_mixed_qkv,
                 post_conv_value_focus_head,
+                explicit_post_conv_value_focus_head,
                 prepared_value_focus_head,
                 pre_gated_norm_output,
                 pre_gated_norm_mean_square,
