@@ -25,18 +25,18 @@ use candle_core as candle;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-enum LayerKind {
+pub(super) enum LayerKind {
     Linear(GatedDeltaNet),
     Full(FullAttention),
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct DecoderLayer {
-    layer_type: String,
-    token_mixer: LayerKind,
-    mlp: Mlp,
-    input_layernorm: Qwen35RmsNorm,
-    post_attention_layernorm: Qwen35RmsNorm,
+    pub(super) layer_type: String,
+    pub(super) token_mixer: LayerKind,
+    pub(super) mlp: Mlp,
+    pub(super) input_layernorm: Qwen35RmsNorm,
+    pub(super) post_attention_layernorm: Qwen35RmsNorm,
 }
 
 impl DecoderLayer {
@@ -179,61 +179,6 @@ impl DecoderLayer {
     ) -> Result<StateBuffer> {
         self.forward_profiled(xs, attention_mask, seqlen_offset)
             .map(|(output, _)| output)
-    }
-
-    pub(super) fn forward_profiled_direct_decode_linear_v1(
-        &mut self,
-        xs: &StateBuffer,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        let device = xs.device();
-        let backend = backend_buffer_api::for_device(device);
-        let mut profile = RuntimeProfile::default();
-        let residual = xs.clone();
-        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
-        let linear_attn = match &mut self.token_mixer {
-            LayerKind::Linear(linear_attn) => linear_attn,
-            LayerKind::Full(_) => {
-                candle::bail!("direct-hip-v1 linear decode expected linear-attention layer")
-            }
-        };
-        let (xs, layer_profile) = linear_attn.forward_profiled_direct_decode_v1(&xs_norm)?;
-        profile.add_assign(&layer_profile);
-        let xs = backend.add(&residual, &xs)?;
-        let residual = xs.clone();
-        let xs = self.post_attention_layernorm.forward_buffer(&xs)?;
-        let mlp_start = profile_start(device)?;
-        let xs = self.mlp.forward_buffer(&xs)?;
-        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-        Ok((backend.add(&residual, &xs)?, profile))
-    }
-
-    pub(super) fn forward_profiled_direct_decode_full_v1(
-        &mut self,
-        layer_id: usize,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        let device = xs.device();
-        let backend = backend_buffer_api::for_device(device);
-        let mut profile = RuntimeProfile::default();
-        let residual = xs.clone();
-        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
-        let self_attn = match &mut self.token_mixer {
-            LayerKind::Full(self_attn) => self_attn,
-            LayerKind::Linear(_) => {
-                candle::bail!("direct-hip-v1 full decode expected full-attention layer")
-            }
-        };
-        let (xs, layer_profile) =
-            self_attn.forward_profiled_direct_decode_v1(&xs_norm, seqlen_offset, layer_id)?;
-        profile.add_assign(&layer_profile);
-        let xs = backend.add(&residual, &xs)?;
-        let residual = xs.clone();
-        let xs = self.post_attention_layernorm.forward_buffer(&xs)?;
-        let mlp_start = profile_start(device)?;
-        let xs = self.mlp.forward_buffer(&xs)?;
-        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-        Ok((backend.add(&residual, &xs)?, profile))
     }
 
     fn clear_kv_cache(&mut self) {

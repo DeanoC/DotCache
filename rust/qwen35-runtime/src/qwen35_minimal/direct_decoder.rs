@@ -1,9 +1,65 @@
 use super::backend_buffer_api;
-use super::decoder::{ModelForCausalLM, TextModel};
+use super::decoder::{DecoderLayer, LayerKind, ModelForCausalLM, TextModel};
+use super::frontend::{profile_elapsed, profile_start};
 use super::types::{RuntimeProfile, StateBuffer};
 use crate::PreparedQwen35DirectMetadata;
 use candle::Result;
 use candle_core as candle;
+
+fn execute_linear_decode_layer(
+    layer: &mut DecoderLayer,
+    xs: &StateBuffer,
+) -> Result<(StateBuffer, RuntimeProfile)> {
+    let device = xs.device();
+    let backend = backend_buffer_api::for_device(device);
+    let mut profile = RuntimeProfile::default();
+    let residual = xs.clone();
+    let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
+    let linear_attn = match &mut layer.token_mixer {
+        LayerKind::Linear(linear_attn) => linear_attn,
+        LayerKind::Full(_) => {
+            candle::bail!("direct-hip-v1 linear decode expected linear-attention layer")
+        }
+    };
+    let (xs, layer_profile) = linear_attn.forward_profiled_direct_decode_v1(&xs_norm)?;
+    profile.add_assign(&layer_profile);
+    let xs = backend.add(&residual, &xs)?;
+    let residual = xs.clone();
+    let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
+    let mlp_start = profile_start(device)?;
+    let xs = layer.mlp.forward_buffer(&xs)?;
+    profile.mlp_millis += profile_elapsed(mlp_start, device)?;
+    Ok((backend.add(&residual, &xs)?, profile))
+}
+
+fn execute_full_decode_layer(
+    layer: &mut DecoderLayer,
+    layer_idx: usize,
+    xs: &StateBuffer,
+    seqlen_offset: usize,
+) -> Result<(StateBuffer, RuntimeProfile)> {
+    let device = xs.device();
+    let backend = backend_buffer_api::for_device(device);
+    let mut profile = RuntimeProfile::default();
+    let residual = xs.clone();
+    let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
+    let self_attn = match &mut layer.token_mixer {
+        LayerKind::Full(self_attn) => self_attn,
+        LayerKind::Linear(_) => {
+            candle::bail!("direct-hip-v1 full decode expected full-attention layer")
+        }
+    };
+    let (xs, layer_profile) =
+        self_attn.forward_profiled_direct_decode_v1(&xs_norm, seqlen_offset, layer_idx)?;
+    profile.add_assign(&layer_profile);
+    let xs = backend.add(&residual, &xs)?;
+    let residual = xs.clone();
+    let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
+    let mlp_start = profile_start(device)?;
+    let xs = layer.mlp.forward_buffer(&xs)?;
+    profile.mlp_millis += profile_elapsed(mlp_start, device)?;
+    Ok((backend.add(&residual, &xs)?, profile))
+}
 
 fn execute_direct_decode_linear_phase(
     model: &mut TextModel,
@@ -52,7 +108,7 @@ fn execute_direct_decode_linear_phase(
                 layer_meta.layer_type
             );
         }
-        let (next_xs, layer_profile) = layer.forward_profiled_direct_decode_linear_v1(&xs)?;
+        let (next_xs, layer_profile) = execute_linear_decode_layer(layer, &xs)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
@@ -108,7 +164,7 @@ fn execute_direct_decode_full_phase(
             );
         }
         let (next_xs, layer_profile) =
-            layer.forward_profiled_direct_decode_full_v1(layer_idx, &xs, seqlen_offset)?;
+            execute_full_decode_layer(layer, layer_idx, &xs, seqlen_offset)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
