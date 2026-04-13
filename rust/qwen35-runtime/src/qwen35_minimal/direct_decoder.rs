@@ -45,7 +45,6 @@ fn execute_linear_decode_layer(
 
 fn execute_full_decode_layer(
     layer: &mut DecoderLayer,
-    layer_idx: usize,
     xs: &StateBuffer,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
@@ -60,9 +59,28 @@ fn execute_full_decode_layer(
             candle::bail!("direct-hip-v1 full decode expected full-attention layer")
         }
     };
-    let (xs, layer_profile) =
-        self_attn.forward_profiled_direct_decode_v1(&xs_norm, seqlen_offset, layer_idx)?;
-    profile.add_assign(&layer_profile);
+    let (b_sz, q_len, _) = xs_norm.dims3()?;
+    let (
+        query_states,
+        key_states,
+        value_states,
+        gate,
+        appended_k,
+        appended_v,
+        input_profile,
+    ) = self_attn.project_direct_decode_inputs(&xs_norm, seqlen_offset)?;
+    profile.add_assign(&input_profile);
+    let xs = self_attn.run_direct_decode_core(
+        xs.dtype(),
+        b_sz,
+        q_len,
+        &query_states,
+        &key_states,
+        &value_states,
+        &gate,
+        seqlen_offset,
+    )?;
+    self_attn.commit_direct_decode_kv_cache(appended_k, appended_v);
     let xs = backend.add(&residual, &xs)?;
     let residual = xs.clone();
     let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
@@ -174,8 +192,7 @@ fn execute_direct_decode_full_phase(
                 layer_meta.layer_type
             );
         }
-        let (next_xs, layer_profile) =
-            execute_full_decode_layer(layer, layer_idx, &xs, seqlen_offset)?;
+        let (next_xs, layer_profile) = execute_full_decode_layer(layer, &xs, seqlen_offset)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
