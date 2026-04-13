@@ -4009,7 +4009,7 @@ impl HipNativeBuffer {
                 if let Some(buffer) = buffer.materialize_host_buffer_with_views()? {
                     return Ok(Some(buffer.bytes));
                 }
-                Self::tensor_to_host_float_bytes(&buffer.materialize_tensor()?, self.dtype)
+                Self::tensor_to_host_bytes(&buffer.materialize_tensor()?, self.dtype)
             }
             HipNativeExpr::Reshape { source, .. } => self.host_bytes_reshape(source),
             HipNativeExpr::Narrow {
@@ -4094,6 +4094,18 @@ impl HipNativeBuffer {
             _ => return Ok(None),
         };
         Ok(Some(bytes.into()))
+    }
+
+    fn tensor_to_host_bytes(tensor: &Tensor, dtype: DType) -> Result<Option<Arc<[u8]>>> {
+        let (storage, layout) = tensor.storage_and_layout();
+        if layout.is_contiguous() {
+            if let candle_core::Storage::Cpu(storage) = &*storage {
+                if let Some(bytes) = Self::cpu_storage_to_bytes(storage, dtype) {
+                    return Ok(Some(bytes));
+                }
+            }
+        }
+        Self::tensor_to_host_float_bytes(tensor, dtype)
     }
 
     fn cpu_storage_to_bytes(storage: &candle_core::CpuStorage, dtype: DType) -> Option<Arc<[u8]>> {
