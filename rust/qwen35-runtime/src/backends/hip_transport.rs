@@ -16318,7 +16318,7 @@ pub(crate) fn linear_prefill_conv(
         return Ok(device_out);
     }
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
-    if let Some(mixed_qkv) = mixed_qkv_hip.0 .0.direct_materialized_device_buffer() {
+    if let Some(mixed_qkv) = mixed_qkv_hip.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &mixed_qkv.storage {
             if let Some(out) =
                 mapped_linear_prefill_conv_hip_host_buffer(mapped, weights, seq_len, kernel_size)?
@@ -16350,8 +16350,8 @@ pub(crate) fn linear_stateful_conv(
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
     let prev_state_hip = HipTensor::from_scaffold_tensor(prev_state.clone());
     if let (Some(mixed_qkv), Some(prev_state)) = (
-        mixed_qkv_hip.0 .0.direct_materialized_device_buffer(),
-        prev_state_hip.0 .0.direct_materialized_device_buffer(),
+        mixed_qkv_hip.try_materialized_device_buffer()?,
+        prev_state_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(mixed_qkv_mapped),
@@ -16426,12 +16426,12 @@ pub(crate) fn linear_decode_step(
         Some(a_log_exp),
         Some(initial_state),
     ) = (
-        mixed_qkv_hip.0 .0.direct_materialized_device_buffer(),
-        prev_conv_state_hip.0 .0.direct_materialized_device_buffer(),
-        a_beta_raw_hip.0 .0.direct_materialized_device_buffer(),
-        dt_bias_hip.0 .0.direct_materialized_device_buffer(),
-        a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
-        initial_state_hip.0 .0.direct_materialized_device_buffer(),
+        mixed_qkv_hip.try_materialized_device_buffer()?,
+        prev_conv_state_hip.try_materialized_device_buffer()?,
+        a_beta_raw_hip.try_materialized_device_buffer()?,
+        dt_bias_hip.try_materialized_device_buffer()?,
+        a_log_exp_hip.try_materialized_device_buffer()?,
+        initial_state_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(mixed_qkv_mapped),
@@ -16524,11 +16524,11 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state(
     let dt_bias_hip = HipTensor::from_scaffold_tensor(dt_bias.clone());
     let a_log_exp_hip = HipTensor::from_scaffold_tensor(a_log_exp.clone());
     if let (Some(mixed_qkv), Some(prev_state), Some(a), Some(dt_bias), Some(a_log_exp)) = (
-        mixed_qkv_hip.0 .0.direct_materialized_device_buffer(),
-        prev_state_hip.0 .0.direct_materialized_device_buffer(),
-        a_hip.0 .0.direct_materialized_device_buffer(),
-        dt_bias_hip.0 .0.direct_materialized_device_buffer(),
-        a_log_exp_hip.0 .0.direct_materialized_device_buffer(),
+        mixed_qkv_hip.try_materialized_device_buffer()?,
+        prev_state_hip.try_materialized_device_buffer()?,
+        a_hip.try_materialized_device_buffer()?,
+        dt_bias_hip.try_materialized_device_buffer()?,
+        a_log_exp_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(mixed_qkv_mapped),
