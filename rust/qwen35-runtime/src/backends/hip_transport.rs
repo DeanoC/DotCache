@@ -296,6 +296,33 @@ impl HipOwnedDeviceBuffer {
         Ok(out)
     }
 
+    fn from_device_tensor_copy(tensor: &Tensor) -> Result<Option<Self>> {
+        use candle_core::Storage;
+
+        if !tensor.device().is_hip() {
+            return Ok(None);
+        }
+        let (storage, layout) = tensor.storage_and_layout();
+        let Storage::Hip(storage) = &*storage else {
+            return Ok(None);
+        };
+        if !layout.is_contiguous() {
+            return Ok(None);
+        }
+        let out = Self::allocate(
+            layout.shape().dims().to_vec(),
+            tensor.dtype(),
+            tensor.device(),
+        )?;
+        hip::copy_device_to_device(
+            tensor.device().as_hip_device()?.ordinal(),
+            out.raw_device_ptr() as *mut c_void,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            out.len_bytes,
+        )?;
+        Ok(Some(out))
+    }
+
     fn raw_device_ptr(&self) -> *const c_void {
         self.allocation.device_ptr()
     }
@@ -4785,6 +4812,9 @@ impl HipTensor {
 }
 
 fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
+    if let Some(device) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor).ok().flatten() {
+        return HipTensor::from_device_buffer(HipDeviceBuffer::from_owned_device_buffer(device));
+    }
     if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
         return host;
     }
@@ -4792,6 +4822,9 @@ fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
 }
 
 fn from_device_tensor(tensor: Tensor) -> HipTensor {
+    if let Some(device) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor).ok().flatten() {
+        return HipTensor::from_device_buffer(HipDeviceBuffer::from_owned_device_buffer(device));
+    }
     if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
         return host;
     }
