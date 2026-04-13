@@ -3343,13 +3343,12 @@ impl HipDeviceBuffer {
             .narrow(2, 0, output_sequence_length)?
             .transpose(1, 2)?
             .contiguous()?
-            .into_tensor()
             .to_dtype(output_dtype)?;
         let recurrent_state = self
             .narrow(1, total_sequence_length, k_head_dim)?
             .reshape(vec![batch_size * num_heads, k_head_dim, v_head_dim])?
             .contiguous()?;
-        Ok((Self::from_tensor(output), recurrent_state))
+        Ok((output, recurrent_state))
     }
 
     pub(crate) fn unpack_chunk_fused(
