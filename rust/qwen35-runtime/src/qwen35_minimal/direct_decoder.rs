@@ -119,7 +119,11 @@ fn execute_full_decode_layer(
     let mlp_start = profile_start(device)?;
     let xs = layer.mlp.forward_buffer(&xs)?;
     profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-    Ok((phase_context.backend.add(&residual, &xs)?, profile))
+    let xs = phase_context.backend.add(&residual, &xs)?;
+    let xs = phase_context
+        .backend
+        .copy_state_into_scratch(&xs, full_attention_output_scratch)?;
+    Ok((xs, profile))
 }
 
 fn execute_direct_decode_linear_phase_unchecked(
