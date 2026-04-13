@@ -16,6 +16,19 @@ Ad hoc terminal readouts are no longer enough.
 
 Use [hf_qwen35_minimal.rs](/home/deano/DotCache/rust/paged-runtime/examples/hf_qwen35_minimal.rs) for checkpoint runs because it now supports an explicit oracle and reports timing deltas.
 
+Preferred wrapper:
+
+```bash
+python3 benchmarks/run_qwen35_hip_direct_tracking.py
+```
+
+That refreshes:
+
+- `hip_direct_short.json`
+- `hip_direct_longer.json`
+- `hip_direct_short_cpu_oracle.json`
+- the generated markdown summary in the same tracking directory
+
 Example:
 
 ```bash
