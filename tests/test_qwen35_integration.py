@@ -112,6 +112,13 @@ class _FakeLayerStructuredCache:
         self.conv_states = list(conv_states or [])
         self.recurrent_states = list(recurrent_states or [])
 
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        for layer in self.layers:
+            keys = getattr(layer, "keys", None)
+            if keys is not None:
+                return int(keys.shape[2])
+        return 0
+
 
 def _tiny_qwen35_model() -> Qwen3_5ForConditionalGeneration:
     with torch.random.fork_rng():
@@ -646,12 +653,16 @@ def test_qwen35_attention_subset_prefill_helpers_support_layer_structured_cache(
     _replace_attention_subset_cache_with_placeholders(cache, [1])
     assert cache.layers[1].keys.shape[2] == 0
     assert cache.layers[1].values.shape[2] == 0
+    assert cache.get_seq_length() == 4
+    assert cache.get_seq_length(1) == 4
 
     cache.layers[1].keys = key_tensor[:, :, :1, :].clone()
     cache.layers[1].values = value_tensor[:, :, :1, :].clone()
     _advance_attention_subset_cache_placeholder(cache, 1)
     assert cache.layers[1].keys.shape[2] == 2
     assert cache.layers[1].values.shape[2] == 2
+    assert cache.get_seq_length() == 5
+    assert cache.get_seq_length(1) == 5
 
 
 def test_qwen35_deltanet_state_adapter_wraps_only_linear_layers() -> None:
