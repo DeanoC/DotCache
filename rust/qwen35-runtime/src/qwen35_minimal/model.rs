@@ -13649,23 +13649,18 @@ impl FullAttention {
             seqlen_offset,
         ) {
             let kernel_start = profile_start(device)?;
-            let output = backend.full_attention_decode(
+            let output = self.full_attention_decode_projected(
+                xs.tensor().dtype(),
+                b_sz,
+                q_len,
                 &query_states,
                 &key_states,
                 &value_states,
-                self.num_kv_groups,
-                scale as f32,
+                &gate,
                 seqlen_offset,
             )?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
-            backend.prepare_full_attention_output_buffer(
-                &output,
-                &gate,
-                b_sz,
-                q_len,
-                self.attention_size,
-                xs.tensor().dtype(),
-            )?
+            output
         } else if use_full_attention_prefill_megakernel(
             device,
             q_len,
@@ -13832,26 +13827,119 @@ impl FullAttention {
         )
     }
 
+    fn full_attention_decode_projected(
+        &self,
+        output_dtype: DType,
+        b_sz: usize,
+        q_len: usize,
+        query_states: &Tensor,
+        key_states: &Tensor,
+        value_states: &Tensor,
+        gate: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        let backend = backend_buffer_api::for_device(query_states.device());
+        let output = backend.full_attention_decode(
+            query_states,
+            key_states,
+            value_states,
+            self.num_kv_groups,
+            1f32 / f32::sqrt(self.head_dim as f32),
+            seqlen_offset,
+        )?;
+        backend.prepare_full_attention_output_buffer(
+            &output,
+            gate,
+            b_sz,
+            q_len,
+            self.attention_size,
+            output_dtype,
+        )
+    }
+
     fn forward_profiled_direct_decode_v1(
         &mut self,
         xs: &StateBuffer,
         seqlen_offset: usize,
-        layer_id: usize,
+        _layer_id: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = xs.device();
         let (_, q_len, _) = xs.dims3()?;
         if q_len != 1 {
             candle::bail!(
                 "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={q_len}"
             );
         }
-        let mut no_external = None;
-        self.forward_profiled_with_external_buffer(
-            xs,
-            None,
+        let backend = backend_buffer_api::for_device(device);
+        let full_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let (b_sz, q_len, _) = xs.dims3()?;
+
+        let qkv_start = profile_start(device)?;
+        let q_and_gate = self.q_proj.forward_buffer(xs)?;
+        let k_proj = self.k_proj.forward_buffer(xs)?;
+        let v_proj = self.v_proj.forward_buffer(xs)?;
+        let (query_states, gate, key_states, value_states) = backend.prepare_full_attention_inputs(
+            &q_and_gate,
+            &k_proj,
+            &v_proj,
+            b_sz,
+            q_len,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.q_norm.weight(),
+            self.q_norm.eps(),
+            self.k_norm.weight(),
+            self.k_norm.eps(),
+        )?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+
+        let layout_start = profile_start(device)?;
+        let (query_states, key_states) =
+            self.rotary_emb
+                .apply_buffer(&query_states, &key_states, seqlen_offset)?;
+        profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
+
+        let kv_append_start = profile_start(device)?;
+        let appended_kv = backend.append_full_attention_kv_buffers(
+            self.kv_cache.as_ref().map(|(k, _)| k),
+            self.kv_cache.as_ref().map(|(_, v)| v),
+            key_states.tensor(),
+            value_states.tensor(),
+        )?;
+        profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
+
+        let input_layout_start = profile_start(device)?;
+        let (query_states, key_states, value_states) =
+            backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                &query_states,
+                &appended_kv.0,
+                &appended_kv.1,
+            )?;
+        let input_layout_elapsed = profile_elapsed(input_layout_start, device)?;
+        profile.layout_prepare_millis += input_layout_elapsed;
+        profile.full_attention_input_layout_millis += input_layout_elapsed;
+
+        let kernel_start = profile_start(device)?;
+        let attn_output = self.full_attention_decode_projected(
+            xs.tensor().dtype(),
+            b_sz,
+            q_len,
+            &query_states,
+            &key_states,
+            &value_states,
+            &gate,
             seqlen_offset,
-            layer_id,
-            &mut no_external,
-        )
+        )?;
+        profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+        self.kv_cache = Some(appended_kv);
+
+        let output_start = profile_start(device)?;
+        let output = self.o_proj.forward_buffer(&attn_output)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        profile.full_attention_millis += profile_elapsed(full_start, device)?;
+        Ok((output, profile))
     }
 
     #[allow(dead_code)]
