@@ -153,12 +153,61 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum OracleMode {
+        Cpu,
+        NativeDevice,
+        None,
+        Pytorch,
+    }
+
+    impl OracleMode {
+        fn default_for(load_mode: LoadMode, device_selector: &DeviceSelector) -> Self {
+            match (load_mode, device_selector) {
+                (LoadMode::HipDirect, DeviceSelector::Hip(_)) => Self::NativeDevice,
+                _ => Self::Cpu,
+            }
+        }
+    }
+
+    impl std::str::FromStr for OracleMode {
+        type Err = RuntimeError;
+
+        fn from_str(value: &str) -> Result<Self> {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "cpu" => Ok(Self::Cpu),
+                "native-device" | "native" | "device" => Ok(Self::NativeDevice),
+                "none" => Ok(Self::None),
+                "pytorch" => Ok(Self::Pytorch),
+                other => Err(RuntimeError::External {
+                    context: "oracle",
+                    message: format!(
+                        "unsupported oracle `{other}`, expected cpu, native-device, none, or pytorch"
+                    ),
+                }),
+            }
+        }
+    }
+
+    impl std::fmt::Display for OracleMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Cpu => f.write_str("cpu"),
+                Self::NativeDevice => f.write_str("native-device"),
+                Self::None => f.write_str("none"),
+                Self::Pytorch => f.write_str("pytorch"),
+            }
+        }
+    }
+
     #[derive(Debug, Serialize)]
     struct RunRecord {
         model_id: String,
         prompt: String,
         device: String,
         load_mode: String,
+        oracle: String,
+        oracle_device: String,
         device_only: bool,
         prompt_token_count: usize,
         generated_token_count: usize,
@@ -169,6 +218,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device_prefill_ms: f64,
         cpu_decode_ms: f64,
         device_decode_ms: f64,
+        oracle_load_ms: f64,
+        oracle_prefill_ms: f64,
+        oracle_decode_ms: f64,
         prefill_max_delta: f32,
         decode_max_delta: f32,
         generated_text: String,
@@ -183,6 +235,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::env::var(key).as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
         )
+    }
+
+    fn device_label(device: &Device) -> &'static str {
+        if device.is_cpu() {
+            "cpu"
+        } else if device.is_cuda() {
+            "cuda"
+        } else if device.is_hip() {
+            "hip"
+        } else if device.is_metal() {
+            "metal"
+        } else {
+            "unknown"
+        }
     }
 
     fn argmax_last_token(logits: &Tensor) -> Result<u32> {
@@ -254,6 +320,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(values.iter().filter(|value| value.is_nan()).count())
     }
 
+    fn trace_decode_input_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_DECODE_INPUT_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
     fn report_linear_nan_trace(runner: &mut MinimalQwen35Runner, input_ids: &Tensor) -> Result<()> {
         for layer_id in runner.linear_attention_layer_ids() {
             let trace = runner.trace_linear_attention_layer(input_ids, layer_id, 0)?;
@@ -284,12 +357,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--device-only] [--record-json <path>]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--oracle cpu|native-device|none|pytorch] [--device-only] [--record-json <path>]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
     let mut load_mode = LoadMode::Native;
+    let mut oracle_mode: Option<OracleMode> = None;
     let mut device_only = false;
     let mut record_json_path: Option<String> = None;
     while let Some(arg) = args.next() {
@@ -299,6 +373,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else if arg == "--load-mode" {
             let value = args.next().ok_or("missing value for --load-mode")?;
             load_mode = value.parse()?;
+        } else if arg == "--oracle" {
+            let value = args.next().ok_or("missing value for --oracle")?;
+            oracle_mode = Some(value.parse()?);
         } else if arg == "--device-only" {
             device_only = true;
         } else if arg == "--record-json" {
@@ -312,18 +389,37 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(8);
+    let oracle_mode = oracle_mode.unwrap_or_else(|| OracleMode::default_for(load_mode, &device_selector));
 
     let cpu_device = Device::Cpu;
     let target_device = device_selector.resolve()?;
-    let (mut cpu_runner, cpu_load_elapsed) = if device_only {
+    let (oracle_device, oracle_runner_mode) = match oracle_mode {
+        OracleMode::Cpu => (
+            cpu_device.clone(),
+            load_mode.cpu_reference_runner_mode(),
+        ),
+        OracleMode::NativeDevice => (
+            target_device.clone(),
+            Some(MinimalQwen35LoadMode::NativeStore),
+        ),
+        OracleMode::None => (cpu_device.clone(), None),
+        OracleMode::Pytorch => {
+            return Err(RuntimeError::External {
+                context: "oracle",
+                message: "pytorch oracle requested but Python torch/transformers integration is not implemented in this harness yet".to_string(),
+            }
+            .into())
+        }
+    };
+    let (mut oracle_runner, oracle_load_elapsed) = if device_only || matches!(oracle_mode, OracleMode::None) {
         (None, std::time::Duration::ZERO)
     } else {
-        let cpu_load_started = Instant::now();
-        let cpu_runner = match load_mode.cpu_reference_runner_mode() {
-            Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &cpu_device, mode)?,
-            None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &cpu_device)?,
+        let oracle_load_started = Instant::now();
+        let oracle_runner = match oracle_runner_mode {
+            Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &oracle_device, mode)?,
+            None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &oracle_device)?,
         };
-        (Some(cpu_runner), cpu_load_started.elapsed())
+        (Some(oracle_runner), oracle_load_started.elapsed())
     };
 
     let device_load_started = Instant::now();
@@ -339,18 +435,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
-    let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) =
-        if let Some(cpu_runner) = cpu_runner.as_mut() {
-            let cpu_hidden_states = cpu_runner.hidden_states_from_input_ids(&input_ids)?;
-            let cpu_prefill_started = Instant::now();
-            match cpu_runner.prefill_from_hidden_states(&cpu_hidden_states) {
-                Ok((cpu_logits, cpu_cache)) => (
-                    Some(cpu_logits),
-                    Some(cpu_cache),
-                    cpu_prefill_started.elapsed(),
+    let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
+        input_ids.clone()
+    } else {
+        input_ids.to_device(&oracle_device)?
+    };
+    let (mut oracle_logits, mut oracle_cache, oracle_prefill_elapsed) =
+        if let Some(oracle_runner) = oracle_runner.as_mut() {
+            let oracle_hidden_states = oracle_runner.hidden_states_from_input_ids(&oracle_input_ids)?;
+            let oracle_prefill_started = Instant::now();
+            match oracle_runner.prefill_from_hidden_states(&oracle_hidden_states) {
+                Ok((oracle_logits, oracle_cache)) => (
+                    Some(oracle_logits),
+                    Some(oracle_cache),
+                    oracle_prefill_started.elapsed(),
                 ),
                 Err(err) => {
-                    eprintln!("warning: disabling cpu reference path after prefill failure: {err}");
+                    eprintln!("warning: disabling oracle path after prefill failure: {err}");
                     (None, None, std::time::Duration::ZERO)
                 }
             }
@@ -376,32 +477,32 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         print_hip_counters("prefill");
     }
-    let cpu_prefill_nans = match cpu_logits.as_ref() {
-        Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
+    let oracle_prefill_nans = match oracle_logits.as_ref() {
+        Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
         None => 0,
     };
     let device_prefill_nans = logit_nan_count(device_logits.tensor())?;
-    if cpu_prefill_nans > 0 || device_prefill_nans > 0 {
+    if oracle_prefill_nans > 0 || device_prefill_nans > 0 {
         eprintln!(
-            "warning: prefill logits contain NaNs cpu={} device={}",
-            cpu_prefill_nans, device_prefill_nans
+            "warning: prefill logits contain NaNs oracle={} device={}",
+            oracle_prefill_nans, device_prefill_nans
         );
-        if let Some(cpu_runner) = cpu_runner.as_mut() {
-            report_linear_nan_trace(cpu_runner, &input_ids)?;
+        if let Some(oracle_runner) = oracle_runner.as_mut() {
+            report_linear_nan_trace(oracle_runner, &oracle_input_ids)?;
         }
     }
 
-    let prefill_delta = match cpu_logits.as_ref() {
-        Some(cpu_logits) => max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?,
+    let prefill_delta = match oracle_logits.as_ref() {
+        Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
         None => f32::NAN,
     };
     let mut generated_ids = prompt_ids.clone();
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
-    let mut cpu_decode_elapsed = std::time::Duration::ZERO;
+    let mut oracle_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
-    let mut cpu_reference_enabled = cpu_logits.is_some() && cpu_cache.is_some();
-    let mut next_token = match cpu_logits.as_ref() {
-        Some(cpu_logits) => argmax_last_token(cpu_logits.tensor())?,
+    let mut oracle_reference_enabled = oracle_logits.is_some() && oracle_cache.is_some();
+    let mut next_token = match oracle_logits.as_ref() {
+        Some(oracle_logits) => argmax_last_token(oracle_logits.tensor())?,
         None => argmax_last_token(device_logits.tensor())?,
     };
     for _ in 0..max_new_tokens {
@@ -409,22 +510,37 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
         let device_hidden_state = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
-        if cpu_reference_enabled {
-            if let (Some(cpu_runner), Some(cpu_cache_ref)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
-            let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
-            let cpu_decode_started = Instant::now();
-            match cpu_runner.decode_from_hidden_state(&cpu_hidden_state, cpu_cache_ref) {
+        if oracle_reference_enabled {
+            if let (Some(oracle_runner), Some(oracle_cache_ref)) = (oracle_runner.as_mut(), oracle_cache.as_mut()) {
+            let oracle_decode_input = if oracle_device.location() == cpu_device.location() {
+                decode_input.clone()
+            } else {
+                decode_input.to_device(&oracle_device)?
+            };
+            let oracle_hidden_state = oracle_runner.hidden_states_from_input_ids(&oracle_decode_input)?;
+            if trace_decode_input_delta_enabled() && oracle_device.location() == target_device.location() {
+                let input_delta = max_logit_delta(
+                    oracle_hidden_state.tensor(),
+                    device_hidden_state.tensor(),
+                )?;
+                eprintln!(
+                    "decode-input-hidden-delta token={} max_abs_delta={:.6}",
+                    next_token, input_delta
+                );
+            }
+            let oracle_decode_started = Instant::now();
+            match oracle_runner.decode_from_hidden_state(&oracle_hidden_state, oracle_cache_ref) {
                 Ok(logits) => {
-                    cpu_logits = Some(logits);
-                    cpu_decode_elapsed += cpu_decode_started.elapsed();
+                    oracle_logits = Some(logits);
+                    oracle_decode_elapsed += oracle_decode_started.elapsed();
                 }
                 Err(err) => {
                     eprintln!(
-                        "warning: disabling cpu reference path after decode failure: {err}"
+                        "warning: disabling oracle path after decode failure: {err}"
                     );
-                    cpu_logits = None;
-                    cpu_cache = None;
-                    cpu_reference_enabled = false;
+                    oracle_logits = None;
+                    oracle_cache = None;
+                    oracle_reference_enabled = false;
                 }
             }
         }
@@ -447,24 +563,24 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             print_hip_counters("decode-step");
         }
-        let cpu_decode_nans = match cpu_logits.as_ref() {
-            Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
+        let oracle_decode_nans = match oracle_logits.as_ref() {
+            Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
             None => 0,
         };
         let device_decode_nans = logit_nan_count(device_logits.tensor())?;
-        if cpu_decode_nans > 0 || device_decode_nans > 0 {
+        if oracle_decode_nans > 0 || device_decode_nans > 0 {
             eprintln!(
-                "warning: decode logits contain NaNs cpu={} device={}",
-                cpu_decode_nans, device_decode_nans
+                "warning: decode logits contain NaNs oracle={} device={}",
+                oracle_decode_nans, device_decode_nans
             );
         }
 
-        if let Some(cpu_logits) = cpu_logits.as_ref() {
+        if let Some(oracle_logits) = oracle_logits.as_ref() {
             max_decode_delta = max_decode_delta.max(max_logit_delta(
-                cpu_logits.tensor(),
+                oracle_logits.tensor(),
                 device_logits.tensor(),
             )?);
-            next_token = argmax_last_token(cpu_logits.tensor())?;
+            next_token = argmax_last_token(oracle_logits.tensor())?;
         } else {
             next_token = argmax_last_token(device_logits.tensor())?;
         }
@@ -476,16 +592,36 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prompt: prompt.clone(),
         device: device_selector.to_string(),
         load_mode: load_mode.to_string(),
+        oracle: oracle_mode.to_string(),
+        oracle_device: match oracle_mode {
+            OracleMode::None => "none".to_string(),
+            _ => device_label(&oracle_device).to_string(),
+        },
         device_only,
         prompt_token_count: prompt_ids.len(),
         generated_token_count: generated_ids.len().saturating_sub(prompt_ids.len()),
         max_new_tokens,
-        cpu_load_ms: cpu_load_elapsed.as_secs_f64() * 1000.0,
+        cpu_load_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_load_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_load_ms: device_load_elapsed.as_secs_f64() * 1000.0,
-        cpu_prefill_ms: cpu_prefill_elapsed.as_secs_f64() * 1000.0,
+        cpu_prefill_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_prefill_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_prefill_ms: device_prefill_elapsed.as_secs_f64() * 1000.0,
-        cpu_decode_ms: cpu_decode_elapsed.as_secs_f64() * 1000.0,
+        cpu_decode_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_decode_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_decode_ms: device_decode_elapsed.as_secs_f64() * 1000.0,
+        oracle_load_ms: oracle_load_elapsed.as_secs_f64() * 1000.0,
+        oracle_prefill_ms: oracle_prefill_elapsed.as_secs_f64() * 1000.0,
+        oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_max_delta: prefill_delta,
         decode_max_delta: max_decode_delta,
         generated_text: generated_text.clone(),
@@ -506,11 +642,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device_only,
         prompt_ids.len(),
         generated_ids.len().saturating_sub(prompt_ids.len()),
-        cpu_load_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_load_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_load_elapsed.as_secs_f64() * 1000.0,
-        cpu_prefill_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_prefill_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_prefill_elapsed.as_secs_f64() * 1000.0,
-        cpu_decode_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_decode_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_delta,
         max_decode_delta,

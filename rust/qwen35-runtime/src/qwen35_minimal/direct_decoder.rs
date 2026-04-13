@@ -2,7 +2,7 @@ use super::backend_buffer_api;
 use super::backend_buffer_api::Qwen35BackendBufferApi;
 use super::decoder::{DecoderLayer, LayerKind, ModelForCausalLM, TextModel};
 use super::frontend::{max_abs_delta, profile_elapsed, profile_start};
-use super::types::{RuntimeProfile, StateBuffer};
+use super::types::{CacheState, LayerCacheState, RuntimeProfile, StateBuffer};
 use crate::PreparedQwen35DirectMetadata;
 use candle::Result;
 use candle_core as candle;
@@ -52,6 +52,15 @@ fn trace_direct_finalize_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn trace_direct_prefill_cache_enabled() -> bool {
+    std::env::var("DOTCACHE_QWEN35_TRACE_DIRECT_PREFILL_CACHE")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
 fn trace_direct_decode_layer_delta(
     layer_idx: usize,
     layer_type: &str,
@@ -93,6 +102,78 @@ fn trace_direct_finalize_deltas(
         "direct-finalize-delta hidden_max_abs_delta={:.6} logits_max_abs_delta={:.6}",
         hidden_delta, logits_delta
     );
+    Ok(())
+}
+
+fn trace_direct_prefill_cache_delta(reference: &CacheState, direct: &CacheState) -> Result<()> {
+    if !trace_direct_prefill_cache_enabled() {
+        return Ok(());
+    }
+    for (layer_idx, (reference_layer, direct_layer)) in
+        reference.layers.iter().zip(direct.layers.iter()).enumerate()
+    {
+        match (reference_layer, direct_layer) {
+            (LayerCacheState::Linear(reference), LayerCacheState::Linear(direct)) => {
+                match (&reference.conv_state, &direct.conv_state) {
+                    (Some(reference), Some(direct)) => {
+                        let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=linear conv_state_max_abs_delta={:.6}",
+                            layer_idx, delta
+                        );
+                    }
+                    (None, None) => {}
+                    _ => {
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=linear conv_state_presence_mismatch",
+                            layer_idx
+                        );
+                    }
+                }
+                match (&reference.recurrent_state, &direct.recurrent_state) {
+                    (Some(reference), Some(direct)) => {
+                        let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=linear recurrent_state_max_abs_delta={:.6}",
+                            layer_idx, delta
+                        );
+                    }
+                    (None, None) => {}
+                    _ => {
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=linear recurrent_state_presence_mismatch",
+                            layer_idx
+                        );
+                    }
+                }
+            }
+            (LayerCacheState::Full(reference), LayerCacheState::Full(direct)) => {
+                match (&reference.kv_cache, &direct.kv_cache) {
+                    (Some((reference_k, reference_v)), Some((direct_k, direct_v))) => {
+                        let key_delta = max_abs_delta(reference_k.tensor(), direct_k.tensor())?;
+                        let value_delta = max_abs_delta(reference_v.tensor(), direct_v.tensor())?;
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=full key_max_abs_delta={:.6} value_max_abs_delta={:.6}",
+                            layer_idx, key_delta, value_delta
+                        );
+                    }
+                    (None, None) => {}
+                    _ => {
+                        eprintln!(
+                            "direct-prefill-cache-delta layer={} kind=full kv_presence_mismatch",
+                            layer_idx
+                        );
+                    }
+                }
+            }
+            _ => {
+                eprintln!(
+                    "direct-prefill-cache-delta layer={} layer_kind_mismatch",
+                    layer_idx
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -471,7 +552,7 @@ pub(super) fn model_forward_hidden_states_profiled_direct_hip_v1(
     hidden_states: &StateBuffer,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
-    let reference_cache_state = if trace_direct_prefill_enabled() {
+    let reference_cache_state = if trace_direct_prefill_enabled() || trace_direct_prefill_cache_enabled() {
         Some(model.cache_state())
     } else {
         None
@@ -492,8 +573,10 @@ pub(super) fn model_forward_hidden_states_profiled_direct_hip_v1(
         let direct_cache_state = model.cache_state();
         model.restore_cache_state(&cache_state)?;
         let (reference_logits, _) = model.forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
+        let reference_post_prefill_cache_state = model.cache_state();
         model.restore_cache_state(&direct_cache_state)?;
         trace_direct_prefill_delta(&reference_logits, &logits)?;
+        trace_direct_prefill_cache_delta(&reference_post_prefill_cache_state, &direct_cache_state)?;
     }
     Ok((logits, profile))
 }

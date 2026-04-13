@@ -14,7 +14,7 @@ Ad hoc terminal readouts are no longer enough.
 
 ## Canonical Command
 
-Use [hf_qwen35_minimal.rs](/home/deano/DotCache/rust/paged-runtime/examples/hf_qwen35_minimal.rs) for checkpoint runs because it already compares the device path against a reference path and reports timing deltas.
+Use [hf_qwen35_minimal.rs](/home/deano/DotCache/rust/paged-runtime/examples/hf_qwen35_minimal.rs) for checkpoint runs because it now supports an explicit oracle and reports timing deltas.
 
 Example:
 
@@ -30,8 +30,12 @@ cargo run --manifest-path rust/Cargo.toml \
   8 \
   --device hip:0 \
   --load-mode hip-direct \
+  --oracle native-device \
   --record-json benchmarks/results/qwen35_hip_direct_latest.json
 ```
+
+For `hip-direct` correctness work on HIP, `--oracle native-device` is the default and should stay the default.
+Use `--oracle cpu` only when you explicitly want cross-device drift data.
 
 ## Required Fields
 
@@ -41,6 +45,8 @@ The JSON artifact should capture at least:
 - `prompt`
 - `device`
 - `load_mode`
+- `oracle`
+- `oracle_device`
 - `device_only`
 - `prompt_token_count`
 - `generated_token_count`
@@ -51,6 +57,9 @@ The JSON artifact should capture at least:
 - `device_prefill_ms`
 - `cpu_decode_ms`
 - `device_decode_ms`
+- `oracle_load_ms`
+- `oracle_prefill_ms`
+- `oracle_decode_ms`
 - `prefill_max_delta`
 - `decode_max_delta`
 - `generated_text`
@@ -61,7 +70,7 @@ The JSON artifact should capture at least:
 
 ## Correctness Gates
 
-Track these after each direct-HIP change:
+Track these after each direct-HIP change against the selected oracle:
 
 - `prefill_max_delta`
 - `decode_max_delta`
@@ -103,7 +112,7 @@ For every substantial direct-HIP execution change:
 The current high-value metrics are:
 
 - decode latency
-- correctness deltas against the reference path
+- correctness deltas against the selected oracle
 - absence of Candle fallback traces on the live HIP path
 
 That is a better signal than broad benchmark expansion while the direct lane is still being structurally rewritten.
