@@ -1113,6 +1113,10 @@ impl StateBuffer {
         self.tensor.device()
     }
 
+    pub fn dtype(&self) -> DType {
+        self.tensor.dtype()
+    }
+
     pub fn dims3(&self) -> Result<(usize, usize, usize)> {
         self.tensor.dims3()
     }
@@ -15924,31 +15928,29 @@ impl GatedDeltaNet {
         let backend = backend_buffer_api::for_device(device);
         let mut profile = RuntimeProfile::default();
         let kv_append_start = profile_start(device)?;
-        let target_dtype = mixed_qkv.tensor().dtype();
+        let target_dtype = mixed_qkv.dtype();
         let weights = self.conv1d_weight_squeezed()?.contiguous()?;
         let state_len = self.conv_kernel_size.saturating_sub(1);
+        let (batch_size_qkv, conv_dim, _) = mixed_qkv.dims3()?;
         let prev_conv_state = match &self.conv_state {
             Some(prev_state) => prev_state.clone_tensor_as(target_dtype)?,
             None => backend.zeros_tensor(
                 mixed_qkv.device(),
                 target_dtype,
-                &[mixed_qkv.tensor().dim(0)?, mixed_qkv.tensor().dim(1)?, state_len],
+                &[batch_size_qkv, conv_dim, state_len],
             )?,
         };
-        let a = if a.tensor().dtype() == target_dtype {
-            a.clone_tensor()
+        let a = if a.dtype() == target_dtype {
+            a.clone()
         } else {
-            a.tensor().to_dtype(target_dtype)?
+            StateBuffer::from_tensor(a.tensor().to_dtype(target_dtype)?)?
         };
-        let beta_raw = if beta_raw.tensor().dtype() == target_dtype {
-            beta_raw.clone_tensor()
+        let beta_raw = if beta_raw.dtype() == target_dtype {
+            beta_raw.clone()
         } else {
-            beta_raw.tensor().to_dtype(target_dtype)?
+            StateBuffer::from_tensor(beta_raw.tensor().to_dtype(target_dtype)?)?
         };
-        let a_beta_raw = backend.concat_last_dim(
-            &backend.tensor_to_buffer(a)?,
-            &backend.tensor_to_buffer(beta_raw)?,
-        )?;
+        let a_beta_raw = backend.concat_last_dim(&a, &beta_raw)?;
         let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
         let initial_state = match &self.recurrent_state {
             Some(state) => {
@@ -15971,8 +15973,9 @@ impl GatedDeltaNet {
             )?,
         };
         let head_repeat = self.num_v_heads / self.num_k_heads;
+        let mixed_qkv = mixed_qkv.contiguous()?;
         let fused = backend.linear_decode_step(
-            &mixed_qkv.contiguous()?,
+            &mixed_qkv,
             &prev_conv_state,
             &weights,
             &a_beta_raw,
