@@ -85,6 +85,21 @@ fn hip_tensor_from_host_bytes<S: Into<candle::Shape>>(
     ))
 }
 
+fn trace_hip_wrapper_fallback(op: &str, tensor: &Tensor) {
+    if std::env::var_os("DOTCACHE_HIP_TRACE_CANDLE_FALLBACK")
+        .map(|v| v != "0")
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "hip-wrapper-fallback op={} dtype={:?} shape={:?} device={:?}",
+            op,
+            tensor.dtype(),
+            tensor.dims(),
+            tensor.device().location()
+        );
+    }
+}
+
 fn repeat_kv(xs: Tensor, repeats: usize) -> Result<Tensor> {
     if repeats <= 1 {
         return Ok(xs);
@@ -1675,6 +1690,7 @@ pub(crate) fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offs
         candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
     })?;
     let n_rows = xs.elem_count() / n_cols;
+    trace_hip_wrapper_fallback("hip_rms_norm", &xs);
     xs.apply_op2_no_bwd(
         &weight,
         &HipRmsNorm {
@@ -1719,6 +1735,7 @@ pub(crate) fn hip_rms_norm_gated(
         candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
     })?;
     let n_rows = hidden_states.elem_count() / n_cols;
+    trace_hip_wrapper_fallback("hip_rms_norm_gated", &hidden_states);
     hidden_states.apply_op3_no_bwd(
         &gate,
         &weight,
@@ -1986,6 +2003,7 @@ pub(crate) fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     if let Some((output, shape)) = hip_swiglu_mul_host_buffer(gate, up)? {
         return hip_tensor_from_host_bytes(gate.device(), gate.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("hip_swiglu_mul", gate);
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
 }
 
@@ -2152,6 +2170,7 @@ pub(crate) fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Res
         return hip_tensor_from_host_bytes(embeddings.device(), embeddings.dtype(), shape, output);
     }
     let (vocab_size, hidden_size) = embeddings.dims2()?;
+    trace_hip_wrapper_fallback("hip_embedding_lookup", &embeddings);
     embeddings.apply_op2_no_bwd(
         &indexes,
         &HipEmbeddingLookup {
@@ -2308,6 +2327,7 @@ pub(crate) fn hip_immutable_embedding_lookup(embedding: &ImmutableEmbedding, ind
     if let Some((output, shape)) = hip_immutable_embedding_lookup_host_buffer(embedding, &indexes)? {
         return hip_tensor_from_host_bytes(indexes.device(), embedding.meta.dtype, shape, output);
     }
+    trace_hip_wrapper_fallback("hip_immutable_embedding_lookup", &indexes);
     indexes.apply_op1_no_bwd(&HipImmutableEmbeddingLookup {
         embedding: embedding.clone(),
     })
@@ -2468,6 +2488,7 @@ pub(crate) fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden
         if let Some((output, shape)) = immutable_output_projection_host_buffer(embedding, &hidden_states)? {
             return hip_tensor_from_host_bytes(hidden_states.device(), embedding.meta.dtype, shape, output);
         }
+        trace_hip_wrapper_fallback("immutable_output_projection", &hidden_states);
         return hidden_states.apply_op1_no_bwd(&HipImmutableOutputProjection {
             embedding: embedding.clone(),
         });
@@ -2618,6 +2639,7 @@ pub(crate) fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, 
         return hip_tensor_from_host_bytes(device, dtype, shape, output);
     }
     let seed = Tensor::zeros(1usize, dtype, device)?;
+    trace_hip_wrapper_fallback("hip_causal_mask", &seed);
     seed.apply_op1_no_bwd(&HipCausalMask {
         batch_size,
         tgt_len,
@@ -2761,6 +2783,7 @@ pub(crate) fn hip_cumsum_last_dim(xs: &Tensor) -> Result<Tensor> {
         candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
     })?;
     let rows = xs.elem_count() / cols;
+    trace_hip_wrapper_fallback("hip_cumsum_last_dim", &xs);
     xs.apply_op1_no_bwd(&HipCumsumLastDim { rows, cols })
 }
 
@@ -3671,6 +3694,7 @@ pub(crate) fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
         .last()
         .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
     let n_rows = xs.elem_count() / n_cols;
+    trace_hip_wrapper_fallback("hip_l2norm", &xs);
     xs.apply_op1_no_bwd(&HipL2Norm {
         n_rows,
         n_cols,
@@ -3863,6 +3887,7 @@ pub(crate) fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) 
     }
     let total_elems = a.elem_count();
     let num_heads = dt_bias.elem_count();
+    trace_hip_wrapper_fallback("hip_value_decay", &a);
     a.apply_op3_no_bwd(
         &dt_bias,
         &a_log_exp,
@@ -4742,6 +4767,7 @@ pub(crate) fn linear_prefill_conv_pack(
         return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
     }
     let (batch_size, conv_dim, total_len) = mixed_qkv.dims3()?;
+    trace_hip_wrapper_fallback("linear_prefill_conv_pack", &mixed_qkv);
     mixed_qkv.apply_op2_no_bwd(
         weights,
         &LinearPrefillConvPack {
@@ -4983,6 +5009,7 @@ pub(crate) fn linear_stateful_conv_hip(
             prev_state.dims()
         )
     }
+    trace_hip_wrapper_fallback("linear_stateful_conv_hip", &mixed_qkv);
     mixed_qkv.apply_op3_no_bwd(
         &prev_state,
         &weights,
@@ -5471,6 +5498,7 @@ fn linear_stateful_conv_value_decay_hip(
     )? {
         return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("linear_stateful_conv_value_decay_hip", &mixed_qkv);
     mixed_qkv.apply_op6_no_bwd(
         &prev_state,
         &weights,
@@ -5681,6 +5709,7 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state_hip(
     )? {
         return hip_tensor_from_host_bytes(mixed_qkv.device(), mixed_qkv.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("linear_stateful_conv_value_decay_with_state_hip", &mixed_qkv);
     mixed_qkv.apply_op6_no_bwd(
         &prev_state,
         &weights,
@@ -6074,6 +6103,7 @@ pub(crate) fn linear_decode_step_hip(
     )? {
         return hip_tensor_from_host_bytes(mixed_qkv.device(), DType::F32, shape, output);
     }
+    trace_hip_wrapper_fallback("linear_decode_step_prepare", &mixed_qkv);
     let packed = mixed_qkv.apply_op6_no_bwd(
         &prev_conv_state,
         &weights,
@@ -6090,6 +6120,7 @@ pub(crate) fn linear_decode_step_hip(
             head_repeat,
         },
     )?;
+    trace_hip_wrapper_fallback("linear_decode_step_apply", &packed);
     packed.apply_op2_no_bwd(
         &initial_state,
         &LinearDecodeApply {
@@ -6646,6 +6677,7 @@ pub(crate) fn full_attention_prefill_megakernel(
     {
         return hip_tensor_from_host_bytes(query.device(), DType::F32, shape, output);
     }
+    trace_hip_wrapper_fallback("full_attention_prefill_megakernel", &query);
     query.apply_op3_no_bwd(
         key,
         value,
@@ -7259,6 +7291,7 @@ pub(crate) fn delta_state_scan(
     if let Some((output, shape)) = delta_state_scan_host_buffer(initial_state, packed_scan, value)? {
         return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_state_scan", initial_state);
     initial_state.apply_op3_no_bwd(packed_scan, value, &DeltaStateScan)
 }
 
@@ -7629,6 +7662,7 @@ pub(crate) fn delta_chunk_fused(
     if let Some((output, shape)) = delta_chunk_fused_host_buffer(prev_state, packed_chunk, value)? {
         return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_chunk_fused", prev_state);
     prev_state.apply_op3_no_bwd(packed_chunk, value, &DeltaChunkFused)
 }
 
@@ -8105,6 +8139,7 @@ pub(crate) fn delta_recurrent_prefill(
     {
         return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_recurrent_prefill", initial_state);
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaRecurrentPrefill)
 }
 
@@ -8386,6 +8421,7 @@ pub(crate) fn delta_chunk_single_prefill(
     {
         return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_chunk_single_prefill", initial_state);
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkSinglePrefill)
 }
 
@@ -9008,6 +9044,7 @@ fn delta_chunk_step_raw(
     {
         return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_chunk_step_raw", prev_state);
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepRaw)
 }
 
@@ -9652,6 +9689,7 @@ fn delta_chunk_step_windowed_raw(
     {
         return hip_tensor_from_host_bytes(prev_state.device(), prev_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_chunk_step_windowed_raw", prev_state);
     prev_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkStepWindowedRaw)
 }
 
@@ -10508,6 +10546,7 @@ pub(crate) fn delta_chunk_scan_raw(
     {
         return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_chunk_scan_raw", initial_state);
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkScanRaw)
 }
 
@@ -11143,6 +11182,7 @@ pub(crate) fn delta_full_scan(
     )? {
         return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_full_scan", initial_state);
     initial_state.apply_op7_no_bwd(
         weighted_key_scan,
         k_cumdecay_scan,
@@ -11444,6 +11484,7 @@ pub(crate) fn delta_local_attn_scan(
     if let Some((output, shape)) = delta_local_attn_scan_host_buffer(query_scan, key_scan, exp_g_scan)? {
         return hip_tensor_from_host_bytes(query_scan.device(), query_scan.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_local_attn_scan", query_scan);
     query_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaLocalAttnScan)
 }
 
@@ -11653,6 +11694,7 @@ pub(crate) fn delta_base_attn_scan(
     {
         return hip_tensor_from_host_bytes(k_beta_scan.device(), k_beta_scan.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_base_attn_scan", k_beta_scan);
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaBaseAttnScan)
 }
 
@@ -11829,6 +11871,7 @@ pub(crate) fn delta_attn_solve_scan(base_attn_scan: &Tensor) -> Result<Tensor> {
             output,
         );
     }
+    trace_hip_wrapper_fallback("delta_attn_solve_scan", base_attn_scan);
     base_attn_scan.apply_op1_no_bwd(&DeltaAttnSolveScan)
 }
 
@@ -12005,6 +12048,7 @@ pub(crate) fn delta_attn_solve_from_inputs(
     {
         return hip_tensor_from_host_bytes(k_beta_scan.device(), k_beta_scan.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_attn_solve_from_inputs", k_beta_scan);
     k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaAttnSolveFromInputs)
 }
 
@@ -12236,6 +12280,7 @@ pub(crate) fn delta_full_scan_pack(
     {
         return hip_tensor_from_host_bytes(query_scan.device(), query_scan.dtype(), shape, output);
     }
+    trace_hip_wrapper_fallback("delta_full_scan_pack", query_scan);
     query_scan.apply_op4_no_bwd(key_scan, exp_g_scan, k_cumdecay_scan, &DeltaFullScanPack)
 }
 
@@ -12501,6 +12546,7 @@ pub(crate) fn delta_full_scan_packed(
             output,
         );
     }
+    trace_hip_wrapper_fallback("delta_full_scan_packed", initial_state);
     initial_state.apply_op4_no_bwd(packed_scan, local_attn_scan, value, &DeltaFullScanPacked)
 }
 
