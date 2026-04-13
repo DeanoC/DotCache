@@ -2147,8 +2147,8 @@ pub(crate) fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Res
     let embeddings = embeddings.contiguous()?;
     let indexes = indexes.contiguous()?;
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_embedding_lookup_mapped_host_buffer(&embeddings, &indexes)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_embedding_lookup_host_buffer(&embeddings, &indexes)? {
+        return hip_tensor_from_host_bytes(embeddings.device(), embeddings.dtype(), shape, output);
     }
     let (vocab_size, hidden_size) = embeddings.dims2()?;
     embeddings.apply_op2_no_bwd(
@@ -2158,31 +2158,6 @@ pub(crate) fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Res
             hidden_size,
         },
     )
-}
-
-#[cfg(feature = "qwen35-minimal-hip")]
-fn hip_embedding_lookup_mapped_host_buffer(
-    embeddings: &Tensor,
-    indexes: &Tensor,
-) -> Result<Option<Tensor>> {
-    let Some((output, shape)) = hip_embedding_lookup_host_buffer(embeddings, indexes)? else {
-        return Ok(None);
-    };
-    Ok(Some(hip_tensor_from_host_bytes(
-        embeddings.device(),
-        embeddings.dtype(),
-        shape,
-        output,
-    )?))
-}
-
-#[cfg(not(feature = "qwen35-minimal-hip"))]
-fn hip_embedding_lookup_mapped_host_buffer(
-    embeddings: &Tensor,
-    indexes: &Tensor,
-) -> Result<Option<Tensor>> {
-    let _ = (embeddings, indexes);
-    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -2329,37 +2304,12 @@ impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
 pub(crate) fn hip_immutable_embedding_lookup(embedding: &ImmutableEmbedding, indexes: &Tensor) -> Result<Tensor> {
     let indexes = indexes.contiguous()?;
     #[cfg(feature = "qwen35-minimal-hip")]
-    if let Some(output) = hip_immutable_embedding_lookup_mapped_host_buffer(embedding, &indexes)? {
-        return Ok(output);
+    if let Some((output, shape)) = hip_immutable_embedding_lookup_host_buffer(embedding, &indexes)? {
+        return hip_tensor_from_host_bytes(indexes.device(), embedding.meta.dtype, shape, output);
     }
     indexes.apply_op1_no_bwd(&HipImmutableEmbeddingLookup {
         embedding: embedding.clone(),
     })
-}
-
-#[cfg(feature = "qwen35-minimal-hip")]
-fn hip_immutable_embedding_lookup_mapped_host_buffer(
-    embedding: &ImmutableEmbedding,
-    indexes: &Tensor,
-) -> Result<Option<Tensor>> {
-    let Some((output, shape)) = hip_immutable_embedding_lookup_host_buffer(embedding, indexes)? else {
-        return Ok(None);
-    };
-    Ok(Some(hip_tensor_from_host_bytes(
-        indexes.device(),
-        embedding.meta.dtype,
-        shape,
-        output,
-    )?))
-}
-
-#[cfg(not(feature = "qwen35-minimal-hip"))]
-fn hip_immutable_embedding_lookup_mapped_host_buffer(
-    embedding: &ImmutableEmbedding,
-    indexes: &Tensor,
-) -> Result<Option<Tensor>> {
-    let _ = (embedding, indexes);
-    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -2514,8 +2464,8 @@ pub(crate) fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden
     #[cfg(feature = "qwen35-minimal-hip")]
     if embedding.meta.device.is_hip() && hidden_states.device().is_hip() {
         let hidden_states = hidden_states.contiguous()?;
-        if let Some(output) = immutable_output_projection_mapped_host_buffer(embedding, &hidden_states)? {
-            return Ok(output);
+        if let Some((output, shape)) = immutable_output_projection_host_buffer(embedding, &hidden_states)? {
+            return hip_tensor_from_host_bytes(hidden_states.device(), embedding.meta.dtype, shape, output);
         }
         return hidden_states.apply_op1_no_bwd(&HipImmutableOutputProjection {
             embedding: embedding.clone(),
@@ -2525,31 +2475,6 @@ pub(crate) fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden
     let fallback = embedding.ensure_fallback_embedding()?;
     let weight = fallback.embeddings().t()?;
     hidden_states.matmul(&weight)
-}
-
-#[cfg(feature = "qwen35-minimal-hip")]
-fn immutable_output_projection_mapped_host_buffer(
-    embedding: &ImmutableEmbedding,
-    hidden_states: &Tensor,
-) -> Result<Option<Tensor>> {
-    let Some((output, shape)) = immutable_output_projection_host_buffer(embedding, hidden_states)? else {
-        return Ok(None);
-    };
-    Ok(Some(hip_tensor_from_host_bytes(
-        hidden_states.device(),
-        embedding.meta.dtype,
-        shape,
-        output,
-    )?))
-}
-
-#[cfg(not(feature = "qwen35-minimal-hip"))]
-fn immutable_output_projection_mapped_host_buffer(
-    embedding: &ImmutableEmbedding,
-    hidden_states: &Tensor,
-) -> Result<Option<Tensor>> {
-    let _ = (embedding, hidden_states);
-    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
