@@ -1663,7 +1663,7 @@ impl HipDeviceBuffer {
         dtype: DType,
         device: &Device,
     ) -> Self {
-        Self::from_materialized_host_buffer(HipHostBuffer {
+        host_result_device_buffer(HipHostBuffer {
             bytes: bytes.into(),
             shape,
             dtype,
@@ -3099,7 +3099,7 @@ impl HipDeviceBuffer {
                 if preserve_pending {
                     Self::from_pending_host_upload(buffer)
                 } else {
-                    Self::from_materialized_host_buffer(buffer)
+                    host_result_device_buffer(buffer)
                 }
             };
             let prepared_host = match prev_state {
@@ -3157,7 +3157,7 @@ impl HipDeviceBuffer {
                 if preserve_pending {
                     Self::from_pending_host_upload(buffer)
                 } else {
-                    Self::from_materialized_host_buffer(buffer)
+                    host_result_device_buffer(buffer)
                 }
             };
             let seq_len = mixed_qkv_host.shape[2];
