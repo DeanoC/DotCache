@@ -59,6 +59,18 @@ fn trace_candle_fallback(op: &str, tensor: &Tensor) {
     }
 }
 
+fn trace_candle_storage_birth(reason: &str, tensor: &Tensor) {
+    if hip_trace_candle_fallback_enabled() {
+        eprintln!(
+            "hip-candle-storage-birth reason={} dtype={:?} shape={:?} device={:?}",
+            reason,
+            tensor.dtype(),
+            tensor.dims(),
+            tensor.device().location()
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum HipNativeExpr {
     DeviceBuffer(HipDeviceBuffer),
@@ -188,6 +200,7 @@ impl HipDeviceStorage {
             if let Some(storage) = import_hip_tensor_storage(&tensor).ok().flatten() {
                 return storage;
             }
+            trace_candle_storage_birth("hip_import_failed", &tensor);
         }
         if !tensor.device().is_hip() {
             if let Some(bytes) = import_non_hip_tensor_bytes(&tensor).ok().flatten() {
@@ -198,6 +211,7 @@ impl HipDeviceStorage {
                     device: tensor.device().clone(),
                 });
             }
+            trace_candle_storage_birth("non_hip_import_failed", &tensor);
         }
         Self::CandleTensor(tensor)
     }
