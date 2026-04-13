@@ -363,6 +363,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_max_delta: Option<f32>,
         pytorch_decode_final_hidden_max_delta: Option<f32>,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer3_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer3_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer3_max_delta: Option<f32>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
         decode_step_cache_max_delta: Option<f32>,
@@ -466,6 +471,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_first_layer_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_final_hidden_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_output: Option<Vec<Vec<Vec<f32>>>>,
         prefill_last_token_logits: Vec<f32>,
         first_decode_step_last_token_logits: Option<Vec<f32>>,
         decode_last_token_logits: Vec<Vec<f32>>,
@@ -2078,6 +2088,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_max_delta,
         pytorch_decode_final_hidden_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
+        pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_token_mixer_max_delta,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta,
+        pytorch_decode_layer3_mlp_max_delta,
+        pytorch_decode_layer3_max_delta,
     ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
         if !pytorch_oracle.decode_decoder_layer_outputs.is_empty() {
             let decode_input_token = *pytorch_oracle.generated_token_ids.first().ok_or_else(|| {
@@ -2130,6 +2145,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     context: "pytorch oracle",
                     message: "decode layer 0 linear core trace missing".to_string(),
                 })?;
+            let layer3_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input,
+                3,
+                prompt_ids.len(),
+                &device_cache,
+            )?;
             let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
                 &decode_input_hidden,
                 &device_cache,
@@ -2959,13 +2980,47 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         max_last_token_delta_vec(runtime_logits_from_oracle_hidden.tensor(), oracle)
                     })
                     .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_token_mixer_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_trace.token_mixer_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_post_attention_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer3_trace.post_attention_layernorm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_mlp_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer3_trace.mlp_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer3_trace.layer_output.tensor(), oracle))
+                    .transpose()?,
             )
         } else {
             (
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None,
+                None, None, None, None, None, None,
             )
         }
     } else {
@@ -2973,7 +3028,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None,
+            None, None, None, None, None, None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3353,6 +3408,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_max_delta,
         pytorch_decode_final_hidden_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
+        pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_token_mixer_max_delta,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta,
+        pytorch_decode_layer3_mlp_max_delta,
+        pytorch_decode_layer3_max_delta,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,
         decode_step_cache_max_delta: max_decode_step_cache_delta,

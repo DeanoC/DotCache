@@ -101,6 +101,7 @@ def main() -> None:
     decoder_layer_outputs = []
     decode_decoder_layer_outputs = []
     layer3_input_layernorm_output = None
+    decode_layer3_input_layernorm_output = None
     layer3_input_layernorm_input = None
     layer3_input_layernorm_mean_square = None
     layer3_input_layernorm_rsqrt = None
@@ -115,9 +116,13 @@ def main() -> None:
     layer3_prepared_value_output = None
     layer3_attention_output = None
     layer3_token_mixer_output = None
+    decode_layer3_token_mixer_output = None
     layer3_post_attention_layernorm_output = None
+    decode_layer3_post_attention_layernorm_output = None
     layer3_mlp_output = None
+    decode_layer3_mlp_output = None
     layer3_output = None
+    decode_layer3_output = None
     layer4_input_layernorm_output = None
     layer4_input_layernorm_input = None
     layer4_input_layernorm_mean_square = None
@@ -551,9 +556,12 @@ def main() -> None:
 
     def layer3_input_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_input_layernorm_output
-        if capture_phase != "prefill":
+        nonlocal decode_layer3_input_layernorm_output
+        if capture_phase == "decode":
+            decode_layer3_input_layernorm_output = capture_tensor(output)
             return
-        layer3_input_layernorm_output = capture_tensor(output)
+        if capture_phase == "prefill":
+            layer3_input_layernorm_output = capture_tensor(output)
 
     def layer3_input_layernorm_pre_hook(_module, inputs):
         nonlocal layer3_input_layernorm_input
@@ -580,9 +588,12 @@ def main() -> None:
 
     def layer3_token_mixer_hook(_module, _inputs, output):
         nonlocal layer3_token_mixer_output
-        if capture_phase != "prefill":
+        nonlocal decode_layer3_token_mixer_output
+        if capture_phase == "decode":
+            decode_layer3_token_mixer_output = capture_tensor(output)
             return
-        layer3_token_mixer_output = capture_tensor(output)
+        if capture_phase == "prefill":
+            layer3_token_mixer_output = capture_tensor(output)
 
     def layer3_q_proj_hook(_module, _inputs, output):
         nonlocal layer3_q_and_gate_output
@@ -627,22 +638,31 @@ def main() -> None:
 
     def layer3_post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_post_attention_layernorm_output
-        if capture_phase != "prefill":
+        nonlocal decode_layer3_post_attention_layernorm_output
+        if capture_phase == "decode":
+            decode_layer3_post_attention_layernorm_output = capture_tensor(output)
             return
-        layer3_post_attention_layernorm_output = capture_tensor(output)
+        if capture_phase == "prefill":
+            layer3_post_attention_layernorm_output = capture_tensor(output)
 
     def layer3_mlp_hook(_module, _inputs, output):
         nonlocal layer3_mlp_output
-        if capture_phase != "prefill":
+        nonlocal decode_layer3_mlp_output
+        if capture_phase == "decode":
+            decode_layer3_mlp_output = capture_tensor(output)
             return
-        layer3_mlp_output = capture_tensor(output)
+        if capture_phase == "prefill":
+            layer3_mlp_output = capture_tensor(output)
 
     def layer3_hook(_module, _inputs, output):
         nonlocal layer3_output
-        if capture_phase != "prefill":
-            return
+        nonlocal decode_layer3_output
         tensor = output[0] if isinstance(output, tuple) else output
-        layer3_output = tensor.detach().to(dtype=torch.float32).cpu()
+        if capture_phase == "decode":
+            decode_layer3_output = tensor.detach().to(dtype=torch.float32).cpu()
+            return
+        if capture_phase == "prefill":
+            layer3_output = tensor.detach().to(dtype=torch.float32).cpu()
 
     def layer4_input_layernorm_hook(_module, _inputs, output):
         nonlocal layer4_input_layernorm_output
@@ -971,6 +991,11 @@ def main() -> None:
             "decode_first_layer_mlp_output": decode_first_layer_mlp_output,
             "decode_first_layer_output": decode_first_layer_output,
             "decode_final_hidden_output": decode_final_hidden_output,
+            "decode_layer3_input_layernorm_output": decode_layer3_input_layernorm_output,
+            "decode_layer3_token_mixer_output": decode_layer3_token_mixer_output,
+            "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output,
+            "decode_layer3_mlp_output": decode_layer3_mlp_output,
+            "decode_layer3_output": decode_layer3_output,
         }
         missing.extend(name for name, value in required_decode.items() if value is None)
     if missing:
@@ -1093,6 +1118,11 @@ def main() -> None:
         "decode_first_layer_mlp_output": decode_first_layer_mlp_output.tolist() if decode_first_layer_mlp_output is not None else None,
         "decode_first_layer_output": decode_first_layer_output.tolist() if decode_first_layer_output is not None else None,
         "decode_final_hidden_output": decode_final_hidden_output.tolist() if decode_final_hidden_output is not None else None,
+        "decode_layer3_input_layernorm_output": decode_layer3_input_layernorm_output.tolist() if decode_layer3_input_layernorm_output is not None else None,
+        "decode_layer3_token_mixer_output": decode_layer3_token_mixer_output.tolist() if decode_layer3_token_mixer_output is not None else None,
+        "decode_layer3_post_attention_layernorm_output": decode_layer3_post_attention_layernorm_output.tolist() if decode_layer3_post_attention_layernorm_output is not None else None,
+        "decode_layer3_mlp_output": decode_layer3_mlp_output.tolist() if decode_layer3_mlp_output is not None else None,
+        "decode_layer3_output": decode_layer3_output.tolist() if decode_layer3_output is not None else None,
         "prefill_last_token_logits": prefill_last_token_logits,
         "first_decode_step_last_token_logits": first_decode_step_logits,
         "decode_last_token_logits": decode_logits,
