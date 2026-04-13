@@ -220,7 +220,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_prefill_ms: f64,
         oracle_decode_ms: f64,
         prefill_max_delta: f32,
+        prefill_cache_max_delta: Option<f32>,
         decode_max_delta: f32,
+        decode_input_hidden_max_delta: Option<f32>,
+        decode_step_cache_max_delta: Option<f32>,
         generated_text: String,
         hip_trace_candle_fallback: bool,
         hip_print_transfers: bool,
@@ -306,6 +309,30 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut max_delta = 0.0f32;
         for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
             max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn cache_max_delta(
+        lhs: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        rhs: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<Option<f32>> {
+        let mut max_delta: Option<f32> = None;
+        for line in lhs.layer_max_abs_deltas(rhs)? {
+            for field in line.split_whitespace() {
+                if let Some((key, value)) = field.split_once('=') {
+                    if key.ends_with("_max_abs_delta") {
+                        let parsed = value.parse::<f32>().map_err(|err| RuntimeError::External {
+                            context: "cache delta parse",
+                            message: format!("failed to parse `{field}`: {err}"),
+                        })?;
+                        max_delta = Some(match max_delta {
+                            Some(current) => current.max(parsed),
+                            None => parsed,
+                        });
+                    }
+                }
+            }
         }
         Ok(max_delta)
     }
@@ -529,11 +556,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
         None => f32::NAN,
     };
+    let prefill_cache_max_delta = match oracle_cache.as_ref() {
+        Some(oracle_cache) => cache_max_delta(oracle_cache, &device_cache)?,
+        None => None,
+    };
     if let (Some(oracle_cache), true) = (oracle_cache.as_ref(), oracle_device.location() == target_device.location()) {
         trace_cross_runner_cache_delta("prefill", oracle_cache, &device_cache)?;
     }
     let mut generated_ids = prompt_ids.clone();
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
+    let mut max_decode_input_hidden_delta: Option<f32> = None;
+    let mut max_decode_step_cache_delta: Option<f32> = None;
     let mut oracle_decode_elapsed = std::time::Duration::ZERO;
     let mut device_decode_elapsed = std::time::Duration::ZERO;
     let mut oracle_reference_enabled = oracle_logits.is_some() && oracle_cache.is_some();
@@ -559,11 +592,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 decode_input.to_device(&oracle_device)?
             };
             let oracle_hidden_state = oracle_runner.hidden_states_from_input_ids(&oracle_decode_input)?;
+            let input_delta = max_logit_delta(
+                oracle_hidden_state.tensor(),
+                device_hidden_state.tensor(),
+            )?;
+            max_decode_input_hidden_delta = Some(match max_decode_input_hidden_delta {
+                Some(current) => current.max(input_delta),
+                None => input_delta,
+            });
             if trace_decode_input_delta_enabled() && oracle_device.location() == target_device.location() {
-                let input_delta = max_logit_delta(
-                    oracle_hidden_state.tensor(),
-                    device_hidden_state.tensor(),
-                )?;
                 eprintln!(
                     "decode-input-hidden-delta token={} max_abs_delta={:.6}",
                     next_token, input_delta
@@ -643,8 +680,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 )?;
             }
         }
-        if oracle_device.location() == target_device.location() {
-            if let Some(oracle_cache_ref) = oracle_cache.as_ref() {
+        if let Some(oracle_cache_ref) = oracle_cache.as_ref() {
+            if let Some(cache_delta) = cache_max_delta(oracle_cache_ref, &device_cache)? {
+                max_decode_step_cache_delta = Some(match max_decode_step_cache_delta {
+                    Some(current) => current.max(cache_delta),
+                    None => cache_delta,
+                });
+            }
+            if oracle_device.location() == target_device.location() {
                 trace_cross_runner_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
             }
         }
@@ -717,7 +760,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_prefill_ms: oracle_prefill_elapsed.as_secs_f64() * 1000.0,
         oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_max_delta: prefill_delta,
+        prefill_cache_max_delta,
         decode_max_delta: max_decode_delta,
+        decode_input_hidden_max_delta: max_decode_input_hidden_delta,
+        decode_step_cache_max_delta: max_decode_step_cache_delta,
         generated_text: generated_text.clone(),
         hip_trace_candle_fallback: env_flag_truthy("DOTCACHE_HIP_TRACE_CANDLE_FALLBACK"),
         hip_print_transfers: env_flag_truthy("DOTCACHE_QWEN35_PRINT_HIP_TRANSFERS"),

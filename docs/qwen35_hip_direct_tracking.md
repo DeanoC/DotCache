@@ -75,7 +75,10 @@ The JSON artifact should capture at least:
 - `oracle_prefill_ms`
 - `oracle_decode_ms`
 - `prefill_max_delta`
+- `prefill_cache_max_delta`
 - `decode_max_delta`
+- `decode_input_hidden_max_delta`
+- `decode_step_cache_max_delta`
 - `generated_text`
 - `hip_trace_candle_fallback`
 - `hip_print_transfers`
@@ -87,7 +90,10 @@ The JSON artifact should capture at least:
 Track these after each direct-HIP change against the selected oracle:
 
 - `prefill_max_delta`
+- `prefill_cache_max_delta`
 - `decode_max_delta`
+- `decode_input_hidden_max_delta`
+- `decode_step_cache_max_delta`
 - generated text drift relative to the same prompt/load-mode checkpoint
 - NaN warnings in prefill or decode
 
@@ -130,3 +136,10 @@ The current high-value metrics are:
 - absence of Candle fallback traces on the live HIP path
 
 That is a better signal than broad benchmark expansion while the direct lane is still being structurally rewritten.
+
+For `--oracle cpu`, the staged deltas are the important signal:
+
+- if `prefill_max_delta` and `prefill_cache_max_delta` are already large, drift starts before decode
+- if prefill is close but `decode_input_hidden_max_delta` jumps, token embedding/input staging differs
+- if decode input is close but `decode_step_cache_max_delta` grows, state/cache updates differ
+- if staged deltas stay small but `decode_max_delta` grows, the divergence is in decode finalization/logits

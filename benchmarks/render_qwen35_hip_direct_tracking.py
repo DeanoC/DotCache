@@ -49,7 +49,10 @@ def render_checkpoint(title: str, payload: dict) -> list[str]:
         f"- oracle: `{payload['oracle']}`",
         f"- oracle_device: `{payload['oracle_device']}`",
         f"- prefill_max_delta: `{fmt_delta(payload['prefill_max_delta'])}`",
+        f"- prefill_cache_max_delta: `{fmt_delta(payload.get('prefill_cache_max_delta'))}`",
         f"- decode_max_delta: `{fmt_delta(payload['decode_max_delta'])}`",
+        f"- decode_input_hidden_max_delta: `{fmt_delta(payload.get('decode_input_hidden_max_delta'))}`",
+        f"- decode_step_cache_max_delta: `{fmt_delta(payload.get('decode_step_cache_max_delta'))}`",
         f"- device_load_ms: `{fmt_ms(payload['device_load_ms'])}`",
         f"- device_prefill_ms: `{fmt_ms(payload['device_prefill_ms'])}`",
         f"- device_decode_ms: `{fmt_ms(payload['device_decode_ms'])}`",
@@ -65,7 +68,10 @@ def render_history(entries: list[dict]) -> list[str]:
             + f"{entry['recorded_at_utc']} "
             + f"{entry['label']} "
             + f"prefill_max_delta={fmt_delta(entry['prefill_max_delta'])} "
+            + f"prefill_cache_max_delta={fmt_delta(entry.get('prefill_cache_max_delta'))} "
             + f"decode_max_delta={fmt_delta(entry['decode_max_delta'])} "
+            + f"decode_input_hidden_max_delta={fmt_delta(entry.get('decode_input_hidden_max_delta'))} "
+            + f"decode_step_cache_max_delta={fmt_delta(entry.get('decode_step_cache_max_delta'))} "
             + f"device_prefill_ms={fmt_ms(entry['device_prefill_ms'])} "
             + f"device_decode_ms={fmt_ms(entry['device_decode_ms'])}"
         )

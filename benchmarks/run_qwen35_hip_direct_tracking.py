@@ -36,7 +36,10 @@ def append_history(label: str, json_path: Path) -> None:
         "device_prefill_ms": payload["device_prefill_ms"],
         "device_decode_ms": payload["device_decode_ms"],
         "prefill_max_delta": payload["prefill_max_delta"],
+        "prefill_cache_max_delta": payload.get("prefill_cache_max_delta"),
         "decode_max_delta": payload["decode_max_delta"],
+        "decode_input_hidden_max_delta": payload.get("decode_input_hidden_max_delta"),
+        "decode_step_cache_max_delta": payload.get("decode_step_cache_max_delta"),
         "generated_text": payload["generated_text"],
         "source_json": json_path.name,
     }
