@@ -45,19 +45,31 @@ def main() -> None:
     first_layer_input_layernorm_output = None
     decode_first_layer_input_layernorm_output = None
     first_layer_linear_qkv_output = None
+    decode_first_layer_linear_qkv_output = None
     first_layer_linear_z_output = None
+    decode_first_layer_linear_z_output = None
     first_layer_linear_b_output = None
+    decode_first_layer_linear_b_output = None
     first_layer_linear_a_output = None
+    decode_first_layer_linear_a_output = None
     first_layer_linear_conv_weight = None
     first_layer_linear_pre_conv_value_focus_head_output = None
     first_layer_linear_post_conv_output = None
     first_layer_linear_direct_conv_output = None
     first_layer_linear_prepared_query_output = None
+    decode_first_layer_linear_prepared_query_output = None
     first_layer_linear_prepared_key_output = None
+    decode_first_layer_linear_prepared_key_output = None
     first_layer_linear_prepared_value_output = None
+    decode_first_layer_linear_prepared_value_output = None
     first_layer_linear_prepared_beta_output = None
+    decode_first_layer_linear_prepared_beta_output = None
     first_layer_linear_prepared_g_output = None
+    decode_first_layer_linear_prepared_g_output = None
     first_layer_linear_direct_recurrent_output = None
+    decode_first_layer_linear_direct_recurrent_output = None
+    decode_first_layer_conv_state_before = None
+    decode_first_layer_recurrent_state_before = None
     first_layer_linear_focus_kv_mem_output = None
     first_layer_linear_focus_delta_output = None
     first_layer_linear_focus_state_output = None
@@ -68,6 +80,7 @@ def main() -> None:
     first_layer_linear_focus_output_steps = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
+    decode_first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
     first_layer_linear_pre_norm_rsqrt = None
     first_layer_linear_pre_norm_focus_head_output = None
@@ -76,6 +89,7 @@ def main() -> None:
     first_layer_linear_norm_weighted_hidden = None
     first_layer_linear_norm_silu_gate = None
     first_layer_linear_norm_output = None
+    decode_first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
     decode_first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
@@ -149,6 +163,107 @@ def main() -> None:
         tensor = output[0] if isinstance(output, tuple) else output
         return tensor.detach().to(dtype=torch.float32).cpu()
 
+    def reconstruct_decode_linear_outputs():
+        nonlocal decode_first_layer_linear_prepared_query_output
+        nonlocal decode_first_layer_linear_prepared_key_output
+        nonlocal decode_first_layer_linear_prepared_value_output
+        nonlocal decode_first_layer_linear_prepared_beta_output
+        nonlocal decode_first_layer_linear_prepared_g_output
+        nonlocal decode_first_layer_linear_direct_recurrent_output
+        if decode_first_layer_linear_prepared_query_output is not None:
+            return
+        if decode_first_layer_conv_state_before is None:
+            raise RuntimeError("decode linear_attn pre-hook must capture conv state before decode reconstruction")
+        if decode_first_layer_recurrent_state_before is None:
+            raise RuntimeError("decode linear_attn pre-hook must capture recurrent state before decode reconstruction")
+        if decode_first_layer_linear_qkv_output is None:
+            raise RuntimeError("decode linear_qkv hook must run before decode reconstruction")
+        if decode_first_layer_linear_z_output is None:
+            raise RuntimeError("decode linear_z hook must run before decode reconstruction")
+        if decode_first_layer_linear_b_output is None:
+            raise RuntimeError("decode linear_b hook must run before decode reconstruction")
+        if decode_first_layer_linear_a_output is None:
+            raise RuntimeError("decode linear_a hook must run before decode reconstruction")
+
+        batch_size = decode_first_layer_linear_qkv_output.shape[0]
+        seq_len_local = decode_first_layer_linear_qkv_output.shape[1]
+        linear_attn = model.model.layers[0].linear_attn
+        qkv_t = decode_first_layer_linear_qkv_output.transpose(1, 2).contiguous()
+        conv_weight = linear_attn.conv1d.weight.detach().squeeze(1).to(dtype=torch.float32)
+        conv_bias = (
+            linear_attn.conv1d.bias.detach().to(dtype=torch.float32)
+            if linear_attn.conv1d.bias is not None
+            else None
+        )
+        hidden_states_new = torch.cat(
+            [decode_first_layer_conv_state_before, qkv_t.to(dtype=torch.float32)], dim=-1
+        )
+        direct_conv = F.conv1d(
+            hidden_states_new,
+            conv_weight.unsqueeze(1),
+            conv_bias,
+            padding=0,
+            groups=hidden_states_new.shape[1],
+        )
+        direct_conv = F.silu(direct_conv[:, :, -seq_len_local:]).transpose(1, 2).contiguous()
+        value_dim = decode_first_layer_linear_z_output.shape[-1]
+        key_dim = (direct_conv.shape[-1] - value_dim) // 2
+        num_k_heads = int(linear_attn.num_k_heads)
+        num_v_heads = int(linear_attn.num_v_heads)
+        head_k_dim = int(linear_attn.head_k_dim)
+        head_v_dim = int(linear_attn.head_v_dim)
+        query = direct_conv[..., :key_dim].reshape(
+            batch_size, seq_len_local, num_k_heads, head_k_dim
+        )
+        key = direct_conv[..., key_dim : key_dim * 2].reshape(
+            batch_size, seq_len_local, num_k_heads, head_k_dim
+        )
+        value = direct_conv[..., key_dim * 2 : key_dim * 2 + value_dim].reshape(
+            batch_size, seq_len_local, num_v_heads, head_v_dim
+        )
+        query = F.normalize(query, p=2.0, dim=-1, eps=1e-6)
+        key = F.normalize(key, p=2.0, dim=-1, eps=1e-6)
+        head_repeat = num_v_heads // num_k_heads
+        if head_repeat > 1:
+            query = query.repeat_interleave(head_repeat, dim=2)
+            key = key.repeat_interleave(head_repeat, dim=2)
+        decode_first_layer_linear_prepared_query_output = query.cpu()
+        decode_first_layer_linear_prepared_key_output = key.cpu()
+        decode_first_layer_linear_prepared_value_output = value.cpu()
+        beta = torch.sigmoid(decode_first_layer_linear_b_output).to(dtype=torch.float32)
+        decode_first_layer_linear_prepared_beta_output = beta.cpu()
+        dt_bias = linear_attn.dt_bias.detach().to(dtype=torch.float32).reshape(1, 1, num_v_heads)
+        a_log_exp = linear_attn.A_log.detach().to(dtype=torch.float32).exp().reshape(1, 1, num_v_heads)
+        a_input = decode_first_layer_linear_a_output.to(dtype=torch.float32)
+        g = -torch.log1p(torch.exp(a_input + dt_bias)) * a_log_exp
+        decode_first_layer_linear_prepared_g_output = g.cpu()
+        q = query.transpose(1, 2).contiguous() * (1.0 / (head_k_dim ** 0.5))
+        k = key.transpose(1, 2).contiguous()
+        v = value.transpose(1, 2).contiguous()
+        beta_t = beta.transpose(1, 2).contiguous()
+        g_t = g.transpose(1, 2).contiguous()
+        state = decode_first_layer_recurrent_state_before.to(dtype=torch.float32).clone()
+        outputs = []
+        for step in range(seq_len_local):
+            q_step = q[:, :, step, :]
+            k_step = k[:, :, step, :]
+            v_step = v[:, :, step, :]
+            beta_step = beta_t[:, :, step].unsqueeze(-1)
+            g_step = g_t[:, :, step].exp().unsqueeze(-1).unsqueeze(-1)
+            state = state * g_step
+            kv_mem = (state * k_step.unsqueeze(-1)).sum(dim=2)
+            delta = (v_step - kv_mem) * beta_step
+            state = state + k_step.unsqueeze(-1) * delta.unsqueeze(2)
+            out_step = (state * q_step.unsqueeze(-1)).sum(dim=2)
+            outputs.append(out_step.unsqueeze(2))
+        decode_first_layer_linear_direct_recurrent_output = (
+            torch.cat(outputs, dim=2)
+            .transpose(1, 2)
+            .contiguous()
+            .reshape(batch_size, seq_len_local, -1)
+            .cpu()
+        )
+
     def input_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_input_layernorm_output
         nonlocal decode_first_layer_input_layernorm_output
@@ -164,6 +279,7 @@ def main() -> None:
         nonlocal decode_first_layer_token_mixer_output
         if capture_phase == "decode":
             decode_first_layer_token_mixer_output = capture_tensor(output)
+            reconstruct_decode_linear_outputs()
             return
         if capture_phase != "prefill":
             return
@@ -172,6 +288,10 @@ def main() -> None:
     def linear_qkv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_qkv_output
         nonlocal first_layer_linear_pre_conv_value_focus_head_output
+        nonlocal decode_first_layer_linear_qkv_output
+        if capture_phase == "decode":
+            decode_first_layer_linear_qkv_output = capture_tensor(output)
+            return
         if capture_phase != "prefill":
             return
         first_layer_linear_qkv_output = capture_tensor(output)
@@ -187,18 +307,30 @@ def main() -> None:
 
     def linear_z_hook(_module, _inputs, output):
         nonlocal first_layer_linear_z_output
+        nonlocal decode_first_layer_linear_z_output
+        if capture_phase == "decode":
+            decode_first_layer_linear_z_output = capture_tensor(output)
+            return
         if capture_phase != "prefill":
             return
         first_layer_linear_z_output = capture_tensor(output)
 
     def linear_b_hook(_module, _inputs, output):
         nonlocal first_layer_linear_b_output
+        nonlocal decode_first_layer_linear_b_output
+        if capture_phase == "decode":
+            decode_first_layer_linear_b_output = capture_tensor(output)
+            return
         if capture_phase != "prefill":
             return
         first_layer_linear_b_output = capture_tensor(output)
 
     def linear_a_hook(_module, _inputs, output):
         nonlocal first_layer_linear_a_output
+        nonlocal decode_first_layer_linear_a_output
+        if capture_phase == "decode":
+            decode_first_layer_linear_a_output = capture_tensor(output)
+            return
         if capture_phase != "prefill":
             return
         first_layer_linear_a_output = capture_tensor(output)
@@ -222,7 +354,15 @@ def main() -> None:
         nonlocal first_layer_linear_focus_output_steps
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
+        nonlocal decode_first_layer_linear_prepared_query_output
+        nonlocal decode_first_layer_linear_prepared_key_output
+        nonlocal decode_first_layer_linear_prepared_value_output
+        nonlocal decode_first_layer_linear_prepared_beta_output
+        nonlocal decode_first_layer_linear_prepared_g_output
+        nonlocal decode_first_layer_linear_direct_recurrent_output
         if capture_phase != "prefill":
+            if capture_phase != "decode":
+                return
             return
         tensor = capture_tensor(output)
         first_layer_linear_conv_weight = _module.weight.detach().squeeze(1).to(dtype=torch.float32).cpu()
@@ -333,6 +473,11 @@ def main() -> None:
 
     def linear_norm_hook(_module, _inputs, output):
         nonlocal first_layer_linear_norm_output
+        nonlocal decode_first_layer_linear_norm_output
+        if capture_phase == "decode":
+            tensor = capture_tensor(output)
+            decode_first_layer_linear_norm_output = tensor.reshape(tensor.shape[0], tensor.shape[1], -1)
+            return
         if capture_phase != "prefill":
             return
         tensor = capture_tensor(output)
@@ -340,6 +485,11 @@ def main() -> None:
 
     def linear_norm_pre_hook(_module, inputs):
         nonlocal first_layer_linear_pre_norm_output
+        nonlocal decode_first_layer_linear_pre_norm_output
+        if capture_phase == "decode":
+            tensor = capture_tensor(inputs[0])
+            decode_first_layer_linear_pre_norm_output = tensor.reshape(tensor.shape[0], tensor.shape[1], -1)
+            return
         if capture_phase != "prefill":
             return
         tensor = capture_tensor(inputs[0])
@@ -645,6 +795,12 @@ def main() -> None:
             if args.max_new_tokens > 0:
                 capture_phase = "decode"
                 decode_input_ids = torch.tensor([[next_token]], dtype=torch.long)
+                decode_first_layer_conv_state_before = (
+                    past_key_values.layers[0].conv_states.detach().to(dtype=torch.float32).clone()
+                )
+                decode_first_layer_recurrent_state_before = (
+                    past_key_values.layers[0].recurrent_states.detach().to(dtype=torch.float32).clone()
+                )
                 decode_outputs = model(
                     input_ids=decode_input_ids,
                     use_cache=True,
@@ -714,82 +870,105 @@ def main() -> None:
             k_normed * (k_weight + 1.0)
         ).transpose(1, 2).contiguous().cpu()
 
-    if (
-        embedding_output is None
-        or first_layer_output is None
-        or first_layer_input_layernorm_output is None
-        or first_layer_linear_qkv_output is None
-        or first_layer_linear_z_output is None
-        or first_layer_linear_b_output is None
-        or first_layer_linear_a_output is None
-        or first_layer_linear_conv_weight is None
-        or first_layer_linear_pre_conv_value_focus_head_output is None
-        or first_layer_linear_post_conv_output is None
-        or first_layer_linear_direct_conv_output is None
-        or first_layer_linear_prepared_query_output is None
-        or first_layer_linear_prepared_key_output is None
-        or first_layer_linear_prepared_value_output is None
-        or first_layer_linear_prepared_beta_output is None
-        or first_layer_linear_prepared_g_output is None
-        or first_layer_linear_direct_recurrent_output is None
-        or first_layer_linear_focus_kv_mem_output is None
-        or first_layer_linear_focus_delta_output is None
-        or first_layer_linear_focus_state_output is None
-        or first_layer_linear_focus_output is None
-        or first_layer_linear_focus_kv_mem_steps is None
-        or first_layer_linear_focus_delta_steps is None
-        or first_layer_linear_focus_state_steps is None
-        or first_layer_linear_focus_output_steps is None
-        or first_layer_linear_prepared_value_focus_head_output is None
-        or first_layer_linear_pre_norm_output is None
-        or first_layer_linear_pre_norm_mean_square is None
-        or first_layer_linear_pre_norm_rsqrt is None
-        or first_layer_linear_pre_norm_focus_head_output is None
-        or first_layer_linear_norm_gate_input is None
-        or first_layer_linear_norm_weight is None
-        or first_layer_linear_norm_weighted_hidden is None
-        or first_layer_linear_norm_silu_gate is None
-        or first_layer_linear_norm_output is None
-        or first_layer_token_mixer_output is None
-        or first_layer_post_attention_layernorm_output is None
-        or first_layer_mlp_output is None
-        or layer3_input_layernorm_output is None
-        or layer3_input_layernorm_input is None
-        or layer3_input_layernorm_mean_square is None
-        or layer3_input_layernorm_rsqrt is None
-        or layer3_input_layernorm_weight is None
-        or layer3_input_layernorm_weighted_hidden is None
-        or layer3_q_and_gate_output is None
-        or layer3_k_proj_output is None
-        or layer3_v_proj_output is None
-        or layer3_prepared_query_output is None
-        or layer3_gate_output is None
-        or layer3_prepared_key_output is None
-        or layer3_prepared_value_output is None
-        or layer3_attention_output is None
-        or layer3_token_mixer_output is None
-        or layer3_post_attention_layernorm_output is None
-        or layer3_mlp_output is None
-        or layer3_output is None
-        or layer4_input_layernorm_output is None
-        or layer4_input_layernorm_input is None
-        or layer4_input_layernorm_mean_square is None
-        or layer4_input_layernorm_rsqrt is None
-        or layer4_input_layernorm_weight is None
-        or layer4_input_layernorm_weighted_hidden is None
-        or layer4_token_mixer_output is None
-        or layer4_post_attention_layernorm_output is None
-        or layer4_mlp_output is None
-        or layer4_output is None
-        or any(layer_output is None for layer_output in decoder_layer_outputs)
-        or (args.max_new_tokens > 0 and any(layer_output is None for layer_output in decode_decoder_layer_outputs))
-        or (args.max_new_tokens > 0 and decode_first_layer_input_layernorm_output is None)
-        or (args.max_new_tokens > 0 and decode_first_layer_token_mixer_output is None)
-        or (args.max_new_tokens > 0 and decode_first_layer_post_attention_layernorm_output is None)
-        or (args.max_new_tokens > 0 and decode_first_layer_mlp_output is None)
-        or (args.max_new_tokens > 0 and decode_first_layer_output is None)
-    ):
-        raise RuntimeError("failed to capture staged first-layer outputs from PyTorch model")
+    missing = []
+    required_scalars = {
+        "embedding_output": embedding_output,
+        "first_layer_output": first_layer_output,
+        "first_layer_input_layernorm_output": first_layer_input_layernorm_output,
+        "first_layer_linear_qkv_output": first_layer_linear_qkv_output,
+        "first_layer_linear_z_output": first_layer_linear_z_output,
+        "first_layer_linear_b_output": first_layer_linear_b_output,
+        "first_layer_linear_a_output": first_layer_linear_a_output,
+        "first_layer_linear_conv_weight": first_layer_linear_conv_weight,
+        "first_layer_linear_pre_conv_value_focus_head_output": first_layer_linear_pre_conv_value_focus_head_output,
+        "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output,
+        "first_layer_linear_direct_conv_output": first_layer_linear_direct_conv_output,
+        "first_layer_linear_prepared_query_output": first_layer_linear_prepared_query_output,
+        "first_layer_linear_prepared_key_output": first_layer_linear_prepared_key_output,
+        "first_layer_linear_prepared_value_output": first_layer_linear_prepared_value_output,
+        "first_layer_linear_prepared_beta_output": first_layer_linear_prepared_beta_output,
+        "first_layer_linear_prepared_g_output": first_layer_linear_prepared_g_output,
+        "first_layer_linear_direct_recurrent_output": first_layer_linear_direct_recurrent_output,
+        "first_layer_linear_focus_kv_mem_output": first_layer_linear_focus_kv_mem_output,
+        "first_layer_linear_focus_delta_output": first_layer_linear_focus_delta_output,
+        "first_layer_linear_focus_state_output": first_layer_linear_focus_state_output,
+        "first_layer_linear_focus_output": first_layer_linear_focus_output,
+        "first_layer_linear_focus_kv_mem_steps": first_layer_linear_focus_kv_mem_steps,
+        "first_layer_linear_focus_delta_steps": first_layer_linear_focus_delta_steps,
+        "first_layer_linear_focus_state_steps": first_layer_linear_focus_state_steps,
+        "first_layer_linear_focus_output_steps": first_layer_linear_focus_output_steps,
+        "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output,
+        "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output,
+        "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square,
+        "first_layer_linear_pre_norm_rsqrt": first_layer_linear_pre_norm_rsqrt,
+        "first_layer_linear_pre_norm_focus_head_output": first_layer_linear_pre_norm_focus_head_output,
+        "first_layer_linear_norm_gate_input": first_layer_linear_norm_gate_input,
+        "first_layer_linear_norm_weight": first_layer_linear_norm_weight,
+        "first_layer_linear_norm_weighted_hidden": first_layer_linear_norm_weighted_hidden,
+        "first_layer_linear_norm_silu_gate": first_layer_linear_norm_silu_gate,
+        "first_layer_linear_norm_output": first_layer_linear_norm_output,
+        "first_layer_token_mixer_output": first_layer_token_mixer_output,
+        "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output,
+        "first_layer_mlp_output": first_layer_mlp_output,
+        "layer3_input_layernorm_output": layer3_input_layernorm_output,
+        "layer3_input_layernorm_input": layer3_input_layernorm_input,
+        "layer3_input_layernorm_mean_square": layer3_input_layernorm_mean_square,
+        "layer3_input_layernorm_rsqrt": layer3_input_layernorm_rsqrt,
+        "layer3_input_layernorm_weight": layer3_input_layernorm_weight,
+        "layer3_input_layernorm_weighted_hidden": layer3_input_layernorm_weighted_hidden,
+        "layer3_q_and_gate_output": layer3_q_and_gate_output,
+        "layer3_k_proj_output": layer3_k_proj_output,
+        "layer3_v_proj_output": layer3_v_proj_output,
+        "layer3_prepared_query_output": layer3_prepared_query_output,
+        "layer3_gate_output": layer3_gate_output,
+        "layer3_prepared_key_output": layer3_prepared_key_output,
+        "layer3_prepared_value_output": layer3_prepared_value_output,
+        "layer3_attention_output": layer3_attention_output,
+        "layer3_token_mixer_output": layer3_token_mixer_output,
+        "layer3_post_attention_layernorm_output": layer3_post_attention_layernorm_output,
+        "layer3_mlp_output": layer3_mlp_output,
+        "layer3_output": layer3_output,
+        "layer4_input_layernorm_output": layer4_input_layernorm_output,
+        "layer4_input_layernorm_input": layer4_input_layernorm_input,
+        "layer4_input_layernorm_mean_square": layer4_input_layernorm_mean_square,
+        "layer4_input_layernorm_rsqrt": layer4_input_layernorm_rsqrt,
+        "layer4_input_layernorm_weight": layer4_input_layernorm_weight,
+        "layer4_input_layernorm_weighted_hidden": layer4_input_layernorm_weighted_hidden,
+        "layer4_token_mixer_output": layer4_token_mixer_output,
+        "layer4_post_attention_layernorm_output": layer4_post_attention_layernorm_output,
+        "layer4_mlp_output": layer4_mlp_output,
+        "layer4_output": layer4_output,
+    }
+    missing.extend(name for name, value in required_scalars.items() if value is None)
+    if any(layer_output is None for layer_output in decoder_layer_outputs):
+        missing.append("decoder_layer_outputs")
+    if args.max_new_tokens > 0:
+        required_decode = {
+            "decode_decoder_layer_outputs": None if any(layer_output is None for layer_output in decode_decoder_layer_outputs) else True,
+            "decode_first_layer_input_layernorm_output": decode_first_layer_input_layernorm_output,
+            "decode_first_layer_linear_qkv_output": decode_first_layer_linear_qkv_output,
+            "decode_first_layer_linear_z_output": decode_first_layer_linear_z_output,
+            "decode_first_layer_linear_b_output": decode_first_layer_linear_b_output,
+            "decode_first_layer_linear_a_output": decode_first_layer_linear_a_output,
+            "decode_first_layer_linear_prepared_query_output": decode_first_layer_linear_prepared_query_output,
+            "decode_first_layer_linear_prepared_key_output": decode_first_layer_linear_prepared_key_output,
+            "decode_first_layer_linear_prepared_value_output": decode_first_layer_linear_prepared_value_output,
+            "decode_first_layer_linear_prepared_beta_output": decode_first_layer_linear_prepared_beta_output,
+            "decode_first_layer_linear_prepared_g_output": decode_first_layer_linear_prepared_g_output,
+            "decode_first_layer_linear_direct_recurrent_output": decode_first_layer_linear_direct_recurrent_output,
+            "decode_first_layer_linear_pre_norm_output": decode_first_layer_linear_pre_norm_output,
+            "decode_first_layer_linear_norm_output": decode_first_layer_linear_norm_output,
+            "decode_first_layer_token_mixer_output": decode_first_layer_token_mixer_output,
+            "decode_first_layer_post_attention_layernorm_output": decode_first_layer_post_attention_layernorm_output,
+            "decode_first_layer_mlp_output": decode_first_layer_mlp_output,
+            "decode_first_layer_output": decode_first_layer_output,
+        }
+        missing.extend(name for name, value in required_decode.items() if value is None)
+    if missing:
+        raise RuntimeError(
+            "failed to capture staged first-layer outputs from PyTorch model; missing="
+            + ",".join(missing)
+        )
 
     decode_started = time.perf_counter()
     decode_logits: list[list[float]] = []
@@ -886,6 +1065,18 @@ def main() -> None:
             layer_output.tolist() for layer_output in decode_decoder_layer_outputs
         ] if args.max_new_tokens > 0 else [],
         "decode_first_layer_input_layernorm_output": decode_first_layer_input_layernorm_output.tolist() if decode_first_layer_input_layernorm_output is not None else None,
+        "decode_first_layer_linear_qkv_output": decode_first_layer_linear_qkv_output.tolist() if decode_first_layer_linear_qkv_output is not None else None,
+        "decode_first_layer_linear_z_output": decode_first_layer_linear_z_output.tolist() if decode_first_layer_linear_z_output is not None else None,
+        "decode_first_layer_linear_b_output": decode_first_layer_linear_b_output.tolist() if decode_first_layer_linear_b_output is not None else None,
+        "decode_first_layer_linear_a_output": decode_first_layer_linear_a_output.tolist() if decode_first_layer_linear_a_output is not None else None,
+        "decode_first_layer_linear_prepared_query_output": decode_first_layer_linear_prepared_query_output.tolist() if decode_first_layer_linear_prepared_query_output is not None else None,
+        "decode_first_layer_linear_prepared_key_output": decode_first_layer_linear_prepared_key_output.tolist() if decode_first_layer_linear_prepared_key_output is not None else None,
+        "decode_first_layer_linear_prepared_value_output": decode_first_layer_linear_prepared_value_output.tolist() if decode_first_layer_linear_prepared_value_output is not None else None,
+        "decode_first_layer_linear_prepared_beta_output": decode_first_layer_linear_prepared_beta_output.tolist() if decode_first_layer_linear_prepared_beta_output is not None else None,
+        "decode_first_layer_linear_prepared_g_output": decode_first_layer_linear_prepared_g_output.tolist() if decode_first_layer_linear_prepared_g_output is not None else None,
+        "decode_first_layer_linear_direct_recurrent_output": decode_first_layer_linear_direct_recurrent_output.tolist() if decode_first_layer_linear_direct_recurrent_output is not None else None,
+        "decode_first_layer_linear_pre_norm_output": decode_first_layer_linear_pre_norm_output.tolist() if decode_first_layer_linear_pre_norm_output is not None else None,
+        "decode_first_layer_linear_norm_output": decode_first_layer_linear_norm_output.tolist() if decode_first_layer_linear_norm_output is not None else None,
         "decode_first_layer_token_mixer_output": decode_first_layer_token_mixer_output.tolist() if decode_first_layer_token_mixer_output is not None else None,
         "decode_first_layer_post_attention_layernorm_output": decode_first_layer_post_attention_layernorm_output.tolist() if decode_first_layer_post_attention_layernorm_output is not None else None,
         "decode_first_layer_mlp_output": decode_first_layer_mlp_output.tolist() if decode_first_layer_mlp_output is not None else None,

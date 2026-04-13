@@ -327,6 +327,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_bad_decode_decoder_layer: Option<usize>,
         pytorch_first_bad_decode_decoder_layer_max_delta: Option<f32>,
         pytorch_decode_first_layer_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_qkv_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_z_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_b_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_a_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_norm_max_delta: Option<f32>,
         pytorch_decode_first_layer_token_mixer_max_delta: Option<f32>,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_decode_first_layer_mlp_max_delta: Option<f32>,
@@ -415,6 +430,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decoder_layer_outputs: Vec<Vec<Vec<Vec<f32>>>>,
         decode_decoder_layer_outputs: Vec<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_qkv_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_z_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_b_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_a_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_prepared_query_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_key_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_value_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_beta_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_prepared_g_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_direct_recurrent_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_pre_norm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_norm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
@@ -624,6 +651,83 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(max_delta)
     }
 
+    fn hidden_vec3_stats(
+        hidden: &[Vec<Vec<f32>>],
+        num_heads: usize,
+        head_dim: usize,
+        eps: f32,
+    ) -> Result<(Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>)> {
+        if hidden.is_empty() || hidden[0].is_empty() {
+            return Err(RuntimeError::External {
+                context: "hidden vec3 stats",
+                message: "empty hidden tensor".to_string(),
+            });
+        }
+        let hidden_size = hidden[0][0].len();
+        if hidden_size != num_heads * head_dim {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "hidden vec3 stats",
+                expected: num_heads * head_dim,
+                got: hidden_size,
+            });
+        }
+        let mut mean_square = vec![vec![vec![0.0f32; num_heads]; hidden[0].len()]; hidden.len()];
+        let mut rsqrt = vec![vec![vec![0.0f32; num_heads]; hidden[0].len()]; hidden.len()];
+        let mut normalized = vec![vec![vec![0.0f32; hidden_size]; hidden[0].len()]; hidden.len()];
+        for (batch_idx, batch) in hidden.iter().enumerate() {
+            for (seq_idx, row) in batch.iter().enumerate() {
+                for head_idx in 0..num_heads {
+                    let start = head_idx * head_dim;
+                    let end = start + head_dim;
+                    let slice = &row[start..end];
+                    let ms = slice.iter().map(|value| value * value).sum::<f32>() / head_dim as f32;
+                    let inv = 1.0f32 / (ms + eps).sqrt();
+                    mean_square[batch_idx][seq_idx][head_idx] = ms;
+                    rsqrt[batch_idx][seq_idx][head_idx] = inv;
+                    for (dim_idx, value) in slice.iter().enumerate() {
+                        normalized[batch_idx][seq_idx][start + dim_idx] = *value * inv;
+                    }
+                }
+            }
+        }
+        Ok((mean_square, rsqrt, normalized))
+    }
+
+    fn hidden_vec3_stats_flattened_decode(
+        hidden: &[Vec<Vec<f32>>],
+        num_heads: usize,
+        head_dim: usize,
+        eps: f32,
+    ) -> Result<(Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>)> {
+        let flat = hidden
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if flat.len() != num_heads * head_dim {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "decode hidden flattened stats",
+                expected: num_heads * head_dim,
+                got: flat.len(),
+            });
+        }
+        let mut mean_square = vec![vec![vec![0.0f32; num_heads]; 1]; 1];
+        let mut rsqrt = vec![vec![vec![0.0f32; num_heads]; 1]; 1];
+        let mut normalized = vec![vec![vec![0.0f32; flat.len()]; 1]; 1];
+        for head_idx in 0..num_heads {
+            let start = head_idx * head_dim;
+            let end = start + head_dim;
+            let slice = &flat[start..end];
+            let ms = slice.iter().map(|value| value * value).sum::<f32>() / head_dim as f32;
+            let inv = 1.0f32 / (ms + eps).sqrt();
+            mean_square[0][0][head_idx] = ms;
+            rsqrt[0][0][head_idx] = inv;
+            for (dim_idx, value) in slice.iter().enumerate() {
+                normalized[0][0][start + dim_idx] = *value * inv;
+            }
+        }
+        Ok((mean_square, rsqrt, normalized))
+    }
+
     fn max_tensor_delta_vec2(tensor: &Tensor, rhs: &[Vec<f32>]) -> Result<f32> {
         let dims = tensor.dims();
         if dims.len() != 2 {
@@ -679,6 +783,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let d1 = dims[1];
         let d2 = dims[2];
         let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let mut out = vec![vec![vec![0.0f32; d2]; d1]; d0];
+        let mut idx = 0usize;
+        for outer in &mut out {
+            for inner in outer {
+                for value in inner {
+                    *value = flat[idx];
+                    idx += 1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn tensor_to_vec3_like(tensor: &Tensor, shape: &[Vec<Vec<f32>>]) -> Result<Vec<Vec<Vec<f32>>>> {
+        let d0 = shape.len();
+        let d1 = shape.first().map_or(0usize, |outer| outer.len());
+        let d2 = shape
+            .first()
+            .and_then(|outer| outer.first())
+            .map_or(0usize, |inner| inner.len());
+        let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        if flat.len() != d0 * d1 * d2 {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor to vec3 like",
+                expected: d0 * d1 * d2,
+                got: flat.len(),
+            });
+        }
         let mut out = vec![vec![vec![0.0f32; d2]; d1]; d0];
         let mut idx = 0usize;
         for outer in &mut out {
@@ -1835,6 +1967,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_bad_decode_decoder_layer,
         pytorch_first_bad_decode_decoder_layer_max_delta,
         pytorch_decode_first_layer_input_layernorm_max_delta,
+        pytorch_decode_first_layer_linear_qkv_max_delta,
+        pytorch_decode_first_layer_linear_z_max_delta,
+        pytorch_decode_first_layer_linear_b_max_delta,
+        pytorch_decode_first_layer_linear_a_max_delta,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_max_delta,
         pytorch_decode_first_layer_token_mixer_max_delta,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
         pytorch_decode_first_layer_mlp_max_delta,
@@ -1876,6 +2023,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 prompt_ids.len(),
                 &device_cache,
             )?;
+            let layer0_linear_projection_trace = layer0_trace
+                .linear_projection_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 0 linear projection trace missing".to_string(),
+                })?;
+            let layer0_linear_core_trace = layer0_trace
+                .linear_core_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 0 linear core trace missing".to_string(),
+                })?;
             (
                 Some(deltas),
                 first_bad.map(|(layer_id, _)| layer_id),
@@ -1885,6 +2046,225 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .as_ref()
                     .map(|oracle| {
                         max_tensor_delta_vec3(layer0_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_qkv_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.qkv_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_z_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.z_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_b_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.b_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_a_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.a_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_query_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_query.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_key_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_key.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_value_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_value.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_beta_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.prepared_beta.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_g_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.prepared_g.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_direct_recurrent_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (runtime_ms, _, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (oracle_ms, _, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_ms, &oracle_ms)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_rsqrt, &oracle_rsqrt)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, _, runtime_normalized) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, _, oracle_normalized) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_normalized, &oracle_normalized)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.post_gated_norm_output.tensor(),
+                            oracle,
+                        )
                     })
                     .transpose()?,
                 pytorch_oracle
@@ -1916,10 +2296,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .transpose()?,
             )
         } else {
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
         }
     } else {
-        (None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
         trace_cpu_oracle_cache_delta("prefill", oracle_cache, &device_cache)?;
@@ -2262,6 +2642,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_bad_decode_decoder_layer,
         pytorch_first_bad_decode_decoder_layer_max_delta,
         pytorch_decode_first_layer_input_layernorm_max_delta,
+        pytorch_decode_first_layer_linear_qkv_max_delta,
+        pytorch_decode_first_layer_linear_z_max_delta,
+        pytorch_decode_first_layer_linear_b_max_delta,
+        pytorch_decode_first_layer_linear_a_max_delta,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_max_delta,
         pytorch_decode_first_layer_token_mixer_max_delta,
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
         pytorch_decode_first_layer_mlp_max_delta,
